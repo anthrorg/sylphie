@@ -1,0 +1,90 @@
+
+// 1. Add this import after applyCrossModulation import:
+import { RuleEngine } from './rule-engine';
+
+// 2. Add this field to the DriveEngine class:
+private ruleEngine: RuleEngine;
+
+// 3. In constructor, add after stateManager initialization:
+this.ruleEngine = new RuleEngine();
+
+// 4. Add this method to DriveEngine class:
+  /**
+   * Initialize the rule engine with a PostgreSQL connection.
+   *
+   * Called once at startup before start() is called. This loads the initial
+   * rule set from the database and sets up periodic reloads.
+   *
+   * @param pool - A pg Pool instance for database access
+   * @throws Error if rule loading fails
+   */
+  public async initializeRuleEngine(pool: any): Promise<void> {
+    await this.ruleEngine.initialize(pool);
+  }
+
+// 5. In stop() method, add before the closing brace:
+    this.ruleEngine.shutdown();
+
+// 6. Replace the applyOutcome method with this:
+  /**
+   * Apply a single outcome (action result or metrics) to drive state.
+   *
+   * For action outcomes:
+   * 1. Check theater prohibition (skip reinforcement if theatrical)
+   * 2. Match against custom rules in the rule engine
+   * 3. Apply matched rule effects or fall back to default affects
+   * 4. Apply guardian weighting
+   * 5. Apply accumulated effects to drive state
+   */
+  private applyOutcome(payload: ActionOutcomePayload | SoftwareMetricsPayload): void {
+    if ('driveEffects' in payload) {
+      // ACTION_OUTCOME
+      const actionPayload = payload as ActionOutcomePayload;
+
+      // Theater check: if theatrical, skip reinforcement
+      if (actionPayload.theaterCheck.isTheatrical) {
+        return;
+      }
+
+      // Determine the event type from the outcome
+      const eventType = actionPayload.outcome === 'positive' ? 'action_success' : 'action_failure';
+
+      // Get the current drive state to use for rule matching
+      const currentState = this.stateManager.freezeCurrent();
+
+      // Match and apply rules from the rule engine
+      const ruleResult = this.ruleEngine.matchAndApply(eventType, currentState);
+
+      // Combine rule effects with observed driveEffects
+      // Rule effects provide the contingency; observed effects provide the direct impact
+      const combinedEffects: Partial<Record<DriveName, number>> = {};
+
+      // Start with rule-derived effects
+      for (const [drive, delta] of Object.entries(ruleResult.driveEffects)) {
+        const driveName = drive as DriveName;
+        combinedEffects[driveName] = (combinedEffects[driveName] || 0) + delta;
+      }
+
+      // Overlay observed driveEffects (direct impact takes precedence)
+      for (const [drive, delta] of Object.entries(actionPayload.driveEffects)) {
+        const driveName = drive as DriveName;
+        combinedEffects[driveName] = (combinedEffects[driveName] || 0) + delta;
+      }
+
+      // Apply guardian weighting to the combined effects
+      const weighted = this.applyGuardianWeighting(
+        combinedEffects,
+        actionPayload.feedbackSource,
+      );
+
+      this.stateManager.applyOutcomeEffects(weighted);
+    } else if ('cognitiveEffortPressure' in payload) {
+      // SOFTWARE_METRICS
+      const metricsPayload = payload as SoftwareMetricsPayload;
+      // Apply cognitive effort pressure to CognitiveAwareness
+      this.stateManager.applyDelta(
+        DriveName.CognitiveAwareness,
+        metricsPayload.cognitiveEffortPressure,
+      );
+    }
+  }

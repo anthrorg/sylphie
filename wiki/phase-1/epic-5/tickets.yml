@@ -1,0 +1,819 @@
+epic: 5
+title: "Decision Making (Core Cognitive Loop)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+tickets:
+  - id: E5-T001
+    meta:
+      title: "Executor Engine: State Machine & 8-State Loop"
+      description: |
+        Build the central execution loop that orchestrates all decision-making subsystem components.
+
+        The executor implements the 8-state machine: IDLE → CATEGORIZING → PREDICTING → ARBITRATING →
+        RETRIEVING → EXECUTING → OBSERVING → LEARNING. This is the heartbeat of the system.
+
+        Design:
+        - ExecutorEngine class with state transitions
+        - Event-driven architecture with 5Hz idle tick fallback per CANON
+        - Graceful state timeout handling (max 500ms per state per CANON Phase 1)
+        - Cycle time target: 100ms under normal load
+
+        Deliverables:
+        - ExecutorEngine class with full state transition logic
+        - State timeout enforcement and recovery
+        - Cycle metrics collection (latency per state, throughput)
+        - Error state transitions (failed prediction → LEARNING, etc.)
+        - Integration hooks for all 5 subsystems
+
+        Test coverage:
+        - Happy path: full 8-state cycle completion
+        - Timeout transitions from each state
+        - Error recovery (prediction failure → learning)
+        - Concurrent event handling (new input arrives mid-cycle)
+        - State invariants (no backward transitions except error recovery)
+      acceptance_criteria:
+        - "All 8 state transitions functional and tested"
+        - "Cycle completes in <100ms on local hardware (measured)"
+        - "Timeout recovery tested from each state"
+        - "Error state handled without deadlock"
+        - "Metrics logged to TimescaleDB per cycle"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: []
+    complexity: L
+
+  - id: E5-T002
+    meta:
+      title: "ProcessInput Orchestrator (Categorizing → Predicting)"
+      description: |
+        Build the decision cycle orchestrator that routes inputs through CATEGORIZING and PREDICTING states.
+
+        This service implements the processInput(input: CommunicationInput) → DecisionCycleResult flow.
+        It bridges Communication subsystem input to the decision logic, performing initial categorization
+        and triggering prediction evaluation.
+
+        Design:
+        - InputCategorizer: route input to domain (graph query, action request, learning, etc.)
+        - PredictionTrigger: identify relevant context and predictions
+        - Inner Monologue buffering (max 5 candidates per Cowan's limit)
+        - Candidate ranking by Type 1 availability and confidence
+
+        Deliverables:
+        - ProcessInput orchestrator service
+        - InputCategorizer with 8+ input types
+        - PredictionTrigger with context matching
+        - Inner Monologue buffer (in-memory ring, max 5)
+        - Integration with Communication subsystem input parser
+
+        Test coverage:
+        - 8 input types routed correctly
+        - Inner Monologue candidates ranked by Type 1 status
+        - Context matching triggers correct predictions
+        - Buffer overflow (6th candidate) handled gracefully
+      acceptance_criteria:
+        - "All input types categorized and routed"
+        - "Inner Monologue maintains max 5 candidates"
+        - "Prediction triggers within 20ms for common inputs"
+        - "CATEGORIZING state transitions to PREDICTING with valid candidates"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T001]
+    complexity: M
+
+  - id: E5-T003
+    meta:
+      title: "Episodic Memory Service: Ring Buffer & Degradation"
+      description: |
+        Build the episodic memory subsystem that captures raw events and enforces aging/degradation.
+
+        This service manages the episode buffer (max 50 episodes in memory), writes to TimescaleDB
+        for long-term persistence, and implements confidence decay curves per ACT-R formula:
+
+          confidence(t) = base + 0.12 * ln(count) - d * ln(hours_since_access + 1)
+
+        Design:
+        - EpisodeBuffer: in-memory ring buffer, max 50 recent episodes
+        - EpisodePersistence: TimescaleDB writes with provenance
+        - ConfidenceDecay: time-based degradation per ACT-R
+        - EpisodeCompression: trigger consolidation to WKG when mature
+        - Attention/arousal gating for selective encoding
+
+        Deliverables:
+        - EpisodeBuffer class (ring buffer, FIFO overflow)
+        - Episode schema with: timestamp, action, outcome, prediction_error, context_hash, provenance
+        - TimescaleDB schema and write operations
+        - Decay computation (lazily on retrieval)
+        - Encoding gate: only store if attention OR arousal > 0.60
+        - Metrics on buffer fullness and consolidation rate
+
+        Test coverage:
+        - Ring buffer FIFO overflow on 51st episode
+        - Decay computed correctly for 1h, 1d, 7d old episodes
+        - TimescaleDB query returns aged episodes in order
+        - Encoding gate blocks low-attention episodes
+        - Consolidation triggered correctly (age > 2 hours + confidence > 0.65)
+      acceptance_criteria:
+        - "Buffer maintains max 50 episodes, FIFO on overflow"
+        - "ACT-R decay formula correctly implemented"
+        - "Episodes persisted to TimescaleDB with provenance"
+        - "Encoding gate respects attention/arousal threshold (>0.60)"
+        - "Consolidation triggered at 2h age + 0.65 confidence"
+    agents: [atlas, cortex, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E5-T004
+    meta:
+      title: "Episodic Memory Consolidation Interface (to Learning)"
+      description: |
+        Build the interface between episodic memory and the Learning subsystem for consolidation.
+
+        When episodes mature (age > 2h, confidence > 0.65), they're consolidated into WKG as
+        semantic content. This bridges raw event storage to durable knowledge.
+
+        Design:
+        - ConsolidationTrigger: identify mature episodes
+        - EpisodeToSemanticConverter: convert episode to WKG nodes/edges
+        - Learning subsystem callback (tell Learning subsystem consolidation is ready)
+        - Lesion test tracking: mark provenance (SENSOR, GUARDIAN, LLM_GENERATED, INFERENCE)
+
+        Deliverables:
+        - ConsolidationTrigger service
+        - EpisodeToSemanticConverter (extract entities, relationships, patterns)
+        - Learning subsystem integration point
+        - Provenance preservation (copy from episode to WKG)
+        - Consolidation event logging (when, what, success/failure)
+
+        Test coverage:
+        - Consolidation triggered only for age > 2h + confidence > 0.65
+        - Episode successfully converted to WKG nodes/edges
+        - Provenance tags preserved
+        - Learning subsystem callback invoked
+        - Failed consolidation (WKG error) logged without dropping episode
+      acceptance_criteria:
+        - "Consolidation trigger fires at correct thresholds"
+        - "Episode → WKG conversion preserves all entity/relationship data"
+        - "Provenance tags copied to WKG"
+        - "Learning subsystem notified synchronously"
+    agents: [atlas, cortex, forge]
+    model: sonnet
+    dependencies: [E5-T003]
+    complexity: M
+
+  - id: E5-T005
+    meta:
+      title: "Inner Monologue & Candidate Generation"
+      description: |
+        Build the candidate generation service that populates the Inner Monologue with action options.
+
+        The Inner Monologue is the working memory for arbitration. It holds max 5 candidate actions
+        ranked by Type 1 availability and confidence, following Cowan's capacity limit for working memory.
+
+        Design:
+        - CandidateCollector: gather candidates from Type 1 (WKG) and Type 2 (LLM)
+        - Candidate ranking: Type 1 first (confidence-sorted), then Type 2 proposals
+        - Inner Monologue buffer: max 5 candidates, FIFO eviction
+        - Attention-based filtering: only promote candidates if attention > 0.40
+
+        Deliverables:
+        - CandidateCollector service
+        - Candidate schema: action_id, source (TYPE_1 | TYPE_2), confidence, type_1_probability
+        - InnerMonologue buffer (max 5, in-memory)
+        - Ranking algorithm (Type 1 > Type 2, then by confidence)
+        - Attention gate: filter candidates if attention too low
+        - Metrics on candidate sources and promotion rates
+
+        Test coverage:
+        - Type 1 candidates retrieved from WKG and ranked
+        - Type 2 LLM candidates collected and ranked below Type 1
+        - Buffer capped at 5 candidates
+        - Attention gate blocks promotion below 0.40
+        - 6th candidate causes FIFO eviction
+      acceptance_criteria:
+        - "Max 5 candidates in Inner Monologue at any time"
+        - "Type 1 candidates ranked above Type 2"
+        - "Candidates sorted by confidence within type"
+        - "Attention gate prevents promotion below 0.40"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T002]
+    complexity: M
+
+  - id: E5-T006
+    meta:
+      title: "Prediction Service: Generate & Evaluate"
+      description: |
+        Build the prediction service that generates outcome predictions for actions and evaluates them.
+
+        This is critical for learning: prediction errors drive the Type 1/Type 2 ratio shift.
+        Predictions are stored in TimescaleDB with edges from action nodes in the WKG.
+
+        Design:
+        - PredictionGenerator: LLM call to generate {outcome, confidence, reasoning}
+        - PredictionEvaluator: compare predicted vs. actual outcome
+        - PredictionError (MAE): metric for Type 1 graduation evaluation
+        - Reconsolidation trigger: failed predictions (error > 0.15) mark actions as plastic
+
+        Deliverables:
+        - PredictionGenerator service (calls LLM)
+        - PredictionEvaluator service
+        - Prediction schema: action_id, predicted_outcome, confidence, timestamp
+        - TimescaleDB prediction log
+        - Error metrics: MAE, binary success/failure
+        - Reconsolidation marker on action nodes (TYPE_1_DEMOTED if error > threshold)
+        - Integration with Learning subsystem for feedback
+
+        Test coverage:
+        - LLM generates valid predictions with confidence
+        - Evaluation compares prediction to actual outcome
+        - MAE computed correctly over last 10 uses
+        - Predictions stored in TimescaleDB
+        - Failed predictions (error > 0.15) trigger reconsolidation
+      acceptance_criteria:
+        - "Predictions generated with confidence ∈ [0.0, 1.0]"
+        - "MAE computed over last 10 uses"
+        - "Prediction errors < 10ms latency"
+        - "Failed predictions trigger reconsolidation flag"
+    agents: [cortex, forge, proof]
+    model: sonnet
+    dependencies: [E5-T002]
+    complexity: M
+
+  - id: E5-T007
+    meta:
+      title: "Type 1/Type 2 Arbitration Service"
+      description: |
+        Build the arbitration engine that selects actions using dual-process logic.
+
+        Per CANON, Type 1 (graph-based reflexes) are preferred over Type 2 (LLM-deliberation) when
+        confidence > 0.80 AND MAE < 0.10 over last 10 uses. Otherwise Type 2 wins.
+
+        Design:
+        - ArbitrationLogic: implement dual-process decision rule
+        - Type 1 probability: P(use Type 1) based on confidence and MAE thresholds
+        - Type 2 cost: latency, cognitive effort drive pressure, compute budget (explicit)
+        - Arbitration event logging (why Type 1 vs Type 2 selected)
+
+        Deliverables:
+        - ArbitrationService with dual-process logic
+        - Type 1 qualification check: confidence > 0.80 AND MAE < 0.10
+        - Type 2 cost model (latency, effort, budget)
+        - Decision logging: timestamp, candidate, reason, selected_process
+        - Metrics on Type 1/Type 2 usage ratio over time
+        - Integration with Drive Engine for effort/budget signals
+
+        Test coverage:
+        - Type 1 selected when confidence > 0.80 AND MAE < 0.10
+        - Type 2 selected when Type 1 thresholds not met
+        - Cost signals affect selection (high effort → favor Type 1)
+        - Arbitration logged to TimescaleDB
+        - Metrics show Type 1/Type 2 ratio
+      acceptance_criteria:
+        - "Type 1 graduation threshold enforced (0.80 confidence, 0.10 MAE)"
+        - "Type 2 cost signals incorporated"
+        - "Selection reason logged"
+        - "Type 1/Type 2 ratio tracked"
+    agents: [cortex, forge, proof]
+    model: sonnet
+    dependencies: [E5-T005, E5-T006]
+    complexity: M
+
+  - id: E5-T008
+    meta:
+      title: "Dynamic Threshold Computation (Context-Sensitive)"
+      description: |
+        Build the threshold computation service that adjusts decision thresholds based on context.
+
+        Base retrieval threshold is 0.50 (per CANON). But anxiety and moral valence modulate this:
+        - High anxiety (>0.70): raise threshold to 0.65 (more conservative)
+        - High moral valence concern (guilt > 0.50): raise threshold to 0.60
+        - High boredom + curiosity: lower threshold to 0.40 (exploratory mode)
+
+        Design:
+        - ThresholdComputation: read 12 drives, compute dynamic threshold
+        - Anxiety multiplier: 1.0x at 0.0 anxiety, 1.3x at 1.0 anxiety
+        - Moral multiplier: 1.0x baseline, 1.2x if guilt > 0.50
+        - Curiosity reduction: 1.0x baseline, 0.8x if curiosity > 0.70 && boredom > 0.60
+
+        Deliverables:
+        - ThresholdComputation service
+        - Drive reading interface (one-way from Drive Engine)
+        - Threshold formula with anxiety/moral/curiosity modulation
+        - Current threshold logging (for debugging)
+        - Integration with Drive Engine (read-only)
+
+        Test coverage:
+        - Base threshold 0.50 at neutral drives
+        - High anxiety (0.90) raises threshold to ~0.65
+        - High guilt (0.80) raises threshold to ~0.60
+        - High curiosity + boredom lowers threshold to ~0.40
+        - Multiple drive effects combine correctly
+      acceptance_criteria:
+        - "Base threshold 0.50 at neutral drives"
+        - "Anxiety raises threshold (0.70+ anxiety → 0.65 threshold)"
+        - "Guilt raises threshold (guilt > 0.50 → 0.60 threshold)"
+        - "Curiosity + boredom lower threshold"
+        - "Threshold read from Drive Engine (no writes)"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T001]
+    complexity: M
+
+  - id: E5-T009
+    meta:
+      title: "Action Retriever: WKG Queries for Candidates"
+      description: |
+        Build the service that retrieves Type 1 action candidates from the World Knowledge Graph.
+
+        Context-sensitive action retrieval is critical for efficiency. Must complete in <100ms.
+        Uses context fingerprinting with deterministic hashing for O(1) lookup of recent contexts.
+
+        Design:
+        - ContextFingerprint: hash (input, goal, recent_episodes) → fingerprint
+        - ActionQuery: MATCH (a:Action) WHERE a.confidence > threshold AND a.context_matches(fp)
+        - Cached contexts: store recent fingerprints → action lists (LRU cache, 50 entries)
+        - Fallback: full WKG query if cache miss (slower but correct)
+
+        Deliverables:
+        - ContextFingerprinting service (deterministic hash)
+        - ActionRetriever service with WKG Cypher queries
+        - LRU context cache (50 entries, 5-minute TTL)
+        - Fallback query logic (cache miss → full search)
+        - Performance metrics: cache hit rate, query latency
+        - Integration with Neo4j knowledge graph
+
+        Test coverage:
+        - Context fingerprinting deterministic (same input → same hash)
+        - Cached contexts retrieve correct action lists
+        - Cache miss triggers fallback query
+        - Query completes in <100ms for common contexts
+        - LRU eviction correct (50 entry limit)
+      acceptance_criteria:
+        - "Context fingerprinting deterministic"
+        - "Action retrieval completes in <100ms"
+        - "Cache hit rate > 60% in typical usage"
+        - "LRU cache maintains 50-entry limit"
+    agents: [atlas, cortex, forge]
+    model: sonnet
+    dependencies: [E5-T005]
+    complexity: M
+
+  - id: E5-T010
+    meta:
+      title: "Confidence Updater: ACT-R 3-Path Logic"
+      description: |
+        Build the confidence update engine that implements the 3-path ACT-R formula.
+
+        Confidence is updated based on source (SENSOR/GUARDIAN/LLM_GENERATED/INFERENCE) and use history:
+
+          confidence = min(1.0, base + 0.12 * ln(count) - d * ln(hours + 1))
+
+        Where base is: SENSOR=0.40, GUARDIAN=0.60, LLM_GENERATED=0.35, INFERENCE=0.30.
+
+        Three update paths:
+        1. Successful use: +confidence increase via ln(count)
+        2. Guardian feedback: direct base update (2x confirmation, 3x correction)
+        3. Failed prediction: -confidence via time decay and error penalty
+
+        Design:
+        - ConfidenceComputation: ACT-R formula implementation
+        - SourceBase: mapping from provenance to base confidence
+        - UpdatePath: successful use, guardian feedback, or failed prediction
+        - Guardian feedback weights: 2x confirm, 3x correction
+        - Error penalty: on prediction failure, reduce base by 0.10-0.20 based on error magnitude
+
+        Deliverables:
+        - ConfidenceUpdater service
+        - ACT-R formula with all three update paths
+        - Guardian feedback handling (2x/3x weights)
+        - Error penalty computation
+        - TimescaleDB logging of all updates (trace for lesion test)
+        - Integration with Learning subsystem for feedback loop
+
+        Test coverage:
+        - ACT-R formula correctly computed for 1 use, 10 uses, 100 uses
+        - Decay computed correctly (1h, 1d, 7d old)
+        - Guardian 2x confirmation increases confidence correctly
+        - Guardian 3x correction decreases confidence correctly
+        - Error penalty applied on prediction failure
+        - Confidence bounded [0.0, 1.0]
+      acceptance_criteria:
+        - "ACT-R formula correctly implements all components"
+        - "Source-based base confidence correct (0.40/0.60/0.35/0.30)"
+        - "Guardian weights applied (2x/3x)"
+        - "Error penalty proportional to prediction error"
+        - "Confidence bounded [0.0, 1.0]"
+    agents: [cortex, forge, proof]
+    model: sonnet
+    dependencies: [E5-T003, E5-T006]
+    complexity: L
+
+  - id: E5-T011
+    meta:
+      title: "Type 1 Graduation & Demotion Tracker"
+      description: |
+        Build the state machine that tracks Type 1 action lifecycle.
+
+        Actions transition through states: UNCLASSIFIED → TYPE_2_ONLY → TYPE_1_CANDIDATE →
+        TYPE_1_GRADUATED → TYPE_1_DEMOTED (and back to TYPE_1_CANDIDATE).
+
+        Graduation criteria: confidence > 0.80 AND MAE < 0.10 over last 10 uses (per CANON).
+        Demotion criteria: MAE > 0.20 in last 3 uses (reconsolidation trigger).
+
+        Design:
+        - ActionStateTracker: maintain state on action nodes
+        - GraduationEvaluator: confidence > 0.80 AND MAE < 0.10
+        - DemotionEvaluator: MAE > 0.20 (reconsolidation)
+        - State transitions with timestamp and reason
+        - WKG updates: update action.type1_state on graduation/demotion
+
+        Deliverables:
+        - ActionStateTracker service
+        - Graduation logic with 10-use window
+        - Demotion logic with 3-use window
+        - State transition events logged to TimescaleDB
+        - WKG updates (modify action.type1_state property)
+        - Metrics: graduation rate, demotion rate, state distribution
+        - Integration with Learning subsystem (mark actions for reconsolidation)
+
+        Test coverage:
+        - Actions transition UNCLASSIFIED → TYPE_2_ONLY with first use
+        - Graduation triggered at confidence > 0.80 AND MAE < 0.10
+        - Demotion triggered at MAE > 0.20 in 3-use window
+        - State transitions logged with reason
+        - WKG updated correctly
+      acceptance_criteria:
+        - "Type 1 graduation state machine functional"
+        - "Graduation criteria: confidence > 0.80 AND MAE < 0.10 (10 uses)"
+        - "Demotion criteria: MAE > 0.20 (3 uses)"
+        - "WKG action nodes updated on state changes"
+        - "State transitions logged to TimescaleDB"
+    agents: [atlas, cortex, forge]
+    model: sonnet
+    dependencies: [E5-T006, E5-T010]
+    complexity: M
+
+  - id: E5-T012
+    meta:
+      title: "Shrug Imperative Enforcement (Standard 4)"
+      description: |
+        Build enforcement of CANON Standard 4: Shrug Imperative.
+
+        "When nothing is above threshold, signal incomprehension. No random low-confidence actions."
+
+        Design:
+        - ThresholdCheck: verify all Inner Monologue candidates above dynamic threshold
+        - ShruggableAction: if all candidates < threshold, select "shrug" action instead
+        - Shrug behavior: "I don't understand that" or "Let me ask for help"
+        - Logging: shrug events to TimescaleDB with reason (threshold, low confidence, etc.)
+
+        Deliverables:
+        - ShruggableActionService
+        - Threshold verification before action selection
+        - Shrug action implementation (speaks incomprehension)
+        - Shrug event logging (reason, threshold, candidate confidences)
+        - Integration with Communication subsystem (speaking shrug)
+        - Metrics on shrug frequency (should be low in steady state)
+
+        Test coverage:
+        - All candidates < threshold → shrug selected
+        - At least one candidate ≥ threshold → no shrug
+        - Shrug behavior executed (logged, not random action taken)
+        - Shrug reason captured (threshold miss, no candidates, etc.)
+      acceptance_criteria:
+        - "No action selected if all candidates < dynamic threshold"
+        - "Shrug behavior invoked instead"
+        - "Shrug events logged with reason"
+        - "Shrug frequency tracked (target: <5% in steady state)"
+    agents: [cortex, forge, sentinel]
+    model: sonnet
+    dependencies: [E5-T005, E5-T008]
+    complexity: M
+
+  - id: E5-T013
+    meta:
+      title: "Action Handler Registry & Execution"
+      description: |
+        Build the action handler registry that maps action types to execution code.
+
+        Actions include: speak (Communication), ask_guardian, explore_graph (Planning),
+        retrieve_fact, update_belief, etc. Each handler encapsulates execution logic.
+
+        Design:
+        - ActionHandlerRegistry: Map[ActionType → Handler]
+        - Built-in handlers: speak, ask_guardian, explore_graph, retrieve_fact, update_belief, pause, learn_from_error
+        - Handler interface: (action: Action) → Promise<Outcome>
+        - Error handling: handler failure → Learning subsystem notification
+
+        Deliverables:
+        - ActionHandlerRegistry service
+        - Base ActionHandler interface
+        - Implementation of 7+ built-in handlers
+        - Error handling and logging per handler
+        - Integration with Communication, Planning, Learning subsystems
+        - Metrics: handler call counts, failure rates
+
+        Test coverage:
+        - Each handler invoked correctly with action parameters
+        - Handler success/failure captured
+        - Unknown action types rejected
+        - Handler errors logged without cascading
+      acceptance_criteria:
+        - "All action types have registered handlers"
+        - "Handlers execute and return outcomes"
+        - "Failures logged and reported to Learning"
+        - "Unknown action types rejected"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T001]
+    complexity: M
+
+  - id: E5-T014
+    meta:
+      title: "Decision Event Logging (TimescaleDB)"
+      description: |
+        Build comprehensive event logging for all decision-making steps to TimescaleDB.
+
+        Every decision cycle logs: input, categorization, candidates, prediction, arbitration choice,
+        action execution, outcome. This enables post-hoc analysis, debugging, and lesion testing.
+
+        Design:
+        - DecisionEventLogger: unified logging to TimescaleDB
+        - Event schema: cycle_id, timestamp, state, input, candidates, choice, reason, outcome
+        - Cycle ID: UUID per 8-state cycle for tracing
+        - Batch writes: flush every 10 events or 100ms
+        - Query interface for retrieving decision traces
+
+        Deliverables:
+        - DecisionEventLogger service
+        - TimescaleDB schema for decision events
+        - Event types: INPUT, CATEGORIZATION, PREDICTION, ARBITRATION, EXECUTION, OUTCOME, LEARNING
+        - Batch write logic (10 events or 100ms)
+        - Query interface (by cycle_id, by time range, by state)
+        - Integration with all decision subsystems
+        - Lesion test support: filter by provenance
+
+        Test coverage:
+        - Events logged for all 8 states
+        - Batch writes work correctly
+        - Query interface retrieves events in order
+        - Cycle ID preserves trace across states
+      acceptance_criteria:
+        - "All decision steps logged to TimescaleDB"
+        - "Batch writes functional (10 events or 100ms)"
+        - "Query interface supports filtering by cycle/time/state"
+        - "No lost events on flush"
+    agents: [forge, proof]
+    model: sonnet
+    dependencies: [E5-T001]
+    complexity: M
+
+  - id: E5-T015
+    meta:
+      title: "Attractor State Monitoring (Type 2 Addict Detection)"
+      description: |
+        Build monitoring for attractor states that indicate system dysfunction.
+
+        CANON lists 6 attractor states including "Type 2 Addict" (LLM always wins, Type 1 never develops).
+        This service detects and alerts when system enters these states.
+
+        Design:
+        - AttractorMonitor: watch Type 1/Type 2 ratio, prediction errors, self-evaluation feedback
+        - Type 2 Addict detection: if Type 1/Type 2 ratio < 0.1 over last 100 cycles → alert
+        - Hallucinated Knowledge detection: if WKG nodes created without SENSOR/GUARDIAN provenance > 20% → alert
+        - Depressive Attractor: if negative self-evaluations > 80% over 50 cycles → alert
+        - Planning Runaway: if prediction failures > 70% and plan count increasing → alert
+
+        Deliverables:
+        - AttractorMonitor service
+        - 5 attractor detectors (Type 2 Addict, Hallucination, Depressive, Planning Runaway, Prediction Pessimist)
+        - Alert generation to guardian (ask_guardian)
+        - Metrics on attractor risk scores
+        - Self-healing: suggest Type 1 bootstrap if Type 2 Addict detected
+
+        Test coverage:
+        - Type 2 Addict detection triggers when Type 1/Type 2 < 0.1
+        - Hallucination detection triggers at >20% non-provenance nodes
+        - Depressive Attractor triggers at >80% negative self-evals
+        - Each detector independently functional
+      acceptance_criteria:
+        - "Type 2 Addict detection: Type 1/Type 2 ratio < 0.1 over 100 cycles"
+        - "Hallucinated Knowledge detection: >20% non-provenance nodes"
+        - "Depressive Attractor detection: >80% negative self-evals"
+        - "Alert generated to guardian on detection"
+    agents: [cortex, sentinel, proof]
+    model: opus
+    dependencies: [E5-T007, E5-T011]
+    complexity: L
+
+  - id: E5-T016
+    meta:
+      title: "Integration: Communication ↔ Decision Making"
+      description: |
+        Build and test full integration between Communication and Decision Making subsystems.
+
+        Communication parses user input and passes to DecisionMaking. DecisionMaking selects actions
+        (speak, ask_guardian, etc.) and Communication delivers output (TTS/chatbox).
+
+        Design:
+        - CommnicationInput interface standardized (text, audio, metadata)
+        - DecisionMaking processes input through full 8-state cycle
+        - Action response flows back to Communication for output
+        - Error propagation: decision failures reported to user via Communication
+
+        Deliverables:
+        - Full end-to-end input → decision → output flow
+        - Communication integration tests (user says X → decision made → response delivered)
+        - Error scenarios: decision fails → user notified
+        - Metrics on end-to-end latency (input to response)
+
+        Test coverage:
+        - Full cycle: user text → categorize → predict → arbitrate → execute → speak
+        - Audio input (via Whisper) routed correctly
+        - Decision failures gracefully communicated
+        - End-to-end latency <500ms (target)
+      acceptance_criteria:
+        - "End-to-end input → decision → output functional"
+        - "Decision latency <200ms, total latency <500ms"
+        - "Errors communicated to user"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T001, E5-T013]
+    complexity: L
+
+  - id: E5-T017
+    meta:
+      title: "Integration: Learning ↔ Decision Making"
+      description: |
+        Build and test integration between Learning and Decision Making subsystems.
+
+        Learning consolidates episodes into WKG and updates confidence. DecisionMaking retrieves
+        consolidated knowledge and evaluates predictions. Feedback loops drive the Type 1/2 shift.
+
+        Design:
+        - Episode consolidation callback: Learning tells Decision when consolidation done
+        - Confidence update callback: Learning tells Decision confidence changed
+        - WKG update notifications: trigger action retriever cache invalidation
+        - Prediction error feedback: Decision tells Learning when predictions fail
+
+        Deliverables:
+        - ConsolidationCallback interface
+        - ConfidenceUpdateCallback interface
+        - WKG invalidation signals
+        - Prediction error reporting to Learning
+        - Integration tests: episodes → learning → confidence update → Type 1 graduation
+
+        Test coverage:
+        - Episode consolidation triggers Learning callback
+        - Confidence updates propagate to Decision
+        - Failed predictions reported to Learning for reconsolidation
+        - Type 1 graduation follows successful learning cycle
+      acceptance_criteria:
+        - "Episode consolidation integrated"
+        - "Confidence updates propagate"
+        - "Prediction failures trigger Learning feedback"
+        - "Type 1/Type 2 ratio improves over 100 cycles"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T004, E5-T010, E5-T011]
+    complexity: L
+
+  - id: E5-T018
+    meta:
+      title: "Integration: Drive Engine ↔ Decision Making (Read-Only)"
+      description: |
+        Build integration between Drive Engine and Decision Making subsystems.
+
+        Decision Making reads 12 drive values (one-way) to compute dynamic thresholds and detect
+        opportunities. Drive Engine runs in isolated process, DecisionMaking reads only, never writes.
+
+        Design:
+        - DriveReader: one-way read interface to Drive values
+        - Opportunity detection: high-urgency drives trigger Planning (e.g., high anxiety)
+        - Dynamic threshold computation: drives affect threshold (anxiety, guilt, curiosity)
+        - No write access: Decision can propose drive changes but cannot execute them
+
+        Deliverables:
+        - DriveReader service (async, one-way reads)
+        - Opportunity detection logic (which drives trigger Planning)
+        - Threshold computation using drives (per E5-T008)
+        - Metrics on opportunity detection frequency
+        - Integration tests: drive changes → threshold changes
+
+        Test coverage:
+        - Drive reads succeed (async)
+        - High-urgency drives trigger Planning
+        - Threshold computation uses drive values
+        - Write attempts rejected (fail gracefully)
+      acceptance_criteria:
+        - "Drive values read successfully"
+        - "No write access to drives"
+        - "Threshold computation uses drives"
+        - "Opportunity detection functional"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T008]
+    complexity: M
+
+  - id: E5-T019
+    meta:
+      title: "Unit Tests: Core Services (>80% coverage)"
+      description: |
+        Build comprehensive unit tests for all Decision Making services.
+
+        Target >80% coverage on executors, confidence updaters, arbitration logic, episodic memory.
+        Use test doubles for external dependencies (Neo4j, LLM, Drive Engine).
+
+        Design:
+        - Jest test suite with mocked dependencies
+        - Test fixtures: sample episodes, actions, predictions, drive values
+        - Happy path, error, and edge case coverage
+
+        Deliverables:
+        - Unit tests for ExecutorEngine, ConfidenceUpdater, Arbitration, EpisodeBuffer
+        - Unit tests for ThresholdComputation, ActionRetriever, Type1Tracker
+        - Test fixtures and test data
+        - Coverage report (target >80%)
+
+        Test coverage:
+        - All 8 states tested (ExecutorEngine)
+        - All update paths tested (ConfidenceUpdater)
+        - Graduation/demotion transitions tested
+        - Threshold modulation tested
+      acceptance_criteria:
+        - "Unit test coverage >80%"
+        - "All core services tested"
+        - "No external dependencies in unit tests (mocked)"
+    agents: [forge, proof]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E5-T020
+    meta:
+      title: "Integration Tests: Full Cycle (8 States)"
+      description: |
+        Build integration tests for full 8-state decision cycle.
+
+        Test the complete flow: IDLE → CATEGORIZING → PREDICTING → ARBITRATING → RETRIEVING →
+        EXECUTING → OBSERVING → LEARNING, with realistic scenarios.
+
+        Design:
+        - Test scenarios: user asks question, system makes decision, learns from outcome
+        - Neo4j/TimescaleDB in-memory or Docker for testing
+        - Mock LLM responses
+        - Scenario: user asks "What's my favorite food?" (tests retrieval, prediction, learning)
+
+        Deliverables:
+        - Integration test suite with 10+ scenarios
+        - Docker compose for test DB setup
+        - Scenario fixtures (sample WKG, episodes, predictions)
+        - Assertions on state transitions, outcomes, learning
+        - Coverage of happy path and error scenarios
+
+        Test coverage:
+        - Full 8-state cycle completion
+        - Type 1 → Type 2 fallback on Type 1 unavailable
+        - Error recovery (prediction fails → learning)
+        - Learning cycle: episode → consolidation → confidence update → Type 1 graduation
+      acceptance_criteria:
+        - "Full 8-state cycle completes successfully"
+        - "Type 1/Type 2 arbitration tested"
+        - "Learning loop functional"
+        - "10+ integration test scenarios pass"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E5-T001, E5-T016, E5-T017, E5-T018]
+    complexity: L
+
+summary:
+  total_tickets: 20
+  phases:
+    phase_1: [E5-T001, E5-T002, E5-T003, E5-T004, E5-T005, E5-T006, E5-T007, E5-T008, E5-T009, E5-T010]
+    phase_2: [E5-T011, E5-T012, E5-T013, E5-T014, E5-T015]
+    phase_3: [E5-T016, E5-T017, E5-T018]
+    phase_4: [E5-T019, E5-T020]
+  estimated_effort:
+    phase_1: "8-10 days (core executor, episodic memory, prediction, arbitration)"
+    phase_2: "5-7 days (Type 1 tracking, enforcement, logging, monitoring)"
+    phase_3: "5-7 days (integration with all subsystems)"
+    phase_4: "3-4 days (comprehensive testing)"
+  key_constraints:
+    - "CANON Standard 4 (Shrug Imperative) enforced by E5-T012"
+    - "CANON Standard 3 (Confidence Ceiling) enforced by E5-T010 and E5-T011"
+    - "CANON A.2 (Episodic Memory) implemented by E5-T003 and E5-T004"
+    - "CANON A.3 (Arbitration) implemented by E5-T007"
+    - "Type 1 graduation criteria (0.80 confidence, 0.10 MAE) from CANON"
+    - "Base threshold 0.50 from CANON retrieval threshold"
+    - "Event-driven architecture with 5Hz idle tick fallback"
+    - "Drive Engine read-only (no writes from Decision Making)"
+  critical_dependencies:
+    - "Neo4j WKG must support action node schema (20+ properties per Atlas)"
+    - "TimescaleDB event backbone must handle 5Hz→10Hz event volume"
+    - "LLM (Claude) available for Type 2 deliberation and predictions"
+    - "Drive Engine running in isolated process with read interface"
+    - "Communication subsystem for input/output integration"
+    - "Learning subsystem for consolidation feedback"

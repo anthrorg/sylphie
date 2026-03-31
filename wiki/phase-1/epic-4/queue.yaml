@@ -1,0 +1,79 @@
+epic: 4
+title: "Drive Engine (Isolated Process)"
+started: 2026-03-29T00:00:00Z
+completed: 2026-03-29T23:59:00Z
+tickets:
+  - id: E4-T001
+    status: complete
+    agents: [drive, forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T002
+    status: complete
+    agents: [forge, drive]
+    completed_at: 2026-03-29
+
+  - id: E4-T003
+    status: complete
+    agents: [forge, drive]
+    completed_at: 2026-03-29
+
+  - id: E4-T004
+    status: complete
+    agents: [forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T005
+    status: complete
+    agents: [drive]
+    completed_at: 2026-03-29
+
+  - id: E4-T006
+    status: complete
+    agents: [drive, forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T007
+    status: complete
+    agents: [drive, skinner]
+    completed_at: 2026-03-29
+
+  - id: E4-T008
+    status: complete
+    agents: [drive, forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T009
+    status: complete
+    agents: [drive]
+    completed_at: 2026-03-29
+
+  - id: E4-T010
+    status: complete
+    agents: [drive, ashby]
+    completed_at: 2026-03-29
+
+  - id: E4-T011
+    status: complete
+    agents: [drive, forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T012
+    status: complete
+    agents: [forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T013
+    status: complete
+    agents: [forge]
+    completed_at: 2026-03-29
+
+  - id: E4-T014
+    status: complete
+    agents: [forge, drive]
+    completed_at: 2026-03-29
+
+  - id: E4-T015
+    status: complete
+    agents: [forge, drive]
+    completed_at: 2026-03-29

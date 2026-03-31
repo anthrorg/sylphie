@@ -1,0 +1,418 @@
+epic: 2
+title: "Events Module (TimescaleDB Backbone)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+# Synthesized from 4 agent analyses: Sentinel (infrastructure/query patterns), Forge (NestJS architecture/type system),
+# Canon (CANON compliance), Ashby (systems dynamics/feedback loops).
+#
+# Key decisions incorporated:
+# - Canon: Events carry dual provenance (subsystem_source + optional provenance field) for lesion test support
+# - Forge: Type-safe discriminated union for event types with compile-time boundary enforcement
+# - Sentinel: Single hypertable with discriminant columns (Option A), not multiple tables
+# - Ashby: Events must carry correlation context and rich outcome data for causal reconstruction
+# - Forge: SELECT FOR UPDATE SKIP LOCKED for queryLearnableEvents() to prevent concurrent Learning races
+# - Sentinel: Critical index idx_has_learnable_processed required before implementation
+# - Ashby: Drive snapshot taken BEFORE action execution, not after
+# - Canon: has_learnable flag set by emitting subsystem (validated by type system), not a separate policy service
+
+tickets:
+  - id: E2-T001
+    meta:
+      title: "Event type system: discriminated union + subsystem boundary types"
+      description: |
+        Define the complete TypeScript event type system in shared/types/event.types.ts.
+        This is the type foundation all other E2 tickets build on.
+
+        Deliverables:
+        - SubsystemSource union type (5 subsystems + SYSTEM)
+        - EventType union type (30 event types grouped by subsystem)
+        - SylphieEventBase interface with all common fields
+        - SylphieEvent discriminated union (event_type + source pairs)
+        - Per-subsystem event data interfaces (typed payloads)
+        - LearnableEvent narrowing type (hasLearnable: true)
+        - DriveSnapshot interface (12 drives as numbers)
+        - EventQueryFilter, EventRecordOptions, EventFrequencyOptions DTOs
+        - EVENT_TYPE_BOUNDARIES constant mapping subsystem -> allowed event types
+        - Subsystem boundary validation utility function
+
+        Event types by subsystem (30 total):
+        Decision Making (8): PREDICTION_GENERATED, PREDICTION_CONFIRMED,
+          PREDICTION_FAILED, ACTION_SELECTED, ACTION_EXECUTED, INPUT_PROCESSED,
+          EPISODE_ENCODED, OBSERVATION_RECORDED
+        Communication (4): INPUT_RECEIVED, UTTERANCE_GENERATED,
+          UTTERANCE_RECEIVED_RESPONSE, PERSON_MODEL_UPDATED
+        Learning (5): CONSOLIDATION_CYCLE_STARTED, ENTITY_LEARNED,
+          EDGE_LEARNED, CONTRADICTION_DETECTED, CONSOLIDATION_CYCLE_COMPLETED
+        Drive Engine (5): DRIVE_SNAPSHOT, OPPORTUNITY_DETECTED,
+          RULE_EVALUATED, SELF_EVALUATION_CYCLE, SIGNAL_COMPUTED
+        Planning (4): OPPORTUNITY_RESEARCH_STARTED, SIMULATION_RUN,
+          PLAN_PROCEDURE_CREATED, PLAN_EXECUTED
+        System (4): SESSION_STARTED, SESSION_ENDED, SCHEMA_MIGRATION,
+          ERROR_RECOVERED
+
+        Per Canon: Events carry subsystem_source (where event came from) AND
+        optional provenance field (SENSOR/GUARDIAN/LLM_GENERATED/INFERENCE)
+        for lesion test support.
+
+        Per Ashby: DriveSnapshot must be taken BEFORE action execution.
+        Per Canon: drive_snapshot JSONB enables Theater Prohibition enforcement.
+      acceptance_criteria:
+        - "SubsystemSource type has 6 values (5 subsystems + SYSTEM)"
+        - "EventType union has exactly 30 event types"
+        - "Each event type is paired with exactly one SubsystemSource in the discriminated union"
+        - "EVENT_TYPE_BOUNDARIES maps each subsystem to its allowed event types"
+        - "Boundary validation function rejects mismatched subsystem/event_type pairs"
+        - "DriveSnapshot interface has all 12 drive fields as numbers"
+        - "LearnableEvent narrowing type correctly narrows from SylphieEvent"
+        - "All DTOs (EventQueryFilter, EventRecordOptions, etc.) defined with optional fields"
+        - "Optional provenance field on SylphieEventBase (ProvenanceSource type)"
+        - "npx tsc --noEmit passes"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E2-T002
+    meta:
+      title: "EventsService skeleton + DI wiring + exception classes"
+      description: |
+        Create the real EventsService class implementing IEventService.
+        Replace the E0 stub with a properly wired service that injects
+        TIMESCALEDB_POOL from E1-T005.
+
+        Deliverables:
+        - EventsService @Injectable() implementing IEventService
+        - All 6 methods present (record, query, queryLearnableEvents,
+          queryEventFrequency, markProcessed, markProcessedBatch)
+        - Methods initially throw NotImplementedError (filled in T003-T006)
+        - TIMESCALEDB_POOL injection via @Inject()
+        - OnModuleInit: verify connection, add missing indexes
+        - OnModuleDestroy: drain pool gracefully
+        - Health check method: healthCheck(): Promise<boolean>
+        - EventsModule updated to provide real EventsService
+
+        Exception classes (per Forge):
+        - EventValidationError (invalid event type / subsystem boundary violation)
+        - EventStorageError (TimescaleDB write failure)
+        - EventQueryError (invalid filter / query timeout)
+        - EventNotFoundError (markProcessed on non-existent ID)
+
+        Per Sentinel: Add critical indexes in OnModuleInit:
+        - idx_has_learnable_processed ON (has_learnable, processed, timestamp)
+          WHERE has_learnable = true AND processed = false
+        - idx_subsystem_timestamp ON (subsystem_source, timestamp DESC)
+      acceptance_criteria:
+        - "EventsService injects TIMESCALEDB_POOL via constructor"
+        - "All 6 IEventService methods present"
+        - "4 custom exception classes defined in events/exceptions/"
+        - "OnModuleInit creates idx_has_learnable_processed index"
+        - "OnModuleInit creates idx_subsystem_timestamp index"
+        - "healthCheck() runs SELECT 1 + verifies events hypertable exists"
+        - "OnModuleDestroy drains pool"
+        - "EventsModule exports EVENTS_SERVICE token with real EventsService"
+        - "npx tsc --noEmit passes"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E2-T001]
+    complexity: M
+
+  - id: E2-T003
+    meta:
+      title: "record() implementation with type validation and write path"
+      description: |
+        Implement the record() method — the write path for all five subsystems.
+
+        Implementation:
+        - Accept typed SylphieEvent with EventRecordOptions
+        - Validate subsystem/event_type boundary (reject mismatches)
+        - Generate event_id (UUID v4) server-side
+        - Extract all fields from SylphieEvent into hypertable columns
+        - Insert via parameterized query (SQL injection safe)
+        - Return { eventId, timestamp } on success
+        - Default: has_learnable=false, processed=false, actor_id='sylphie',
+          schema_version=1
+        - correlationId from options (optional)
+
+        Error handling (per Sentinel):
+        - Connection timeout: log warning, throw EventStorageError
+        - Constraint violations: log, throw EventStorageError
+        - Single-row insert, no transaction wrapping needed
+        - Use prepared statements for performance
+
+        Per Canon: drive_snapshot must be present on output events
+        (UTTERANCE_GENERATED, ACTION_EXECUTED) for Theater Prohibition.
+        Per Ashby: snapshot taken BEFORE action, not after.
+      acceptance_criteria:
+        - "record() accepts SylphieEvent with full type safety"
+        - "Boundary validation rejects mismatched subsystem/event_type"
+        - "Generates UUID v4 event_id server-side"
+        - "All hypertable columns populated from event fields"
+        - "Returns { eventId: string, timestamp: Date }"
+        - "Parameterized query prevents SQL injection"
+        - "Connection timeout throws EventStorageError"
+        - "Unit test: record 5 different event types from 5 subsystems"
+        - "Unit test: boundary violation (Learning emitting PREDICTION_GENERATED) throws EventValidationError"
+        - "Integration test: record() + query() round-trip retrieves same event"
+        - "Performance: record() completes in <10ms p99"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E2-T002]
+    complexity: M
+
+  - id: E2-T004
+    meta:
+      title: "query() implementation with dynamic filtering and pagination"
+      description: |
+        Implement query() — the general-purpose read path for subsystems
+        needing historical context.
+
+        EventQueryFilter fields:
+        - startTime?: Date (default 24h ago)
+        - endTime?: Date (default now)
+        - eventTypes?: EventType[] (filter by type, empty = all)
+        - subsystemSource?: SubsystemSource (single source filter)
+        - correlationId?: string (episode retrieval)
+        - limit?: number (default 100, max 10000)
+        - offset?: number (pagination)
+        - includeProcessed?: boolean (default true)
+
+        Implementation:
+        - Build dynamic WHERE clause from non-null filter fields
+        - Order by timestamp DESC (most recent first)
+        - Apply LIMIT + OFFSET
+        - Deserialize JSONB event_data back to typed payload
+        - Return SylphieEvent[] (may be empty, never null)
+
+        Query patterns by subsystem (per Sentinel):
+        - Communication: 7-day window, COMMUNICATION events, limit 100
+        - Decision Making: correlationId for full episode retrieval
+        - Planning: OPPORTUNITY_DETECTED + time range for pattern research
+        - Web/API: paginated, filtered by type and subsystem
+      acceptance_criteria:
+        - "Dynamic WHERE clause built from non-null filter fields"
+        - "Default time window 24h when startTime not provided"
+        - "Limit enforced: default 100, max 10000"
+        - "Order by timestamp DESC"
+        - "correlationId query returns all events in episode"
+        - "Empty result returns [] not null"
+        - "JSONB event_data deserialized back to typed objects"
+        - "EXPLAIN shows index usage on (timestamp, event_type)"
+        - "EXPLAIN shows index usage on correlation_id"
+        - "Integration test: record 50 events, query with various filters"
+        - "Pagination test: offset + limit returns correct page"
+        - "Performance: 24h window query <50ms p99"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E2-T003]
+    complexity: M
+
+  - id: E2-T005
+    meta:
+      title: "queryLearnableEvents() with FIFO ordering and concurrent access safety"
+      description: |
+        Implement queryLearnableEvents() — Learning subsystem's primary
+        read path for consolidation cycles.
+
+        Per CANON: max 5 events per cycle to prevent catastrophic interference.
+        Per Forge: use SELECT FOR UPDATE SKIP LOCKED to prevent concurrent
+        Learning cycles from processing the same events.
+
+        Implementation:
+        - Filter: has_learnable=true AND processed=false
+        - Order: timestamp ASC (oldest first, FIFO consolidation)
+        - Limit: configurable, default 5, hardcoded max 50
+        - Use idx_has_learnable_processed partial index for performance
+        - Return LearnableEvent[] (narrowed type with hasLearnable: true)
+        - Empty result returns [] (not an error — no learnable events pending)
+
+        Concurrency (per Forge):
+        - SELECT FOR UPDATE SKIP LOCKED prevents two concurrent Learning
+          cycles from picking up the same events
+        - If rows are locked by another cycle, SKIP LOCKED returns next
+          available events instead of blocking
+
+        Per Ashby: Monitor unconsolidated event backlog. If count of
+        has_learnable=true AND processed=false exceeds 50, emit a
+        CONSOLIDATION_DEBT warning event.
+      acceptance_criteria:
+        - "Filters has_learnable=true AND processed=false"
+        - "Orders by timestamp ASC (FIFO)"
+        - "Default limit 5, respects configurable override, max 50"
+        - "Uses SELECT FOR UPDATE SKIP LOCKED for concurrent safety"
+        - "Returns LearnableEvent[] narrowed type"
+        - "Empty result returns [] (no error)"
+        - "Uses idx_has_learnable_processed index (EXPLAIN verification)"
+        - "Integration test: record 10 learnable events, query returns first 5"
+        - "Integration test: markProcessed first 5, re-query returns next 5"
+        - "Concurrency test: two simultaneous queries return non-overlapping sets"
+        - "Performance: <5ms p99 on 100K event dataset"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E2-T003]
+    complexity: L
+
+  - id: E2-T006
+    meta:
+      title: "queryEventFrequency() for Drive Engine signal computation"
+      description: |
+        Implement queryEventFrequency() — Drive Engine's high-frequency
+        read path for computing drive signals from event frequency.
+
+        Per CANON §Subsystem 4: "Tick Event → query last 10 event frequencies
+        from TimescaleDB"
+
+        Implementation:
+        - COUNT(*) query with event_type filter and time window
+        - windowSeconds parameter (supports 60s, 3600s, 86400s, etc.)
+        - Returns integer count (0 if no matches)
+        - Validates eventType against EventType union
+        - Optional subsystemSource filter
+
+        Per Sentinel frequency signals:
+        - ACTION_EXECUTED_SUCCESSFULLY + 60s → Satisfaction signal
+        - GUARDIAN_POSITIVE_FEEDBACK + 3600s → Satisfaction signal
+        - NOVEL_ENTITY_ENCOUNTERED + 86400s → Curiosity signal
+        - INPUT_RECEIVED + 600s → Social signal
+        - PREDICTION_FAILED + 3600s → Anxiety signal
+
+        Performance critical: Drive Engine runs at 100Hz tick rate.
+        This method will be called ~5-10 times per tick.
+        Must complete in <5ms consistently.
+      acceptance_criteria:
+        - "COUNT(*) with event_type and timestamp >= (now - window)"
+        - "Returns integer count, 0 if no matches"
+        - "Validates eventType against EventType union"
+        - "Optional subsystemSource filter"
+        - "Connection failure throws EventQueryError"
+        - "Integration test: record events, count matches expected"
+        - "Performance: <5ms p99 on 1M event dataset, 1h window"
+        - "Performance: <10ms p99 on 1M event dataset, 7d window"
+        - "Concurrent test: 100 simultaneous calls complete in <1s total"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: [E2-T003]
+    complexity: M
+
+  - id: E2-T007
+    meta:
+      title: "markProcessed() and markProcessedBatch() for Learning consolidation"
+      description: |
+        Implement markProcessed() and markProcessedBatch() — Learning
+        subsystem marks events as consolidated after extraction.
+
+        Implementation:
+        - markProcessed(eventId): UPDATE events SET processed=true WHERE event_id=$1
+        - markProcessedBatch(eventIds): UPDATE events SET processed=true WHERE event_id IN (...)
+        - Idempotent: second call on same ID is silent no-op
+        - Non-existent event_id: silent success (UPDATE 0 rows, no error)
+        - Empty array: no-op (no query executed)
+        - Batch uses single UPDATE with IN clause (not N queries)
+
+        Error handling:
+        - Connection failure throws EventStorageError (Learning retries)
+        - Invalid UUID format throws EventValidationError
+      acceptance_criteria:
+        - "markProcessed sets processed=true for single event"
+        - "markProcessedBatch sets processed=true for array of events"
+        - "Idempotent: calling twice is safe"
+        - "Non-existent eventId is silent success"
+        - "Empty array is no-op"
+        - "Batch uses single UPDATE with IN clause"
+        - "Integration test: record + markProcessed + queryLearnableEvents confirms exclusion"
+        - "Performance: markProcessedBatch with 50 IDs <20ms"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: [E2-T003]
+    complexity: S
+
+  - id: E2-T008
+    meta:
+      title: "Event builder utilities and subsystem helper functions"
+      description: |
+        Create type-safe event builder functions that make it easy for
+        each subsystem to construct correctly-typed events.
+
+        Per Forge: builders enforce boundary rules at compile time.
+
+        Deliverables:
+        - createDecisionMakingEvent(type, data, options) helper
+        - createCommunicationEvent(type, data, options) helper
+        - createLearningEvent(type, data, options) helper
+        - createDriveEngineEvent(type, data, options) helper
+        - createPlanningEvent(type, data, options) helper
+        - createSystemEvent(type, data, options) helper
+        - Each builder only accepts event types valid for its subsystem
+        - Builders auto-set subsystemSource, timestamp, schema_version
+        - Builders accept optional correlationId, driveSnapshot, hasLearnable
+        - Exported from events/index.ts barrel
+
+        These utilities reduce boilerplate in downstream epics (E3-E10)
+        and make it impossible to emit wrong event types at the call site.
+      acceptance_criteria:
+        - "6 builder functions (one per subsystem + system)"
+        - "Each builder only accepts its own event types (compile-time check)"
+        - "Builders auto-set subsystemSource, timestamp, schemaVersion"
+        - "Builders accept optional correlationId, driveSnapshot, hasLearnable"
+        - "TypeScript error if wrong event type passed to wrong builder"
+        - "Unit test: all 30 event types constructable via correct builder"
+        - "Unit test: wrong event type produces compile error (type test)"
+        - "Exported from events barrel index.ts"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E2-T001]
+    complexity: S
+
+  - id: E2-T009
+    meta:
+      title: "Integration test suite and performance benchmarks"
+      description: |
+        Comprehensive integration test suite covering all EventsService
+        methods, cross-subsystem query patterns, and performance targets.
+        Tests run against real TimescaleDB container (docker-compose).
+
+        Test categories:
+        1. Write path: record() 100 events of mixed types, verify all stored
+        2. Read path: query() with all filter combinations
+        3. Learning path: queryLearnableEvents() + markProcessed() round trip
+        4. Drive Engine path: queryEventFrequency() for all common windows
+        5. Episode path: correlationId retrieval across subsystems
+        6. Boundary enforcement: verify subsystem type mismatches rejected
+        7. Concurrency: 20 parallel record() + 10 parallel query()
+        8. Health check: startup passes, DB-offline fails within 5s
+
+        Performance benchmarks (per Sentinel):
+        - record(): <10ms p99
+        - query() 24h window: <50ms p99
+        - queryLearnableEvents(): <5ms p99
+        - queryEventFrequency() 1h window: <5ms p99
+        - queryEventFrequency() 7d window: <10ms p99
+        - markProcessedBatch(50): <20ms p99
+        - Connection pool utilization <80% under load
+
+        Per Ashby: Include a "feedback loop coherence" test:
+        record prediction → record outcome → queryEventFrequency confirms
+        count → queryLearnableEvents picks up the learnable event →
+        markProcessed excludes it from future queries.
+      acceptance_criteria:
+        - "All 8 test categories pass"
+        - "Performance benchmarks met for all 6 operations"
+        - "Boundary enforcement verified (wrong subsystem/event_type rejected)"
+        - "Concurrency test passes without deadlocks or data loss"
+        - "Feedback loop coherence test passes end-to-end"
+        - "Health check verified on startup and DB-offline"
+        - "Tests run against real TimescaleDB (docker-compose)"
+        - "Test output includes latency percentiles (p50, p99)"
+        - "npx tsc --noEmit passes across entire project"
+        - "NestJS application starts without circular dependency warnings"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E2-T003, E2-T004, E2-T005, E2-T006, E2-T007, E2-T008]
+    complexity: L

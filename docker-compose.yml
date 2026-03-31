@@ -1,0 +1,151 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: sylphie-neo4j
+    networks:
+      - sylphie-net
+    ports:
+      - "7478:7474"  # Browser (7474 taken by co-being)
+      - "7688:7687"  # Bolt (7687 taken by co-being)
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-sylphie_dev}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_server_memory_pagecache_size=512M
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-sylphie_dev} 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: sylphie-timescaledb
+    networks:
+      - sylphie-net
+    ports:
+      - "${TIMESCALE_PORT:-5433}:5432"  # Non-default host port to avoid conflicts
+    environment:
+      - POSTGRES_DB=${TIMESCALE_DB:-sylphie_events}
+      - POSTGRES_USER=${TIMESCALE_USER:-sylphie}
+      - POSTGRES_PASSWORD=${TIMESCALE_PASSWORD:-sylphie_events_dev}
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TIMESCALE_USER:-sylphie} -d ${TIMESCALE_DB:-sylphie_events}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    shm_size: '256mb'
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  postgres:
+    image: postgres:17
+    container_name: sylphie-postgres
+    networks:
+      - sylphie-net
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"  # Different host port from TimescaleDB
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-sylphie_system}
+      - POSTGRES_USER=${POSTGRES_ADMIN_USER:-sylphie_admin}
+      - POSTGRES_PASSWORD=${POSTGRES_ADMIN_PASSWORD:-sylphie_admin_dev}
+      - POSTGRES_INITDB_ARGS=-c shared_preload_libraries=pg_stat_statements
+      - POSTGRES_RUNTIME_PASSWORD=${POSTGRES_RUNTIME_PASSWORD:-sylphie_app_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init-runtime-user.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ADMIN_USER:-sylphie_admin} -d ${POSTGRES_DB:-sylphie_system}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # NOTE: Grafeo (Self KG + Other KGs) runs embedded in the NestJS process.
+  # No separate container is needed or appropriate. Grafeo instances are created
+  # programmatically in KnowledgeModule and persist to the filesystem paths
+  # configured by GRAFEO_SELF_KG_PATH and GRAFEO_OTHER_KG_PATH.
+
+  # Dedicated Neo4j for the sylphie-pkg codebase knowledge graph.
+  # Separate from the main Sylphie WKG so agent queries don't touch production data.
+  sylphie-pkg-neo4j:
+    image: neo4j:5-community
+    container_name: sylphie-pkg-neo4j
+    networks:
+      - sylphie-net
+    ports:
+      - "7477:7474"  # Browser (separate from main Neo4j on 7474)
+      - "7691:7687"  # Bolt (separate from main Neo4j on 7687)
+    environment:
+      - NEO4J_AUTH=neo4j/sylphie-pkg-local
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_pagecache_size=256M
+      - NEO4J_dbms_memory_heap_max__size=512M
+    volumes:
+      - sylphie_pkg_neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sylphie-pkg-local 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  timescaledb_data:
+    driver: local
+  postgres_data:
+    driver: local
+  sylphie_pkg_neo4j_data:
+    driver: local
+
+networks:
+  sylphie-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16

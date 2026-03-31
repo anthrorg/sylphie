@@ -1,0 +1,376 @@
+epic: 1
+title: "Database Infrastructure"
+phase: 1
+created: 2026-03-29
+status: planned
+
+# Synthesized from 5 agent analyses: Sentinel (infrastructure), Forge (NestJS architecture),
+# Atlas (knowledge graph schema), Canon (CANON compliance), Ashby (systems dynamics).
+#
+# Key decisions incorporated:
+# - Canon: Provenance enforced at database level (Neo4j constraints), not just service layer
+# - Atlas: Grafeo validation is a blocking gate; SQLite + graph abstraction is fallback
+# - Ashby: TimescaleDB retention must coordinate with Learning consolidation pressure
+# - Forge: DatabaseModule owns PostgreSQL pools; Neo4j in KnowledgeModule; TimescaleDB in EventsModule
+# - Sentinel: Two-pool PostgreSQL (admin + runtime) with RLS on drive_rules
+# - Ashby: Three structural leak paths documented for E3-E4 mitigation
+
+tickets:
+  - id: E1-T001
+    meta:
+      title: "Grafeo technology validation and Self/Other KG technology decision"
+      description: |
+        BLOCKING GATE for all KG-related work in E1.
+
+        Validate @grafeo-db/js v0.5.28 against five criteria:
+        1. Can be installed in a NestJS project without peer dependency conflicts
+        2. Supports Cypher queries (or equivalent graph query language)
+        3. Can create N completely isolated instances in memory
+        4. Has persistent storage (not in-memory only)
+        5. Acceptable performance for small graphs (<200 nodes, <100ms queries)
+
+        If Grafeo passes all five: proceed with Grafeo.
+        If Grafeo fails on any criterion: implement SQLite + graph abstraction layer
+        as the fallback (one .sqlite file per KG instance, vertex/edge tables,
+        custom traversal layer supporting core Cypher-equivalent operations).
+
+        Document the decision in wiki/phase-1/epic-1/decisions.md with rationale.
+        This decision gates E1-T006, E1-T007, E3, and E4.
+      acceptance_criteria:
+        - "Grafeo validated against all 5 criteria OR fallback technology selected"
+        - "Decision documented in decisions.md with rationale"
+        - "Proof-of-concept: create 2 isolated graph instances, write nodes with properties, query by label"
+        - "If SQLite fallback: vertex/edge table DDL defined, basic CRUD operations working"
+        - "Performance benchmark: 100 node inserts + 10 traversal queries < 500ms total"
+    agents: [atlas, sentinel]
+    model: opus
+    dependencies: []
+    complexity: M
+
+  - id: E1-T002
+    meta:
+      title: "Docker Compose finalization with all 5 database services"
+      description: |
+        Finalize docker-compose.yml with all database services, health checks,
+        volumes, networking, and resource limits.
+
+        Services:
+        - neo4j:5-community (ports 7474/7687, APOC plugin, memory limits)
+        - timescale/timescaledb:latest-pg17 (port 5433, database: sylphie_events)
+        - postgres:17 (port 5432, database: sylphie_system)
+        - No Grafeo container (embedded in NestJS process)
+
+        Each service requires:
+        - Named volumes for data persistence
+        - Health checks with appropriate intervals
+        - Restart policies (unless-stopped)
+        - Environment variables from .env (no hardcoded credentials)
+        - Network: single bridge network (sylphie-net)
+
+        Update .env.example with all new database environment variables.
+        Two PostgreSQL user sets: admin (sylphie_admin) + runtime (sylphie_app).
+      acceptance_criteria:
+        - "docker compose config validates without errors"
+        - "docker compose up starts all 3 services successfully"
+        - "All services pass their health checks within 60 seconds"
+        - "Named volumes persist data across container restarts"
+        - ".env.example documents every variable with comments"
+        - "Two PostgreSQL users defined (sylphie_admin, sylphie_app)"
+        - "No credentials in docker-compose.yml (all from .env)"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E1-T003
+    meta:
+      title: "Neo4j driver factory provider with constraint setup and health check"
+      description: |
+        Replace the NEO4J_DRIVER stub in KnowledgeModule with a real Neo4j driver
+        factory provider.
+
+        Factory provider:
+        - Injects ConfigService for connection parameters
+        - Creates neo4j.driver() with connection pooling (max 50, configurable)
+        - Connection timeout: 30s, request timeout: 30s
+        - Encrypted: configurable (default true for prod, false for local)
+
+        OnModuleInit constraint setup (idempotent, runs every startup):
+        - CREATE CONSTRAINT IF NOT EXISTS for node ID uniqueness per label type
+          (Entity, Concept, Procedure, Utterance, SchemaType, SchemaRelType, MetaRule)
+        - CREATE CONSTRAINT IF NOT EXISTS for provenance NOT NULL on all node labels
+          (per Canon compliance: provenance at database level, not just service layer)
+        - Indexes: provenance, confidence, created_at, label+type composite
+        - Three-level schema seed: MetaSchema root node, Schema root node
+
+        OnModuleDestroy: graceful driver close.
+
+        Health check method: simple RETURN 1 query + constraint verification.
+
+        Config validation: Neo4jConfig class with class-validator decorators.
+      acceptance_criteria:
+        - "NEO4J_DRIVER factory provider creates driver with ConfigService"
+        - "OnModuleInit applies all constraints idempotently (safe to re-run)"
+        - "Provenance NOT NULL constraint exists on all node labels"
+        - "Node ID uniqueness constraints exist for all 7 node types"
+        - "Indexes created for provenance, confidence, created_at"
+        - "Health check returns true when Neo4j is healthy"
+        - "OnModuleDestroy closes driver cleanly"
+        - "Config validation fails fast on missing/invalid Neo4j env vars"
+        - "npx tsc --noEmit passes"
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E1-T002]
+    complexity: M
+
+  - id: E1-T004
+    meta:
+      title: "PostgreSQL system database: DDL, RLS, two-pool provider"
+      description: |
+        Create the PostgreSQL system database schema and wire the two-pool
+        NestJS provider.
+
+        DDL (applied via init script or OnModuleInit):
+        - drive_rules table: id, name, event_pattern, drive_effects (JSONB),
+          priority, provenance, created_at, updated_at, created_by, is_active
+        - proposed_drive_rules table: id, name, event_pattern, drive_effects,
+          proposed_by, proposed_at, status (pending/approved/rejected),
+          reviewed_by, reviewed_at, review_notes
+        - users table: id, name, role (guardian/observer), created_at
+        - settings table: key, value (JSONB), updated_at, updated_by
+        - sessions table: id, started_at, ended_at, user_id, summary
+
+        RLS enforcement:
+        - CREATE ROLE sylphie_app LOGIN PASSWORD '...'
+        - GRANT SELECT ON drive_rules TO sylphie_app
+        - GRANT INSERT ON proposed_drive_rules TO sylphie_app
+        - GRANT SELECT, INSERT, UPDATE ON users, settings, sessions TO sylphie_app
+        - NO UPDATE/DELETE on drive_rules for sylphie_app
+        - ALTER TABLE drive_rules ENABLE ROW LEVEL SECURITY
+        - CREATE POLICY read_only ON drive_rules FOR SELECT TO sylphie_app USING (true)
+
+        Two-pool NestJS provider:
+        - POSTGRES_ADMIN_POOL: uses sylphie_admin credentials (NOT exported from module)
+        - POSTGRES_RUNTIME_POOL: uses sylphie_app credentials (exported for other modules)
+        - DatabaseModule owns both pools
+        - Admin pool used only for guardian-approved rule activation
+        - OnModuleInit: verify RLS is active, verify role permissions
+
+        Config: PostgresAdminConfig, PostgresRuntimeConfig with class-validator.
+      acceptance_criteria:
+        - "drive_rules table exists with all specified columns"
+        - "proposed_drive_rules table exists with status workflow columns"
+        - "RLS enabled on drive_rules: sylphie_app can SELECT but not INSERT/UPDATE/DELETE"
+        - "sylphie_app can INSERT into proposed_drive_rules"
+        - "Admin pool is NOT exported from DatabaseModule"
+        - "Runtime pool IS exported for other modules to inject"
+        - "OnModuleInit verifies RLS is active (fails fast if not)"
+        - "Integration test: attempt UPDATE drive_rules as sylphie_app fails"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E1-T002]
+    complexity: L
+
+  - id: E1-T005
+    meta:
+      title: "TimescaleDB connection, hypertable schema, compression and retention"
+      description: |
+        Wire TimescaleDB connection and create the event hypertable schema.
+
+        Connection provider:
+        - pg Pool factory injecting ConfigService
+        - Pool size: 30 (configurable)
+        - Connection timeout: 5s, idle timeout: 30s
+        - TIMESCALEDB_POOL DI token in EventsModule
+
+        Hypertable DDL (applied via init script or OnModuleInit):
+        - events table:
+          event_id UUID PRIMARY KEY,
+          timestamp TIMESTAMPTZ NOT NULL,
+          event_type TEXT NOT NULL,
+          subsystem_source TEXT NOT NULL,
+          correlation_id UUID,
+          actor_id TEXT DEFAULT 'sylphie',
+          drive_snapshot JSONB,
+          tick_number BIGINT,
+          event_data JSONB NOT NULL,
+          has_learnable BOOLEAN DEFAULT false,
+          processed BOOLEAN DEFAULT false,
+          schema_version INTEGER DEFAULT 1
+        - SELECT create_hypertable('events', 'timestamp')
+        - Indexes: event_type, subsystem_source, has_learnable, correlation_id,
+          composite (timestamp, event_type)
+
+        Compression policy: compress chunks older than 7 days.
+        Retention policy: drop chunks older than 90 days.
+
+        IMPORTANT (per Ashby): Retention period (90 days) must exceed the maximum
+        expected Learning consolidation lag. Learning runs on pressure-driven
+        timescale via Cognitive Awareness drive. 90 days provides ample buffer.
+
+        Health check: SELECT 1 + verify events table exists as hypertable.
+        OnModuleDestroy: drain pool.
+      acceptance_criteria:
+        - "TIMESCALEDB_POOL factory provider creates pg Pool with ConfigService"
+        - "events hypertable created with all specified columns"
+        - "Compression policy set for chunks > 7 days"
+        - "Retention policy set for chunks > 90 days"
+        - "All specified indexes created"
+        - "Health check validates connection and hypertable existence"
+        - "Config validation fails fast on missing TimescaleDB env vars"
+        - "npx tsc --noEmit passes"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E1-T002]
+    complexity: M
+
+  - id: E1-T006
+    meta:
+      title: "Grafeo/SQLite Self KG provider with isolation enforcement"
+      description: |
+        Implement the Self KG provider based on the technology decision from E1-T001.
+
+        If Grafeo: Create a singleton Grafeo instance for KG(Self).
+        If SQLite fallback: Create SQLite database file (self_kg.sqlite) with
+        vertex/edge tables and graph abstraction layer.
+
+        Provider requirements:
+        - SELF_KG_SERVICE DI token in KnowledgeModule
+        - Implements ISelfKgService interface from E0
+        - Singleton instance (one Self KG for the system)
+        - Provenance required on every node/edge write
+        - ACT-R properties stored: base, count, decayRate, lastRetrievalAt
+        - OnModuleInit: initialize store, seed minimal self-model
+          (one root node: "Self" with SYSTEM_BOOTSTRAP provenance)
+        - OnModuleDestroy: persist and close
+
+        Isolation enforcement:
+        - Self KG has NO access to Neo4j driver or WKG service
+        - Self KG has NO access to Other KG instances
+        - Module-level: ISelfKgService does not import WKG_SERVICE or OTHER_KG_SERVICE
+        - Test: verify no cross-KG data leakage
+      acceptance_criteria:
+        - "ISelfKgService implementation satisfies interface from E0"
+        - "Self KG creates/reads/updates nodes with provenance"
+        - "Self KG stores ACT-R parameters on every node"
+        - "Self KG is completely isolated from WKG and Other KGs"
+        - "Minimal self-model seed node created on first init"
+        - "Data persists across process restarts"
+        - "No Neo4j driver or WKG imports in Self KG implementation"
+        - "npx tsc --noEmit passes"
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E1-T001]
+    complexity: M
+
+  - id: E1-T007
+    meta:
+      title: "Grafeo/SQLite Other KG provider with per-person instance management"
+      description: |
+        Implement the Other KG provider based on the technology decision from E1-T001.
+
+        If Grafeo: Create per-person Grafeo instances managed by a Map<personId, instance>.
+        If SQLite fallback: One .sqlite file per person (other_kg_{personId}.sqlite).
+
+        Provider requirements:
+        - OTHER_KG_SERVICE DI token in KnowledgeModule
+        - Implements IOtherKgService interface from E0
+        - Every method requires personId as first parameter (per Atlas isolation rule)
+        - Lazy instance creation: new person KG created on first interaction
+        - Provenance required on every node/edge write
+        - ACT-R properties stored on every node
+        - Instance lifecycle: create on first access, persist, close on shutdown
+
+        Isolation enforcement:
+        - Each person's KG is a completely separate store (no shared state)
+        - Other KG has NO access to Neo4j driver, WKG, or Self KG
+        - If one person's KG corrupts, others are unaffected
+        - Module-level: IOtherKgService does not import WKG_SERVICE or SELF_KG_SERVICE
+      acceptance_criteria:
+        - "IOtherKgService implementation satisfies interface from E0"
+        - "Per-person instances are completely isolated from each other"
+        - "personId required on every method call"
+        - "Lazy creation: first call for a new person creates their KG"
+        - "Data persists across process restarts"
+        - "No WKG, Neo4j, or Self KG imports in Other KG implementation"
+        - "Provenance and ACT-R params on every node"
+        - "npx tsc --noEmit passes"
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E1-T001]
+    complexity: M
+
+  - id: E1-T008
+    meta:
+      title: "Database health check module and startup verification"
+      description: |
+        Create a unified health check system that verifies all 5 database
+        connections on startup and exposes health status via the existing
+        HealthController stub from E0.
+
+        Implementation:
+        - DatabaseHealthService with checkAll() method
+        - Per-database health indicators: neo4j, timescaledb, postgres, self_kg, other_kg
+        - OnApplicationBootstrap: run full health check, fail startup if any
+          database is unreachable
+        - HealthController.getHealth() returns aggregate status with per-DB detail
+
+        Startup verification checklist (runs on every boot):
+        1. Neo4j reachable + constraints present
+        2. TimescaleDB reachable + events hypertable exists
+        3. PostgreSQL reachable + RLS active on drive_rules
+        4. Self KG initialized
+        5. Other KG service ready (no instances needed yet)
+
+        Config: add health check interval to AppConfig.
+      acceptance_criteria:
+        - "Health check reports status for all 5 databases"
+        - "Application fails to start if any database is unreachable"
+        - "HealthController returns JSON with per-database status"
+        - "RLS verification runs on startup (fails if RLS not active)"
+        - "Neo4j constraint verification runs on startup"
+        - "npx tsc --noEmit passes"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E1-T003, E1-T004, E1-T005, E1-T006, E1-T007]
+    complexity: M
+
+  - id: E1-T009
+    meta:
+      title: "Integration testing and full verification"
+      description: |
+        End-to-end verification that all database infrastructure works together.
+
+        Tests:
+        1. Docker Compose: all services start and become healthy
+        2. Neo4j: driver connects, constraints exist, provenance NOT NULL enforced,
+           write a test node with provenance, query it back
+        3. TimescaleDB: pool connects, hypertable exists, write a test event,
+           query it back, verify compression/retention policies configured
+        4. PostgreSQL:
+           - RLS test: connect as sylphie_app, verify SELECT on drive_rules works
+           - RLS test: connect as sylphie_app, verify UPDATE on drive_rules FAILS
+           - RLS test: connect as sylphie_app, verify INSERT on proposed_drive_rules works
+           - Admin test: connect as sylphie_admin, verify full access
+        5. Self KG: create nodes, query them, verify isolation from WKG
+        6. Other KG: create two person instances, verify complete isolation
+        7. Health check: verify HealthController returns all-healthy response
+        8. Type check: npx tsc --noEmit passes across entire project
+
+        Also verify:
+        - No circular module dependencies at startup
+        - AppModule imports all modules successfully
+        - Graceful shutdown closes all connections
+      acceptance_criteria:
+        - "All 8 test categories pass"
+        - "RLS enforcement verified with actual database queries"
+        - "KG isolation verified (no cross-KG data leakage)"
+        - "npx tsc --noEmit passes with zero errors"
+        - "NestJS application starts without circular dependency warnings"
+        - "Graceful shutdown closes all database connections"
+        - "docker compose down followed by docker compose up preserves all data"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E1-T008]
+    complexity: M

@@ -1,0 +1,85 @@
+epic: 5
+started: 2026-03-29T00:00:00Z
+completed: 2026-03-29T23:59:00Z
+tickets:
+  - id: E5-T001
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T01:00:00Z
+  - id: E5-T003
+    status: complete
+    agent: atlas
+    completed_at: 2026-03-29T01:00:00Z
+  - id: E5-T013
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29T01:00:00Z
+  - id: E5-T014
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29T02:00:00Z
+  - id: E5-T002
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T02:00:00Z
+  - id: E5-T008
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T02:00:00Z
+  - id: E5-T004
+    status: complete
+    agent: atlas
+    completed_at: 2026-03-29T02:00:00Z
+  - id: E5-T005
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T02:30:00Z
+    notes: "Inner Monologue merged into ProcessInputService"
+  - id: E5-T006
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T03:00:00Z
+  - id: E5-T009
+    status: complete
+    agent: atlas
+    completed_at: 2026-03-29T03:00:00Z
+  - id: E5-T010
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T03:00:00Z
+  - id: E5-T007
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T04:00:00Z
+  - id: E5-T012
+    status: complete
+    agent: sentinel
+    completed_at: 2026-03-29T04:00:00Z
+  - id: E5-T011
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T04:00:00Z
+  - id: E5-T015
+    status: complete
+    agent: sentinel
+    completed_at: 2026-03-29T05:00:00Z
+  - id: E5-T016
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T05:00:00Z
+  - id: E5-T017
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T05:00:00Z
+  - id: E5-T018
+    status: complete
+    agent: cortex
+    completed_at: 2026-03-29T05:00:00Z
+  - id: E5-T019
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29T06:00:00Z
+  - id: E5-T020
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29T06:00:00Z

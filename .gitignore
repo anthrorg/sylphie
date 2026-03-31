@@ -1,0 +1,69 @@
+# Dependencies
+node_modules/
+packages/*/node_modules/
+
+# Build output
+dist/
+packages/*/dist/
+
+# Environment files — never commit secrets
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.test
+
+# TypeScript incremental compilation cache
+*.tsbuildinfo
+
+# NestJS
+.nest/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jest cache
+.jest-cache/
+
+# NPM
+package-lock.json
+
+# Yarn
+yarn.lock
+.yarn/
+
+# Runtime data (Grafeo KGs, etc.)
+data/
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# Temporary screenshots
+dashboard-current.png
+
+# Runtime test data (keep .example)
+regression-test.json
+
+# Docker
+.dockerignore

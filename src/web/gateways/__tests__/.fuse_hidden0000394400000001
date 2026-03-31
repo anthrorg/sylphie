@@ -1,0 +1,703 @@
+/**
+ * Unit tests for ConversationGateway.
+ *
+ * Tests real-time bidirectional conversation via WebSocket,
+ * including message routing through CommunicationService,
+ * drive state inclusion, and session tracking.
+ */
+
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { ConversationGateway } from '../conversation.gateway';
+import { COMMUNICATION_SERVICE } from '../../../communication/communication.tokens';
+import { DRIVE_STATE_READER } from '../../../drive-engine/drive-engine.tokens';
+import { CONNECTION_MANAGER } from '../../web.tokens';
+import type { ICommunicationService } from '../../../communication/interfaces/communication.interfaces';
+import type { IDriveStateReader } from '../../../drive-engine/interfaces/drive-engine.interfaces';
+import type { IConnectionManagerService } from '../../interfaces/web.interfaces';
+import type { DriveSnapshot } from '../../../shared/types/drive.types';
+import { DriveName } from '../../../shared/types/drive.types';
+import type { WebConfig } from '../../web.config';
+
+/**
+ * Helper to create a mock drive snapshot.
+ */
+function createMockDriveSnapshot(overrides?: Partial<DriveSnapshot>): DriveSnapshot {
+  const pressureVector: Record<DriveName, number> = {
+    [DriveName.SystemHealth]: 0.5,
+    [DriveName.MoralValence]: 0.6,
+    [DriveName.Integrity]: 0.7,
+    [DriveName.CognitiveAwareness]: 0.4,
+    [DriveName.Guilt]: 0.1,
+    [DriveName.Curiosity]: 0.8,
+    [DriveName.Boredom]: 0.2,
+    [DriveName.Anxiety]: 0.3,
+    [DriveName.Satisfaction]: 0.5,
+    [DriveName.Sadness]: 0.1,
+    [DriveName.InformationIntegrity]: 0.9,
+    [DriveName.Social]: 0.6,
+  };
+
+  const driveDeltas: Record<DriveName, number> = {
+    [DriveName.SystemHealth]: 0.0,
+    [DriveName.MoralValence]: 0.0,
+    [DriveName.Integrity]: 0.0,
+    [DriveName.CognitiveAwareness]: 0.0,
+    [DriveName.Guilt]: 0.0,
+    [DriveName.Curiosity]: 0.0,
+    [DriveName.Boredom]: 0.0,
+    [DriveName.Anxiety]: 0.0,
+    [DriveName.Satisfaction]: 0.0,
+    [DriveName.Sadness]: 0.0,
+    [DriveName.InformationIntegrity]: 0.0,
+    [DriveName.Social]: 0.0,
+  };
+
+  return {
+    pressureVector: pressureVector as any,
+    driveDeltas: driveDeltas as any,
+    ruleMatchResult: {
+      ruleId: null,
+      eventType: 'TEST',
+      matched: false,
+    },
+    totalPressure: 6.3,
+    timestamp: new Date(),
+    tickNumber: 1,
+    sessionId: 'session-test',
+    ...overrides,
+  };
+}
+
+/**
+ * Helper to create a mock WebSocket client.
+ */
+function createMockClient() {
+  return {
+    id: `client-${Math.random().toString(36).substr(2, 9)}`,
+    send: jest.fn(),
+    close: jest.fn(),
+    readyState: 1,
+    on: jest.fn(),
+  };
+}
+
+/**
+ * Helper to get last sendToClient call, flushing async operations first.
+ */
+async function getLastSendToClientCall(
+  mockConnectionManager: Partial<IConnectionManagerService>,
+) {
+  await new Promise((resolve) => setImmediate(resolve));
+  const calls = (mockConnectionManager.sendToClient as jest.Mock).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[calls.length - 1][1];
+}
+
+describe('ConversationGateway', () => {
+  let gateway: ConversationGateway;
+  let mockCommunicationService: Partial<ICommunicationService>;
+  let mockDriveStateReader: Partial<IDriveStateReader>;
+  let mockConnectionManager: Partial<IConnectionManagerService>;
+  let mockConfigService: Partial<ConfigService>;
+
+  beforeEach(async () => {
+    mockCommunicationService = {
+      handleGuardianInput: jest.fn().mockResolvedValue({
+        parsed: { intentType: 'statement', text: 'hello' },
+        responseGenerated: true,
+        eventIds: ['evt-1'],
+      }),
+    };
+
+    mockDriveStateReader = {
+      getCurrentState: jest.fn().mockReturnValue(createMockDriveSnapshot()),
+    };
+
+    mockConnectionManager = {
+      register: jest.fn(),
+      unregister: jest.fn(),
+      getConnectionCount: jest.fn().mockReturnValue(0),
+      sendToClient: jest.fn().mockResolvedValue(undefined),
+      broadcast: jest.fn(),
+      getChannels: jest.fn().mockReturnValue([]),
+    };
+
+    mockConfigService = {
+      get: jest.fn((key: string) => {
+        if (key === 'web') {
+          return {} as WebConfig;
+        }
+        return undefined;
+      }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        ConversationGateway,
+        {
+          provide: COMMUNICATION_SERVICE,
+          useValue: mockCommunicationService,
+        },
+        {
+          provide: DRIVE_STATE_READER,
+          useValue: mockDriveStateReader,
+        },
+        {
+          provide: CONNECTION_MANAGER,
+          useValue: mockConnectionManager,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
+        },
+      ],
+    }).compile();
+
+    gateway = module.get<ConversationGateway>(ConversationGateway);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('handleConnection', () => {
+    it('should generate a new session ID on connection', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const sendCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0];
+      const message = sendCall[1];
+
+      expect(message.sessionId).toBeDefined();
+      expect(typeof message.sessionId).toBe('string');
+      expect(message.sessionId.length).toBeGreaterThan(0);
+    });
+
+    it('should register client with connection manager on conversation channel', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const registerCall = (mockConnectionManager.register as jest.Mock).mock
+        .calls[0];
+      expect(registerCall[0]).toBe(mockClient);
+      expect(registerCall[1]).toMatch(/^conversation:/);
+    });
+
+    it('should track session ID per client', () => {
+      const client1 = createMockClient();
+      const client2 = createMockClient();
+
+      gateway.handleConnection(client1);
+      gateway.handleConnection(client2);
+
+      // Extract session IDs from send calls
+      const session1 = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1].sessionId;
+      const session2 = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[1][1].sessionId;
+
+      expect(session1).not.toBe(session2);
+    });
+
+    it('should send initial system message with drive snapshot', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const message = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1];
+
+      expect(message.type).toBe('system');
+      expect(message.driveSnapshot).toBeDefined();
+      expect(message.driveSnapshot.drives).toBeDefined();
+      expect(Array.isArray(message.driveSnapshot.drives)).toBe(true);
+    });
+
+    it('should include system message metadata on connection', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const message = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1];
+
+      expect(message.metadata).toBeDefined();
+      expect(message.metadata.systemMessage).toContain('Connected');
+    });
+  });
+
+  describe('handleDisconnect', () => {
+    it('should unregister client from connection manager', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.unregister as jest.Mock).mockClear();
+
+      gateway.handleDisconnect(mockClient);
+
+      expect(mockConnectionManager.unregister).toHaveBeenCalledWith(
+        mockClient,
+        expect.stringMatching(/^conversation:/),
+      );
+    });
+
+    it('should clear client session tracking', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      gateway.handleDisconnect(mockClient);
+
+      // Attempting to handle message from disconnected client should fail gracefully
+      expect(() => {
+        gateway.handleMessage({ text: 'test' }, mockClient);
+      }).not.toThrow();
+    });
+
+    it('should use correct session ID for unregistration', () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const registerCall = (mockConnectionManager.register as jest.Mock).mock
+        .calls[0];
+      const registeredChannel = registerCall[1];
+
+      (mockConnectionManager.unregister as jest.Mock).mockClear();
+
+      gateway.handleDisconnect(mockClient);
+
+      const unregisterCall = (mockConnectionManager.unregister as jest.Mock)
+        .mock.calls[0];
+      expect(unregisterCall[1]).toBe(registeredChannel);
+    });
+
+    it('should be safe to call for non-connected client', () => {
+      const mockClient = createMockClient();
+
+      expect(() => {
+        gateway.handleDisconnect(mockClient);
+      }).not.toThrow();
+    });
+  });
+
+  describe('handleMessage', () => {
+    it('should route incoming message to CommunicationService', async () => {
+      const mockClient = createMockClient();
+      const messageText = 'Hello Sylphie';
+
+      gateway.handleConnection(mockClient);
+
+      await gateway.handleMessage({ text: messageText }, mockClient);
+
+      expect(mockCommunicationService.handleGuardianInput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: messageText,
+        }),
+      );
+    });
+
+    it('should include session ID in GuardianInput', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const sessionId = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1].sessionId;
+
+      (mockCommunicationService.handleGuardianInput as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const guardianInput = (
+        mockCommunicationService.handleGuardianInput as jest.Mock
+      ).mock.calls[0][0];
+
+      expect(guardianInput.sessionId).toBe(sessionId);
+    });
+
+    it('should reject messages with invalid payload', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      await gateway.handleMessage(null, mockClient);
+
+      expect(mockCommunicationService.handleGuardianInput).not.toHaveBeenCalled();
+
+      // Should send error response
+      const lastCall = await getLastSendToClientCall(mockConnectionManager);
+      expect(lastCall.type).toBe('system');
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should reject messages without text field', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      await gateway.handleMessage({ notText: 'value' }, mockClient);
+
+      expect(mockCommunicationService.handleGuardianInput).not.toHaveBeenCalled();
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should send response with drive state when responseGenerated is true', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+
+      expect(lastCall.type).toBe('response');
+      expect(lastCall.driveSnapshot).toBeDefined();
+    });
+
+    it('should send acknowledgment when responseGenerated is false', async () => {
+      const mockClient = createMockClient();
+
+      (mockCommunicationService.handleGuardianInput as jest.Mock).mockResolvedValue({
+        parsed: { intentType: 'query' },
+        responseGenerated: false,
+        eventIds: ['evt-1'],
+      });
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+
+      expect(lastCall.type).toBe('response');
+      expect(lastCall.metadata.acknowledged).toBe(true);
+    });
+
+    it('should include event IDs in response metadata', async () => {
+      const mockClient = createMockClient();
+      const eventIds = ['evt-1', 'evt-2'];
+
+      (mockCommunicationService.handleGuardianInput as jest.Mock).mockResolvedValue({
+        parsed: { intentType: 'statement' },
+        responseGenerated: true,
+        eventIds,
+      });
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+
+      expect(lastCall.metadata.eventIds).toEqual(eventIds);
+    });
+
+    it('should include parse intent type in response metadata', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+
+      expect(lastCall.metadata.parseIntentType).toBe('statement');
+    });
+
+    it('should handle CommunicationService errors gracefully', async () => {
+      const mockClient = createMockClient();
+
+      (mockCommunicationService.handleGuardianInput as jest.Mock).mockRejectedValue(
+        new Error('Service error'),
+      );
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+
+      expect(lastCall.type).toBe('system');
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should not crash on error during sendToClient', async () => {
+      const mockClient = createMockClient();
+
+      (mockConnectionManager.sendToClient as jest.Mock).mockRejectedValue(
+        new Error('Send failed'),
+      );
+
+      gateway.handleConnection(mockClient);
+
+      expect(async () => {
+        await gateway.handleMessage({ text: 'test' }, mockClient);
+      }).not.toThrow();
+    });
+
+    it('should handle message from client with no session ID gracefully', async () => {
+      const mockClient = createMockClient();
+
+      // Don't call handleConnection, so no session is registered
+
+      await gateway.handleMessage({ text: 'test' }, mockClient);
+
+      expect(mockCommunicationService.handleGuardianInput).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleFeedback', () => {
+    it('should accept correction feedback type', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'correction',
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      expect(mockConnectionManager.sendToClient).toHaveBeenCalled();
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.feedbackType).toBe('correction');
+    });
+
+    it('should accept confirmation feedback type', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'confirmation',
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.feedbackType).toBe('confirmation');
+    });
+
+    it('should reject invalid feedback type', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'invalid',
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should reject missing feedback type', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should include feedback metadata in response', async () => {
+      const mockClient = createMockClient();
+      const targetId = 'msg-123';
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'correction',
+          targetMessageId: targetId,
+        },
+        mockClient,
+      );
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.metadata.feedbackReceived).toBe(true);
+      expect(lastCall.metadata.targetMessageId).toBe(targetId);
+    });
+
+    it('should include drive state in feedback response', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'correction',
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      const lastCall = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[-1][1];
+      expect(lastCall.driveSnapshot).toBeDefined();
+    });
+
+    it('should handle errors during feedback processing', async () => {
+      const mockClient = createMockClient();
+
+      (mockConnectionManager.sendToClient as jest.Mock).mockRejectedValue(
+        new Error('Send failed'),
+      );
+
+      gateway.handleConnection(mockClient);
+
+      expect(async () => {
+        await gateway.handleFeedback(
+          {
+            feedbackType: 'correction',
+            targetMessageId: 'msg-1',
+          },
+          mockClient,
+        );
+      }).not.toThrow();
+    });
+
+    it('should handle feedback from client with no session ID', async () => {
+      const mockClient = createMockClient();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 'correction',
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      // Should send error response
+      expect(mockConnectionManager.sendToClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('drive state in responses', () => {
+    it('should include current drive snapshot in all outgoing messages', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const initMessage = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1];
+      expect(initMessage.driveSnapshot).toBeDefined();
+    });
+
+    it('should serialize drive snapshot correctly', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+
+      const message = (mockConnectionManager.sendToClient as jest.Mock).mock
+        .calls[0][1];
+      const snapshot = message.driveSnapshot;
+
+      expect(snapshot.drives).toBeDefined();
+      expect(Array.isArray(snapshot.drives)).toBe(true);
+      expect(snapshot.drives.length).toBeGreaterThan(0);
+      expect(snapshot.totalPressure).toBeDefined();
+      expect(snapshot.tickNumber).toBeDefined();
+      expect(snapshot.timestamp).toBeDefined();
+    });
+  });
+
+  describe('message validation', () => {
+    it('should validate message payload is object', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage('not-an-object', mockClient);
+
+      const lastCall = await getLastSendToClientCall(mockConnectionManager);
+      expect(lastCall.metadata.error).toContain('Invalid');
+    });
+
+    it('should validate text field is string', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleMessage({ text: 123 }, mockClient);
+
+      const lastCall = await getLastSendToClientCall(mockConnectionManager);
+      expect(lastCall.metadata.error).toContain('required');
+    });
+
+    it('should validate feedback payload is object', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(null, mockClient);
+
+      const lastCall = await getLastSendToClientCall(mockConnectionManager);
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+
+    it('should validate feedbackType is string', async () => {
+      const mockClient = createMockClient();
+
+      gateway.handleConnection(mockClient);
+      (mockConnectionManager.sendToClient as jest.Mock).mockClear();
+
+      await gateway.handleFeedback(
+        {
+          feedbackType: 123,
+          targetMessageId: 'msg-1',
+        },
+        mockClient,
+      );
+
+      const lastCall = await getLastSendToClientCall(mockConnectionManager);
+      expect(lastCall.metadata.error).toBeDefined();
+    });
+  });
+});

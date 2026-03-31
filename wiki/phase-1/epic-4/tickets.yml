@@ -1,0 +1,1032 @@
+epic: 4
+title: "Drive Engine (Isolated Process)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+# Synthesized from 5 agent analyses: Drive (computation), Forge (architecture),
+# Skinner (behavioral science), Ashby (systems theory), Canon (CANON compliance).
+#
+# Key architectural principle: Drive Engine runs in separate Node.js process
+# with one-way IPC communication. Write-protection enforced at three levels:
+# structural (TypeScript), process (separate OS process), database (PostgreSQL RLS).
+#
+# CRITICAL: Seven decisions pending Jim approval before implementation starts.
+# See decisions.md for full rationale.
+
+tickets:
+  - id: E4-T001
+    meta:
+      title: "IPC infrastructure: child_process.fork, typed messages, health monitoring"
+      description: |
+        Build the inter-process communication (IPC) channel between main NestJS process and
+        Drive Engine child process. This is the architectural foundation for process isolation
+        and write-protection enforcement.
+
+        Deliverables:
+        - Child process bootstrap: src/drive-engine/drive-process/main.ts
+          * Spawn entry point with separate event loop
+          * IPC message listener setup
+          * Graceful shutdown handler
+
+        - IPC message type definitions: src/drive-engine/interfaces/ipc.interfaces.ts
+          * DriveIPCMessage union type
+          * Inbound messages: ACTION_OUTCOME, PREDICTION_RESULT, SESSION_START, SESSION_END
+          * Outbound messages: DRIVE_SNAPSHOT, OPPORTUNITY_CREATED, DRIVE_EVENT, HEALTH_STATUS, ERROR
+          * Payload types for each message
+          * Message validation schema (zod or joi)
+
+        - IPC channel service: src/drive-engine/ipc-channel/ipc-channel.service.ts
+          * fork() child process with stdio configuration
+          * Message send queue (FIFO) for main → child
+          * Message handler dispatch for child → main messages
+          * Error handler for malformed messages
+          * Process lifecycle tracking (spawn time, restart count)
+
+        - Health monitoring: src/drive-engine/ipc-channel/health-monitor.ts
+          * Periodic ping-pong to verify child liveness
+          * Heartbeat timeout detection (>5s without DRIVE_SNAPSHOT = unhealthy)
+          * Memory usage tracking via process.memoryUsage()
+          * CPU usage monitoring (high CPU >80% = log warning)
+
+        - Recovery mechanism: src/drive-engine/ipc-channel/recovery.ts
+          * Exponential backoff retry on crash (1s, 2s, 4s, 8s, max 60s)
+          * Max retry count (3) before safe mode alert
+          * In-flight message queue persistence across restarts
+          * Restart logging with timestamp and reason
+
+        Test coverage:
+        - Unit: Message serialization/deserialization, type validation
+        - Integration: Fork child, send message, receive response within 100ms
+        - Resilience: Child crash → auto-restart → message queue drained
+
+      acceptance_criteria:
+        - "Child process spawned successfully via child_process.fork()"
+        - "Outbound IPC messages (ACTION_OUTCOME) received by child within 10ms"
+        - "Inbound IPC messages (DRIVE_SNAPSHOT) handled by main within 10ms"
+        - "Message validation rejects malformed payloads (non-string type values, missing fields)"
+        - "Health monitor detects unresponsive child (no DRIVE_SNAPSHOT for >5s)"
+        - "Recovery mechanism respawns child after crash with exponential backoff"
+        - "In-flight messages not lost on child restart"
+        - "npx tsc --noEmit passes"
+        - "Integration test suite passes (100% of IPC scenarios)"
+
+    agents: [drive, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E4-T002
+    meta:
+      title: "DriveReaderService: read-only facade, Observable, defensive copies"
+      description: |
+        Build the main process-side service that provides read-only access to drive state.
+        This service is the interface through which Decision Making and Communication
+        access the Drive Engine's output. No write methods exist.
+
+        Deliverables:
+        - DriveReaderService: src/drive-engine/drive-reader/drive-reader.service.ts
+          * Implements IDriveStateReader interface (read-only)
+          * Methods:
+            - getCurrentState(): DriveSnapshot (returns defensive JSON copy)
+            - get driveState$(): Observable<DriveSnapshot> (RxJS Subject as Observable)
+            - getLatestTimestamp(): number
+            - isDriveHealthy(): boolean
+
+        - Snapshot caching: src/drive-engine/drive-reader/drive-state-snapshot.ts
+          * Cache latest DRIVE_SNAPSHOT from IPC message
+          * Defensive copy via JSON.parse(JSON.stringify()) to prevent external mutation
+          * Coherence validation:
+            - All drive values in [-10.0, 1.0]
+            - totalPressure = sum of all drives (sanity check)
+            - No all-zero snapshot (indicates child crash)
+            - No unchanging snapshot for >1s (indicates child hung)
+          * Throw DriveCoherenceError on validation failure
+
+        - Observable stream: src/drive-engine/drive-reader/drive-reader.module.ts
+          * RxJS Subject emits DriveSnapshot on each DRIVE_SNAPSHOT IPC message
+          * Observable is publicly exposed for reactive subscribers
+          * Subject is internal; consumers only see Observable
+
+        Integration:
+        - Inject DriveReaderService into decision-making and communication modules
+        - Provide IDriveStateReader token for dependency injection
+        - No other services have direct access to the child process
+
+        Test coverage:
+        - Unit: Defensive copy prevents mutation, Observable emits on message
+        - Integration: DriveReaderService provides consistent snapshots to consumers
+        - Resilience: Snapshot validation catches corrupt/unresponsive child
+
+      acceptance_criteria:
+        - "DriveReaderService exports IDriveStateReader interface (no write methods)"
+        - "getCurrentState() returns JSON-copy defensive snapshot (no reference sharing)"
+        - "driveState$ Observable emits on each DRIVE_SNAPSHOT message"
+        - "Snapshot coherence validation rejects invalid states (drives outside [-10.0, 1.0], all zeros, unchanged)"
+        - "External mutation of returned snapshot does not affect internal state"
+        - "Multiple subscribers receive same snapshot (no divergence)"
+        - "DriveReaderService is injectable via DI token"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge, drive]
+    model: sonnet
+    dependencies: [E4-T001]
+    complexity: M
+
+  - id: E4-T003
+    meta:
+      title: "ActionOutcomeReporterService: fire-and-forget queue, IPC send"
+      description: |
+        Build the service that Decision Making and Communication use to report action
+        outcomes to the Drive Engine. This is fire-and-forget (async) to prevent decision
+        latency from blocking.
+
+        Deliverables:
+        - ActionOutcomeReporterService: src/drive-engine/action-outcome-reporter/action-outcome-reporter.service.ts
+          * Implements IActionOutcomeReporter interface
+          * Methods:
+            - reportOutcome(action: Action, outcome: Outcome): Promise<void>
+            - reportPredictionResult(prediction: Prediction, actual: any): Promise<void>
+          * No return value; fire-and-forget semantics
+
+        - Outcome queue: src/drive-engine/action-outcome-reporter/outcome-queue.ts
+          * FIFO queue for ACTION_OUTCOME and PREDICTION_RESULT messages
+          * Max queue size: 1000 (configurable)
+          * Async flushing via setImmediate()
+          * Queue persistence: if child is temporarily unavailable, queue accumulates
+          * Max retries: 3 attempts per message before dropping (logged)
+
+        - Message formatting:
+          * ACTION_OUTCOME payload:
+            - actionId: string (references procedure from WKG)
+            - outcome: 'success' | 'partial' | 'failure'
+            - timestamp: number (milliseconds)
+            - context: { driveState: DriveSnapshot, wkgState: string (hash?), prediction?: Prediction }
+          * PREDICTION_RESULT payload:
+            - predictionId: string
+            - predictedValue: any
+            - actualValue: any
+            - accuracy: number (MAE or categorical match)
+            - timestamp: number
+
+        Integration:
+        - Inject into ExecutorEngine (E5) for action execution feedback
+        - Inject into CommunicationService (E6) for response quality feedback
+        - Called asynchronously; never blocks decision loop
+
+        Test coverage:
+        - Unit: Queue FIFO ordering, max size enforcement, retry logic
+        - Integration: Outcomes reach child process within 100ms
+        - Resilience: Child unavailable → queue accumulates → child restarts → queue drains
+
+      acceptance_criteria:
+        - "reportOutcome() accepts action and outcome, returns immediately (non-blocking)"
+        - "Outcomes are queued and sent asynchronously (setImmediate)"
+        - "Message queue respects max size (1000); oldest dropped if exceeded"
+        - "Failed send retries up to 3 times with exponential backoff"
+        - "Queued messages reach child within 100ms of queue flush"
+        - "Outcome payload includes action, outcome type, and context snapshot"
+        - "IActionOutcomeReporter interface matches expected consumers"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge, drive]
+    model: sonnet
+    dependencies: [E4-T001]
+    complexity: M
+
+  - id: E4-T004
+    meta:
+      title: "RuleProposerService: INSERT to proposed_drive_rules, PostgreSQL RLS"
+      description: |
+        Build the service that the Drive Engine (and optionally Learning) uses to propose
+        new drive rules. Rules go into PostgreSQL proposed_drive_rules table (not active
+        drive_rules). Guardian must explicitly approve to activate.
+
+        Deliverables:
+        - RuleProposerService: src/drive-engine/rule-proposer/rule-proposer.service.ts
+          * Implements IRuleProposer interface
+          * Method:
+            - proposeRule(rule: ProposedDriveRule): Promise<void>
+          * Publishes event: RULE_PROPOSED to TimescaleDB (for audit trail)
+
+        - PostgreSQL client: src/drive-engine/rule-proposer/postgres-rules-client.ts
+          * Database connection using sylphie_app role (INSERT-only on proposed_drive_rules)
+          * Query:
+            INSERT INTO proposed_drive_rules
+              (trigger, effect, confidence, proposed_by, reasoning, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+          * No UPDATE or DELETE on active drive_rules (role forbids this)
+          * Connection pooling for multiple proposals
+
+        - ProposedDriveRule type: src/drive-engine/interfaces/rules.interfaces.ts
+          * trigger: string (event pattern, e.g., "action_success AND anxiety > 0.7")
+          * effect: string (drive change, e.g., "integrity += 0.10")
+          * confidence: number (system's confidence in the rule, 0-1)
+          * proposed_by: string (subsystem that proposed, e.g., "drive_engine", "learning")
+          * reasoning: string (explanation for guardian review)
+
+        - Rule proposal workflow:
+          1. System decides a new rule would help: "When action succeeds under anxiety, boost integrity"
+          2. Call proposeRule({ trigger: '...', effect: '...', ... })
+          3. Rule inserted into proposed_drive_rules (inactive)
+          4. Event emitted: RULE_PROPOSED to TimescaleDB
+          5. Guardian reviews queue and approves (moves to drive_rules) or rejects (deletes)
+
+        Test coverage:
+        - Unit: ProposedDriveRule validation, INSERT query formatting
+        - Integration: Proposed rule appears in DB within 100ms
+        - Security: Verify app role cannot UPDATE/DELETE drive_rules (should fail)
+        - Audit: RULE_PROPOSED event emitted to TimescaleDB
+
+      acceptance_criteria:
+        - "proposeRule() inserts rule into proposed_drive_rules table"
+        - "INSERT succeeds using sylphie_app role (read-only on drive_rules)"
+        - "Proposed rule includes: trigger, effect, confidence, proposed_by, reasoning"
+        - "RULE_PROPOSED event emitted to TimescaleDB for audit trail"
+        - "App cannot directly modify active drive_rules (role permission enforced)"
+        - "Database connection pooling prevents exhaustion"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E4-T005
+    meta:
+      title: "Core drive computation: 12-drive tick loop, accumulation, clamping"
+      description: |
+        Implement the heart of the Drive Engine: the 12-drive system running in the child
+        process. This is the core computation that updates drives every 10ms.
+
+        Deliverables:
+        - Drive state representation: src/drive-engine/drive-process/drive-state.ts
+          * Drive vector: 12 values [-10.0, 1.0]
+          * Core drives: systemHealth, moralValence, integrity, cognitiveAwareness
+          * Complement drives: guilt, curiosity, boredom, anxiety, satisfaction, sadness, informationIntegrity, social
+          * Accumulators: per-drive accumulation rate
+          * Decay: per-drive decay rate (if applicable)
+
+        - Tick loop: src/drive-engine/drive-process/drive-engine.ts
+          * 100Hz loop (10ms per tick)
+          * Tick sequence:
+            1. Drain outcome queue (ACTION_OUTCOME, PREDICTION_RESULT messages)
+            2. Compute base drive updates (accumulation, decay)
+            3. Apply outcomes (satisfaction, guilt, anxiety adjustments)
+            4. Apply contingencies (habituation, amplification, etc.)
+            5. Apply cross-modulation (drive-to-drive effects)
+            6. Clamp all drives to [-10.0, 1.0]
+            7. Compute totalPressure (sum of all drives)
+            8. Publish DRIVE_SNAPSHOT via IPC
+            9. Schedule next tick
+
+        - Base accumulation/decay: src/drive-engine/drive-process/accumulation.ts
+          * Per-drive accumulation rate (e.g., systemHealth += 0.01 per tick without intervention)
+          * Per-drive decay rate (e.g., curiosity -= 0.005 per tick if not stimulated)
+          * Decay is *optional*; may or may not apply (TBD in CANON A.14)
+
+        - Clamping: src/drive-engine/drive-process/clamping.ts
+          * Clamp all drives to [-10.0, 1.0]
+          * After cross-modulation and before snapshot publish
+          * If any drive exceeds bounds, log warning (indicates tuning issue)
+
+        Constants: src/drive-engine/constants/drives.ts
+          * Drive names and enum
+          * Default accumulation/decay rates (pending CANON A.14 specification)
+          * Ranges and thresholds (anxiety > 0.7, system health < 0.3, etc.)
+
+        Test coverage:
+        - Unit: Accumulation, decay, clamping math correct
+        - Integration: 100Hz tick loop produces DRIVE_SNAPSHOT every 10ms
+        - Resilience: Tick loop survives malformed outcome messages (logged, skipped)
+
+      acceptance_criteria:
+        - "12-drive state vector maintained (4 core + 8 complement)"
+        - "Tick loop runs at 100Hz (10ms per tick) ±2ms"
+        - "DRIVE_SNAPSHOT published after each tick via IPC"
+        - "All drives clamped to [-10.0, 1.0] (no out-of-range values)"
+        - "totalPressure = sum of all drives (sanity check)"
+        - "Outcomes from IPC queue applied each tick"
+        - "Tick survives malformed messages (logged, not fatal)"
+        - "Memory footprint <10MB (no unbounded state)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive]
+    model: sonnet
+    dependencies: []
+    complexity: L
+
+  - id: E4-T006
+    meta:
+      title: "Rule engine: PostgreSQL rule lookup, matching, default affect, caching"
+      description: |
+        Implement the rule engine in the child process. Rules are loaded from PostgreSQL
+        drive_rules table and applied to incoming events (outcomes, predictions) to
+        modulate drive state.
+
+        Deliverables:
+        - Rule loading: src/drive-engine/drive-process/rule-engine.ts
+          * Read drive_rules table from PostgreSQL on startup
+          * Periodic reload every 60 seconds (rules can be approved by guardian)
+          * Rule format: { id, trigger, effect, enabled, confidence, created_at }
+
+        - Rule matching: src/drive-engine/drive-process/rule-matching.ts
+          * Pattern matching: trigger is a string pattern (e.g., "action_success AND anxiety > 0.7")
+          * Event context: action outcome, prediction result, current drive state
+          * Determine which rules match the current event
+          * Matching is deterministic and fast (< 5ms for 100 rules)
+
+        - Rule application: src/drive-engine/drive-process/rule-application.ts
+          * Apply matched rules: execute the 'effect' (e.g., "integrity += 0.10")
+          * Effect syntax: simple DSL: "drive_name += value" or "drive_name *= factor"
+          * Multiple rules can match one event; all applicable rules fire
+          * Accumulate effects, then apply once per tick
+
+        - Default affect: src/drive-engine/drive-process/default-affect.ts
+          * If no rules match an event, apply default affect
+          * Example: action_success → default affect is Satisfaction += 0.10
+          * Default affects handle common cases; rules handle special cases
+
+        - Caching: src/drive-engine/drive-process/rule-cache.ts
+          * LRU cache of matched rules per event pattern
+          * Cache key: event type + drive snapshot hash
+          * Reduces recomputation of rule matching on repeated events
+          * Cache invalidated when rules reload
+
+        Constants: src/drive-engine/constants/rules.ts
+          * Default affects (action_success, action_failure, prediction_hit, prediction_miss, etc.)
+          * Rule confidence thresholds (only apply rules with confidence > 0.5?)
+
+        Test coverage:
+        - Unit: Pattern matching, rule application, default affect
+        - Integration: Rules from PostgreSQL loaded, applied on event
+        - Cache validation: Repeated events use cache correctly
+
+      acceptance_criteria:
+        - "Drive_rules table queried on startup and every 60s"
+        - "Rules with enabled=true loaded; disabled rules ignored"
+        - "Rule pattern matching works for common triggers (e.g., 'anxiety > 0.7 AND action_success')"
+        - "Matched rules applied: effect executed (drive_name += value syntax)"
+        - "Multiple matching rules all fire; effects accumulate"
+        - "Default affects applied if no rules match"
+        - "Rule cache reduces lookup time for repeated patterns"
+        - "Rule reload doesn't interrupt tick loop (async load)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive, forge]
+    model: sonnet
+    dependencies: [E4-T005]
+    complexity: M
+
+  - id: E4-T007
+    meta:
+      title: "Behavioral contingencies: all 5 CANON contingencies implemented"
+      description: |
+        Implement the five behavioral contingencies that shape personality:
+        1. Satisfaction Habituation Curve
+        2. Anxiety Amplification
+        3. Guilt Repair Contingency
+        4. Social Comment Quality
+        5. Curiosity Information Gain
+
+        Deliverables:
+        - Satisfaction Habituation: src/drive-engine/drive-process/behavioral-contingencies/satisfaction-habituation.ts
+          * Track consecutive successes on same action topography
+          * Curve: 1st=+0.20, 2nd=+0.15, 3rd=+0.10, 4th=+0.05, 5th+=+0.02
+          * Counter resets on different action selection
+          * Query TimescaleDB for recent action history (last 5 actions of same type)
+          * Prevents habituation collapse by incentivizing behavioral diversity
+
+        - Anxiety Amplification: src/drive-engine/drive-process/behavioral-contingencies/anxiety-amplification.ts
+          * Check: is anxiety > 0.7?
+          * If yes and action outcome is failure: confidence reduction *= 1.5
+          * Else: normal confidence reduction applies
+          * Prevents learned helplessness while encouraging caution under stress
+
+        - Guilt Repair: src/drive-engine/drive-process/behavioral-contingencies/guilt-repair.ts
+          * Track: did system acknowledge error? (inferred from communication analysis or explicit signal)
+          * Track: did system change behavior? (detect if same error avoided in similar context)
+          * Relief based on what occurred:
+            - Acknowledgment only: guilt -= 0.10
+            - Behavioral change only: guilt -= 0.15
+            - Both: guilt -= 0.30
+          * Requires behavioral change detection (fuzzy matching on action categories + context)
+
+        - Social Comment Quality: src/drive-engine/drive-process/behavioral-contingencies/social-comment-quality.ts
+          * Communication module timestamps Sylphie-initiated comments
+          * When guardian responds, check: response within 30 seconds?
+          * If yes: social -= 0.15 (relief) + satisfaction += 0.10 (bonus)
+          * Shapes discrimination: system learns which comment types elicit responses
+
+        - Curiosity Information Gain: src/drive-engine/drive-process/behavioral-contingencies/curiosity-information-gain.ts
+          * Measure actual new information created:
+            - New nodes added to WKG (query Neo4j)
+            - Confidence increases (sum of ΔConfidence for updated nodes)
+            - Prediction errors resolved (MAE > 0.20 now < 0.10)
+          * Relief proportional: curiosity -= k * (newNodes + confidenceDelta + resolvedErrors)
+          * Prevents reward hacking: revisiting known territory ≈ 0 relief
+
+        Integration:
+        - All contingencies called in tick loop after base drive updates
+        - Contingencies read from TimescaleDB and WKG (async, with caching)
+        - Contingencies modify drive state in-place before cross-modulation
+
+        Test coverage:
+        - Unit: Each contingency formula correct (satisfaction curve, anxiety multiplier, etc.)
+        - Integration: Contingencies applied correctly in sequence
+        - Behavioral: System exhibits predicted behavior patterns (diversity, caution under anxiety, etc.)
+
+      acceptance_criteria:
+        - "Satisfaction Habituation: curve values correct, counter resets on action change"
+        - "Anxiety Amplification: 1.5x reduction when anxiety>0.7 and failure"
+        - "Guilt Repair: acknowledgment=-0.10, change=-0.15, both=-0.30"
+        - "Social Comment Quality: 30s window detection, relief+bonus when triggered"
+        - "Curiosity Information Gain: proportional to actual new nodes/confidence/resolved errors"
+        - "All contingencies query necessary data (TimescaleDB, WKG) efficiently"
+        - "No blocking queries in tick loop (cache results or async load)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive, skinner]
+    model: sonnet
+    dependencies: [E4-T005, E4-T006]
+    complexity: L
+
+  - id: E4-T008
+    meta:
+      title: "Self-evaluation: KG(Self) reads on slower timescale, identity lock-in prevention"
+      description: |
+        Implement self-evaluation: Drive Engine reads KG(Self) (Grafeo) on a slower timescale
+        to adjust drive baselines based on self-assessed capabilities. This prevents identity
+        lock-in (system permanently convinced it's "bad at X").
+
+        Deliverables:
+        - Self-evaluation loop: src/drive-engine/drive-process/self-evaluation.ts
+          * Runs on slower cadence than drive ticks (e.g., every 60 ticks = every 600ms)
+          * Reads KG(Self) to get Sylphie's self-assessed capabilities and drive_patterns
+          * Adjusts drive baselines based on self-assessment
+          * Example: if KG(Self) says "I'm bad at social interaction" (capability < 0.3),
+            reduce Social drive baseline by 0.05 for next tick window
+
+        - KG(Self) interface: src/drive-engine/interfaces/self-kg.interfaces.ts
+          * SelfCapability: { id, name, success_rate, last_executed, confidence }
+          * DrivePattern: { drive, stimulus, response_strength, examples, last_observed }
+          * PredictionAccuracy: { domain, mae, sample_count, confidence }
+          * Query interface (read-only): queryCapability(), queryDrivePattern(), queryPredictionAccuracy()
+
+        - Circuit breakers: src/drive-engine/drive-process/self-evaluation-circuit-breaker.ts
+          * Prevent rumination loops: if self-assessment is negative for N consecutive evaluations, pause self-eval
+          * Max consecutive negative assessments before pause: 5
+          * Pause duration: 5 seconds (re-enable self-eval after cool-down)
+          * Log when circuit breaker trips (indicates potential issue)
+
+        - Drive baseline adjustment: src/drive-engine/drive-process/drive-baseline-adjustment.ts
+          * Current drive baseline: systemHealth = 0.5 (default)
+          * Adjustment based on KG(Self):
+            - If self-assessed system_health < 0.3: reduce baseline to 0.35
+            - If self-assessed system_health > 0.7: maintain baseline 0.5
+            - If recovery: gradually restore baseline (not instantaneous)
+          * Prevents permanent depression from transient failures
+
+        - Grafeo integration: src/drive-engine/drive-process/database-clients.ts
+          * Child process maintains Grafeo connection to KG(Self) (same as main process)
+          * Read-only queries; no writes from Drive Engine
+          * Queries are async and cached (check cache first)
+          * Timeout on slow queries (>500ms = skip this evaluation cycle)
+
+        Constants: src/drive-engine/constants/self-evaluation.ts
+          * Self-eval cadence: every 60 ticks (600ms)
+          * Circuit breaker threshold: 5 consecutive negative assessments
+          * Pause duration: 5000ms
+          * Baseline adjustment factors (per drive)
+
+        Test coverage:
+        - Unit: Baseline adjustment math, circuit breaker logic
+        - Integration: Self-eval loop queries KG(Self) every 600ms
+        - Resilience: Slow/missing KG(Self) doesn't block ticks (async, cached)
+        - Circuit breaker: Rumination loops trigger pause correctly
+
+      acceptance_criteria:
+        - "Self-evaluation runs every 60 ticks (±10ms accuracy)"
+        - "KG(Self) queries complete within 500ms or skipped"
+        - "Drive baselines adjusted based on self-assessed capabilities"
+        - "Negative self-assessment doesn't crash (circuit breaker prevents rumination)"
+        - "Circuit breaker pauses self-eval for 5s after 5 consecutive negatives"
+        - "Baseline restoration gradual, not instantaneous"
+        - "Read-only access to KG(Self); no writes from Drive Engine"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive, forge]
+    model: sonnet
+    dependencies: [E4-T005]
+    complexity: M
+
+  - id: E4-T009
+    meta:
+      title: "Prediction accuracy evaluation: MAE computation, prediction classification"
+      description: |
+        Implement prediction accuracy evaluation. Drive Engine reads prediction outcomes
+        from TimescaleDB and computes Mean Absolute Error (MAE) for type-specific predictions.
+        MAE feeds Type 1/Type 2 graduation criteria.
+
+        Deliverables:
+        - Prediction evaluation: src/drive-engine/drive-process/prediction-evaluator.ts
+          * Read prediction outcomes from TimescaleDB (asynchronously)
+          * Predictions are created by Decision Making before action execution
+          * Outcomes are recorded after action execution (actual result)
+          * Compute MAE: mean absolute error over last N predictions (N = 10)
+          * Classification:
+            - MAE < 0.10: ACCURATE (prediction was good)
+            - MAE 0.10-0.20: MODERATE (passable)
+            - MAE > 0.20: POOR (unreliable)
+
+        - MAE query: src/drive-engine/drive-process/mae-query.ts
+          * SELECT predictions.predicted_value, outcomes.actual_value
+            FROM predictions JOIN outcomes ON predictions.id = outcomes.prediction_id
+            WHERE predictions.type = $1 AND predictions.created_at > NOW() - INTERVAL '1 hour'
+            ORDER BY predictions.created_at DESC LIMIT 10
+          * Compute: mae = sum(abs(predicted - actual)) / count
+          * If count < 10: mark as "insufficient data" (don't use for graduation yet)
+          * Cache result: MAE per prediction type, update every 10 predictions or 60s
+
+        - Opportunity signal: src/drive-engine/drive-process/opportunity-signal.ts
+          * When prediction is POOR (MAE > 0.20), emit OPPORTUNITY_CREATED
+          * Opportunity metadata:
+            - prediction_type: string
+            - mae: number
+            - recent_failures: number (count of failed predictions in last 10)
+            - severity: "low" | "medium" | "high" (based on MAE magnitude)
+
+        - Graduation criteria: src/drive-engine/drive-process/graduation-criteria.ts
+          * Type 1 candidates require: confidence > 0.80 AND MAE < 0.10
+          * Demotion if: MAE > 0.15 (prediction accuracy degraded)
+          * Communication to Decision Making (E5): include MAE in action context
+
+        - TimescaleDB integration: src/drive-engine/drive-process/database-clients.ts
+          * Read predictions and outcomes from TimescaleDB
+          * Queries are async and cached (per prediction type)
+          * Timeout on slow queries: >500ms = skip this evaluation, use cached MAE
+
+        Constants: src/drive-engine/constants/prediction-evaluation.ts
+          * MAE window: 10 predictions
+          * MAE thresholds: ACCURATE < 0.10, MODERATE < 0.20, POOR >= 0.20
+          * Cache TTL: 60 seconds or 10 new predictions (whichever comes first)
+
+        Test coverage:
+        - Unit: MAE computation correct (arithmetic validation)
+        - Integration: Prediction MAE queries work, classifications correct
+        - Resilience: Missing outcomes don't crash (marked as "insufficient data")
+        - Graduation: Opportunities emitted when MAE > 0.20
+
+      acceptance_criteria:
+        - "MAE computed over last 10 predictions per type"
+        - "Classification: ACCURATE (<0.10), MODERATE (0.10-0.20), POOR (>0.20)"
+        - "Insufficient data (<10 predictions) handled gracefully"
+        - "OPPORTUNITY_CREATED emitted when MAE > 0.20"
+        - "MAE cached per prediction type; cache invalidates on new data or TTL"
+        - "Queries to TimescaleDB timeout at 500ms (cached value used)"
+        - "Graduation criteria passed to Decision Making (confidence > 0.80 AND MAE < 0.10)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive]
+    model: sonnet
+    dependencies: [E4-T005]
+    complexity: M
+
+  - id: E4-T010
+    meta:
+      title: "Opportunity detection: pattern classification, priority queue, decay, cold-start dampening"
+      description: |
+        Implement opportunity detection in the child process. Opportunities are generated
+        from prediction failures and classified by type (recurring, high-impact, low-priority).
+        Opportunities are emitted to Planning subsystem for procedure creation.
+
+        Deliverables:
+        - Opportunity detection: src/drive-engine/drive-process/opportunity-detector.ts
+          * Input: prediction failures (MAE > 0.20) from prediction-evaluator
+          * Classify opportunities:
+            - RECURRING: same prediction fails multiple times (>3 in last 10)
+            - HIGH_IMPACT: large prediction error (MAE > 0.40) or involves high-pressure situation
+            - LOW_PRIORITY: single failure, low magnitude, low pressure context
+
+        - Priority scoring: src/drive-engine/drive-process/opportunity-priority.ts
+          * Priority = log(frequency) * magnitude
+            - frequency: how many times has this prediction failed? (log scale)
+            - magnitude: what is the MAE? (linear)
+          * Example: recurring (freq=5) + large error (mae=0.35) = high priority
+          * Example: single failure (freq=1) + small error (mae=0.12) = low priority
+          * Cold-start dampening: during sessions 1-N, multiply priority *= (sessionNumber / N)
+            - Session 1: priority *= 0.1
+            - Session 5: priority *= 0.5
+            - Session 10: priority *= 1.0 (full priority)
+
+        - Opportunity decay: src/drive-engine/drive-process/opportunity-decay.ts
+          * Opportunities expire if the underlying prediction becomes accurate
+          * When MAE < 0.10 for the same prediction type: decay opportunity priority by 0.5
+          * When MAE stays < 0.10 for 100 consecutive predictions: remove opportunity entirely
+          * Prevents backlog of "fixed" opportunities
+
+        - Opportunity queue: src/drive-engine/drive-process/opportunity-queue.ts
+          * Priority queue of current opportunities
+          * Top opportunities emitted to Planning (every 100 ticks, max 5 per tick)
+          * Opportunities include: prediction_type, mae, context, priority, session_number
+
+        - Planning integration: src/drive-engine/drive-process/planning-publisher.ts
+          * Emit OPPORTUNITY_CREATED message via IPC to main process
+          * Main process relays to Planning subsystem (E8)
+          * Opportunity metadata includes all context needed for plan creation
+
+        Constants: src/drive-engine/constants/opportunity-detection.ts
+          * Recurring threshold: 3 failures in 10 predictions
+          * High-impact threshold: MAE > 0.40 OR totalPressure > 0.8
+          * Cold-start session count: N (pending Jim approval; planning assumes 10)
+          * Decay threshold: MAE < 0.10 for 100+ consecutive predictions
+
+        Test coverage:
+        - Unit: Priority scoring math, decay logic, cold-start dampening
+        - Integration: Opportunities emitted with correct priority and metadata
+        - Behavioral: Recurring failures get higher priority than single failures
+        - Cold-start: Opportunities dampened in early sessions, full priority later
+
+      acceptance_criteria:
+        - "Opportunities classified: RECURRING, HIGH_IMPACT, LOW_PRIORITY"
+        - "Priority scored: priority = log(frequency) * magnitude"
+        - "Cold-start dampening: priority *= (sessionNumber / N) for N sessions"
+        - "Opportunity decay: priority reduced when underlying prediction improves"
+        - "Opportunity queue maintains priority ordering (max N opportunities at a time)"
+        - "OPPORTUNITY_CREATED messages emitted to Planning"
+        - "Opportunity metadata complete: type, mae, context, priority, session"
+        - "No unbounded queue growth (old expired opportunities removed)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive, ashby]
+    model: sonnet
+    dependencies: [E4-T009]
+    complexity: L
+
+  - id: E4-T011
+    meta:
+      title: "Theater Prohibition enforcement: zero reinforcement for low-drive expressions"
+      description: |
+        Implement Theater Prohibition enforcement: if Sylphie expresses an emotion and
+        the drive check fails (pressure expression without drive > 0.2, or relief expression
+        without drive < 0.3), the action receives zero reinforcement. This prevents the
+        system from learning to perform emotions it doesn't have.
+
+        Deliverables:
+        - Theater detection: src/drive-engine/drive-process/theater-prohibition.ts
+          * Receive ACTION_OUTCOME with action metadata
+          * Action metadata includes: action_type (e.g., "speak_happily", "explore_curiously")
+          * Parse action type to infer emotional expression (map from v1 code)
+          * Example mappings:
+            - "speak_happily" → relief expression: requires satisfaction < 0.3
+            - "express_concern" → pressure expression: requires anxiety > 0.2
+            - "explore_curiously" → pressure expression: requires curiosity > 0.2
+
+        - Drive state check: src/drive-engine/drive-process/drive-correlation-check.ts
+          * At moment of action selection (recorded in ACTION_OUTCOME context):
+            drive_snapshot = context.driveState
+          * Check: does emotional expression correlate with actual drive?
+          * Directional check:
+            - Pressure expression (distress, need, urgency): drive must be > 0.2 to be authentic
+            - Relief expression (contentment, calm, happiness): drive must be < 0.3 to be authentic
+          * If check fails: mark outcome as `theatrical: true`
+          * Else: `theatrical: false`
+
+        - Reinforcement blocking: src/drive-engine/drive-process/reinforcement-blocking.ts
+          * If outcome.theatrical === true:
+            - Apply contingencies as normal (satisfaction, guilt, etc.)
+            - BUT: set all contingency values to 0 (zero relief)
+            - Outcome is recorded but produces no drive change
+            - Log: "Theater prohibited: [action] expressed [emotion] ([expression_type]) but drive check failed (value: [drive_value])"
+          * If outcome.theatrical === false:
+            - Apply contingencies normally
+
+        - Action-to-emotion mapping: src/drive-engine/constants/action-emotions.ts
+          * Map from action type (stored in WKG) to emotional expression
+          * Mapping: { action_id: 'speak_curiously', emotion: 'curiosity', expression_type: 'pressure', threshold: 0.2 }
+          * expression_type: 'pressure' (drive > threshold) or 'relief' (drive < threshold)
+          * Extensible: new actions can be added without code changes
+
+        Integration with Communication (E6):
+        - Communication should pre-flight check (prevent theatrical responses)
+        - Drive Engine backstops with post-flight enforcement (zero reinforcement)
+        - Combined approach: E6 prevents, E4 punishes if prevention fails
+
+        Test coverage:
+        - Unit: Action-to-emotion mapping, drive threshold check
+        - Integration: Theatrical actions receive zero reinforcement
+        - Behavioral: System learns not to express low-drive emotions
+
+      acceptance_criteria:
+        - "Theater detection identifies emotional expressions with directional type (pressure vs. relief)"
+        - "Drive state snapshot recorded at action selection time"
+        - "Theatrical pressure expressions (drive <= 0.2) receive zero reinforcement (all contingencies = 0)"
+        - "Theatrical relief expressions (drive >= 0.3) receive zero reinforcement (all contingencies = 0)"
+        - "Non-theatrical actions receive normal contingencies"
+        - "Theater events logged with action, emotion, expression type, and drive value"
+        - "Action-to-emotion mapping extensible (no hardcoded lists)"
+        - "npx tsc --noEmit passes"
+
+    agents: [drive, forge]
+    model: sonnet
+    dependencies: [E4-T005]
+    complexity: M
+
+  - id: E4-T012
+    meta:
+      title: "Event emission: drive events to TimescaleDB from child process"
+      description: |
+        Implement event emission from the Drive Engine child process to TimescaleDB.
+        All drive-related events are recorded for audit trail and analysis.
+
+        Deliverables:
+        - Drive event types: src/drive-engine/interfaces/drive-events.ts
+          * DRIVE_TICK: on every tick (100Hz)
+          * OUTCOME_PROCESSED: when an ACTION_OUTCOME is applied
+          * OPPORTUNITY_CREATED: when an opportunity is detected
+          * DRIVE_EVENT: when a contingency fires (satisfaction gained, guilt processed, etc.)
+          * SELF_EVALUATION_RUN: when KG(Self) evaluation occurs
+          * RULE_APPLIED: when a drive rule fires
+          * HEALTH_STATUS: periodic heartbeat (every 60 ticks)
+
+        - Event emission: src/drive-engine/drive-process/event-emitter.ts
+          * IEventEmitter interface (write-only to TimescaleDB)
+          * Methods:
+            - emitTick(snapshot: DriveSnapshot, rulesFired: Rule[]): Promise<void>
+            - emitOutcomeProcessed(outcome: Outcome, resultingDrives: DriveVector): Promise<void>
+            - emitOpportunityCreated(opportunity: Opportunity): Promise<void>
+            - emitContingency(contingency: Contingency, driveChange: Map<string, number>): Promise<void>
+            - emitHealthStatus(timestamp: number, memoryUsage: number): Promise<void>
+
+        - TimescaleDB integration: src/drive-engine/drive-process/database-clients.ts
+          * Child process connects to TimescaleDB as 'drive_engine' role
+          * INSERT events with:
+            - type: string (event type)
+            - subsystem: 'DRIVE_ENGINE'
+            - payload: JSON (event-specific data)
+            - timestamp: number (milliseconds)
+            - session_id: string (current session)
+            - drive_snapshot: JSON (current drive state)
+          * Async writes (non-blocking)
+          * Retry on failure (up to 3 retries)
+
+        - Event format (example):
+          ```
+          {
+            type: 'CONTINGENCY_APPLIED',
+            subsystem: 'DRIVE_ENGINE',
+            payload: {
+              contingency_type: 'SATISFACTION_HABITUATION',
+              action_id: 'speak_to_guardian_001',
+              consecutive_count: 2,
+              relief_amount: 0.15,
+              previous_satisfaction: 0.45,
+              new_satisfaction: 0.60
+            },
+            timestamp: Date.now(),
+            drive_snapshot: { systemHealth: 0.5, ... }
+          }
+          ```
+
+        - Batching: src/drive-engine/drive-process/event-batching.ts
+          * Queue events (non-blocking emit calls)
+          * Batch write every 100ms or 50 events (whichever comes first)
+          * Reduces TimescaleDB write pressure
+
+        Constants: src/drive-engine/constants/events.ts
+          * Event type enum
+          * Batch size: 50
+          * Batch timeout: 100ms
+          * Retry count: 3
+
+        Test coverage:
+        - Unit: Event formatting, batch logic
+        - Integration: Events appear in TimescaleDB within 200ms
+        - Resilience: Slow TimescaleDB doesn't block ticks (batched, async)
+
+      acceptance_criteria:
+        - "All drive events emitted to TimescaleDB with correct type and payload"
+        - "Events include timestamp, subsystem, drive snapshot, session_id"
+        - "Event emission is async (non-blocking to tick loop)"
+        - "Events batched: 50 events or 100ms timeout"
+        - "Retry on failure: up to 3 retries with backoff"
+        - "Slow TimescaleDB doesn't affect tick latency (queued)"
+        - "Event payload includes sufficient context for audit/debugging"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge]
+    model: sonnet
+    dependencies: [E4-T005]
+    complexity: M
+
+  - id: E4-T013
+    meta:
+      title: "PostgreSQL RLS enforcement: write-protection at database level, credential segregation"
+      description: |
+        Enforce write-protection at the PostgreSQL database level using role-based access
+        control (RLS). This is Layer 3 of the three-layer isolation boundary.
+
+        Deliverables:
+        - Database role creation and permission assignment:
+          * Create role sylphie_app (main NestJS process):
+            - GRANT SELECT ON drive_rules TO sylphie_app;
+            - GRANT SELECT, INSERT ON proposed_drive_rules TO sylphie_app;
+            - (NO UPDATE, DELETE on drive_rules)
+          * Create role drive_engine (Drive Engine child process):
+            - GRANT SELECT ON drive_rules TO drive_engine;
+            - GRANT SELECT ON proposed_drive_rules TO drive_engine;
+            - (NO INSERT, UPDATE, DELETE)
+          * Create role guardian_admin (administrator only):
+            - GRANT ALL ON drive_rules TO guardian_admin;
+            - (can approve rules, move from proposed to active)
+
+        - Credential management:
+          * Main process uses sylphie_app credentials (passed via environment variable)
+          * Child process uses drive_engine credentials (passed at startup)
+          * Guardian admin credentials stored separately, never in code
+          * Connection strings do NOT contain passwords (use environment variables)
+
+        - Write-protection verification: src/drive-engine/postgres-verification/verify-rls.ts
+          * On startup, verify that app role cannot UPDATE drive_rules:
+            - Attempt: UPDATE drive_rules SET enabled = false WHERE id = 'test'
+            - Expected: ERROR permission denied
+            - If permitted: FAIL STARTUP and alert guardian
+          * Log: "RLS verification passed" on success
+
+        - Migration script: src/db/migrations/rls-setup.sql
+          * Idempotent SQL to set up roles and permissions
+          * Can be run on existing database
+          * Includes role creation, grants, and verification
+
+        Documentation: docs/architecture/database-isolation.md
+          * Explain three-layer boundary
+          * Show role permission matrix (what each role can do)
+          * Show credential management strategy
+
+        Test coverage:
+        - Unit: Migration script creates roles correctly (test against test DB)
+        - Integration: Credentials passed correctly, app cannot UPDATE drive_rules
+        - Security: Verify all three roles exist with correct permissions
+
+      acceptance_criteria:
+        - "sylphie_app role: SELECT drive_rules, SELECT/INSERT proposed_drive_rules"
+        - "drive_engine role: SELECT drive_rules, SELECT proposed_drive_rules"
+        - "guardian_admin role: ALL permissions on drive_rules"
+        - "Application startup fails if RLS verification fails"
+        - "Credentials passed via environment variables (not in code)"
+        - "Migration script is idempotent"
+        - "No hardcoded passwords in codebase"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E4-T014
+    meta:
+      title: "Integration tests: end-to-end IPC, write-protection validation, attractor state tests"
+      description: |
+        Comprehensive integration test suite validating the complete Drive Engine system.
+
+        Deliverables:
+        - Test suite: src/drive-engine/__tests__/integration/
+          * Drive IPC lifecycle (spawn, message exchange, crash recovery)
+          * Write-protection enforcement (app cannot modify drive state)
+          * Attractor state prevention (system doesn't get stuck in Depressive Attractor)
+          * Behavioral contingency execution (satisfaction, guilt, curiosity work correctly)
+          * Cold-start dampening (opportunities dampened in early sessions)
+          * Self-evaluation doesn't cause rumination
+          * Theater Prohibition enforcement
+
+        - End-to-end tests: drive-ipc-e2e.test.ts
+          * Spawn child process, send ACTION_OUTCOME, receive DRIVE_SNAPSHOT
+          * Verify IPC latency < 50ms
+          * Verify DRIVE_SNAPSHOT coherence (all drives in [0,1], totalPressure consistent)
+          * Send multiple outcomes in sequence, verify drives update correctly
+          * Child crash → auto-restart → message queue drains
+          * Main process reads stale snapshot (1-2 ticks old) — acceptable
+
+        - Write-protection tests: write-protection.test.ts
+          * Attempt to import a "write method" from DriveReaderService → compile error
+          * PostgreSQL: app role attempts UPDATE drive_rules → denied
+          * Drive Engine proposes rule → inserted in proposed_drive_rules (not drive_rules)
+          * Guardian approves rule → moved to drive_rules by admin role
+          * App role cannot approve (no UPDATE permission)
+
+        - Attractor state prevention tests: attractor-states.test.ts
+          * **Depressive Attractor:** All behaviors habituated to +0.02. System gets behavioral alternatives (E5 provides actions). Verify system switches actions as returns diminish.
+          * **Type 2 Addict:** LLM always wins arbitration. Verify Type 1 candidates eventually exceed threshold (0.80 confidence + MAE < 0.10).
+          * **Prediction Pessimist:** Early prediction failures flood backlog. Verify cold-start dampening prevents backlog explosion.
+          * **Learned Helplessness:** High anxiety + repeated failures. Verify Anxiety Amplification + circuit breakers prevent stuck state.
+
+        - Behavioral contingency tests: contingencies.test.ts
+          * **Satisfaction Habituation:** Repeated action on success → diminishing relief. Counter resets on action switch. ✓
+          * **Anxiety Amplification:** High anxiety (>0.7) + failure → 1.5x reduction. ✓
+          * **Guilt Repair:** Acknowledgment -0.10, change -0.15, both -0.30. ✓
+          * **Social Comment:** 30s window, guardian response → +0.10 satisfaction + -0.15 social. ✓
+          * **Curiosity:** New nodes → relief proportional to gain. Revisit known = 0 relief. ✓
+
+        - Cold-start tests: cold-start-dampening.test.ts
+          * Session 1: opportunity.priority *= 0.1
+          * Session 5: opportunity.priority *= 0.5
+          * Session 10+: opportunity.priority *= 1.0
+          * Verify dampening ends correctly
+
+        - Self-evaluation tests: self-evaluation.test.ts
+          * Self-eval runs every 60 ticks (±10ms accuracy)
+          * Negative assessment triggers circuit breaker after 5 consecutive
+          * Pause for 5s, then resume
+          * Rumination doesn't crash system
+
+        - Mock dependencies:
+          * Mock DriveReaderService for tests that don't need IPC
+          * Mock TimescaleDB for tests that don't need persistence
+          * Mock WKG/Grafeo for self-evaluation tests
+          * Mock Communication events for social contingency tests
+
+        Test utilities: src/drive-engine/__tests__/test-utils.ts
+          * createMockAction(), createMockOutcome()
+          * waitForDriveSnapshot(), assertDriveCoherence()
+          * waitForOpportunity(), assertOpportunityPriority()
+
+      acceptance_criteria:
+        - "End-to-end tests pass: IPC lifecycle, message exchange, crash recovery"
+        - "Write-protection tests pass: app cannot modify drive_rules"
+        - "Attractor state tests pass: system doesn't get stuck in known bad states"
+        - "Behavioral contingency tests pass: all 5 contingencies work correctly"
+        - "Cold-start tests pass: dampening applied correctly"
+        - "Self-evaluation tests pass: no rumination loops"
+        - "Theater Prohibition tests pass: low-drive emotions not reinforced"
+        - "All tests complete in <10 seconds (reasonable CI time)"
+        - "Code coverage >80% for drive-process/ (core logic)"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge, drive]
+    model: sonnet
+    dependencies: [E4-T001, E4-T002, E4-T003, E4-T004, E4-T005, E4-T006, E4-T007, E4-T008, E4-T009, E4-T010, E4-T011, E4-T012, E4-T013]
+    complexity: L
+
+  - id: E4-T015
+    meta:
+      title: "Cross-module integration: Decision Making, Communication, Learning, Planning"
+      description: |
+        Integrate Drive Engine with all consuming subsystems: Decision Making (E5) receives
+        drive snapshots for arbitration; Communication (E6) injects drives into context;
+        Learning (E7) sees drive events for consolidation; Planning (E8) receives Opportunities.
+
+        Deliverables:
+        - Decision Making integration: src/decision-making/executor-engine.service.ts
+          * Inject DriveReaderService and ActionOutcomeReporterService
+          * On action selection: retrieve getCurrentState() for Type 1/Type 2 arbitration
+          * Subscribe to driveState$ for reactive updates (when drives shift significantly)
+          * After action execution: call reportOutcome(action, outcome)
+          * Use prediction MAE (from DRIVE_EVENT messages) for graduation criteria
+
+        - Communication integration: src/communication/response-generator.service.ts
+          * Inject DriveReaderService
+          * Retrieve getCurrentState() before LLM call
+          * Inject drive snapshot into LLM context: "You are feeling: Curiosity=0.5, Anxiety=0.8, ..."
+          * Theater Prohibition pre-flight check: does response express emotion matching actual drive?
+          * Report comment outcome via ActionOutcomeReporterService (social contingency tracking)
+
+        - Learning integration: src/learning/consolidation.service.ts
+          * Subscribe to DRIVE_EVENT messages (via IEventService)
+          * When Integrity drive increases (contradiction detected), trigger learning cycle
+          * When Cognitive Awareness drive increases (prediction failure), prioritize that domain
+          * Cross-validate: if Learning says "I created X edges" and Curiosity relief doesn't match, flag inconsistency
+
+        - Planning integration: src/planning/opportunity-evaluator.service.ts
+          * Listen for OPPORTUNITY_CREATED messages from Drive Engine
+          * Opportunities ordered by priority (from Drive Engine)
+          * Cold-start dampening respected: don't create procedures for low-priority opportunities
+          * Evaluate procedures: MAE < 0.10 is success (can graduate)
+
+        - Subsystem coordination tests:
+          * E5 → E4: decision-making calls reportOutcome() and reads drive state
+          * E6 → E4: communication reads drive state, performs theater check
+          * E7 → E4: learning reads drive events, correlates with knowledge mutations
+          * E8 → E4: planning reads opportunities, respects priority and dampening
+
+        - Integration checklist: docs/architecture/drive-engine-integration.md
+          * Verify all subsystems use correct interfaces (read-only)
+          * Verify outcome reporting is async (non-blocking)
+          * Verify no subsystem attempts to modify drive rules
+          * Verify Immutable Standard 6 is maintained across all integrations
+
+      acceptance_criteria:
+        - "Decision Making retrieves drive state and reports outcomes"
+        - "Decision Making uses MAE for Type 1/Type 2 arbitration"
+        - "Communication injects drive state into LLM context"
+        - "Communication performs Theater Prohibition pre-flight check"
+        - "Learning correlates contradiction detection with drive events"
+        - "Planning respects Opportunity priority and cold-start dampening"
+        - "All subsystems use DriveReaderService (read-only interface)"
+        - "No subsystem has write access to drive state"
+        - "Integration tests pass: end-to-end from input to learning"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge, drive]
+    model: sonnet
+    dependencies: [E4-T001, E4-T002, E4-T003, E4-T005, E4-T010, E4-T014]
+    complexity: L

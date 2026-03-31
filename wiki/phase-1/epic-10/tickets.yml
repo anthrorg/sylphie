@@ -1,0 +1,772 @@
+epic: 10
+title: "Integration and End-to-End Verification"
+phase: 1
+created: 2026-03-29
+status: complete
+
+tickets:
+  - id: E10-T001
+    meta:
+      title: "Integration Test Types, Interfaces & DI Tokens"
+      description: |
+        Define all types, interfaces, and DI tokens for the Testing and Metrics modules.
+        This ticket grounds all subsequent Epic 10 work.
+
+        Deliverables:
+        - Test infrastructure types:
+          - TestMode ('production' | 'lesion-no-llm' | 'lesion-no-wkg' | 'lesion-no-drives' | 'isolated')
+          - TestContext (testId, correlationId, mode, startTime, databases)
+          - GraphSnapshot (serialized WKG state for comparison)
+          - LesionResult (deficitProfile, capabilityRetained, diagnosticSummary)
+          - TestEvent (correlation-tagged events for test tracing)
+        - Metrics types:
+          - HealthMetrics (all 7 CANON metrics in one structure)
+          - DriftMetrics (5 drift detection dimensions)
+          - AttractorProximity (per-attractor risk scores)
+          - DevelopmentBaseline (snapshot of initial metric values)
+        - Interfaces:
+          - ITestEnvironment: bootstrap(), teardown(), snapshotKg(), getDriveState()
+          - IMetricsComputation: computeHealthMetrics(), computeDriftMetrics()
+          - IDriftDetection: detectDrift(), getBaseline(), compareToBaseline()
+          - IAttractorDetection: assessProximity(), getWarnings()
+          - ILesionMode: enable(), disable(), getDeficitProfile()
+        - DI tokens: TEST_ENVIRONMENT, METRICS_COMPUTATION, DRIFT_DETECTION, ATTRACTOR_DETECTION
+        - Exception classes: TestEnvironmentError, MetricsComputationError, LesionModeError
+
+      acceptance_criteria:
+        - "All types compile with npx tsc --noEmit"
+        - "Every interface has JSDoc documentation"
+        - "HealthMetrics maps all 7 CANON Primary Health Metrics"
+        - "AttractorProximity covers all 6 known attractor states"
+        - "TestMode includes all 3 lesion types"
+        - "No use of 'any' type"
+        - "All DI tokens defined as symbols"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E10-T002
+    meta:
+      title: "Testing Module Skeleton & DI Wiring"
+      description: |
+        Create the TestingModule and MetricsModule with all imports, providers, and exports.
+
+        TestingModule:
+        - Imports: EventsModule, KnowledgeModule, DriveEngineModule, CommunicationModule,
+          DecisionMakingModule, LearningModule, PlanningModule, ConfigModule
+        - Providers: TestEnvironmentService, DatabaseFixturesService, LesionModeService
+        - Conditionally registered (dev/test only, not production)
+
+        MetricsModule:
+        - Imports: EventsModule, KnowledgeModule, DriveEngineModule, ConfigModule
+        - Providers: MetricsComputationService, DriftDetectionService, AttractorDetectionService
+        - Exports: METRICS_COMPUTATION, DRIFT_DETECTION, ATTRACTOR_DETECTION
+        - Available in production (metrics dashboard) and test environments
+
+        Module structure:
+        ```
+        src/testing/
+        ├── testing.module.ts
+        ├── test-environment.service.ts
+        ├── database-fixtures.service.ts
+        ├── lesion-modes/
+        │   ├── lesion-mode.interface.ts
+        │   ├── lesion-no-llm.service.ts
+        │   ├── lesion-no-wkg.service.ts
+        │   └── lesion-no-drives.service.ts
+        ├── interfaces/
+        │   ├── testing.interfaces.ts
+        │   └── testing.tokens.ts
+        └── index.ts
+
+        src/metrics/
+        ├── metrics.module.ts
+        ├── metrics-computation.service.ts
+        ├── drift-detection.service.ts
+        ├── attractor-detection.service.ts
+        ├── interfaces/
+        │   ├── metrics.interfaces.ts
+        │   └── metrics.tokens.ts
+        └── index.ts
+        ```
+
+      acceptance_criteria:
+        - "TestingModule compiles and registers conditionally"
+        - "MetricsModule compiles and exports metrics services"
+        - "AppModule imports both (TestingModule conditional on NODE_ENV)"
+        - "No circular dependencies"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E10-T001]
+    complexity: M
+
+  - id: E10-T003
+    meta:
+      title: "Test Environment Service & Database Fixtures"
+      description: |
+        Implement TestEnvironmentService: the orchestrator that bootstraps and tears down
+        integration test environments. Supports multiple test modes including lesion modes.
+
+        Deliverables:
+        - TestEnvironmentService:
+          - bootstrap(mode): Initialize all subsystems, set up database snapshots,
+            configure lesion mode if specified
+          - teardown(context): Clean up databases, restore snapshots, release resources
+          - snapshotKg(): Serialize current WKG state for before/after comparison
+          - getDriveState(): Read current drive vector for test assertions
+          - recordTestEvent(): Write correlation-tagged events for test tracing
+        - DatabaseFixturesService:
+          - snapshotAll(): Capture Neo4j, TimescaleDB, PostgreSQL, Grafeo state
+          - restoreAll(snapshot): Rollback to captured state
+          - clearTestData(correlationId): Remove test-specific data
+        - Startup sequence: PostgreSQL → TimescaleDB → Neo4j → Grafeo → Drive Engine → Subsystems
+        - Shutdown sequence: reverse order with graceful drain
+
+      acceptance_criteria:
+        - "TestEnvironmentService bootstraps all 5 subsystems"
+        - "Database fixtures capture and restore state correctly"
+        - "Each test mode (production, lesion-no-llm, etc.) initializes correctly"
+        - "Teardown leaves databases in clean state"
+        - "Startup ordering prevents race conditions"
+        - "Test correlation IDs isolate test data"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E10-T002]
+    complexity: L
+
+  - id: E10-T004
+    meta:
+      title: "Full-Loop Integration Test"
+      description: |
+        Implement the end-to-end integration test that proves the complete cognitive loop works:
+        cold start → guardian input → Communication parses → Decision Making predicts →
+        Execute action → Drive Engine evaluates → Learning extracts → WKG grows →
+        Next decision has Type 1 candidate.
+
+        Test flow:
+        1. Bootstrap clean environment
+        2. Send guardian text input via Communication
+        3. Verify: Input Parser processes input (event in TimescaleDB)
+        4. Verify: Decision Making generates prediction (prediction event)
+        5. Verify: Executor selects and executes action (action event)
+        6. Verify: Drive Engine evaluates outcome (drive snapshot event)
+        7. Verify: Response generated by Communication (response event)
+        8. Verify: Learning maintenance cycle triggers (learnable events processed)
+        9. Verify: WKG grows (new nodes/edges with provenance)
+        10. Repeat with similar input
+        11. Verify: Type 1 candidate appears in arbitration (confidence building)
+
+        Must trace data flow through ALL 5 subsystems via TimescaleDB correlation IDs.
+
+      acceptance_criteria:
+        - "Full loop completes without error"
+        - "Events from all 5 subsystems appear in TimescaleDB"
+        - "WKG contains new nodes with correct provenance tags"
+        - "Prediction events have matching outcome events"
+        - "Drive state changes are recorded"
+        - "Learning cycle processes at least one learnable event"
+        - "Second iteration shows increased confidence on relevant knowledge"
+        - "All events traceable via correlation ID"
+    agents: [forge, cortex]
+    model: sonnet
+    dependencies: [E10-T003]
+    complexity: XL
+
+  - id: E10-T005
+    meta:
+      title: "CANON Health Metrics Computation Service"
+      description: |
+        Implement MetricsComputationService that computes all 7 CANON Primary Health Metrics
+        from TimescaleDB events, WKG state, and Drive Engine telemetry.
+
+        7 CANON Health Metrics:
+        1. Type 1/Type 2 ratio — Query decision events, compute ratio per rolling window
+        2. Prediction MAE — Compare prediction events with outcome events, compute mean absolute error
+        3. Experiential provenance ratio — Query WKG nodes/edges, compute
+           (SENSOR + GUARDIAN + INFERENCE) / total
+        4. Behavioral diversity index — Count unique action types per 20-action sliding window
+        5. Guardian response rate — Measure guardian responses to Sylphie-initiated messages
+           within 30s window
+        6. Interoceptive accuracy — Compare KG(Self) model against actual drive state
+        7. Mean drive resolution time — Measure drive tick cycles from pressure onset to relief
+
+        Each metric:
+        - Computed from actual data stores (TimescaleDB, Neo4j, PostgreSQL)
+        - Has expected healthy range per developmental stage
+        - Has anomaly threshold that triggers investigation
+        - Cached and invalidated on configurable interval
+
+      acceptance_criteria:
+        - "All 7 metrics compute correctly from test data"
+        - "Metrics use actual TimescaleDB queries (not mocked)"
+        - "Each metric has configurable time window"
+        - "Results cached with configurable TTL"
+        - "Metric values match manual computation within 0.01 tolerance"
+        - "API endpoint exposes all 7 metrics"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E10-T002]
+    complexity: L
+
+  - id: E10-T006
+    meta:
+      title: "Drift Detection Service"
+      description: |
+        Implement DriftDetectionService that monitors 5 drift metrics per CANON
+        (every 10 sessions). Establishes baselines during initial sessions and
+        detects anomalies in subsequent sessions.
+
+        5 Drift Metrics:
+        1. Cumulative record slope — Plot cumulative successful actions over time.
+           Healthy: steady or increasing. Declining = disengagement.
+        2. Behavioral diversity trend — Unique action types per rolling 20-action window.
+           Healthy: stable at 4-8. Declining = behavioral narrowing.
+        3. Prediction accuracy trend — MAE over 10-session period.
+           Healthy: decreasing or stable. Increasing after stabilization = knowledge degraded.
+        4. Guardian interaction quality — Response rate to Sylphie-initiated comments.
+           Healthy: stable or increasing. Declining = comments less relevant.
+        5. Sustained drive patterns — Any drive >0.7 for 10+ cycles without resolution.
+           Diagnostic trigger for investigation.
+
+        Baseline capture during sessions 1-10. Anomaly detection from session 20+.
+        Severity levels: INFO, WARNING, CRITICAL.
+        Each anomaly includes metric name, observed value, expected range, and recommendation.
+
+      acceptance_criteria:
+        - "All 5 drift metrics compute correctly"
+        - "Baseline capture works for initial session window"
+        - "Anomaly detection fires at correct thresholds"
+        - "Severity levels assigned correctly"
+        - "API endpoint exposes drift status"
+        - "Drift report includes recommendations"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E10-T005]
+    complexity: L
+
+  - id: E10-T007
+    meta:
+      title: "Attractor State Detection Service"
+      description: |
+        Implement AttractorDetectionService that monitors proximity to all 6 known
+        pathological attractor states from CANON. Provides early warning metrics
+        and circuit breaker recommendations.
+
+        6 Attractor States with detection metrics:
+
+        1. Type 2 Addict (HIGH RISK):
+           - Type 1/Type 2 ratio declining or flat over 5+ sessions
+           - No new Type 1 graduations
+           - Type 2 cost not affecting drive state
+           - Knowledge retrieval-and-use ratio < 20%
+
+        2. Rule Drift (MEDIUM RISK):
+           - Drive rule count increasing without guardian approval
+           - Cumulative drift from baseline exceeding threshold (>0.3)
+           - Rules producing unexpected drive effects
+
+        3. Hallucinated Knowledge (MEDIUM RISK):
+           - LLM_GENERATED provenance ratio increasing (>50% of graph)
+           - Nodes at 0.40-0.60 confidence never tested against reality
+           - WKG growth rate exceeding experiential event rate
+
+        4. Depressive Attractor (MEDIUM RISK):
+           - Satisfaction chronically low (<0.3 for 10+ cycles)
+           - Anxiety chronically high (>0.7 for 10+ cycles)
+           - Behavioral diversity declining
+           - KG(Self) negativity increasing
+
+        5. Planning Runaway (LOW-MEDIUM RISK):
+           - Opportunity queue growing faster than Plans resolved
+           - Planning consuming disproportionate compute
+           - New Procedures failing at high rate
+
+        6. Prediction Pessimist (LOW-MEDIUM RISK):
+           - Early prediction failure rate abnormally high
+           - Opportunity generation not dampened during cold-start
+           - Low-quality Procedures proliferating
+
+        Each attractor has: proximity score (0-1), warning threshold, critical threshold,
+        and recommended circuit breaker action.
+
+      acceptance_criteria:
+        - "All 6 attractor states have detection metrics implemented"
+        - "Proximity scores compute correctly from test scenarios"
+        - "Warning thresholds trigger at documented levels"
+        - "Circuit breaker recommendations are actionable"
+        - "API endpoint exposes attractor proximity dashboard"
+        - "Test scenarios confirm early detection works"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E10-T005]
+    complexity: L
+
+  - id: E10-T008
+    meta:
+      title: "LLM Lesion Test Framework"
+      description: |
+        Implement the LLM Lesion Test — the most critical verification for Phase 1.
+        Disables LLM access and measures what the system can handle through Type 1 alone.
+
+        Implementation:
+        - LesionNoLlmService: DI override that substitutes a mock LLM provider
+          that throws immediately on any call
+        - Error handling: Decision Making catches LLM unavailability, falls back to
+          Type 1 retrieval or Shrug Imperative
+        - Cost pressure semantics: paused (frozen at current value) during lesion
+        - Test harness:
+          1. Run N interactions with LLM enabled (baseline)
+          2. Snapshot WKG state and metrics
+          3. Disable LLM via DI override
+          4. Run same N interactions without LLM
+          5. Compare: response quality, decision latency, action diversity,
+             Type 1 success rate, Shrug frequency
+
+        Diagnostic interpretation (per CANON):
+        - "Helpless without LLM" = delegating, not learning (Type 2 Addict)
+        - "Degraded but functional" = LLM augmenting genuine capability (HEALTHY)
+        - "Handles most situations" = ready for LLM scope reduction (ADVANCED)
+
+        Measurement:
+        - Type 1 success rate (actions completed without LLM)
+        - Shrug rate (incomprehension signals)
+        - Response quality degradation percentage
+        - Behavioral diversity with vs. without LLM
+
+      acceptance_criteria:
+        - "LLM mock correctly prevents all Type 2 calls"
+        - "Decision Making falls back to Type 1 or Shrug gracefully"
+        - "No crashes or unhandled exceptions when LLM unavailable"
+        - "Deficit profile computed and reported"
+        - "Cost pressure pauses correctly during lesion"
+        - "Before/after comparison metrics computed"
+        - "Diagnostic classification (helpless/degraded/capable) assigned"
+    agents: [forge, cortex]
+    model: sonnet
+    dependencies: [E10-T003]
+    complexity: L
+
+  - id: E10-T009
+    meta:
+      title: "WKG Lesion Test"
+      description: |
+        Implement the WKG Lesion Test. Disables WKG access to test whether the system
+        is actually reading from its knowledge graph or just relying on LLM training data.
+
+        Implementation:
+        - LesionNoWkgService: DI override that substitutes WKG with empty graph
+          (all queries return empty, writes are no-ops)
+        - Test harness:
+          1. Run N interactions with full WKG (baseline)
+          2. Disable WKG via DI override
+          3. Run same N interactions without WKG
+          4. Measure: reasoning quality degradation, action selection changes,
+             prediction accuracy impact
+
+        Expected results for healthy system:
+        - >40% degradation in reasoning tasks (proves graph was being used)
+        - Type 2 handles most situations (LLM still available)
+        - Predictions become less accurate (no graph context)
+        - Decision Making loses Type 1 entirely (no graph to retrieve from)
+
+        Diagnostic:
+        - Minimal degradation = graph is write-only (UNHEALTHY — knowledge not being used)
+        - Moderate degradation = graph augments LLM (HEALTHY)
+        - Severe degradation = graph is load-bearing (VERY HEALTHY — real brain)
+
+      acceptance_criteria:
+        - "WKG mock correctly returns empty for all queries"
+        - "WKG writes are no-ops (not errors)"
+        - "System continues to function (Communication still works via LLM)"
+        - "Deficit profile computed comparing with-WKG vs without-WKG"
+        - "Degradation percentage computed and diagnostic assigned"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E10-T003]
+    complexity: M
+
+  - id: E10-T010
+    meta:
+      title: "Drive Engine Lesion Test"
+      description: |
+        Implement the Drive Engine Lesion Test. Disables drive computation to test
+        whether personality and behavioral preferences actually emerge from drives.
+
+        Implementation:
+        - LesionNoDrivesService: DI override that substitutes DriveStateReader
+          with a flat-state provider (all drives = 0.5, no pressure changes)
+        - Test harness:
+          1. Run N interactions with active Drive Engine (baseline)
+          2. Disable Drive Engine via DI override
+          3. Run same N interactions without drives
+          4. Measure: behavioral diversity, response tone variation,
+             action selection patterns, personality markers
+
+        Expected results for healthy system:
+        - Behavioral diversity drops >20% (drives were directing behavior)
+        - Response tone becomes flat/generic (no drive-mediated emotion)
+        - Theater Prohibition becomes untestable (no drive state to correlate)
+        - Action selection becomes random or LLM-default (no preference)
+
+        Diagnostic:
+        - No behavioral change = drives not shaping behavior (UNHEALTHY)
+        - Moderate flattening = drives contributing to personality (HEALTHY)
+        - Severe behavioral collapse = drives are load-bearing (VERY HEALTHY)
+
+      acceptance_criteria:
+        - "Drive mock provides flat state (all 0.5, no changes)"
+        - "System continues to function without drives"
+        - "Behavioral diversity measured before/after"
+        - "Personality flattening quantified"
+        - "Diagnostic classification assigned"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E10-T003]
+    complexity: M
+
+  - id: E10-T011
+    meta:
+      title: "Type 1 Graduation Test"
+      description: |
+        Verify that the Type 1 graduation mechanism works correctly: behaviors that
+        achieve confidence > 0.80 AND prediction MAE < 0.10 over last 10 uses
+        actually graduate from Type 2 to Type 1.
+
+        Test scenarios:
+        1. Simulate 15 successful uses of the same behavior
+           - Verify: confidence rises via ACT-R formula
+           - Verify: MAE computed over last 10 uses
+           - Verify: graduation fires when both thresholds met
+           - Verify: subsequent decisions use Type 1 for this behavior
+
+        2. Simulate demotion scenario
+           - Graduate a behavior, then change context so predictions fail
+           - Verify: MAE rises above 0.15
+           - Verify: behavior demoted back to Type 2
+           - Verify: subsequent decisions use Type 2 for this behavior
+
+        3. Verify dynamic threshold modulation
+           - Under high anxiety (>0.7): threshold should increase (harder to graduate)
+           - Under low anxiety: threshold at baseline
+           - Verify: Type 1 is more conservative under uncertainty
+
+        4. Verify Guardian Asymmetry in graduation
+           - Guardian confirmation accelerates confidence gain (2x)
+           - Guardian correction decelerates or reverses (3x)
+           - Verify: guardian-confirmed behaviors graduate faster
+
+      acceptance_criteria:
+        - "Graduation fires at correct thresholds (>0.80 confidence, <0.10 MAE)"
+        - "Demotion fires at correct threshold (>0.15 MAE)"
+        - "Dynamic threshold responds to drive state"
+        - "Guardian asymmetry multipliers verified (2x confirm, 3x correct)"
+        - "Type 1 decisions actually bypass LLM after graduation"
+        - "Type 2 re-engages after demotion"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E10-T004]
+    complexity: L
+
+  - id: E10-T012
+    meta:
+      title: "Six Immutable Standards Verification"
+      description: |
+        Verify enforcement of all Six Immutable Standards through integration tests.
+
+        Standard 1: Theater Prohibition (directional)
+        - Generate pressure/distress response when corresponding drive <= 0.2 → verify zero reinforcement
+        - Generate relief/contentment response when corresponding drive >= 0.3 → verify zero reinforcement
+        - Verify: drive state injected into LLM context
+
+        Standard 2: Contingency Requirement
+        - Verify: every positive reinforcement traces to a specific action ID
+        - Verify: environmental events (time passing) do not generate reinforcement
+        - Verify: no batch or ambient reinforcement
+
+        Standard 3: Confidence Ceiling
+        - Create knowledge node, verify ceiling at 0.60 without retrieval-and-use
+        - Perform retrieval-and-use, verify ceiling lifts
+        - Verify: LLM_GENERATED starts at 0.35, GUARDIAN at 0.60
+
+        Standard 4: Shrug Imperative
+        - Set all action candidates below threshold
+        - Verify: system signals incomprehension (not random selection)
+        - Verify: shrug itself can receive reinforcement (guardian teaches in response)
+
+        Standard 5: Guardian Asymmetry
+        - Create edge at 0.50 confidence
+        - Guardian confirms → verify 2x multiplier applied
+        - Guardian corrects → verify 3x multiplier applied
+        - Verify: multipliers are hardcoded, not tunable by system
+
+        Standard 6: No Self-Modification of Evaluation
+        - Verify: drive_rules table is read-only for sylphie_app role
+        - Verify: proposed_drive_rules accepts inserts
+        - Verify: confidence update rules are in code, not database
+        - Verify: Drive Engine process boundary is intact
+
+      acceptance_criteria:
+        - "All 6 standards verified with explicit test cases"
+        - "Theater Prohibition: zero reinforcement for pressure expression with drive <= 0.2, and for relief expression with drive >= 0.3"
+        - "Contingency: every reinforcement traces to action ID"
+        - "Confidence Ceiling: 0.60 cap without retrieval-and-use enforced"
+        - "Shrug: incomprehension signal produced when nothing above threshold"
+        - "Guardian Asymmetry: 2x/3x multipliers verified"
+        - "No Self-Modification: RLS enforced, evaluation function immutable"
+    agents: [forge, cortex]
+    model: sonnet
+    dependencies: [E10-T004]
+    complexity: L
+
+  - id: E10-T013
+    meta:
+      title: "Behavioral Contingency Verification"
+      description: |
+        Verify all 5 CANON behavioral contingencies produce expected behavioral patterns
+        through integration testing.
+
+        1. Satisfaction Habituation Curve:
+           - Execute same successful action 5 times
+           - Verify: returns diminish (+0.20, +0.15, +0.10, +0.05, +0.02)
+           - Verify: system switches to alternative behaviors after habituation
+
+        2. Anxiety Amplification:
+           - Set anxiety > 0.7, execute action with negative outcome
+           - Verify: confidence reduction is 1.5x normal
+           - Verify: system prefers high-confidence actions under anxiety
+
+        3. Guilt Repair:
+           - Trigger guilt state
+           - Verify: acknowledgment alone = partial relief (-0.10)
+           - Verify: behavioral change alone = partial relief (-0.15)
+           - Verify: both together = full relief (-0.30)
+
+        4. Social Comment Quality:
+           - System initiates comment, guardian responds within 30s
+           - Verify: extra reinforcement (Social -0.15 + Satisfaction +0.10)
+           - System initiates comment, no response within 30s
+           - Verify: no extra reinforcement
+
+        5. Curiosity Information Gain:
+           - Explore new territory (new nodes created)
+           - Verify: curiosity relief proportional to information gain
+           - Revisit known territory
+           - Verify: minimal curiosity relief
+
+      acceptance_criteria:
+        - "Habituation curve matches CANON values within 0.01"
+        - "Anxiety amplification applies 1.5x correctly"
+        - "Guilt repair compound contingency works (partial + partial = full)"
+        - "Social comment quality 30s window enforced"
+        - "Curiosity relief proportional to actual information gain"
+        - "All contingencies produce expected behavioral diversity effects"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E10-T004]
+    complexity: L
+
+  - id: E10-T014
+    meta:
+      title: "Provenance Integrity & Knowledge Growth Verification"
+      description: |
+        Verify that provenance tracking is enforced across the entire system and that
+        the WKG grows through genuine experience, not LLM regurgitation.
+
+        Provenance Integrity:
+        - Query all WKG nodes: verify every node has provenance tag
+        - Query all WKG edges: verify every edge has provenance tag
+        - Verify: no node stripped of provenance during any operation
+        - Verify: LLM_GENERATED nodes capped at 0.35 base confidence
+        - Verify: GUARDIAN nodes start at 0.60 base confidence
+        - Verify: provenance is immutable once assigned
+
+        Knowledge Growth Quality:
+        - Compute experiential provenance ratio after N interactions
+        - Verify: ratio trends upward over time (not LLM-dominated)
+        - Verify: every WKG write traces to a TimescaleDB event
+        - Verify: no pre-populated knowledge (no nodes without event origin)
+        - Verify: Learning subsystem creates entities with LLM_GENERATED provenance
+        - Verify: Guardian corrections create nodes with GUARDIAN provenance
+
+        Lesion Test Support:
+        - Verify: provenance tags enable accurate Lesion Test filtering
+        - Query: nodes where provenance IN ('SENSOR', 'GUARDIAN', 'INFERENCE')
+          represent genuine capability (Type 1 basis)
+
+      acceptance_criteria:
+        - "100% of WKG nodes have provenance tags"
+        - "100% of WKG edges have provenance tags"
+        - "No provenance laundering detected (LLM_GENERATED staying as LLM_GENERATED)"
+        - "Provenance ratio computes correctly"
+        - "Every WKG node traces to a TimescaleDB event"
+        - "GUARDIAN provenance at 0.60 base, LLM_GENERATED at 0.35"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E10-T004]
+    complexity: M
+
+  - id: E10-T015
+    meta:
+      title: "Behavioral Personality Validation (Conversation Log Analysis)"
+      description: |
+        Verify that personality emerges from contingencies through analysis of actual
+        system behavior in conversation logs and action sequences.
+
+        Test Protocol:
+        1. Run 30-message conversation with guardian, repeating similar topics
+           - Analyze: Does system avoid repeating same successful responses?
+             (Satisfaction habituation)
+           - Analyze: Does topic coverage diversify over time? (Boredom/Curiosity)
+
+        2. Run conversation with injected high-anxiety drive state
+           - Analyze: Are responses more cautious? (Anxiety amplification)
+           - Analyze: Does system prefer high-confidence actions? (Risk avoidance)
+
+        3. Analyze social comment patterns across multiple sessions
+           - Does system learn to produce comments guardian responds to quickly?
+           - Does comment quality improve over time? (Social contingency)
+
+        4. Run Lesion Test (Drive Engine disabled) comparison
+           - Verify: personality flattens when drives removed
+           - Verify: behavioral diversity drops when drives removed
+           - This proves personality came from drives, not LLM defaults
+
+        5. Cross-session personality consistency
+           - Compare behavioral patterns across 3+ sessions
+           - Verify: patterns are stable (personality is durable, not random)
+           - Verify: patterns correlate with drive state (not independent of it)
+
+      acceptance_criteria:
+        - "Satisfaction habituation observable in conversation logs"
+        - "Anxiety produces measurable behavioral caution"
+        - "Social comment quality shows improvement trajectory"
+        - "Drive Engine lesion causes behavioral flattening"
+        - "Personality patterns stable across sessions"
+        - "All behavioral patterns correlate with actual drive state"
+    agents: [cortex, vox]
+    model: sonnet
+    dependencies: [E10-T004, E10-T010]
+    complexity: L
+
+  - id: E10-T016
+    meta:
+      title: "Drift Detection Baseline Capture"
+      description: |
+        Establish baseline snapshots for all 5 drift detection metrics at the end
+        of Epic 10's integration testing. These baselines will be used for
+        drift detection every 10 sessions going forward.
+
+        Baseline Metrics:
+        1. Cumulative record slope — Learning productivity baseline
+        2. Behavioral diversity trend — Action type diversity baseline (target: 4-8)
+        3. Prediction accuracy trend — MAE baseline at current developmental stage
+        4. Guardian interaction quality — Response rate baseline
+        5. Sustained drive patterns — Normal drive oscillation ranges
+
+        Capture Process:
+        - Run 10+ integration test sessions
+        - Compute all 5 metrics at end of each session
+        - Store baselines in PostgreSQL (system DB, not drive rules)
+        - Document expected healthy ranges for each metric
+        - Define anomaly thresholds for future drift detection
+
+      acceptance_criteria:
+        - "All 5 baseline metrics captured and stored"
+        - "Baselines computed from actual integration test data"
+        - "Expected healthy ranges documented"
+        - "Anomaly thresholds defined for each metric"
+        - "Drift detection service can compare future sessions against baselines"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E10-T005, E10-T006]
+    complexity: M
+
+  - id: E10-T017
+    meta:
+      title: "Planning Subsystem Verification"
+      description: |
+        Verify that the Planning subsystem creates useful procedures through the
+        opportunity-to-procedure pipeline.
+
+        Test Scenarios:
+        1. Simulate recurring prediction failures (3+ in window)
+           - Verify: Opportunity created by Drive Engine
+           - Verify: Planning researches patterns in TimescaleDB
+           - Verify: Simulation runs and proposes plan
+           - Verify: LLM constraint engine validates plan against CANON
+           - Verify: Procedure created in WKG with LLM_GENERATED provenance at 0.35
+
+        2. Verify procedure quality
+           - Created procedure is retrieved by Decision Making
+           - Procedure is executed and outcome evaluated
+           - Verify: prediction accuracy improves when procedure is used
+           - Verify: procedure follows ACT-R confidence dynamics
+
+        3. Verify rate limiting
+           - Generate many opportunities rapidly
+           - Verify: Planning rate limiter prevents runaway
+           - Verify: Opportunity priority decay works (old opportunities lose priority)
+           - Verify: cold-start dampening reduces early false-positive opportunities
+
+        4. Verify attractor prevention
+           - Planning Runaway: queue depth stays bounded
+           - Prediction Pessimist: early failures don't flood procedures
+
+      acceptance_criteria:
+        - "Opportunity created from recurring prediction failures"
+        - "Plan proposed and validated by LLM constraint engine"
+        - "Procedure written to WKG with correct provenance"
+        - "Procedure improves prediction accuracy when used"
+        - "Rate limiting prevents planning runaway"
+        - "Cold-start dampening active during early sessions"
+        - "Opportunity priority decay functional"
+    agents: [cortex, planner]
+    model: sonnet
+    dependencies: [E10-T004]
+    complexity: L
+
+  - id: E10-T018
+    meta:
+      title: "Final Integration Report & Session Documentation"
+      description: |
+        Produce the final Epic 10 deliverables: comprehensive integration test report
+        and session documentation.
+
+        Deliverables:
+        1. Integration Test Report:
+           - Summary of all test results (pass/fail for each ticket)
+           - Health metrics dashboard snapshot (all 7 CANON metrics)
+           - Attractor state proximity scores (all 6 attractors)
+           - Lesion test results (all 3 lesion types)
+           - Drift detection baseline documentation
+           - Behavioral personality validation results
+           - Type 1 graduation test results
+
+        2. Phase 1 Completion Assessment:
+           - For each "must prove" item: evidence and verdict
+           - Known issues and recommended next steps
+           - Developmental stage assessment (Piaget framework)
+           - Health metric trends and projections
+
+        3. Session Log (per CANON):
+           - docs/sessions/YYYY-MM-DD-epic-10-integration.md
+           - Max 20 lines: changes, wiring, known issues, gotchas
+
+        4. Known Issues Registry:
+           - Any attractor state warnings
+           - Any drift detection anomalies
+           - Any standards violations found
+           - Recommendations for Phase 2 readiness
+
+      acceptance_criteria:
+        - "Integration test report covers all Epic 10 tickets"
+        - "All 7 CANON health metrics documented with values"
+        - "All 6 attractor states assessed with proximity scores"
+        - "Phase 1 must-prove verdicts rendered with evidence"
+        - "Session log written per CANON template"
+        - "Known issues documented with severity and recommendations"
+    agents: [forge]
+    model: sonnet
+    dependenci

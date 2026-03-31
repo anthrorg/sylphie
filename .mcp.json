@@ -4,13 +4,13 @@
       "command": "npx",
       "args": ["@playwright/mcp"]
     },
-    "codebase-pkg": {
+    "sylphie-pkg": {
       "command": "node",
-      "args": ["../co-being/codebase-pkg/dist/mcp-server/index.js"],
+      "args": ["./packages/sylphie-pkg/dist/mcp-server/index.js"],
       "env": {
-        "CODEBASE_PKG_NEO4J_URI": "bolt://localhost:7689",
-        "CODEBASE_PKG_NEO4J_USER": "neo4j",
-        "CODEBASE_PKG_NEO4J_PASSWORD": "codebase-pkg-local"
+        "SYLPHIE_PKG_NEO4J_URI": "bolt://localhost:7691",
+        "SYLPHIE_PKG_NEO4J_USER": "neo4j",
+        "SYLPHIE_PKG_NEO4J_PASSWORD": "sylphie-pkg-local"
       }
     }
   }

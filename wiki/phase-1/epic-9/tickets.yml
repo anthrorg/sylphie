@@ -1,0 +1,755 @@
+epic: 9
+title: "Dashboard API and WebSocket Gateways"
+phase: 1
+created: 2026-03-29
+status: complete
+
+tickets:
+  - id: E9-T001
+    meta:
+      title: "Web Module Types, Interfaces & DI Tokens"
+      description: |
+        Define all types, interfaces, and DI tokens for the Web module. This ticket grounds
+        all subsequent work — every controller, gateway, and service imports from these types.
+
+        Deliverables:
+        - DTO types for all endpoints:
+          - HealthCheckResponse, HealthCheckResult (per-database health)
+          - DriveStateResponse, DriveHistoryResponse
+          - GraphSnapshotResponse, GraphStatsResponse, GraphQueryParams
+          - ConversationHistoryResponse, ConversationMessage
+          - MetricsResponse (all 7 CANON health metrics)
+          - VoiceTranscriptionResponse, VoiceSynthesisResponse
+          - PersonModelSummaryResponse
+        - WebSocket message types:
+          - TelemetryFrame (drive ticks, predictions, action selections)
+          - GraphUpdateFrame (node/edge changes)
+          - ConversationIncomingMessage (text, feedback, voice-chunk)
+          - ConversationOutgoingMessage (response + theaterCheck + metadata)
+          - DriveUpdateFrame
+        - WebConfig interface (HTTP, CORS, WebSocket, security settings)
+        - IConnectionManagerService interface (connect, disconnect, broadcast, getConnectionCount)
+        - Web module exception classes: WebException, GraphQueryTimeoutError,
+          InvalidSessionError, WebSocketConnectionError
+        - DI tokens: CONNECTION_MANAGER, WEB_CONFIG
+
+      acceptance_criteria:
+        - "All DTOs compile with npx tsc --noEmit"
+        - "Every response type has JSDoc documentation"
+        - "ConversationOutgoingMessage includes theaterCheck field (Theater Prohibition)"
+        - "DriveStateResponse maps all 12 drives"
+        - "MetricsResponse includes all 7 CANON Primary Health Metrics"
+        - "GraphQueryParams enforces maxDepth and maxNodes limits"
+        - "No use of 'any' type"
+        - "All DI tokens defined as symbols"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E9-T002
+    meta:
+      title: "WebModule Skeleton & DI Wiring"
+      description: |
+        Create the WebModule with all imports, providers, and exports. Wire controllers,
+        gateways, and infrastructure services.
+
+        Module imports: EventsModule, KnowledgeModule, DriveEngineModule, CommunicationModule, ConfigModule
+        Module injects (read-only):
+        - EVENTS_SERVICE from EventsModule (query events, metrics)
+        - WKG_SERVICE from KnowledgeModule (graph visualization)
+        - SELF_KG_SERVICE from KnowledgeModule (self-model for metrics)
+        - DRIVE_STATE_READER from DriveEngineModule (real-time drive state)
+        - COMMUNICATION_SERVICE from CommunicationModule (chat routing)
+        - LLM_SERVICE from CommunicationModule (voice endpoints delegate here)
+
+        Directory structure per Forge analysis:
+        src/web/
+        ├── web.module.ts
+        ├── controllers/           (5 controllers)
+        ├── gateways/              (3 gateways + connection manager)
+        ├── guards/                (development guard)
+        ├── filters/               (exception filters for HTTP + WS)
+        ├── dtos/                  (all DTOs from T001)
+        ├── interfaces/            (interfaces + tokens)
+        ├── utils/                 (pagination, serialization helpers)
+        └── index.ts
+
+        Deliverables:
+        - Full web.module.ts with all imports, providers, exports
+        - Empty controller/gateway stubs implementing methods that throw 'Not implemented'
+        - ConnectionManagerService stub
+        - WebConfig validation with class-validator
+        - Exception filter stubs (HTTP and WebSocket)
+        - All barrel exports
+
+      acceptance_criteria:
+        - "WebModule imports EventsModule, KnowledgeModule, DriveEngineModule, CommunicationModule"
+        - "All 5 controllers registered as providers"
+        - "All 3 gateways registered as providers"
+        - "ConnectionManagerService registered and exported"
+        - "No circular module dependencies"
+        - "npx tsc --noEmit passes"
+        - "WebModule does NOT export any subsystem services (read-only consumer)"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T001]
+    complexity: M
+
+  - id: E9-T003
+    meta:
+      title: "ConnectionManagerService"
+      description: |
+        Implement the shared WebSocket connection lifecycle manager. Adapted from v1
+        ConnectionManagerService pattern but rebuilt for NestJS ws adapter.
+
+        Features:
+        - register(client, channel): Track WebSocket client on a named channel
+        - unregister(client, channel): Remove client, cleanup resources
+        - broadcast(channel, message): Send to all clients on a channel
+        - sendToClient(client, message): Send to single client with timeout
+        - getConnectionCount(channel): Return active connection count
+        - getChannels(): Return all active channel names
+        - Heartbeat management: detect stale connections (configurable interval)
+        - Graceful shutdown: close all connections on module destroy
+
+        Channels map to gateways:
+        - 'telemetry' — TelemetryGateway clients
+        - 'graph' — GraphUpdatesGateway clients
+        - 'conversation:{sessionId}' — ConversationGateway clients per session
+
+        v1 lift: Adapt ConnectionManagerService pattern (channel-based, broadcast, sendToClient)
+
+      acceptance_criteria:
+        - "Clients tracked per channel"
+        - "Broadcast sends to all channel clients"
+        - "Stale connection detection via heartbeat"
+        - "sendToClient has configurable timeout (default 5s)"
+        - "Graceful shutdown closes all connections"
+        - "getConnectionCount returns accurate counts"
+        - "OnModuleDestroy implemented for cleanup"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: M
+
+  - id: E9-T004
+    meta:
+      title: "HealthController (All 5 Databases)"
+      description: |
+        Implement the health check endpoint that verifies all 5 database connections.
+
+        Endpoint: GET /api/health
+
+        Health checks run in parallel with per-check timeout (150ms) and overall timeout (500ms).
+        Each check delegates to the owning service's health method:
+        - Neo4j: via IWkgService health check (node count, edge count, constraints)
+        - TimescaleDB: via IEventService health check (event count, latest event, hypertable status)
+        - PostgreSQL: via system DB check (drive_rules count, proposed_rules count)
+        - Grafeo Self KG: via ISelfKgService health check (instance exists, queryable)
+        - Grafeo Other KG: via IOtherKgService health check (instances exist, queryable)
+
+        Response includes:
+        - Overall status: healthy | degraded | unhealthy
+        - Per-database status with latency, details, errors
+        - System metadata: uptime, version
+
+        Rollup rules:
+        - healthy: all 5 respond in <200ms
+        - degraded: all accessible but >=1 slow or warning
+        - unhealthy: >=1 unreachable
+
+        Note: Health check methods may need to be added to subsystem interfaces
+        if they don't already exist. Document which interfaces need extension.
+
+      acceptance_criteria:
+        - "All 5 databases checked in parallel"
+        - "Per-check 150ms timeout enforced"
+        - "Overall 500ms timeout enforced"
+        - "Status rollup follows healthy/degraded/unhealthy rules"
+        - "Response includes per-database latency"
+        - "System uptime included in metadata"
+        - "Errors are caught and reported, not thrown"
+        - "Health response is cacheable (30s TTL for non-degraded)"
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: M
+
+  - id: E9-T005
+    meta:
+      title: "DrivesController (Read-Only Drive State API)"
+      description: |
+        Implement REST endpoints for drive state observation. ALL endpoints are READ-ONLY.
+        No drive override or modification endpoints (v1 drive overrides PROHIBITED per Canon).
+
+        Endpoints:
+        - GET /api/drives/current — Current drive state snapshot (all 12 drives)
+        - GET /api/drives/history?from=&to=&resolution= — Drive state over time (query TimescaleDB)
+
+        Implementation:
+        - Inject IDriveStateReader for current state
+        - Inject IEventService for historical drive snapshots
+        - DriveStateResponse maps all 12 drives with names and values
+        - History returns time-series data points suitable for charting
+
+        CANON enforcement:
+        - No POST/PUT/PATCH/DELETE endpoints
+        - IDriveStateReader provides read-only access (CANON §Drive Isolation)
+        - Drive values are actual state, not cached or approximated (Theater Prohibition)
+
+      acceptance_criteria:
+        - "GET /api/drives/current returns all 12 drive values"
+        - "GET /api/drives/history supports time range and resolution params"
+        - "No write endpoints exist on this controller"
+        - "Drive values come from IDriveStateReader.getCurrentState()"
+        - "History queries TimescaleDB drive snapshot events"
+        - "Response includes drive names and numeric values [0, 1]"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: S
+
+  - id: E9-T006
+    meta:
+      title: "GraphController (WKG Read-Only Visualization API)"
+      description: |
+        Implement REST endpoints for World Knowledge Graph visualization. Strictly read-only.
+
+        Endpoints:
+        - GET /api/graph/snapshot?offset=&limit= — Paginated node/edge snapshot
+        - GET /api/graph/stats — Node count, edge count, provenance distribution, type distribution
+        - GET /api/graph/subgraph?nodeId=&depth=&maxNodes= — Subgraph extraction centered on a node
+
+        Query protection (per Sentinel analysis):
+        - Max depth: 3 (configurable)
+        - Max nodes per query: 200 (configurable)
+        - Query timeout: 5 seconds
+        - No arbitrary Cypher execution
+
+        Response format:
+        - Nodes: id, label, type, provenance, confidence, properties
+        - Edges: id, sourceId, targetId, relationship, provenance, confidence
+        - Stats: node_count, edge_count, provenance_breakdown, type_breakdown
+
+        CANON enforcement:
+        - No write endpoints (all WKG writes go through KnowledgeModule)
+        - Provenance and confidence values accurately displayed (Standards 3, 7)
+        - Graph serialization preserves provenance tags
+
+      acceptance_criteria:
+        - "Snapshot endpoint returns paginated nodes and edges"
+        - "Stats endpoint returns node/edge counts and provenance distribution"
+        - "Subgraph endpoint respects maxDepth=3 and maxNodes=200 limits"
+        - "Query timeout of 5 seconds enforced"
+        - "No write endpoints on this controller"
+        - "All nodes include provenance and confidence fields"
+        - "Pagination works correctly (offset/limit)"
+        - "Empty graph returns valid empty response, not error"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: M
+
+  - id: E9-T007
+    meta:
+      title: "ConversationController (History REST API)"
+      description: |
+        Implement REST endpoints for conversation history retrieval.
+
+        Endpoints:
+        - GET /api/conversation/history?from=&to=&limit=&offset= — Paginated history
+        - GET /api/conversation/messages/:conversationId — Messages for a specific conversation
+
+        History queries TimescaleDB for communication events. Each message includes:
+        - Message text (guardian input or Sylphie response)
+        - Timestamp
+        - Direction (incoming/outgoing)
+        - Drive state at time of message
+        - Prediction context (if available)
+        - Guardian feedback type (correction/confirmation/none)
+        - Theater check result (for Sylphie responses)
+        - Type 1 vs Type 2 indicator
+
+        Metadata enrichment:
+        - Drive state snapshot attached to each message for Theater Prohibition visibility
+        - Input parse results for debugging
+
+      acceptance_criteria:
+        - "History endpoint returns paginated conversation messages"
+        - "Each message includes drive state snapshot"
+        - "Guardian feedback type included when present"
+        - "Theater check result included for Sylphie responses"
+        - "Pagination with offset/limit works correctly"
+        - "Time range filtering (from/to) works"
+        - "Empty history returns valid empty response"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: M
+
+  - id: E9-T008
+    meta:
+      title: "MetricsController (Development Health Metrics API)"
+      description: |
+        Implement REST endpoints for the 7 CANON Primary Health Metrics plus additional
+        development metrics.
+
+        Endpoints:
+        - GET /api/metrics/health — All 7 CANON health metrics as a single response
+        - GET /api/metrics/type-ratio?window= — Type 1/Type 2 ratio over time
+        - GET /api/metrics/predictions?window= — Prediction MAE over time
+        - GET /api/metrics/provenance — Provenance distribution (experiential vs LLM)
+
+        The 7 CANON Primary Health Metrics:
+        1. Type 1/Type 2 ratio — from action selection events in TimescaleDB
+        2. Prediction MAE — from prediction evaluation events
+        3. Experiential provenance ratio — from WKG provenance counts
+        4. Behavioral diversity index — unique action types per 20-action window
+        5. Guardian response rate to comments — social contingency events
+        6. Interoceptive accuracy — Self KG vs actual drive state comparison
+        7. Mean drive resolution time — drive state transition timing
+
+        Each metric computed from EventsModule and/or KnowledgeModule queries.
+        Results should include current value, trend (improving/stable/declining),
+        and historical data points for charting.
+
+        Guard: Development mode only (via DevelopmentGuard)
+
+      acceptance_criteria:
+        - "All 7 CANON health metrics computed and returned"
+        - "Each metric includes current value and trend"
+        - "Time-windowed variants support configurable window parameter"
+        - "Provenance endpoint returns SENSOR/GUARDIAN/LLM_GENERATED/INFERENCE counts"
+        - "Metrics endpoint guarded by development mode flag"
+        - "Historical data points suitable for chart rendering"
+        - "Metrics computed from EventsModule and KnowledgeModule, not hardcoded"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: L
+
+  - id: E9-T009
+    meta:
+      title: "TelemetryGateway (Real-Time Drive & Prediction Stream)"
+      description: |
+        Implement the telemetry WebSocket gateway for high-frequency real-time data.
+
+        Gateway: @WebSocketGateway with path /ws/telemetry
+
+        Streams to connected clients:
+        - Drive state updates (from IDriveStateReader.driveState$ Observable)
+        - Action selection events (from EventsModule stream)
+        - Prediction events (from EventsModule stream)
+        - Type 1/Type 2 decisions (from EventsModule stream)
+
+        Buffering strategy (per Sentinel analysis):
+        - Buffer events, broadcast batches every 500ms
+        - Maximum 50 events per batch
+        - Drop oldest events when buffer exceeds limit
+        - This reduces DB query load from 600/min to 120/min
+
+        Connection lifecycle:
+        - handleConnection: register client with ConnectionManagerService
+        - handleDisconnect: unregister, cleanup subscriptions
+        - Subscribe to driveState$ Observable on connect, unsubscribe on disconnect
+
+        Message framing:
+        - Each frame includes: type, event, payload, timestamp, sequence number
+
+      acceptance_criteria:
+        - "Gateway listens on /ws/telemetry"
+        - "Drive state updates streamed from driveState$ Observable"
+        - "Events buffered and batched every 500ms"
+        - "Client registration via ConnectionManagerService"
+        - "Subscriptions cleaned up on disconnect"
+        - "Message frames include sequence numbers for ordering"
+        - "No database queries per individual event (batch only)"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T003]
+    complexity: M
+
+  - id: E9-T010
+    meta:
+      title: "GraphUpdatesGateway (WKG Change Notifications)"
+      description: |
+        Implement the graph updates WebSocket gateway for real-time WKG change notifications.
+
+        Gateway: @WebSocketGateway with path /ws/graph
+
+        Streams to connected clients:
+        - New node creation events
+        - Edge creation/update events
+        - Confidence changes
+        - Provenance updates
+
+        Low frequency compared to telemetry. Events sourced from EventsModule
+        (knowledge-related events with subsystem='LEARNING' or subsystem='KNOWLEDGE').
+
+        On connect, optionally send initial graph snapshot (configurable).
+
+        Message format: { type: 'graph-update', event: 'node-created'|'edge-created'|...,
+        payload: { node/edge data }, timestamp }
+
+      acceptance_criteria:
+        - "Gateway listens on /ws/graph"
+        - "Node and edge change events streamed"
+        - "Events sourced from EventsModule, not direct DB polling"
+        - "Client registration via ConnectionManagerService"
+        - "Subscriptions cleaned up on disconnect"
+        - "Initial snapshot sent on connect (optional, configurable)"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T003]
+    complexity: S
+
+  - id: E9-T011
+    meta:
+      title: "ConversationGateway (Real-Time Chat)"
+      description: |
+        Implement the bidirectional conversation WebSocket gateway for real-time chat
+        between guardian and Sylphie.
+
+        Gateway: @WebSocketGateway with path /ws/conversation
+
+        Incoming messages (guardian → Sylphie):
+        - type: 'message' — text input from guardian
+        - type: 'feedback' — correction/confirmation of Sylphie's response
+
+        All incoming messages routed through CommunicationService.handleGuardianInput().
+        ConversationGateway NEVER processes content directly (CANON: Communication routing).
+
+        Outgoing messages (Sylphie → guardian):
+        - type: 'response' — Sylphie's reply with theaterCheck, metadata
+        - type: 'drive-update' — periodic drive state for dashboard display
+        - type: 'system' — connection status, errors
+
+        Theater Prohibition enforcement:
+        - Every 'response' message includes theaterCheck field
+        - Drive state included for frontend correlation display
+
+        Session management:
+        - Track active sessions per connection
+        - On connect: send current drive state + last N messages as snapshot
+        - On disconnect: notify CommunicationService of session end
+
+        Guardian feedback handling:
+        - 'correction' feedback carries 3x weight (Guardian Asymmetry)
+        - 'confirmation' feedback carries 2x weight
+        - Both routed through CommunicationService for proper processing
+
+      acceptance_criteria:
+        - "Gateway listens on /ws/conversation"
+        - "Incoming messages routed through CommunicationService"
+        - "Gateway does NOT process content directly"
+        - "Outgoing responses include theaterCheck result"
+        - "Drive state included in outgoing messages"
+        - "Guardian feedback type detected and routed correctly"
+        - "Session tracking on connect/disconnect"
+        - "Snapshot sent on initial connection (drive state + recent messages)"
+        - "Error handling: invalid messages return error frames, don't crash"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E9-T003]
+    complexity: L
+
+  - id: E9-T012
+    meta:
+      title: "VoiceController (STT/TTS HTTP Endpoints)"
+      description: |
+        Implement HTTP endpoints for voice input/output. Logic delegates to
+        Communication module services.
+
+        Endpoints:
+        - POST /api/voice/transcribe — Upload audio, return transcription
+          - Accepts: multipart/form-data with audio file
+          - Delegates to ISttService.transcribe()
+          - Returns: { text, confidence, latency_ms }
+        - POST /api/voice/synthesize — Text to speech audio
+          - Accepts: { text: string }
+          - Delegates to ITtsService.synthesize()
+          - Returns: audio/mpeg stream
+
+        Error handling:
+        - STT failure: return degradation message suggesting text input
+        - TTS failure: return text-only response
+        - Both per Vox's "never block on audio failure" rule
+
+      acceptance_criteria:
+        - "POST /api/voice/transcribe accepts audio upload"
+        - "POST /api/voice/synthesize returns audio stream"
+        - "Both delegate to Communication module services"
+        - "STT failure returns graceful degradation response"
+        - "TTS failure returns text-only fallback"
+        - "Latency tracked and included in response"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: S
+
+  - id: E9-T013
+    meta:
+      title: "Exception Filters (HTTP + WebSocket)"
+      description: |
+        Implement global exception filters for both HTTP and WebSocket contexts.
+
+        HTTP Exception Filter:
+        - Catches SylphieException and all subclasses
+        - Maps domain exceptions to appropriate HTTP status codes:
+          - NodeNotFoundError → 404
+          - InvalidSessionError → 401
+          - GraphQueryTimeoutError → 504
+          - WebException → 400
+          - Unknown SylphieException → 500
+        - Error responses never leak sensitive details (stack traces, DB queries)
+        - Structured error response: { error: string, message: string, statusCode: number }
+
+        WebSocket Exception Filter:
+        - Catches exceptions during WebSocket message handling
+        - Sends error frame to client: { type: 'error', error: string, code: string }
+        - Does NOT close the WebSocket connection on recoverable errors
+        - Logs all errors with context
+
+        Development mode:
+        - In development mode, include additional debug info in error responses
+        - In production mode, generic error messages only
+
+      acceptance_criteria:
+        - "HTTP filter maps domain exceptions to correct status codes"
+        - "Error responses have consistent structure"
+        - "No stack traces or DB queries in production error responses"
+        - "WebSocket filter sends error frames, doesn't crash connection"
+        - "Development mode includes extra debug info"
+        - "All exceptions logged with context"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T002]
+    complexity: S
+
+  - id: E9-T014
+    meta:
+      title: "Web Configuration & Environment"
+      description: |
+        Wire WebConfig into ConfigModule with environment variable mappings.
+        Validate all web configuration on startup.
+
+        Configuration parameters:
+        - WEB_HTTP_PORT (default: 3000)
+        - WEB_HTTP_HOST (default: '0.0.0.0')
+        - WEB_CORS_ORIGIN (default: 'http://localhost:5173')
+        - WEB_CORS_CREDENTIALS (default: true)
+        - WEB_WS_PATH_PREFIX (default: '/ws')
+        - WEB_WS_MAX_CLIENTS (default: 100)
+        - WEB_WS_HEARTBEAT_INTERVAL_MS (default: 30000)
+        - WEB_DEVELOPMENT_MODE (default: true)
+        - WEB_GRAPH_MAX_DEPTH (default: 3)
+        - WEB_GRAPH_MAX_NODES (default: 200)
+        - WEB_GRAPH_QUERY_TIMEOUT_MS (default: 5000)
+        - WEB_TELEMETRY_BATCH_INTERVAL_MS (default: 500)
+        - WEB_TELEMETRY_MAX_BATCH_SIZE (default: 50)
+        - WEB_HEALTH_CACHE_TTL_MS (default: 30000)
+        - WEB_HEALTH_CHECK_TIMEOUT_MS (default: 500)
+
+        Add to .env.example with comments.
+
+      acceptance_criteria:
+        - "All parameters have sensible defaults"
+        - "class-validator decorators on all config fields"
+        - "Application fails fast if config is malformed"
+        - ".env.example updated with all web env vars"
+        - "WebConfig injectable via ConfigService"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T001]
+    complexity: S
+
+  - id: E9-T015
+    meta:
+      title: "Web Event Types"
+      description: |
+        Define web-specific event types in the shared event type system for
+        dashboard telemetry tracking.
+
+        Events to add:
+        - WS_CLIENT_CONNECTED (channel, clientId)
+        - WS_CLIENT_DISCONNECTED (channel, clientId, duration)
+        - HEALTH_CHECK_COMPLETED (status, per-database results)
+        - CHAT_INPUT_RECEIVED (sessionId, inputLength)
+        - CHAT_RESPONSE_SENT (sessionId, responseLength, latencyMs, theaterResult)
+        - VOICE_TRANSCRIPTION_COMPLETED (latencyMs, textLength, confidence)
+        - VOICE_SYNTHESIS_COMPLETED (latencyMs, audioLength)
+        - GRAPH_QUERY_EXECUTED (queryType, nodeCount, latencyMs)
+        - METRICS_QUERY_EXECUTED (metricsRequested, latencyMs)
+
+        Each event type must have:
+        - Typed payload
+        - subsystem: 'WEB'
+        - has_learnable: false (web events are not learnable)
+
+      acceptance_criteria:
+        - "All event types added to EventType union"
+        - "Each event has typed payload"
+        - "subsystem field is 'WEB'"
+        - "has_learnable is false for all web events"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T001]
+    complexity: S
+
+  - id: E9-T016
+    meta:
+      title: "Unit Tests: Controllers"
+      description: |
+        Unit tests for all 5 REST controllers with mocked dependencies.
+
+        HealthController tests:
+        - All 5 databases healthy → status 'healthy'
+        - One database slow → status 'degraded'
+        - One database unreachable → status 'unhealthy'
+        - Individual timeout respected (150ms)
+        - Overall timeout respected (500ms)
+
+        DrivesController tests:
+        - Current drive state returns all 12 drives
+        - History with time range returns filtered results
+        - No write endpoints exist (verify route table)
+
+        GraphController tests:
+        - Snapshot with pagination returns correct page
+        - Stats returns node/edge counts and provenance distribution
+        - Subgraph respects maxDepth and maxNodes limits
+        - Query timeout enforced (5s)
+        - Empty graph returns valid response
+
+        ConversationController tests:
+        - History with pagination returns correct page
+        - Time range filtering works
+        - Messages include drive state and theater check
+
+        MetricsController tests:
+        - All 7 CANON health metrics computed
+        - Development guard blocks in production mode
+        - Time-windowed queries respect window parameter
+
+      acceptance_criteria:
+        - "All controller endpoints have unit tests"
+        - "Health check rollup logic tested"
+        - "Drive state read-only verified"
+        - "Graph query limits enforced"
+        - "Conversation history pagination works"
+        - "Metrics computation from mocked services verified"
+        - "Tests pass with npm test"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T004, E9-T005, E9-T006, E9-T007, E9-T008]
+    complexity: L
+
+  - id: E9-T017
+    meta:
+      title: "Unit Tests: Gateways & ConnectionManager"
+      description: |
+        Unit tests for WebSocket gateways and ConnectionManagerService.
+
+        ConnectionManagerService tests:
+        - Register client on channel
+        - Unregister client removes from channel
+        - Broadcast sends to all channel clients
+        - sendToClient with timeout
+        - Stale connection detection
+        - Graceful shutdown closes all connections
+        - Multiple channels tracked independently
+
+        TelemetryGateway tests:
+        - Client receives drive updates after connect
+        - Events buffered and batched (verify 500ms interval)
+        - Subscriptions cleaned up on disconnect
+        - Message frames include sequence numbers
+
+        GraphUpdatesGateway tests:
+        - Client receives graph change notifications
+        - Initial snapshot sent on connect (when enabled)
+        - Subscriptions cleaned up on disconnect
+
+        ConversationGateway tests:
+        - Incoming messages routed to CommunicationService
+        - Outgoing responses include theaterCheck
+        - Guardian feedback type detected correctly
+        - Session tracking on connect/disconnect
+        - Error messages don't crash connection
+
+      acceptance_criteria:
+        - "ConnectionManager lifecycle fully tested"
+        - "Telemetry buffering verified"
+        - "Conversation routing to CommunicationService verified"
+        - "Theater check inclusion in responses verified"
+        - "Guardian feedback routing tested"
+        - "Disconnect cleanup tested"
+        - "Tests pass with npm test"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T003, E9-T009, E9-T010, E9-T011]
+    complexity: L
+
+  - id: E9-T018
+    meta:
+      title: "Integration Test: Dashboard API End-to-End"
+      description: |
+        Integration test verifying the full dashboard API surface works with
+        subsystem services.
+
+        Test scenarios:
+        1. Health check: start app, verify all databases report healthy
+        2. Drive state: query current drives, verify 12 values returned
+        3. Graph snapshot: with seeded WKG data, verify pagination works
+        4. Graph stats: verify provenance distribution computed correctly
+        5. Conversation: send message via WebSocket, verify response includes
+           theaterCheck and drive state
+        6. Telemetry: connect to telemetry WS, verify drive updates stream
+        7. Metrics: verify all 7 CANON health metrics compute from seeded events
+        8. Voice: transcribe audio via POST, verify delegation to STT service
+
+        CANON compliance verification:
+        - Chat input flows through CommunicationService (not direct)
+        - Drive state is read-only (no modification possible)
+        - Graph API is read-only (no write endpoints)
+        - Theater check present in conversation responses
+        - Guardian feedback carries correct weight
+
+      acceptance_criteria:
+        - "All 8 scenarios execute without errors"
+        - "Health check reports all databases"
+        - "Conversation messages include theater check"
+        - "Drive state is read-only verified"
+        - "Graph query limits enforced"
+        - "Metrics compute correctly from seeded data"
+        - "Test is repeatable and deterministic"
+    agents: [forge, sentinel]
+    model: sonnet
+    dependencies: [E9-T016, E9-T017]
+    complexity: L
+
+  - id: E9-T019
+    meta:
+      title: "Session Log & Documentation"
+      description: |
+        Write session log documenting all changes from Epic 9 implementation.
+        Update architecture docs affected by Web module addition.
+
+        Deliverables:
+        - Session log at docs/sessions/YYYY-MM-DD-epic-9-dashboard-api.md (max 20 lines)
+        - Update src/web/ README if needed
+        - Verify CLAUDE.md project structure reflects web module
+        - Document any gotchas discovered during implementation
+        - Note the E10 dependency (full integration verification)
+
+      acceptance_criteria:
+        - "Session log follows template in CLAUDE.md"
+        - "All NEW/MODIFIED/DELETED files documented"
+        - "Known issues section includes E10 integration dependency"
+        - "Gotchas documented for next session"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E9-T018]
+    complexity: S

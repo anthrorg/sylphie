@@ -21,7 +21,7 @@ AI companion that develops genuine personality through experience. Knowledge liv
 - Type 1 graduation requires: confidence > 0.80 AND prediction MAE < 0.10 over last 10 uses.
 
 ### Six Immutable Standards
-1. **Theater Prohibition** -- Output must correlate with actual drive state. No performing emotions she doesn't have.
+1. **Theater Prohibition** -- Output must correlate with actual drive state. Directional: pressure expressions require drive > 0.2; relief expressions require drive < 0.3. No performing emotions she doesn't have, no claiming relief she hasn't earned.
 2. **Contingency Requirement** -- Every positive reinforcement traces to a specific behavior.
 3. **Confidence Ceiling** -- No knowledge exceeds 0.60 without successful retrieval-and-use.
 4. **Shrug Imperative** -- When nothing is above threshold, signal incomprehension. No random low-confidence actions.

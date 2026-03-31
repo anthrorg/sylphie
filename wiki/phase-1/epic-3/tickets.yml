@@ -1,0 +1,909 @@
+epic: 3
+title: "Knowledge Module (WKG + Self KG + Other KG)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+# Synthesized from 5 agent analyses: Atlas (schema design), Forge (NestJS architecture), Sentinel (persistence),
+# Canon (CANON compliance), Science (Piaget+Ashby developmental risks).
+#
+# Key decisions incorporated:
+# - Single WkgNode label with `is_instance` flag to distinguish ABox/TBox (Atlas + Sentinel)
+# - Grafeo risk is HIGH: needs technology spike first, with SQLite+Cypher fallback (Sentinel)
+# - Confidence computed lazily on read, not eagerly on write (Sentinel + Atlas)
+# - Provenance enforced at service layer with type-safe guards (Forge + Atlas)
+# - Contradiction detection stores CONTRADICTS edges, doesn't block writes (Atlas + Science)
+# - KG isolation through separate service classes and separate Grafeo instances (Forge + Atlas)
+# - queryContext() uses bounded subgraph traversal for LLM context assembly (Atlas)
+# - Events emitted for knowledge mutations via injected IEventService (Forge)
+# - Guardian Asymmetry (2x/3x) applied as multiplier on retrieval_count increment (Atlas + Canon)
+# - Self KG schema includes: capabilities, drive_patterns, prediction_accuracy, behavioral_patterns (Atlas + Science)
+# - Contradictions are developmental catalysts, not errors (Science/Piaget)
+#
+# CRITICAL: Six decisions pending Jim input (listed in canon.md) must be resolved before implementation:
+# 1. WKG three-level structure (Concept/Procedure/Instance) — data model representation
+# 2. Guardian confirmation mechanic — Option C (2x/3x weight on retrieval_count) preferred
+# 3. Success definition for retrieval-and-use tracking — USE_SUCCESS events required from Decision Making
+# 4. Contradiction resolution — Flag and proceed (preferred) or block and reject
+# 5. Self-Evaluation Protocol (CANON A.8) — Jim specification required
+# 6. Knowledge Domain Structure (CANON A.9) — Flat or partitioned model
+
+tickets:
+  - id: E3-T001
+    meta:
+      title: "Grafeo technology spike and fallback planning"
+      description: |
+        Validate Grafeo viability for Self KG and Other KG implementations.
+        Grafeo is a pre-1.0 (v0.5.28) embedded graph database with a single maintainer.
+        This is the highest technical risk in Epic 3. A spike must determine whether Grafeo
+        is production-ready or if fallback migration is needed before full implementation.
+
+        Scope:
+        - Create a test Grafeo instance in NestJS (embedded, not network service)
+        - Write 10 test SelfConcept nodes with confidence/provenance metadata
+        - Query via Cypher subset: basic MATCH, WHERE, SET operations
+        - Test persistence and recovery (restart NestJS, verify data intact)
+        - Measure memory footprint (SelfKgService + 5 concurrent OtherKgService instances)
+        - Document all Cypher operations supported vs. unsupported
+        - Identify any crashes, data corruption, or severe performance issues
+        - Create decision checklist: blockers vs. acceptable limitations
+
+        Deliverables:
+        - Test implementation in src/knowledge/services/grafeo-spike/
+        - Spike report: spike-report.md documenting findings, risks, recommended path
+        - If blockers found: detailed migration plan to Plan B (SQLite + Cypher dialect)
+        - Decision checklist for Jim: "Is Grafeo acceptable?" with specific risks listed
+
+        Plan B Alternatives (if Grafeo unsuitable):
+        - Option 1: SQLite with Cypher dialect (lighter weight, more mature)
+        - Option 2: In-memory graph store (acceptable for Phase 1 prototype only)
+        - Option 3: Split Self/Other KGs to Neo4j (less isolation, but proven)
+
+        Migration strategy (if Plan B triggered):
+        - Extract Grafeo data as JSON (preserve all metadata)
+        - Implement ISelfKgService against new backend
+        - Swap underlying store (code interfaces remain identical)
+        - Run full test suite against new store
+        - No delays to downstream epics (E4–E8) if Plan B needed
+
+        CRITICAL: This ticket is a true spike. It must NOT block tickets T002–T010.
+        If Grafeo proves viable, proceed to T003+ immediately. If not, Jim decides
+        Plan B path and T007–T008 are adapted accordingly.
+
+      acceptance_criteria:
+        - "Grafeo instance created and tests written in <4 hours"
+        - "10 test nodes persisted and queried successfully"
+        - "Cypher support matrix documented (operations supported/unsupported)"
+        - "Memory footprint measured with 5 concurrent instances"
+        - "Persistence verified: data survives NestJS restart"
+        - "No data corruption or crashes observed in 30-minute stress test"
+        - "spike-report.md completed with blockers and acceptable limitations"
+        - "Decision checklist provided for Jim"
+        - "If blockers found: detailed Plan B migration plan documented"
+        - "npx tsc --noEmit passes (spike code)"
+
+    agents: [sentinel, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E3-T002
+    meta:
+      title: "Knowledge types and shared schemas (TypeScript)"
+      description: |
+        Define the complete TypeScript type system for all three knowledge graphs.
+        This is the foundational contract that all other E3 tickets build on.
+
+        Per Forge: All types must be defined before services; types drive interface design
+        and enforce isolation at compile time.
+
+        Deliverables:
+        - src/knowledge/types/wkg.types.ts
+          * WkgNode interface (id, label, description, is_instance flag, confidence, base_confidence,
+            provenance, created_at, updated_at, last_retrieved, retrieval_count)
+          * WkgEdge interface (from, to, type, confidence, base_confidence, provenance,
+            timestamp, is_contradictory flag)
+          * WkgNodeType union (Entity, Concept, Procedure)
+          * WkgEdgeType union (RELATES_TO, INSTANCE_OF, HAS_PROPERTY, HAS_PRECONDITION,
+            HAS_EFFECT, CONTRADICTS)
+          * ProvenanceSource enum (SENSOR, GUARDIAN, LLM_GENERATED, INFERENCE)
+          * PROVENANCE_BASE_CONFIDENCE mapping (SENSOR: 0.40, GUARDIAN: 0.60, etc.)
+          * CONFIDENCE_THRESHOLDS constants (RETRIEVAL: 0.50, GRADUATION: 0.80, CEILING: 0.60)
+          * Default decay rates per provenance
+          * WkgQueryFilter, WkgUpsertOptions, WkgEdgeQueryOptions DTOs
+
+        - src/knowledge/types/self-kg.types.ts
+          * SelfConcept interface (id, label, type: "capability" | "drive_pattern" |
+            "prediction_accuracy" | "behavioral_pattern", confidence, provenance, timestamp)
+          * SelfEdgeType union (ENABLES, UNDERMINES, PREDICTS, CORRELATES_WITH, CONFLICTS_WITH)
+          * SelfConflict interface (id, type, nodes[], severity, timestamp)
+          * SelfKgQueryFilter DTO
+
+        - src/knowledge/types/other-kg.types.ts
+          * PersonConcept interface (id, label, type, confidence, provenance, timestamp)
+          * PersonEdgeType union (HAS_TRAIT, BELIEVES, PREFERS, FEARS, ENJOYS, INCONSISTENT_WITH)
+          * PersonModel interface (person_id, created_at, last_updated, conflicts[])
+          * PersonQueryFilter DTO
+
+        - src/knowledge/types/confidence.types.ts
+          * ConfidenceUpdate interface (node_id, old_confidence, new_confidence, reason,
+            retrieval_count_delta, guardian_weighted)
+          * ACT-R formula parameters (base, d decay)
+
+        - src/knowledge/types/contradiction.types.ts
+          * Contradiction interface (id, type: "factual" | "logical" | "temporal" |
+            "provenance_conflict" | "confidence_conflict", nodes, severity, timestamp)
+          * ContradictionEdge DTO for Neo4j storage
+
+        - src/knowledge/types/events.ts
+          * Knowledge-specific event types: KNOWLEDGE_NODE_UPSERTED, KNOWLEDGE_EDGE_UPSERTED,
+            CONTRADICTION_DETECTED, KNOWLEDGE_RETRIEVAL_AND_USE, SELF_CONCEPT_UPDATED,
+            PERSON_CONCEPT_UPDATED
+
+        Per Canon: Provenance is never updated or erased (immutable on record).
+        Per Atlas: Confidence is computed lazily on read (not eagerly on write).
+
+      acceptance_criteria:
+        - "All WKG types defined in wkg.types.ts"
+        - "All Self KG types defined in self-kg.types.ts"
+        - "All Other KG types defined in other-kg.types.ts"
+        - "ProvenanceSource enum has 4 values (SENSOR, GUARDIAN, LLM_GENERATED, INFERENCE)"
+        - "PROVENANCE_BASE_CONFIDENCE has correct mappings (SENSOR: 0.40, GUARDIAN: 0.60, etc.)"
+        - "CONFIDENCE_THRESHOLDS defined and immutable"
+        - "is_instance flag present on WkgNode (distinguishes ABox/TBox)"
+        - "Contradiction interface supports all 5 contradiction types"
+        - "All DTOs have optional fields where appropriate"
+        - "Knowledge event types defined in events.ts"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E3-T003
+    meta:
+      title: "Neo4j World Knowledge Graph (WKG) foundation"
+      description: |
+        Implement the real Neo4j WKG with constraints, indexes, and WkgService skeleton.
+        Per Sentinel: This is the performance-critical tier. Indexes and schema design
+        decisions made here determine downstream query latency.
+
+        Deliverables:
+        - src/knowledge/services/wkg/wkg.schema.ts
+          * Neo4j initialization script: CREATE CONSTRAINTS, CREATE INDEXES
+          * Constraint: WkgNode.id is unique
+          * Constraint: No duplicate edges (from, to, type must be composite key)
+          * Index: (confidence) for confidence filtering queries
+          * Index: (provenance) for provenance auditing
+          * Index: (created_at) for temporal range queries
+          * Index: (label) full-text for LLM context search
+          * Index: composite (from, to, type) for edge lookup
+          * Documentation: Index rationale for each index
+
+        - src/knowledge/services/wkg/wkg.service.ts
+          * WkgService @Injectable() implementing IWkgService
+          * Inject NEO4J_DRIVER from E1-T005 (bootstrap in OnModuleInit)
+          * Skeleton methods (filled in T004–T006):
+            - upsertNode(node): Promise<WkgNode>
+            - findNode(id): Promise<WkgNode | null>
+            - upsertEdge(edge): Promise<WkgEdge>
+            - queryEdges(filter): Promise<WkgEdge[]>
+            - checkContradiction(nodeA, nodeB): Promise<Contradiction | null>
+            - queryContext(nodeId, depth): Promise<subgraph>
+            - recordRetrievalAndUse(nodeId): Promise<void>
+          * OnModuleInit: verify Neo4j connection, run schema migration
+          * OnModuleDestroy: close driver gracefully
+          * Logger: inject @Logger() from NestJS
+
+        - src/knowledge/services/wkg/wkg.queries.ts
+          * Query builders (functions returning parameterized Cypher)
+          * UPSERT node query template
+          * UPSERT edge query template
+          * CHECK contradiction query template
+          * These are NOT executed here; just builder functions
+
+        - src/knowledge/services/wkg/wkg.errors.ts
+          * InvalidProvenanceError
+          * ConfidenceCeilingError
+          * SchemaModificationError
+          * ContradictionDetectedError (not fatal; used for signaling)
+
+        Per Atlas: Provenance validation happens at service layer, not database.
+        Per Sentinel: All queries must be parameterized (SQL injection safe).
+        Per Canon: Provenance is immutable and auditable.
+
+      acceptance_criteria:
+        - "Neo4j schema migration script created and documented"
+        - "All 7 constraints and indexes created in OnModuleInit"
+        - "WkgService injects NEO4J_DRIVER and verifies connection"
+        - "All 6 interface methods present (filled with NotImplementedError)"
+        - "3 error classes defined in wkg.errors.ts"
+        - "Query builders created in wkg.queries.ts (not executed)"
+        - "OnModuleInit creates missing indexes on first boot"
+        - "OnModuleDestroy closes driver gracefully"
+        - "Integration test: services boot, schema created, health check passes"
+        - "Neo4j constraint verification: duplicate nodes rejected"
+        - "npx tsc --noEmit passes"
+
+    agents: [sentinel, atlas, forge]
+    model: sonnet
+    dependencies: [E3-T002]
+    complexity: L
+
+  - id: E3-T004
+    meta:
+      title: "WKG edge operations and contradiction detection"
+      description: |
+        Implement upsertEdge() and checkContradiction() — the write path for relationships
+        and the contradiction detection pipeline.
+
+        Implementation (upsertEdge):
+        - Accept WkgEdge with confidence, provenance, base_confidence
+        - Validate provenance source exists
+        - Enforce confidence ceiling: confidence <= CEILING (0.60) when retrieval_count === 0
+        - Check if edge already exists (by composite key: from + to + type)
+        - If exists: UPDATE metadata, increment last_updated, recompute confidence
+        - If new: CREATE with base_confidence, confidence, provenance, timestamp
+        - Call checkContradiction() before write
+        - Emit KNOWLEDGE_EDGE_UPSERTED event to TimescaleDB
+        - Return created/updated WkgEdge
+
+        Per Science (Piaget): Contradictions are developmental catalysts, not errors.
+        Proceed with write even if contradiction detected; flag it for Learning to analyze.
+
+        Implementation (checkContradiction):
+        - Accept two nodes or node pair from edge context
+        - Query Neo4j: find all edges between nodes of opposite polarity
+          (A -[RELATES_TO]-> B vs. A -[CONTRADICTS]-> B)
+        - For each contradiction candidate: compute severity (confidence difference)
+        - If severity > threshold (0.20): return Contradiction object
+        - Store contradiction as CONTRADICTS edge in Neo4j
+        - Emit CONTRADICTION_DETECTED event to TimescaleDB (for Learning analysis)
+        - Do NOT block the original write
+        - Track contradiction count on losing edge (optional: downweight its confidence)
+
+        Contradiction types (per Atlas):
+        - FACTUAL: "color=red" contradicts "color=blue" (same property, opposite values)
+        - LOGICAL: A contradicts B logically (e.g., "cannot be both X and Y")
+        - TEMPORAL: "happened on 2025-01-01" contradicts "happened on 2025-02-01"
+        - PROVENANCE_CONFLICT: GUARDIAN says A, multiple SENSOR say ¬A
+        - CONFIDENCE_CONFLICT: High-confidence A contradicts high-confidence B
+
+        Per Canon: Contradictions must enable lesion test (provenance auditable).
+        Store contradiction metadata: both nodes, both confidences, severity, discovered_by.
+
+      acceptance_criteria:
+        - "upsertEdge() accepts typed WkgEdge with confidence, provenance"
+        - "Validates provenance source against enum"
+        - "Enforces confidence ceiling (0.60) for untested knowledge"
+        - "Detects existing edges by composite key (from, to, type)"
+        - "Updates metadata on existing edge, creates new edge if not found"
+        - "checkContradiction() identifies all contradiction types"
+        - "Contradiction severity computed (confidence difference)"
+        - "Contradictions stored as CONTRADICTS edges in Neo4j"
+        - "KNOWLEDGE_EDGE_UPSERTED event emitted with full metadata"
+        - "CONTRADICTION_DETECTED event emitted with severity and type"
+        - "Integration test: upsert 5 edges, query shows all stored"
+        - "Integration test: detect factual contradiction (color=red vs. color=blue)"
+        - "Integration test: contradiction doesn't block write"
+        - "Performance: upsertEdge() <20ms p99"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, sentinel, forge]
+    model: sonnet
+    dependencies: [E3-T003]
+    complexity: L
+
+  - id: E3-T005
+    meta:
+      title: "ConfidenceService (ACT-R wrapper and retrieval tracking)"
+      description: |
+        Implement ConfidenceService — the confidence computation engine that wraps
+        the ACT-R formula and enforces the Confidence Ceiling (Immutable Standard 3).
+
+        ACT-R Formula:
+        confidence(t) = min(1.0, base + 0.12 * ln(count) - d * ln(hours_elapsed + 1))
+
+        Where:
+        - base = PROVENANCE_BASE_CONFIDENCE[provenance] (SENSOR: 0.40, GUARDIAN: 0.60, etc.)
+        - count = retrieval_count (incremented on successful use)
+        - d = DEFAULT_DECAY_RATES[provenance]
+        - hours_elapsed = now - last_retrieved
+
+        Per Atlas: Confidence is COMPUTED LAZILY on read, not eagerly on every write.
+        This keeps write path fast; reads pay the computation cost.
+
+        Implementation:
+        - computeConfidence(node): Promise<number>
+          * Fetch node from Neo4j (with base_confidence, provenance, retrieval_count, last_retrieved)
+          * Apply ACT-R formula
+          * Clamp result to [0.0, 1.0]
+          * Return computed confidence
+          * Do NOT update node in database (lazy computation)
+
+        - enforceConfidenceCeiling(nodeId, proposedConfidence, provenance): Promise<void>
+          * Get PROVENANCE_BASE_CONFIDENCE[provenance]
+          * If proposedConfidence > base AND retrieval_count === 0:
+            throw ConfidenceCeilingError
+          * If provenance === LLM_GENERATED AND proposedConfidence > 0.35:
+            throw ConfidenceCeilingError (LLM starts low)
+
+        - recordRetrievalAndUse(nodeId, successOutcome?): Promise<void>
+          * Increment retrieval_count by 1 (or by weight if Guardian confirmation)
+          * Update last_retrieved timestamp
+          * Emit KNOWLEDGE_RETRIEVAL_AND_USE event to TimescaleDB
+          * If successOutcome provided: increment success_count (for MAE tracking)
+          * Per Canon Guardian Asymmetry: if guardian confirmed this knowledge,
+            increment retrieval_count by 3x (not 1x)
+
+        - getConfidenceDebugInfo(nodeId): Promise<DebugInfo>
+          * Return {
+              base_confidence,
+              provenance,
+              retrieval_count,
+              last_retrieved,
+              hours_elapsed,
+              computed_confidence,
+              confidence_ceiling,
+              is_at_ceiling,
+              decay_rate,
+              ln_count_term,
+              ln_time_term
+            }
+          * Useful for debugging confidence dynamics
+
+        Per Atlas: Enforce SHRUG_THRESHOLD (0.50) — if no knowledge exceeds this,
+        Decision Making should shrug (signal incomprehension) rather than guess.
+
+      acceptance_criteria:
+        - "ACT-R formula implemented with all parameters"
+        - "Confidence computed lazily on read (no eager updates)"
+        - "Confidence clamped to [0.0, 1.0]"
+        - "Confidence ceiling enforced: base confidence if retrieval_count === 0"
+        - "LLM_GENERATED base is 0.35 (never starts higher)"
+        - "recordRetrievalAndUse() increments count by 1"
+        - "Guardian confirmation (successOutcome) increments by 3x"
+        - "KNOWLEDGE_RETRIEVAL_AND_USE event emitted"
+        - "getConfidenceDebugInfo() returns all 11 debug fields"
+        - "Unit test: ACT-R formula matches expected values for sample inputs"
+        - "Unit test: confidence ceiling enforcement rejects invalid values"
+        - "Unit test: retrieval_count increment tested (1x and 3x Guardian)"
+        - "Integration test: computeConfidence() for real nodes matches formula"
+        - "Performance: computeConfidence() <1ms (pure function, no DB call)"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, sentinel]
+    model: sonnet
+    dependencies: [E3-T002]
+    complexity: M
+
+  - id: E3-T006
+    meta:
+      title: "queryContext() for LLM context assembly"
+      description: |
+        Implement queryContext() — the bounded subgraph traversal that assembles
+        knowledge context for LLM voice generation (Communication subsystem).
+
+        Scope:
+        Per Atlas: LLM needs rich context about Sylphie's world understanding to generate
+        authentic responses. But unbounded graph traversal is expensive. queryContext()
+        uses depth-limited BFS to gather relevant knowledge without query explosion.
+
+        Implementation:
+        - queryContext(nodeId, depth, confidenceFilter): Promise<Subgraph>
+          * Start at nodeId (target entity/concept)
+          * BFS traversal to specified depth (typically 1–3)
+          * At each hop: fetch outgoing edges (RELATES_TO, INSTANCE_OF, HAS_PROPERTY, etc.)
+          * Filter by confidence threshold (optional: only return edges with confidence > 0.50)
+          * Collect all nodes and edges in subgraph
+          * Compute transitive closure for inference (if A->[B] and B->[C], include A->[C])
+          * Return {nodes: WkgNode[], edges: WkgEdge[], inferred: WkgEdge[]}
+
+        - detectContradictions(subgraph): Contradiction[]
+          * Within assembled subgraph, find contradictions (CONTRADICTS edges)
+          * Return list of contradictions with severity
+          * Passed to Communication for contextual awareness
+
+        - queryContextWithProvenance(nodeId, depth, provenanceFilter): Promise<Subgraph>
+          * Same as queryContext but filtered by provenance
+          * Used for lesion test: exclude LLM_GENERATED to see what Sylphie "knows"
+          * vs. what LLM is saying
+
+        Performance targets (per Sentinel):
+        - Depth 1: <5ms
+        - Depth 2: <20ms
+        - Depth 3: <50ms
+        - Max depth enforced at 3 to prevent runaway queries
+
+        Per Atlas: This is NOT a general-purpose graph query. It's tailored for LLM
+        context assembly. Other subsystems use simpler queryEdges() + findNode().
+
+      acceptance_criteria:
+        - "queryContext() performs BFS to specified depth"
+        - "Returns {nodes, edges, inferred_edges} subgraph"
+        - "Filters by confidence threshold (optional)"
+        - "Depth limited to max 3"
+        - "Transitive closure computed (inferred edges)"
+        - "detectContradictions() identifies CONTRADICTS edges in subgraph"
+        - "queryContextWithProvenance() filters by provenance source"
+        - "Lesion test query (exclude LLM_GENERATED) works correctly"
+        - "Performance: depth 1 <5ms, depth 2 <20ms, depth 3 <50ms"
+        - "Integration test: assemble context for entity with 5 neighbors, depth 2"
+        - "Integration test: contradiction detection within subgraph"
+        - "Integration test: lesion test filters LLM_GENERATED correctly"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, sentinel]
+    model: sonnet
+    dependencies: [E3-T003, E3-T004]
+    complexity: M
+
+  - id: E3-T007
+    meta:
+      title: "SelfKgService implementation (Grafeo or fallback)"
+      description: |
+        Implement SelfKgService — Sylphie's self-model (KG(Self)).
+        This stores her understanding of her own capabilities, drive patterns,
+        prediction accuracy, and behavioral patterns.
+
+        CRITICAL: Implementation path depends on E3-T001 (Grafeo spike) outcome.
+        - If Grafeo viable: implement against Grafeo (embedded graph DB)
+        - If Grafeo blocked: implement against Plan B (SQLite or alternative)
+        Code structure remains identical; only backing store changes.
+
+        Self KG Schema (per Atlas + Science):
+        Nodes:
+        - Capability { id, name, confidence, supported_contexts[], limitations[] }
+        - DrivePattern { id, drive_name, trigger_condition, response_pattern, confidence }
+        - PredictionAccuracy { id, prediction_type, accuracy_rate, error_patterns[], confidence }
+        - BehavioralPattern { id, pattern_name, frequency, contexts[], confidence }
+
+        Edges:
+        - ENABLES (Capability enables another capability)
+        - UNDERMINES (Capability undermines another)
+        - PREDICTS (Behavioral pattern predicts outcome)
+        - CORRELATES_WITH (Self-understanding correlates with external evidence)
+        - CONFLICTS_WITH (Self-concept conflicts with contradicting evidence)
+
+        Implementation (Grafeo path):
+        - SelfKgService @Injectable() implementing ISelfKgService
+        - Inject GRAFEO_INSTANCE token (initialized in KnowledgeModule)
+        - upsertConcept(concept): Promise<SelfConcept>
+          * Upsert node in Grafeo with confidence, provenance
+          * Return updated node
+        - queryConcept(id): Promise<SelfConcept | null>
+          * Fetch single concept
+        - queryByType(type: "capability" | "drive_pattern" | ...): Promise<SelfConcept[]>
+          * Query all concepts of a type
+        - recordConflict(node, conflictingEvidence): Promise<void>
+          * When external evidence contradicts self-model: record conflict edge
+          * Emit SELF_CONCEPT_UPDATED event
+          * Do NOT immediately update confidence; flag for Learning analysis
+
+        Integration with Drive Engine (E4):
+        - Self KG is readable by Drive Engine (reads drive_patterns, prediction_accuracy)
+        - Self KG is updated by Learning (E7) after consolidation
+        - Self KG drives Self-Evaluation signals (Integrity, Cognitive Awareness)
+
+        Per Science (Piaget): Self-model develops through accommodation when
+        contradictions are detected. recordConflict() flags these for behavioral response.
+
+        Per Canon Guardian Asymmetry: If guardian explicitly corrects self-model,
+        update with GUARDIAN provenance (confidence boost to 3x weight).
+
+      acceptance_criteria:
+        - "SelfKgService implements ISelfKgService"
+        - "Injects backing store token (Grafeo or Plan B)"
+        - "All 4 node types supported (Capability, DrivePattern, etc.)"
+        - "upsertConcept() stores with confidence and provenance"
+        - "queryConcept() retrieves by ID"
+        - "queryByType() filters by concept type"
+        - "recordConflict() stores conflict edge without updating confidence"
+        - "SELF_CONCEPT_UPDATED event emitted on conflict"
+        - "Integration test: create 5 concepts, query by type, verify all returned"
+        - "Integration test: record conflict, verify edge stored"
+        - "Integration test: lesion test (exclude LLM_GENERATED) works for Self KG"
+        - "Memory test: 1000 concepts persist without errors"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E3-T001, E3-T002]
+    complexity: M
+
+  - id: E3-T008
+    meta:
+      title: "OtherKgService implementation (per-person Grafeo instances)"
+      description: |
+        Implement OtherKgService — per-person models of other people (KG(Jim), KG(Guardian), etc.).
+        Each person gets their own isolated Grafeo instance for person-specific knowledge.
+
+        Per Canon + Forge: Complete isolation between graphs prevents cross-contamination
+        of person models. Every person maintains: traits, beliefs, preferences, fears, enjoys,
+        and inconsistencies detected.
+
+        Implementation:
+        - OtherKgService @Injectable() with internal registry
+        - getPersonGraph(person_id): Promise<Grafeo>
+          * Return or create per-person Grafeo instance
+          * Instances stored in Map<person_id, Grafeo>
+          * Each instance has persistence (LevelDB or Plan B alternative)
+        - upsertPersonConcept(person_id, concept): Promise<PersonConcept>
+          * Get person's graph
+          * Upsert node (id, label, type, confidence, provenance)
+        - queryPersonConcept(person_id, id): Promise<PersonConcept | null>
+        - queryPersonConceptsByType(person_id, type): Promise<PersonConcept[]>
+          * Query by type ("trait", "belief", "preference", "fear", "enjoys")
+        - recordPersonConflict(person_id, node, conflictingEvidence): Promise<void>
+          * Record inconsistency as INCONSISTENT_WITH edge
+          * Emit PERSON_CONCEPT_UPDATED event
+        - listPersonGraphs(): string[]
+          * Return list of person_ids tracked
+        - deletePersonGraph(person_id): Promise<void>
+          * Clean up person's Grafeo instance (for isolation tests)
+
+        Registry Pattern (per Forge):
+        - Internal Map prevents accidental external access to Grafeo instances
+        - Only getPersonGraph() and deletePersonGraph() manage lifecycle
+        - Each instance owns its own data directory
+
+        Per Science (Piaget): Person models develop through repeated interactions.
+        Each conflict recorded is assimilated into the person-specific schema.
+
+        Example usage (from Communication module):
+        1. User says "I prefer coffee" → queryPersonConcept("jim", "preferences")
+           returns existing "Prefers.coffee" with confidence 0.85
+        2. User says "Actually, I prefer tea" → CONFLICT detected
+           → recordPersonConflict() creates INCONSISTENT_WITH edge
+           → Drive Engine's Social signal increases (tension resolved)
+
+      acceptance_criteria:
+        - "OtherKgService implements IOtherKgService"
+        - "Registry Map holds per-person Grafeo instances"
+        - "getPersonGraph() lazily creates instance on first access"
+        - "All 6 edge types supported (HAS_TRAIT, BELIEVES, PREFERS, FEARS, ENJOYS, INCONSISTENT_WITH)"
+        - "upsertPersonConcept() stores in person-specific graph"
+        - "queryPersonConceptsByType() filters by type"
+        - "recordPersonConflict() stores conflict edge (INCONSISTENT_WITH)"
+        - "PERSON_CONCEPT_UPDATED event emitted on conflict"
+        - "listPersonGraphs() returns all tracked persons"
+        - "deletePersonGraph() cleans up instance (for testing)"
+        - "Integration test: create models for 3 persons, query each independently"
+        - "Integration test: conflicts in person A don't affect person B"
+        - "Integration test: recordPersonConflict() works correctly"
+        - "Isolation test: person A graph completely separate from person B"
+        - "npx tsc --noEmit passes"
+
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E3-T001, E3-T002]
+    complexity: M
+
+  - id: E3-T009
+    meta:
+      title: "KnowledgeModule wiring and cross-module integration"
+      description: |
+        Wire all four knowledge services (WKG, ConfidenceService, SelfKgService,
+        OtherKgService) into a cohesive KnowledgeModule with proper DI and event emission.
+
+        Per Forge: The Knowledge Module must:
+        - Export services via DI tokens (not concrete classes)
+        - Emit events for all mutations
+        - Coordinate with EventsModule (import events, emit via injected IEventService)
+        - Establish clear consumer boundaries (which modules import which services)
+
+        Deliverables:
+        - src/knowledge/knowledge.module.ts
+          * KnowledgeModule @Module()
+          * Providers: WkgService, SelfKgService, OtherKgService, ConfidenceService
+          * DI Tokens: WKG_SERVICE, SELF_KG_SERVICE, OTHER_KG_SERVICE, CONFIDENCE_SERVICE
+          * Exports: all 4 tokens (no concrete classes)
+          * Imports: EventsModule (for IEventService injection)
+          * OnModuleInit: initialize all services, run schema migrations
+          * OnModuleDestroy: cleanup (Neo4j driver, Grafeo instances)
+
+        - src/knowledge/knowledge.providers.ts
+          * Provider definitions with full DI configuration
+          * Factory functions for service creation
+          * Token definitions (use Symbol, not string, for type safety)
+
+        - src/knowledge/index.ts (barrel export)
+          * Export DI tokens and interface types
+          * Export NO concrete classes
+
+        Event Emission (per Forge):
+        - WkgService injects @Inject(EVENTS_SERVICE) private eventsService: IEventService
+        - On upsertNode: emit KNOWLEDGE_NODE_UPSERTED
+        - On upsertEdge: emit KNOWLEDGE_EDGE_UPSERTED
+        - On contradiction detected: emit CONTRADICTION_DETECTED
+        - On recordRetrievalAndUse: emit KNOWLEDGE_RETRIEVAL_AND_USE
+        - SelfKgService: emit SELF_CONCEPT_UPDATED on conflict
+        - OtherKgService: emit PERSON_CONCEPT_UPDATED on conflict
+        - All events fire-and-forget (don't block service call)
+        - Error handler: log, don't crash (event queue should be reliable)
+
+        Cross-Module Integration:
+        - DecisionMakingModule imports WKG_SERVICE, CONFIDENCE_SERVICE
+          * Retrieves Type 1 reflexes from WKG
+          * Records retrieval-and-use after execution
+        - LearningModule imports WKG_SERVICE, SELF_KG_SERVICE
+          * Consolidates events into WKG edges
+          * Updates Self KG with prediction accuracy
+        - CommunicationModule imports WKG_SERVICE, CONFIDENCE_SERVICE
+          * Queries context via queryContext()
+          * Uses confidence for response confidence thresholds
+        - DriveEngineModule imports SELF_KG_SERVICE
+          * Reads drive patterns from Self KG
+          * Reads prediction accuracy for self-evaluation signals
+        - PlanningModule imports WKG_SERVICE
+          * Queries patterns for simulation
+
+        No circular imports: KnowledgeModule -> EventsModule, but not vice versa.
+
+      acceptance_criteria:
+        - "KnowledgeModule defined with all 4 services"
+        - "All 4 DI tokens exported (WKG_SERVICE, etc.)"
+        - "No concrete classes exported (only tokens + interface types)"
+        - "EventsModule imported for IEventService"
+        - "All 6 knowledge event types emit correctly"
+        - "OnModuleInit runs schema migrations"
+        - "OnModuleDestroy cleans up resources"
+        - "Unit test: services boot, all tokens resolve"
+        - "Integration test: app boots with KnowledgeModule, no circular dependency warnings"
+        - "Integration test: DecisionMakingModule can import WKG_SERVICE, CONFIDENCE_SERVICE"
+        - "Integration test: event emission verified (events recorded in TimescaleDB)"
+        - "No circular import errors"
+        - "npx tsc --noEmit passes"
+
+    agents: [forge, atlas]
+    model: sonnet
+    dependencies: [E3-T003, E3-T005, E3-T007, E3-T008]
+    complexity: M
+
+  - id: E3-T010
+    meta:
+      title: "Integration tests, provenance enforcement, lesion test support"
+      description: |
+        Comprehensive integration test suite covering all knowledge services,
+        end-to-end workflows, provenance enforcement, and lesion test support.
+        Tests run against real Neo4j + Grafeo instances (docker-compose).
+
+        Test Categories:
+
+        1. **WKG Correctness:**
+           - Create 10 entities with varying provenance
+           - Create edges with confidence ceilings
+           - Verify confidence computed lazily
+           - Verify is_instance flag distinguishes ABox/TBox
+           - Query nodes by confidence threshold
+
+        2. **Confidence Dynamics:**
+           - Verify ACT-R formula: confidence increases with retrieval_count
+           - Verify decay: older knowledge loses confidence over time
+           - Verify ceiling: new untested knowledge capped at base
+           - Verify Guardian boost: recordRetrievalAndUse with 3x multiplier
+           - Verify SHRUG_THRESHOLD: no knowledge >0.50 triggers shrug
+
+        3. **Contradiction Detection:**
+           - Create factual contradiction (color=red vs. color=blue)
+           - Create logical contradiction (cannot be both X and Y)
+           - Verify CONTRADICTS edge stored
+           - Verify severity computed (confidence difference)
+           - Verify write proceeds despite contradiction
+           - Verify contradiction doesn't prevent re-querying conflicted edge
+
+        4. **Provenance Immutability:**
+           - Create node with SENSOR provenance
+           - Attempt to change provenance to GUARDIAN: rejected
+           - Update confidence on same node: provenance unchanged
+           - Verify lesion test: filter by provenance, exclude LLM_GENERATED
+
+        5. **Self KG Isolation:**
+           - Create 5 self-concepts of different types
+           - Query by type, verify all returned
+           - Record conflict: verify CONFLICTS_WITH edge
+           - Verify Self KG data isolated (no leakage to WKG)
+
+        6. **Other KG Isolation:**
+           - Create person models for 3 people
+           - Add conflicting traits to each person
+           - Query person A's model: verify only person A's data
+           - Query person B's model: verify person B unaffected by person A's updates
+           - Verify each person's Grafeo instance separate
+
+        7. **Cross-Service Workflows:**
+           - Decision Making retrieves action from WKG
+           - Records retrieval-and-use: confidence increases
+           - Learning consolidates event into new WKG edge
+           - Drive Engine reads prediction_accuracy from Self KG
+           - Self-evaluation signal triggered
+
+        8. **Event Emission:**
+           - Verify KNOWLEDGE_NODE_UPSERTED event emitted on upsertNode
+           - Verify KNOWLEDGE_EDGE_UPSERTED event emitted on upsertEdge
+           - Verify CONTRADICTION_DETECTED event emitted with severity
+           - Verify KNOWLEDGE_RETRIEVAL_AND_USE event emitted
+           - Verify SELF_CONCEPT_UPDATED event on Self KG conflict
+           - Verify PERSON_CONCEPT_UPDATED event on Other KG conflict
+           - Verify all events recorded in TimescaleDB
+
+        9. **Lesion Test Support:**
+           - Run queryContextWithProvenance(node, depth, exclude_LLM_GENERATED)
+           - Verify returned context contains only SENSOR + GUARDIAN + INFERENCE
+           - Verify LLM_GENERATED edges excluded
+           - This enables lesion test: "What does Sylphie know without LLM?"
+
+        10. **Performance Targets:**
+            - upsertNode: <10ms p99
+            - findNode: <5ms p99
+            - upsertEdge: <20ms p99
+            - queryEdges (10 results): <10ms p99
+            - queryContext (depth 2): <20ms p99
+            - computeConfidence: <1ms p99
+            - recordRetrievalAndUse: <10ms p99
+            - Concurrency: 100 parallel upserts complete <2s
+
+        11. **Stability under Load:**
+           - Record 1000 nodes with various provenance
+           - Create 500 edges with contradictions
+           - Query confidence on all nodes (lazy computation)
+           - No data corruption, no queries timeout
+           - Memory usage <500MB (Grafeo instances)
+
+        12. **Error Handling:**
+           - Invalid provenance rejected with InvalidProvenanceError
+           - Confidence ceiling violation rejected with ConfidenceCeilingError
+           - Neo4j offline: service reports health check failure
+           - Grafeo crash (if applicable): fallback activates or error logged
+
+      acceptance_criteria:
+        - "All 12 test categories implemented"
+        - "Tests run against real Neo4j + Grafeo (docker-compose)"
+        - "Test coverage >85% for knowledge services"
+        - "All confidence dynamics verified (formula, decay, ceiling, boost)"
+        - "All 5 contradiction types detected and stored"
+        - "Provenance immutability verified (cannot change after creation)"
+        - "Self KG and Other KG isolation verified"
+        - "Cross-service workflows tested end-to-end"
+        - "All 6 event types emitted and recorded in TimescaleDB"
+        - "Lesion test: queryContextWithProvenance excludes LLM_GENERATED correctly"
+        - "Performance targets met for all 8 operations"
+        - "Concurrency test: 100 parallel operations complete in <2s"
+        - "Load test: 1000 nodes + 500 edges, no corruption"
+        - "Error handling verified (invalid provenance, ceiling violations, offline DB)"
+        - "Tests document expected behavior for Jim (acceptance criteria validation)"
+        - "npx tsc --noEmit passes across entire project"
+        - "NestJS application starts without circular dependency warnings"
+
+    agents: [sentinel, atlas, forge]
+    model: sonnet
+    dependencies: [E3-T003, E3-T004, E3-T005, E3-T006, E3-T007, E3-T008, E3-T009]
+    complexity: L
+
+---
+
+# Critical Dependencies and Ordering
+
+## Must Complete Before E3 Implementation:
+- E1: Infrastructure (Neo4j, TimescaleDB, event backbone)
+- E2: Events Module (event types, EventsService)
+
+## Parallel Tracks (can run concurrently):
+- T001 (Grafeo spike): Independent, but T007–T008 depend on outcome
+- T002 (Types): Independent, builds foundation for all other tickets
+- T003–T006 (WKG + Confidence): Can run in sequence once T002 done
+- T007–T008 (Self/Other KGs): Depend on T001 spike outcome
+
+## Critical Path:
+1. E3-T001 (Grafeo spike) — validates Plan A or triggers Plan B
+2. E3-T002 (Types) — foundation for all services
+3. E3-T003 (WKG foundation) — Neo4j schema and service skeleton
+4. E3-T004 (Edge ops + contradictions) — relationship write path
+5. E3-T005 (ConfidenceService) — ACT-R wrapper and retrieval tracking
+6. E3-T006 (queryContext) — LLM context assembly
+7. E3-T007 (SelfKgService) — self-model implementation
+8. E3-T008 (OtherKgService) — per-person models
+9. E3-T009 (Module wiring) — DI and event emission
+10. E3-T010 (Integration tests) — validates entire module
+
+## Downstream Dependencies:
+- E4 (Drive Engine): Requires WKG_SERVICE, SELF_KG_SERVICE, CONFIDENCE_SERVICE
+- E5 (Decision Making): Requires WKG_SERVICE, CONFIDENCE_SERVICE, retrieval-and-use tracking
+- E6 (Communication): Requires WKG_SERVICE, queryContext()
+- E7 (Learning): Requires all knowledge services, consolidation write path
+- E8 (Planning): Requires WKG_SERVICE
+
+---
+
+# Risks and Mitigations
+
+## Risk 1: Grafeo Pre-1.0 Status (CRITICAL)
+**Mitigation:** E3-T001 (technology spike) validates viability before full implementation.
+If Grafeo blocked, E3-T007–T008 adapted to Plan B within same epic.
+
+## Risk 2: Confidence Dynamics Complexity
+**Mitigation:** ACT-R formula is pure function (testable). ConfidenceService (T005)
+provides exhaustive unit tests before integration.
+
+## Risk 3: Contradiction Handling
+**Mitigation:** Per Science (Piaget), contradictions are signals, not errors.
+T004 ensures writes proceed despite contradictions; Learning (E7) analyzes them.
+
+## Risk 4: Provenance Immutability vs. Guardian Asymmetry
+**Mitigation:** Per Canon analysis, Option C preserves immutability while enabling 3x weight.
+Provenance never changes; retrieval_count incremented by 3x for guardian-confirmed knowledge.
+
+## Risk 5: Cross-Graph Isolation Breaches
+**Mitigation:** Type system enforces isolation (SelfKgService only accepts SelfConcept).
+Integration tests (T010) verify complete isolation; no cross-contamination.
+
+---
+
+# Jim Decisions Required (from canon.md)
+
+Before implementation, Jim must decide on six critical gaps:
+
+1. **WKG Three-Level Structure** (Concept/Procedure/Instance)
+   - Current E3: not explicitly modeled
+   - Option A: Use separate node labels (Concept, Procedure, Instance)
+   - Option B: Single WkgNode with type property
+   - Recommended: Option B (simpler, is_instance flag suffices)
+
+2. **Guardian Confirmation Mechanic**
+   - Option A: Update provenance to GUARDIAN
+   - Option B: Store provenance_confirmed flag
+   - Option C: Increment retrieval_count by 3x (preserve provenance, boost weight)
+   - Recommended: Option C (preserves lesion test, enables asymmetry)
+
+3. **Success Definition for Retrieval-and-Use**
+   - Current: Decision Making does not emit USE_SUCCESS events
+   - Required: Define what constitutes "use + success" for confidence increment
+   - Decision: Does Decision Making emit outcome, or does Learning infer success from prediction accuracy?
+
+4. **Contradiction Resolution**
+   - Option A: Block updates on contradiction (reject conflicting edge)
+   - Option B: Flag and proceed (store CONTRADICTS edge, write succeeds)
+   - Recommended: Option B (per Piaget: contradictions are growth signals)
+
+5. **Self-Evaluation Protocol (CANON A.8)**
+   - Currently reserved in CANON
+   - Required: Jim specification before E4 (Drive Engine) can read Self KG
+
+6. **Knowledge Domain Structure (CANON A.9)**
+   - Option A: Flat (all entities in single WKG)
+   - Option B: Partitioned (domains: "physical world", "social", "self", "procedural")
+   - Decision: Affects queryContext() scope and Learning partition strategy
+
+---
+
+# Session Log Template
+
+After E3 completion, document in `docs/sessions/YYYY-MM-DD-knowledge-module.md`:
+
+```
+# YYYY-MM-DD -- Knowledge Module Implementation
+
+## Changes
+- NEW: src/knowledge/services/wkg/wkg.service.ts -- Neo4j WKG implementation
+- NEW: src/knowledge/services/confidence/confidence.service.ts -- ACT-R wrapper
+- NEW: src/knowledge/services/self-kg/self-kg.service.ts -- Grafeo Self KG (or Plan B)
+- NEW: src/knowledge/services/other-kg/other-kg.service.ts -- Per-person Grafeo instances
+- NEW: src/knowledge/types/ -- All TypeScript types and interfaces
+- MODIFIED: src/app.module.ts -- Import KnowledgeModule
+
+## Wiring Changes
+- KnowledgeModule exports WKG_SERVICE, CONFIDENCE_SERVICE, SELF_KG_SERVICE, OTHER_KG_SERVICE
+- DecisionMakingModule imports WKG_SERVICE, CONFIDENCE_SERVICE
+- LearningModule imports WKG_SERVICE, SELF_KG_SERVICE
+- CommunicationModule imports WKG_SERVICE, CONFIDENCE_SERVICE
+- DriveEngineModule imports SELF_KG_SERVICE
+- PlanningModule imports WKG_SERVICE
+- All modules receive events via EventsModule (injected IEventService)
+
+## Known Issues
+- [List any incomplete or deferred work]
+
+## Gotchas for Next Session
+- [Lessons learned, performance bottlenecks, testing gotchas]
+```

@@ -1,0 +1,781 @@
+epic: 8
+title: "Planning (Opportunity-to-Procedure Pipeline)"
+phase: 1
+created: 2026-03-29
+status: complete
+
+tickets:
+  - id: E8-T001
+    meta:
+      title: "Planning Types & Interface Definitions"
+      description: |
+        Define all types and interfaces for the Planning subsystem. This ticket grounds all
+        subsequent work — every other ticket imports from these types.
+
+        Deliverables:
+        - Opportunity type (id, context fingerprint, priority, source event, classification)
+        - OpportunityPriority type (initial priority, current priority, enqueued timestamp)
+        - ResearchResult type (event patterns, failures, discrepancies, evidence strength, prior attempts)
+        - SimulatedOutcome type (action, predicted drive effects, success probability, information gain, expected value)
+        - SimulationResult type (simulations array, hasViableOutcome, bestCandidate)
+        - PlanProposal type (id, opportunity ref, description, procedure spec, evidence strength, complexity)
+        - ActionStep type (order, action, expected duration, dependsOn, fallback)
+        - ContextFingerprint type (primary entity, secondary entities, situational factors)
+        - PredictedOutcome type (drive effects, expected duration, confidence)
+        - AbortCondition type (condition, threshold, action)
+        - ValidationResult type (passes, failures, checked constraints, suggested revisions)
+        - ConstraintCheckResult type (constraint name, passes, details)
+        - CreatedProcedure type (id, confidence, status)
+        - PlanEvaluation type (MAE, success, failure, new confidence)
+        - PlanningResult discriminated union (CREATED | RATE_LIMITED | INSUFFICIENT_EVIDENCE | NO_VIABLE_OUTCOME | VALIDATION_FAILED)
+        - PlanningState type (queue size, active plans, rate limiter state, cold-start dampening)
+        - ColdStartConfig type (threshold decisions, initial dampening, ramp type)
+        - RateLimitConfig type (max plans/window, window duration, max active, max tokens/plan)
+        - QueueConfig type (max size, decay rate/hour, min priority threshold)
+
+        Interfaces:
+        - IPlanningService: processOpportunity(), getState(), getOpportunityQueue()
+        - IOpportunityResearchService: research(opportunity) -> ResearchResult
+        - ISimulationService: simulate(research) -> SimulationResult
+        - IPlanProposalService: propose(research, simulations) -> PlanProposal[], revise(proposal, feedback) -> PlanProposal
+        - IConstraintValidationService: validate(proposal) -> ValidationResult
+        - IProcedureCreationService: create(proposal, validation) -> CreatedProcedure
+        - IPlanEvaluationService: evaluateExecution(procedureId, execution) -> PlanEvaluation
+        - IOpportunityQueueService: enqueue(), dequeue(), getState(), size()
+        - IPlanningRateLimiter: canProceed(), recordPlanCreated(), getState()
+
+        DI Tokens:
+        - PLANNING_SERVICE, OPPORTUNITY_QUEUE, PLANNING_RATE_LIMITER
+        - OPPORTUNITY_RESEARCH_SERVICE, SIMULATION_SERVICE
+        - PLAN_PROPOSAL_SERVICE, CONSTRAINT_VALIDATION_SERVICE
+        - PROCEDURE_CREATION_SERVICE, PLAN_EVALUATION_SERVICE
+
+      acceptance_criteria:
+        - "All interfaces compile with npx tsc --noEmit"
+        - "Every type has JSDoc with CANON reference where applicable"
+        - "PlanningResult is a discriminated union with exhaustive status variants"
+        - "Provenance field present on CreatedProcedure (LLM_GENERATED)"
+        - "Confidence field on CreatedProcedure defaults to 0.35"
+        - "No use of 'any' type"
+        - "All DI tokens defined as symbols"
+        - "Config types have class-validator decorators"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E8-T002
+    meta:
+      title: "PlanningModule Skeleton & DI Wiring"
+      description: |
+        Replace the E0 stub PlanningModule with the real module structure. Wire all providers,
+        imports, and exports. Establish the module boundary.
+
+        Module imports: EventsModule, KnowledgeModule, ConfigModule
+        Module injects (read-only): DRIVE_STATE_READER from DriveEngineModule,
+        LLM_SERVICE from CommunicationModule
+
+        Directory structure per epic-plan.md architecture section.
+
+        Deliverables:
+        - Full planning.module.ts with imports, providers, exports
+        - Empty service classes implementing interfaces from T001
+        - planning.tokens.ts with all DI tokens
+        - Configuration schema additions (PlanningConfig with rate limits, cold-start, queue settings)
+        - All barrel exports (index.ts per subdirectory)
+        - Exception hierarchy in planning.exceptions.ts
+
+        Exports (public): PLANNING_SERVICE
+        Internal only: All pipeline services, queue, rate limiter
+
+      acceptance_criteria:
+        - "PlanningModule imports EventsModule, KnowledgeModule, ConfigModule"
+        - "All providers registered with correct tokens"
+        - "Module exports only PLANNING_SERVICE token"
+        - "No circular module dependencies"
+        - "npx tsc --noEmit passes with zero errors"
+        - "Exception classes: PlanningException, InsufficientEvidenceError, NoViableOutcomeError, ValidationFailedError, RateLimitExceededError, QueueFullError, PipelineStageError"
+        - "Configuration validated with class-validator on startup"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E8-T001]
+    complexity: M
+
+  - id: E8-T003
+    meta:
+      title: "OpportunityQueueService with Priority Decay"
+      description: |
+        Implement the priority queue that manages unaddressed Opportunities. Core infrastructure
+        for the entire pipeline — without this, Opportunities have nowhere to go.
+
+        Features:
+        - enqueue(opportunity): Apply cold-start dampening to priority, add to queue,
+          enforce max size (evict lowest priority if full), emit OPPORTUNITY_RECEIVED event
+        - dequeue(): Apply decay to all items, sort by priority, return highest or null,
+          prune items below 0.01 priority
+        - getState(): Return queue size, oldest item age, priority distribution
+        - Priority decay: exponential at configurable rate (default 10%/hour)
+        - Max queue size: configurable (default 50)
+        - OPPORTUNITY_DROPPED event when evicting
+
+        Cold-start dampening integration:
+        - Pure function: computeColdStartDampening(totalDecisions, config) -> number
+        - Linear ramp: 0.8 * (1 - totalDecisions / threshold) where threshold defaults to 100
+        - Applied to Opportunity priority at enqueue time
+        - totalDecisions read from Events module
+
+      acceptance_criteria:
+        - "Enqueue respects max queue size, evicts lowest priority"
+        - "Dequeue applies exponential decay correctly"
+        - "Items below 0.01 priority are pruned on dequeue"
+        - "Cold-start dampening reduces priority by 80% at decision 0"
+        - "Cold-start dampening reaches 0% at configured threshold"
+        - "OPPORTUNITY_RECEIVED event emitted on enqueue"
+        - "OPPORTUNITY_DROPPED event emitted on eviction"
+        - "Unit test: enqueue 60 items into queue of 50, verify 10 evicted"
+        - "Unit test: decay after 10 hours reduces priority to ~0.35"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002]
+    complexity: M
+
+  - id: E8-T004
+    meta:
+      title: "PlanningRateLimiter"
+      description: |
+        Implement rate limiting to prevent Planning Runaway attractor state.
+
+        Three limits enforced:
+        1. Plans per time window: max 3 per 1-hour window (configurable)
+        2. Active plans: max 10 created-but-not-evaluated (configurable)
+        3. Token budget: max 4000 LLM tokens per plan (configurable)
+
+        Methods:
+        - canProceed(): Check all three limits, return boolean
+        - recordPlanCreated(): Increment counters
+        - recordPlanEvaluated(): Decrement active count
+        - getState(): Return current counts, window info, limits
+
+        Window auto-resets after duration expires.
+        All limits configurable via PlanningConfig.
+
+      acceptance_criteria:
+        - "canProceed returns false when plans/window limit hit"
+        - "canProceed returns false when active plans limit hit"
+        - "Window resets correctly after duration expires"
+        - "recordPlanCreated increments plan counter"
+        - "recordPlanEvaluated decrements active count"
+        - "getState returns accurate metrics"
+        - "Unit test: create 3 plans, verify 4th blocked"
+        - "Unit test: wait for window reset, verify new plans allowed"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002]
+    complexity: S
+
+  - id: E8-T005
+    meta:
+      title: "OpportunityResearchService"
+      description: |
+        Implement the RESEARCH stage of the pipeline. Queries TimescaleDB for event patterns
+        around a detected Opportunity to understand WHY predictions failed in this context.
+
+        Research process:
+        1. Query event frequency for the failure context (7-day window, configurable)
+        2. Identify specific prediction failures (MAE > 0.15)
+        3. Compute discrepancies: expected vs actual outcomes
+        4. Query WKG for relevant knowledge about the context
+        5. Check for prior plan attempts on same context fingerprint
+        6. Compute evidence strength (failures count, discrepancy consistency, prior attempts)
+        7. Assess evidence sufficiency gate: 2+ failures with MAE > 0.15
+
+        Evidence strength formula:
+        - More failures = stronger (up to 0.40 from failure count)
+        - Consistent discrepancy patterns = stronger (up to 0.30)
+        - No prior attempts = fresh opportunity bonus (0.20)
+        - Failed prior attempts = stronger need (up to 0.30)
+        - Capped at 1.0
+
+      acceptance_criteria:
+        - "Queries TimescaleDB via EventsModule for failure context"
+        - "Identifies prediction failures with MAE > 0.15"
+        - "Computes evidence strength per formula"
+        - "Evidence sufficiency requires 2+ failures"
+        - "Queries WKG for context knowledge"
+        - "Checks for prior plan attempts"
+        - "RESEARCH_COMPLETED event emitted on completion"
+        - "RESEARCH_INSUFFICIENT event emitted when evidence insufficient"
+        - "Returns hasSufficientEvidence boolean"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002]
+    complexity: M
+
+  - id: E8-T006
+    meta:
+      title: "OutcomeSimulator"
+      description: |
+        Implement the SIMULATE stage. Models potential outcomes using historical pattern matching
+        (Phase 1 default per CANON A.5 reserved status).
+
+        Simulation process:
+        1. Generate 3-5 candidate actions from research results
+        2. For each candidate:
+           a. Query WKG for similar past actions (by type, context overlap)
+           b. Predict drive effects by averaging historical outcomes of similar actions
+           c. Estimate success probability from event frequency of similar actions
+           d. Estimate information gain from WKG gaps in this context
+           e. Compute expected value: weighted combination of drive effects, success probability, info gain
+        3. Sort candidates by expected value
+        4. Gate: hasViableOutcome = any candidate with expected value > 0.3
+
+        Conservative estimation:
+        - Sparse data (< 3 similar actions) → wide uncertainty, lower expected value
+        - Prefer simple plans with moderate EV over complex plans with high EV but high uncertainty
+
+        Helper classes:
+        - CandidateGenerator: creates distinct Action candidates from research
+        - DriveEffectPredictor: queries WKG, aggregates historical effects
+        - SuccessEstimator: frequency-based probability
+        - InformationGainEstimator: WKG gap analysis
+
+      acceptance_criteria:
+        - "Generates 3-5 candidate actions per Opportunity"
+        - "Predicts drive effects from similar WKG actions"
+        - "Estimates success probability from event frequency"
+        - "Computes expected value correctly"
+        - "hasViableOutcome true when any candidate EV > 0.3"
+        - "Sparse data produces conservative (lower) estimates"
+        - "SIMULATION_COMPLETED event emitted"
+        - "SIMULATION_NO_VIABLE event emitted when no viable outcome"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002, E8-T005]
+    complexity: L
+
+  - id: E8-T007
+    meta:
+      title: "PlanProposalService"
+      description: |
+        Implement the PROPOSE stage. Generates concrete plan proposals from simulation results.
+
+        Proposal generation:
+        1. Take top 3 simulation candidates
+        2. For each, create a PlanProposal:
+           - name: descriptive, human-readable
+           - triggerContext: ContextFingerprint from the Opportunity
+           - actionSequence: ordered ActionSteps with dependencies and fallbacks
+           - expectedOutcome: predicted drive effects and duration
+           - abortConditions: when to stop executing (e.g., MAE too high, drive state critical)
+        3. Include evidence strength and simulated expected value as metadata
+
+        Revision logic:
+        - revise(proposal, suggestedRevisions): modify proposal based on validation feedback
+        - Maximum 2 revisions per proposal
+        - Revisions address specific constraint failures
+
+        Proposals must be grounded in research evidence. Do NOT generate speculative plans
+        that have no basis in observed patterns.
+
+      acceptance_criteria:
+        - "Generates up to 3 proposals per simulation result"
+        - "Each proposal has complete PlanProposal structure"
+        - "Action sequences have ordered steps with dependencies"
+        - "Abort conditions specified for each proposal"
+        - "revise() modifies proposal based on constraint feedback"
+        - "PROPOSAL_GENERATED event emitted"
+        - "Proposals reference evidence from research stage"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002, E8-T006]
+    complexity: M
+
+  - id: E8-T008
+    meta:
+      title: "ConstraintValidationService & Checkers"
+      description: |
+        Implement the VALIDATE stage. Validates plan proposals against all constraints before
+        procedure creation. The LLM assists with coherence checking but does NOT make decisions.
+
+        Constraint categories (4 checker classes):
+        1. SafetyConstraintsChecker: no harmful or unsafe actions
+        2. FeasibilityConstraintsChecker: action dependencies satisfiable, complexity reasonable
+        3. CoherenceConstraintsChecker (LLM-assisted): logical consistency of action sequence
+           - Structured prompt with explicit PASS/FAIL output format
+           - LLM validates coherence, does not decide whether to proceed
+        4. ImmutableStandardsChecker: all 6 Immutable Standards enforced
+           - Standard 1 (Theater): no unsupported emotional expressions in plan actions
+           - Standard 2 (Contingency): every reinforcement traces to a specific behavior
+           - Standard 3 (Confidence Ceiling): no assumed high confidence without retrieval-and-use
+           - Standard 4 (Shrug): plan includes uncertainty handler / abort conditions
+           - Standard 5 (Guardian Asymmetry): inherited from shared confidence system
+           - Standard 6 (No Self-Modification): plan does not modify evaluation function
+
+        Orchestration:
+        - validate(proposal): run all 4 checkers, collect results
+        - If failures: extract suggested revisions from failure details
+        - Return ValidationResult with passes/failures
+
+      acceptance_criteria:
+        - "All 4 constraint categories checked"
+        - "All 6 Immutable Standards verified in ImmutableStandardsChecker"
+        - "LLM coherence check uses structured prompt with PASS/FAIL"
+        - "LLM does not decide — only checks coherence"
+        - "ValidationResult contains specific failure reasons"
+        - "Suggested revisions extracted from failures"
+        - "VALIDATION_PASSED or VALIDATION_FAILED event emitted"
+        - "Each checker independently testable"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: [E8-T002]
+    complexity: L
+
+  - id: E8-T009
+    meta:
+      title: "ProcedureCreationService"
+      description: |
+        Implement the CREATE stage. Writes validated plan proposals as Procedure nodes
+        to the World Knowledge Graph.
+
+        Creation process:
+        1. Create Procedure node in WKG via KnowledgeModule:
+           - type: 'Procedure'
+           - provenance: 'LLM_GENERATED' (constraint engine used LLM)
+           - confidence: 0.35 (LLM_GENERATED base)
+           - retrievalCount: 0
+           - lastRetrievalTime: null
+           - Properties: triggerContext, actionSequence, expectedOutcome, abortConditions,
+             evidenceStrength, simulatedExpectedValue, createdFromOpportunity
+        2. Create edges:
+           - TRIGGERED_BY edge: procedure → trigger context primary entity
+           - CAN_ACHIEVE edge: procedure → expected outcome entity (if identifiable)
+           - Both edges with INFERENCE provenance at 0.30 confidence
+        3. Emit PLAN_CREATED event with procedure ID and confidence
+
+        Provenance discipline: LLM_GENERATED on the procedure node because the constraint
+        engine used the LLM during validation. Edges are INFERENCE because they are
+        system-derived relationships.
+
+      acceptance_criteria:
+        - "Procedure node created with provenance LLM_GENERATED"
+        - "Procedure confidence is exactly 0.35"
+        - "retrievalCount starts at 0"
+        - "TRIGGERED_BY edge created with INFERENCE provenance at 0.30"
+        - "CAN_ACHIEVE edge created when applicable"
+        - "PLAN_CREATED event emitted"
+        - "All required properties stored on procedure node"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002]
+    complexity: M
+
+  - id: E8-T010
+    meta:
+      title: "PlanEvaluationService (Post-Execution)"
+      description: |
+        Implement post-execution evaluation. MANDATORY per CANON — plans must be evaluated
+        AFTER execution, not just before. This closes the feedback loop.
+
+        Evaluation process:
+        1. Receive procedure execution outcome from Decision Making
+        2. Load procedure from WKG
+        3. Compare expected drive effects to actual drive effects
+        4. Compute MAE (Mean Absolute Error) across all drive dimensions
+        5. Classify outcome:
+           - Success: MAE < 0.10
+           - Partial: 0.10 <= MAE <= 0.15
+           - Failure: MAE > 0.15
+        6. Update procedure confidence via ACT-R formula:
+           - Success: increment retrievalCount, update lastRetrievalTime
+           - Failure: apply confidence reduction
+        7. Emit PLAN_EVALUATION event
+        8. If failure: emit PLAN_FAILURE event (Drive Engine may create new Opportunity)
+
+        Guardian feedback integration:
+        - Guardian confirmation of plan outcome: 2x weight on confidence update
+        - Guardian correction of plan outcome: 3x weight on confidence reduction
+
+        Graduation/demotion:
+        - Type 1 graduation: confidence > 0.80 AND MAE < 0.10 over last 10 uses
+        - Type 1 demotion: MAE > 0.15 (context changed, plan no longer reliable)
+
+      acceptance_criteria:
+        - "MAE computed correctly from expected vs actual drive effects"
+        - "Outcome classified as success/partial/failure"
+        - "Confidence updated via ACT-R formula"
+        - "Guardian feedback carries 2x (confirm) or 3x (correction) weight"
+        - "PLAN_EVALUATION event always emitted"
+        - "PLAN_FAILURE event emitted when MAE > 0.15"
+        - "retrievalCount and lastRetrievalTime updated on evaluation"
+        - "Type 1 graduation criteria checked (>0.80 AND MAE<0.10 over last 10)"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T002, E8-T009]
+    complexity: M
+
+  - id: E8-T011
+    meta:
+      title: "PlanningPipelineService (Main Orchestrator)"
+      description: |
+        Implement the main pipeline orchestrator that coordinates all 6 stages sequentially
+        for a single Opportunity.
+
+        Pipeline flow:
+        1. Check rate limiter → if blocked, return RATE_LIMITED
+        2. RESEARCH: call OpportunityResearchService
+           → if insufficient evidence, return INSUFFICIENT_EVIDENCE
+        3. SIMULATE: call OutcomeSimulator
+           → if no viable outcome, return NO_VIABLE_OUTCOME
+        4. PROPOSE: call PlanProposalService
+        5. VALIDATE: for each proposal, call ConstraintValidationService
+           → if fails, attempt revision (max 2)
+           → if all proposals fail validation, return VALIDATION_FAILED
+        6. CREATE: call ProcedureCreationService for first passing proposal
+           → return CREATED with procedure reference
+
+        Error handling:
+        - Each stage wrapped in try/catch
+        - Stage failures emit PIPELINE_STAGE_ERROR event
+        - Pipeline returns PlanningResult with appropriate status
+        - No unhandled exceptions escape the pipeline
+
+        Rate limiter integration:
+        - recordPlanCreated() called on successful creation
+
+      acceptance_criteria:
+        - "All 6 stages executed in sequence"
+        - "Each failure path returns correct PlanningResult variant"
+        - "Revision loop: up to 2 revisions on validation failure"
+        - "Rate limiter checked before pipeline starts"
+        - "Rate limiter updated on plan creation"
+        - "All stage events emitted to TimescaleDB"
+        - "Error handling: no unhandled exceptions"
+        - "Integration test: happy path Opportunity → Procedure"
+        - "Integration test: each failure path exercised"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: [E8-T003, E8-T004, E8-T005, E8-T006, E8-T007, E8-T008, E8-T009, E8-T010]
+    complexity: L
+
+  - id: E8-T012
+    meta:
+      title: "PlanningService (Public Facade)"
+      description: |
+        Implement the public-facing PlanningService that wraps the pipeline and queue
+        behind a clean interface for other modules.
+
+        Methods:
+        - processOpportunity(opportunity): Enqueue and process via pipeline
+        - getState(): Return PlanningState (queue metrics, rate limiter state, cold-start status)
+        - getOpportunityQueue(): Return queue contents for dashboard
+
+        Queue processing loop:
+        - On module init, start background processing loop
+        - Dequeue highest-priority Opportunity, run pipeline, repeat
+        - Configurable processing interval
+        - Graceful shutdown: wait for in-flight pipeline, stop loop
+
+        Module lifecycle:
+        - OnModuleInit: start queue processing loop
+        - OnModuleDestroy: graceful shutdown
+
+      acceptance_criteria:
+        - "processOpportunity enqueues and triggers processing"
+        - "getState returns accurate PlanningState"
+        - "Queue processing loop starts on module init"
+        - "Graceful shutdown waits for in-flight pipeline"
+        - "PLANNING_SERVICE token provides this service"
+        - "Only public API exported from module"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: [E8-T003, E8-T004, E8-T011]
+    complexity: M
+
+  - id: E8-T013
+    meta:
+      title: "Planning Configuration & Environment"
+      description: |
+        Wire PlanningConfig into ConfigModule with environment variable mappings.
+        Validate all planning configuration on startup.
+
+        Configuration parameters:
+        - PLANNING_MAX_PLANS_PER_WINDOW (default: 3)
+        - PLANNING_WINDOW_DURATION_MS (default: 3600000)
+        - PLANNING_MAX_ACTIVE_PLANS (default: 10)
+        - PLANNING_MAX_TOKENS_PER_PLAN (default: 4000)
+        - PLANNING_QUEUE_MAX_SIZE (default: 50)
+        - PLANNING_QUEUE_DECAY_RATE_PER_HOUR (default: 0.10)
+        - PLANNING_QUEUE_MIN_PRIORITY (default: 0.01)
+        - PLANNING_COLD_START_THRESHOLD (default: 100)
+        - PLANNING_COLD_START_INITIAL_DAMPENING (default: 0.8)
+        - PLANNING_RESEARCH_TIME_WINDOW_DAYS (default: 7)
+        - PLANNING_MIN_FAILURES_FOR_EVIDENCE (default: 2)
+        - PLANNING_SIMULATION_MIN_EXPECTED_VALUE (default: 0.3)
+        - PLANNING_MAX_PROPOSAL_REVISIONS (default: 2)
+        - PLANNING_PROCESSING_INTERVAL_MS (default: 5000)
+
+        Add to .env.example with comments.
+
+      acceptance_criteria:
+        - "All parameters have sensible defaults"
+        - "class-validator decorators on all config fields"
+        - "Application fails fast if config is malformed"
+        - ".env.example updated with all planning env vars"
+        - "PlanningConfig injectable via ConfigService"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E8-T001]
+    complexity: S
+
+  - id: E8-T014
+    meta:
+      title: "Planning Event Types"
+      description: |
+        Define all planning-specific event types in the shared event type system.
+        Ensure all 13 planning events are properly typed in the EventType discriminated union.
+
+        Events to add:
+        - OPPORTUNITY_RECEIVED
+        - OPPORTUNITY_DROPPED
+        - PLANNING_RATE_LIMITED
+        - RESEARCH_COMPLETED
+        - RESEARCH_INSUFFICIENT
+        - SIMULATION_COMPLETED
+        - SIMULATION_NO_VIABLE
+        - PROPOSAL_GENERATED
+        - VALIDATION_PASSED
+        - VALIDATION_FAILED
+        - PLAN_CREATED
+        - PLAN_EVALUATION
+        - PLAN_FAILURE
+
+        Each event type must have:
+        - Typed payload matching the stage's output
+        - subsystem: 'PLANNING'
+        - has_learnable flag (PLAN_CREATED = true, PLAN_EVALUATION = true, others = false)
+        - Correlation ID linking all events for same Opportunity
+
+      acceptance_criteria:
+        - "All 13 event types added to EventType union"
+        - "Each event has typed payload"
+        - "subsystem field is 'PLANNING'"
+        - "has_learnable correctly set"
+        - "Correlation ID present for pipeline tracing"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E8-T001]
+    complexity: S
+
+  - id: E8-T015
+    meta:
+      title: "Unit Tests: Queue, Rate Limiter, Cold-Start"
+      description: |
+        Comprehensive unit tests for the three infrastructure components.
+
+        OpportunityQueueService tests:
+        - Enqueue single item, verify in queue
+        - Enqueue beyond max size, verify lowest priority evicted
+        - Dequeue applies decay correctly (mock time advancement)
+        - Items below min priority pruned
+        - Empty queue returns null on dequeue
+        - Priority ordering is correct after decay
+        - Cold-start dampening applied at enqueue
+
+        PlanningRateLimiter tests:
+        - Fresh limiter allows plans
+        - Plans-per-window limit blocks at threshold
+        - Active plans limit blocks at threshold
+        - Window reset allows new plans
+        - recordPlanEvaluated reduces active count
+
+        Cold-start dampening tests:
+        - Decision 0: dampening = 0.8
+        - Decision 50: dampening = 0.4
+        - Decision 100: dampening = 0.0
+        - Decision 200: dampening = 0.0 (no negative dampening)
+
+      acceptance_criteria:
+        - "All queue operations tested including edge cases"
+        - "All rate limiter limits tested"
+        - "Cold-start dampening verified at key decision counts"
+        - "Tests pass with npm test"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T003, E8-T004]
+    complexity: M
+
+  - id: E8-T016
+    meta:
+      title: "Unit Tests: Research, Simulation, Proposal"
+      description: |
+        Unit tests for the three analysis pipeline stages using mocked dependencies.
+
+        OpportunityResearchService tests:
+        - With 3 prediction failures: hasSufficientEvidence = true
+        - With 1 failure: hasSufficientEvidence = false
+        - Evidence strength formula produces correct values
+        - Prior plan attempts factor into evidence strength
+        - Events emitted correctly
+
+        OutcomeSimulator tests:
+        - Generates 3-5 candidates from research
+        - Drive effect prediction averages similar WKG actions correctly
+        - Success probability from event frequency
+        - Expected value computation correct
+        - Sparse data (< 3 similar actions) produces conservative estimates
+        - hasViableOutcome correctly evaluated
+
+        PlanProposalService tests:
+        - Generates proposals from simulation candidates
+        - Proposals have complete structure (trigger, actions, outcomes, aborts)
+        - Revision modifies proposal based on feedback
+        - Max 2 revisions tracked
+
+      acceptance_criteria:
+        - "Research tests: sufficient/insufficient evidence paths"
+        - "Simulation tests: candidate generation, EV computation, sparse data"
+        - "Proposal tests: generation, structure completeness, revision"
+        - "Mocked EventsModule and KnowledgeModule dependencies"
+        - "Tests pass with npm test"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T005, E8-T006, E8-T007]
+    complexity: M
+
+  - id: E8-T017
+    meta:
+      title: "Unit Tests: Validation, Creation, Evaluation"
+      description: |
+        Unit tests for the validation, creation, and evaluation stages.
+
+        ConstraintValidationService tests:
+        - Valid proposal passes all 4 checker categories
+        - Theater Prohibition violation detected and rejected
+        - Contingency Requirement violation detected
+        - Confidence Ceiling violation detected
+        - Shrug Imperative violation detected (no abort conditions)
+        - Self-Modification violation detected
+        - LLM coherence checker returns structured PASS/FAIL
+        - Suggested revisions extracted from failures
+
+        ProcedureCreationService tests:
+        - Procedure node created with LLM_GENERATED provenance
+        - Confidence exactly 0.35
+        - retrievalCount = 0
+        - TRIGGERED_BY edge created with INFERENCE provenance at 0.30
+        - PLAN_CREATED event emitted
+
+        PlanEvaluationService tests:
+        - Success (MAE < 0.10): confidence increases per ACT-R
+        - Failure (MAE > 0.15): confidence decreases, PLAN_FAILURE emitted
+        - Guardian confirm: 2x weight applied
+        - Guardian correction: 3x weight applied
+        - Graduation check: confidence > 0.80 AND MAE < 0.10 over 10 uses
+
+      acceptance_criteria:
+        - "All 6 Immutable Standards tested in validation"
+        - "Procedure creation provenance and confidence verified"
+        - "ACT-R confidence updates tested for success, failure, guardian feedback"
+        - "Graduation and demotion criteria tested"
+        - "Tests pass with npm test"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T008, E8-T009, E8-T010]
+    complexity: M
+
+  - id: E8-T018
+    meta:
+      title: "Integration Test: Full Pipeline Happy Path"
+      description: |
+        End-to-end integration test: Opportunity intake through to Procedure creation.
+
+        Test scenario:
+        1. Create mock Opportunity with context fingerprint
+        2. Seed TimescaleDB with 3+ prediction failure events matching context
+        3. Seed WKG with similar past actions for simulation
+        4. Submit Opportunity to PlanningService
+        5. Verify: research finds sufficient evidence
+        6. Verify: simulation produces viable candidates
+        7. Verify: proposal generates valid plans
+        8. Verify: validation passes all constraints
+        9. Verify: Procedure node exists in WKG with correct properties
+        10. Verify: PLAN_CREATED event in TimescaleDB
+        11. Simulate execution with known outcome
+        12. Verify: PlanEvaluation updates confidence correctly
+        13. Verify: PLAN_EVALUATION event in TimescaleDB
+
+      acceptance_criteria:
+        - "Full pipeline executes without errors"
+        - "Procedure created in WKG with LLM_GENERATED at 0.35"
+        - "All 13 event types emitted at appropriate stages"
+        - "Post-execution evaluation updates confidence"
+        - "Test is repeatable and deterministic"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: [E8-T011, E8-T012]
+    complexity: L
+
+  - id: E8-T019
+    meta:
+      title: "Integration Test: Attractor State Prevention"
+      description: |
+        Tests that verify Planning Runaway and Prediction Pessimist prevention.
+
+        Planning Runaway test:
+        - Submit 10 Opportunities in rapid succession
+        - Verify: only 3 plans created in first hour (rate limit)
+        - Verify: PLANNING_RATE_LIMITED events emitted for blocked attempts
+        - Verify: active plan count stays within limit
+        - Verify: queue handles overflow correctly (eviction)
+
+        Prediction Pessimist test:
+        - Set totalDecisions = 5 (early operation)
+        - Submit Opportunities with prediction failures
+        - Verify: cold-start dampening reduces Opportunity priority by ~76%
+        - Verify: fewer plans created than would be without dampening
+        - Verify: created procedures start at 0.35, not higher
+        - Set totalDecisions = 150 (past threshold)
+        - Verify: no dampening applied, normal operation
+
+        Queue stability test:
+        - Fill queue to max (50)
+        - Advance time by 24 hours
+        - Verify: most items decayed below threshold and pruned
+        - Verify: queue does not grow unboundedly
+
+      acceptance_criteria:
+        - "Rate limiter prevents more than 3 plans per hour"
+        - "Cold-start dampening active in early operation"
+        - "Cold-start dampening inactive after threshold"
+        - "Queue decays and prunes correctly over time"
+        - "No Planning Runaway under burst load"
+        - "No Prediction Pessimist in early operation"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T011, E8-T012]
+    complexity: M
+
+  - id: E8-T020
+    meta:
+      title: "Session Log & Documentation"
+      description: |
+        Write session log documenting all changes from Epic 8 implementation.
+        Update any architecture docs affected by Planning module addition.
+
+        Deliverables:
+        - Session log at docs/sessions/YYYY-MM-DD-epic-8-planning.md (max 20 lines)
+        - Update src/planning/ README if needed
+        - Verify CLAUDE.md project structure section reflects planning module
+        - Document any gotchas discovered during implementation
+        - Note the E5 dependency (trial mechanism for new procedures)
+
+      acceptance_criteria:
+        - "Session log follows template in CLAUDE.md"
+        - "All NEW/MODIFIED/DELETED files documented"
+        - "Known issues section includes E5 trial mechanism dependency"
+        - "Gotchas documented for next session"
+    agents: [planner]
+    model: sonnet
+    dependencies: [E8-T018, E8-T019]
+    complexity: S

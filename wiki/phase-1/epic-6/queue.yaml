@@ -1,0 +1,56 @@
+epic: 6
+started: 2026-03-29T00:00:00Z
+completed: 2026-03-29T00:00:00Z
+tickets:
+  - id: E6-T001
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T002
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29
+  - id: E6-T003
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T004
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T005
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T006
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T007
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T008
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29
+  - id: E6-T009
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T010
+    status: complete
+    agent: forge
+    completed_at: 2026-03-29
+  - id: E6-T011
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T012
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29
+  - id: E6-T013
+    status: complete
+    agent: vox
+    completed_at: 2026-03-29

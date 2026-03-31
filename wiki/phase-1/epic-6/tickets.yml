@@ -1,0 +1,721 @@
+epic: 6
+title: "Communication (Input/Output + Person Modeling)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+tickets:
+  - id: E6-T001
+    meta:
+      title: "Communication Types & Interface Refinement"
+      description: |
+        Refine E0 stub interfaces for real implementation. Define all types needed across the
+        Communication subsystem: ParsedInput, ResponseGenerationContext, TheaterCheck, PersonModel,
+        ConversationThread, LlmContextBlock, and supporting types.
+
+        This ticket grounds all subsequent work. Every other ticket imports from these types.
+
+        Deliverables:
+        - Refined ICommunicationService interface with full method signatures
+        - Refined IInputParserService with ParsedInput return type
+        - Refined IPersonModelingService with PersonModel type
+        - Refined ITheaterValidator with TheaterCheck type
+        - Refined ILlmService with cost tracking types (LlmCallResult, LlmCostReport)
+        - ResponseGenerationContext type (drive state + WKG context + person model + episodes)
+        - InputIntent enum (QUESTION, STATEMENT, CORRECTION, COMMAND, ACKNOWLEDGMENT, TEACHING)
+        - GuardianFeedbackType enum (CONFIRMATION, CORRECTION, TEACHING, NONE)
+        - ConversationThread type with message history and topic tracking
+        - Communication event types for TimescaleDB emission
+        - DriveNarrative construction types
+
+        Acceptance criteria:
+        - All types compile with strict TypeScript
+        - Every type has JSDoc explaining its CANON relevance
+        - ParsedInput includes guardianFeedbackType for Guardian Asymmetry (Immutable Standard 5)
+        - ResponseGenerationContext includes driveState field (Theater Prohibition, Standard 1)
+        - LlmCostReport includes latency and token count for Type 2 cost tracking
+        - All provenance-carrying types include ProvenanceSource field
+      acceptance_criteria:
+        - "All interfaces compile with npx tsc --noEmit"
+        - "Every type has JSDoc with CANON reference"
+        - "ParsedInput includes guardianFeedbackType field"
+        - "ResponseGenerationContext includes driveState: DriveSnapshot"
+        - "LlmCostReport tracks latency_ms and token_count"
+        - "No use of 'any' type"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E6-T002
+    meta:
+      title: "CommunicationModule Skeleton & DI Wiring"
+      description: |
+        Replace the E0 stub CommunicationModule with the real module structure. Wire all
+        providers, imports, and exports. Establish the module boundary.
+
+        Module imports: EventsModule, KnowledgeModule, ConfigModule
+        Module injects (read-only): DRIVE_STATE_READER from DriveEngineModule
+
+        Directory structure:
+        src/communication/
+        ├── communication.module.ts
+        ├── communication.service.ts      # Public facade (ICommunicationService)
+        ├── input-parser/
+        │   └── input-parser.service.ts
+        ├── response-generator/
+        │   ├── response-generator.service.ts
+        │   └── llm-context-assembler.service.ts
+        ├── person-modeling/
+        │   └── person-modeling.service.ts
+        ├── theater-validator/
+        │   └── theater-validator.service.ts
+        ├── llm/
+        │   └── llm.service.ts            # Claude API client
+        ├── voice/
+        │   ├── stt.service.ts            # OpenAI Whisper
+        │   └── tts.service.ts            # OpenAI TTS
+        ├── chatbox/
+        │   └── chatbox.gateway.ts        # WebSocket gateway
+        ├── social/
+        │   └── social-contingency.service.ts
+        ├── interfaces/
+        │   └── communication.interfaces.ts
+        └── index.ts                      # Barrel export
+
+        Exports (public): COMMUNICATION_SERVICE, LLM_SERVICE
+        Internal only: InputParserService, ResponseGeneratorService, TheaterValidatorService,
+        PersonModelingService, SttService, TtsService, SocialContingencyService
+
+        Deliverables:
+        - Full module file with imports, providers, exports
+        - Empty service classes implementing interfaces from T001
+        - Configuration schema additions (OpenAI API key, Anthropic API key, voice settings)
+        - All DI tokens registered
+        - Barrel export (index.ts) exposing only public API
+
+        Acceptance criteria:
+        - Module compiles and loads in NestJS
+        - No circular dependencies
+        - DriveStateReader injected as read-only (IDriveStateReader interface)
+        - No direct import of DriveEngineModule internals
+      acceptance_criteria:
+        - "npx tsc --noEmit passes"
+        - "NestJS app starts with CommunicationModule loaded"
+        - "No circular module dependencies"
+        - "DriveStateReader injected via DRIVE_STATE_READER token (read-only)"
+        - "Configuration validated on startup (API keys required)"
+    agents: [forge, vox]
+    model: sonnet
+    dependencies: [E6-T001]
+    complexity: M
+
+  - id: E6-T003
+    meta:
+      title: "LLM Service (Claude API Client with Cost Tracking)"
+      description: |
+        Implement ILlmService backed by the Anthropic Claude API. Every call must track and
+        report cost (latency, tokens) to the Events module. This cost creates the Type 2
+        pressure that drives Type 1 graduation.
+
+        The LLM is Sylphie's voice, not her mind. This service translates intent into words.
+        It does not decide what to do — that is Decision Making's job.
+
+        Design:
+        - Anthropic SDK client with configurable model (default: claude-sonnet-4-5)
+        - Token counting on every call (input + output tokens)
+        - Latency measurement (wall clock ms from call to response)
+        - Cost event emission to TimescaleDB: TYPE_2_DELIBERATION_COST event
+        - Cognitive effort estimate derived from latency + token count
+        - Max token budget per call (configurable, default 4096)
+        - Retry logic with exponential backoff (max 3 retries)
+        - Graceful error handling (LlmUnavailableError → fallback to cached acknowledgments)
+
+        CANON constraint: Type 2 must carry explicit cost. Without cost reporting, the LLM
+        always wins and Type 1 never develops (CANON §Dual-Process Cognition).
+
+        Deliverables:
+        - LlmService implementing ILlmService
+        - complete(context: LlmContextBlock): Promise<LlmCallResult>
+        - estimateCost(context: LlmContextBlock): LlmCostEstimate
+        - Cost event emission on every call
+        - Health check method for dashboard
+        - Unit tests with mocked Anthropic client
+
+        Test coverage:
+        - Successful completion with cost tracking
+        - Timeout handling (configurable, default 10s)
+        - Retry on transient failure
+        - Cost event emitted to TimescaleDB on every call
+        - Token budget enforcement
+      acceptance_criteria:
+        - "Every LLM call emits TYPE_2_DELIBERATION_COST event to TimescaleDB"
+        - "Cost event includes latency_ms and token_count"
+        - "Timeout at 10s (configurable)"
+        - "Max 3 retries with exponential backoff"
+        - "No LLM call proceeds without cost tracking"
+        - "Health check returns service status"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T002]
+    complexity: M
+
+  - id: E6-T004
+    meta:
+      title: "Input Parser Service (LLM-Mediated)"
+      description: |
+        Implement IInputParserService. Converts raw guardian input (text or transcribed speech)
+        into structured ParsedInput for Decision Making.
+
+        The parser is LLM-assisted (Type 2) in Phase 1. Over time, recurring patterns may
+        graduate to pattern-based (Type 1) parsing, but that is a future concern.
+
+        Parser responsibilities:
+        1. Intent classification: QUESTION, STATEMENT, CORRECTION, COMMAND, ACKNOWLEDGMENT, TEACHING
+        2. Entity extraction: identify entities, cross-reference with WKG
+        3. Guardian feedback detection: CONFIRMATION (2x weight), CORRECTION (3x weight), TEACHING
+        4. Context binding: resolve references ("it", "that") from conversation thread
+        5. Provenance assignment: all parsed content tagged LLM_GENERATED at 0.35 base
+
+        Design:
+        - parse(raw: string, source: 'TEXT' | 'VOICE', conversationId: string): Promise<ParsedInput>
+        - LLM prompt structured for reliable JSON extraction
+        - WKG entity resolution via IWkgService.findNode()
+        - Conversation thread context for reference resolution
+        - All parsed events emitted to TimescaleDB with has_learnable=true
+
+        v1 reference: co-being/packages/conversation-engine/src/services/input-parser.service.ts
+        (adapt structure, clean-room implementation for v2 LLM-mediated approach)
+
+        CANON constraints:
+        - Guardian feedback carries special weight (Immutable Standard 5)
+        - Provenance on all extracted entities (CANON §Provenance)
+        - Events tagged has_learnable=true for Learning subsystem
+
+        Test coverage:
+        - Parse simple statement → correct intent + entities
+        - Parse guardian correction → CORRECTION feedback type detected
+        - Parse with reference resolution ("what about it?")
+        - Provenance correctly assigned (LLM_GENERATED)
+        - Event emitted to TimescaleDB
+      acceptance_criteria:
+        - "Correctly classifies 6 intent types"
+        - "Guardian correction detected and tagged with CORRECTION feedback type"
+        - "Entities cross-referenced with WKG via findNode()"
+        - "All parsed entities carry LLM_GENERATED provenance"
+        - "Communication events emitted to TimescaleDB with has_learnable=true"
+        - "Reference resolution works for simple anaphora"
+    agents: [vox, cortex]
+    model: sonnet
+    dependencies: [E6-T002, E6-T003]
+    complexity: L
+
+  - id: E6-T005
+    meta:
+      title: "LLM Context Assembler (CANON A.6 Default)"
+      description: |
+        Implement the LLM context assembly pipeline — the component that constructs the full
+        context block the LLM needs to speak as Sylphie authentically.
+
+        This implements CANON Appendix A.6 (LLM Context Assembly Protocol) with reasonable
+        defaults, flagged for Jim's review.
+
+        Context components (priority order):
+        1. ALWAYS: Drive state snapshot + drive narrative (natural language summary)
+        2. ALWAYS: Action intent from Decision Making (WHAT to say)
+        3. ALWAYS: Theater Prohibition instruction (directional: pressure expression requires drive > 0.2; relief expression requires drive < 0.3)
+        4. ALWAYS: Person model summary from Other KG
+        5. PRIORITY: Recent conversation history (last N turns, configurable)
+        6. PRIORITY: Relevant WKG knowledge for current topic
+        7. SPACE-PERMITTING: Episodic memory summaries
+        8. NEVER: Raw drive computation details, internal system state, other people's KG data
+
+        Drive narrative construction:
+        - Convert raw drive values to natural language
+        - Only describe drives notably high (>0.6) or notably low/negative (drives can range [-10.0, 1.0]; low/negative values represent extended relief)
+        - Example: "You feel curious (0.72) and slightly anxious (0.55). Your satisfaction is very
+          low (-2.3, extended relief state) — do not express unfulfilled need or urgency around satisfaction."
+
+        Design:
+        - LlmContextAssemblerService (internal, not exported)
+        - assemble(intent: ActionIntent, driveState: DriveSnapshot, conversationId: string): Promise<LlmContextBlock>
+        - Token budget management (fit within LLM max tokens)
+        - Context prioritization when budget is tight
+
+        CANON constraints:
+        - Drive state MUST be injected (Theater Prohibition enforcement)
+        - Person model data comes from Other KG only (isolation)
+        - WKG knowledge carries provenance tags in context
+
+        Test coverage:
+        - Drive narrative accurately reflects drive values
+        - High drives described, low drives noted as "do not express"
+        - Token budget respected
+        - Person model included from correct Grafeo instance
+        - No internal system state leaked to LLM
+      acceptance_criteria:
+        - "Drive state injected in every LLM context block"
+        - "Drive narrative constructed in natural language"
+        - "Drive narrative reflects directional Theater rules: pressure expression blocked when drive <= 0.2; relief expression blocked when drive >= 0.3"
+        - "Person model sourced from Other KG only (isolation verified)"
+        - "Token budget enforced (no context exceeds max tokens)"
+        - "Context includes Theater Prohibition instruction"
+    agents: [vox, cortex]
+    model: sonnet
+    dependencies: [E6-T003]
+    complexity: L
+
+  - id: E6-T006
+    meta:
+      title: "Theater Validator Service"
+      description: |
+        Implement ITheaterValidator — the post-generation check that enforces Immutable
+        Standard 1 (Theater Prohibition).
+
+        Theater is when Sylphie's output does not correlate with her actual drive state.
+        Examples: expressing urgency/distress when a drive is <= 0.2 (pressure Theater); expressing
+        contentment/calm/fulfillment when a drive is >= 0.3 (relief Theater); defaulting to "helpful
+        assistant" enthusiasm regardless of drive state. Drives range [-10.0, 1.0] — negative values
+        represent extended relief states, not absence of the drive.
+
+        Design:
+        - validate(response: string, driveState: DriveSnapshot): TheaterCheck
+        - Extract emotional valence from response text (LLM-assisted lightweight check)
+        - Compute drive valence from current drive state
+        - Correlation check: if expressed emotion deviates too far from drive state → Theater
+        - Theater threshold: correlation < 0.4 → isTheater = true
+        - If Theater detected: reinforcementMultiplier = 0.0 (zero reinforcement)
+        - If Theater detected: optionally request regeneration with stronger drive constraint
+
+        Emotion-to-drive mapping (default, flagged for Jim's review):
+        - Excitement/enthusiasm → Satisfaction + Curiosity
+        - Sadness/disappointment → Sadness
+        - Anxiety/worry → Anxiety
+        - Boredom/disengagement → Boredom
+        - Social warmth/engagement → Social
+        - Guilt/remorse → Guilt
+        - Curiosity/wonder → Curiosity
+
+        Behavioral science input (Skinner):
+        - Zero reinforcement is an extinction procedure for non-contingent emotional expression
+        - The LLM may ignore drive prompts; this validator catches what prompting misses
+        - Even positive guardian responses to Theater get zeroed
+        - Ambiguous zone (drive 0.2-0.3, the overlap between thresholds): allow weak expression, flag for monitoring
+
+        Deliverables:
+        - TheaterValidatorService implementing ITheaterValidator
+        - Emotion extraction (LLM-assisted or rule-based)
+        - Drive-emotion correlation computation
+        - TheaterCheck result type with reinforcementMultiplier
+        - Event logging for Theater detections (for behavioral auditing)
+
+        Test coverage:
+        Pressure Theater (expressing distress/need/urgency):
+        - Response expressing worry/anxiety with Anxiety = 0.1 (drive <= 0.2) → Theater detected
+        - Response expressing curiosity/eagerness with Curiosity = 0.75 (drive > 0.2) → NOT Theater
+        Relief Theater (expressing contentment/calm/fulfillment):
+        - Response expressing contentment/satisfaction with Satisfaction = 0.8 (drive >= 0.3) → Theater detected
+        - Response expressing calm/fulfillment with Satisfaction = 0.05 (drive < 0.3) → NOT Theater
+        Other cases:
+        - Neutral response with any drive state → NOT Theater
+        - Ambiguous zone (drive 0.2-0.3) with mild expression → allowed with flag
+        - Zero reinforcement multiplier on Theater detection
+      acceptance_criteria:
+        - "Theater detected when emotional expression mismatches drive state (correlation < 0.4)"
+        - "reinforcementMultiplier = 0.0 when Theater detected"
+        - "Emotion-to-drive mapping covers all 12 drives"
+        - "Ambiguous zone (0.2-0.3 overlap) handled with flagging, not hard rejection"
+        - "Theater detection events logged to TimescaleDB for behavioral audit"
+        - "Unit tests cover all emotion-drive combinations"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T001]
+    complexity: M
+
+  - id: E6-T007
+    meta:
+      title: "Response Generator Service"
+      description: |
+        Implement the response generation pipeline — the core of how Sylphie speaks.
+
+        The response generator receives an ActionIntent from Decision Making and produces
+        natural language output. It orchestrates: context assembly → LLM call → Theater
+        validation → output delivery.
+
+        Flow:
+        1. Receive ActionIntent from Decision Making (WHAT to say)
+        2. Assemble LLM context via LlmContextAssemblerService (T005)
+        3. Call LlmService.complete() with assembled context (T003)
+        4. Run TheaterValidator.validate() on generated response (T006)
+        5. If Theater detected: regenerate with stronger drive constraint (max 1 retry)
+        6. If still Theater after retry: deliver neutral/minimal response
+        7. Emit communication event to TimescaleDB
+        8. Return CommunicationResponse (text, theaterCheck, cost, latency)
+
+        Design:
+        - ResponseGeneratorService (internal service)
+        - generate(intent: ActionIntent, driveState: DriveSnapshot, conversationId: string): Promise<CommunicationResponse>
+        - Orchestrates LlmContextAssembler, LlmService, TheaterValidator
+        - Tracks total response latency (context assembly + LLM + validation)
+        - Reports full cost to Events module
+
+        CANON constraints:
+        - LLM is the voice, not the mind. Response generator translates intent, does not select it.
+        - Drive state injected in every call (Theater Prohibition)
+        - Type 2 cost reported (latency + tokens)
+        - Theater violations get zero reinforcement
+
+        v1 reference: Clean-room implementation. v1 had no Theater Prohibition or drive injection.
+
+        Test coverage:
+        - Happy path: intent → context → LLM → validate → respond
+        - Theater detected → regeneration → pass on retry
+        - Theater detected → regeneration → still Theater → minimal response
+        - Total latency tracked and reported
+        - Cost event emitted
+      acceptance_criteria:
+        - "Response generated from ActionIntent + drive state"
+        - "Theater validation runs on every response"
+        - "Max 1 regeneration attempt on Theater detection"
+        - "Fallback to minimal/neutral response if Theater persists"
+        - "Total latency (assembly + LLM + validation) reported to Events"
+        - "Response never generated without drive state injection"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T003, E6-T005, E6-T006]
+    complexity: L
+
+  - id: E6-T008
+    meta:
+      title: "Person Modeling Service (Other KG via Grafeo)"
+      description: |
+        Implement IPersonModelingService — Sylphie's model of the people she interacts with.
+
+        Each person gets an isolated Grafeo instance (Other KG). Person models contain
+        INFERENCES about the person, not FACTS. Facts about people belong in the WKG.
+
+        Person model schema:
+        - Identity: name, role (GUARDIAN/PEER/STRANGER), first encounter, total interactions
+        - Communication style: avg response time, preferred topics, correction frequency,
+          engagement level, typical message length
+        - Observed states: current mood (inferred, low confidence), topic sensitivities,
+          positive reinforcers
+
+        Isolation enforcement (CANON: "completely isolated from each other and from the WKG"):
+        - Per-person Grafeo instances stored in a Map<string, GrafeoGraph>
+        - No shared node IDs with WKG or Self KG
+        - No edges between person KGs
+        - Public interface returns sanitized PersonModel objects, not raw graph data
+        - Write access restricted to PersonModelingService only
+
+        Design:
+        - PersonModelingService implementing IPersonModelingService
+        - getPersonModel(personId: string): PersonModel (read-only view)
+        - updateFromConversation(personId: string, event: ConversationEvent): void
+        - createPerson(personId: string, name: string, role: PersonRole): void
+        - All person model inferences tagged LLM_GENERATED or INFERENCE provenance
+        - Never SENSOR or GUARDIAN provenance (those are about reality, not Sylphie's model)
+
+        Developmental perspective (Piaget):
+        - Early models are simple ("Jim is the guardian")
+        - Models grow through conversation: "Jim prefers brief responses"
+        - Guardian correction of model → accommodation (restructure model)
+        - Model accuracy tracked by prediction success (did response match expectation?)
+
+        Test coverage:
+        - Create person → isolated Grafeo instance
+        - Update from conversation → model enriched
+        - getPersonModel returns sanitized view (no raw graph access)
+        - Verify isolation: no shared edges with WKG
+        - Verify isolation: no shared edges between person KGs
+        - Provenance always LLM_GENERATED or INFERENCE on person model nodes
+      acceptance_criteria:
+        - "Per-person Grafeo instances completely isolated from WKG"
+        - "No shared node IDs between person KGs and WKG"
+        - "No edges between different person KGs"
+        - "Public interface returns sanitized PersonModel (no raw graph)"
+        - "All person model nodes carry LLM_GENERATED or INFERENCE provenance"
+        - "Person model updates tagged with timestamp for decay"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T002]
+    complexity: L
+
+  - id: E6-T009
+    meta:
+      title: "Voice Pipeline (STT + TTS)"
+      description: |
+        Implement ISttService and ITtsService using OpenAI APIs.
+
+        Speech-to-Text (Whisper API):
+        - transcribe(audioBuffer: Buffer): Promise<TranscriptionResult>
+        - Word-level timestamps for precise timing
+        - Confidence estimation from log probabilities
+        - Graceful degradation: STT failure → text fallback (never block on audio failure)
+        - STT events logged to TimescaleDB
+
+        Text-to-Speech (OpenAI TTS API):
+        - synthesize(text: string): Promise<Buffer>
+        - Configurable voice (default: nova)
+        - Sentence-level streaming for latency optimization:
+          * Break response into sentences
+          * Synthesize sentence 1 while generating sentence 2
+          * Deliver progressively
+        - Pre-computed acknowledgments cache ("I see", "Hmm", "Okay")
+        - TTS events logged to TimescaleDB
+        - Graceful degradation: TTS failure → text-only output
+
+        Latency budget: Total response time < 2 seconds from guardian's last word.
+        Strategy: Parallel processing — while LLM generates, prepare TTS context.
+        Sentence-level streaming masks synthesis latency.
+
+        CANON constraint: Audio is the preferred channel, not the only channel. Never block
+        on voice failure. (Vox Rule 12)
+
+        Test coverage:
+        - STT successful transcription with confidence
+        - STT failure → STTDegradationError thrown (caller falls back to text)
+        - TTS successful synthesis
+        - TTS failure → TTSDegradationError thrown (caller falls back to text)
+        - Events logged for both success and failure
+        - Pre-computed acknowledgment cache populated on init
+      acceptance_criteria:
+        - "STT transcribes audio via Whisper API with word timestamps"
+        - "TTS synthesizes via OpenAI TTS API with configurable voice"
+        - "STT failure throws STTDegradationError (graceful degradation)"
+        - "TTS failure throws TTSDegradationError (graceful degradation)"
+        - "Pre-computed acknowledgment cache for common responses"
+        - "All voice events logged to TimescaleDB"
+        - "Never blocks on audio failure"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T002]
+    complexity: M
+
+  - id: E6-T010
+    meta:
+      title: "Chatbox WebSocket Gateway"
+      description: |
+        Implement the WebSocket gateway for text-based conversation — the primary chat
+        interface during Phase 1.
+
+        Design:
+        - ChatboxGateway using @WebSocketGateway decorator
+        - handleMessage(client, payload): receive guardian text input
+        - broadcastResponse(response): send Sylphie's response to all connected clients
+        - Connection management (connect/disconnect tracking)
+        - Conversation thread management (create/resume threads)
+        - Message history available via REST endpoint (ConversationController)
+
+        WebSocket events:
+        - 'guardian_message' → parse input → forward to Decision Making
+        - 'sylphie_response' → broadcast generated response
+        - 'sylphie_initiated' → broadcast Sylphie-initiated comment (Social drive)
+        - 'typing_indicator' → show when Sylphie is "thinking" (Type 2 processing)
+        - 'connection_status' → health/status updates
+
+        v1 reference: co-being/packages/backend/src/web/conversation.gateway.ts
+        (adapt WebSocket patterns for NestJS gateway)
+
+        Integration:
+        - Receives parsed input from InputParserService
+        - Sends to CommunicationService.handleGuardianInput()
+        - Receives responses from ResponseGeneratorService
+        - Timestamps all messages for Social contingency tracking
+
+        Test coverage:
+        - Client connects → tracked
+        - Guardian sends message → forwarded to Communication pipeline
+        - Response generated → broadcast to clients
+        - Sylphie initiates comment → broadcast with timestamp
+        - Disconnect → cleanup
+      acceptance_criteria:
+        - "WebSocket gateway accepts connections and messages"
+        - "Guardian messages forwarded to Communication pipeline"
+        - "Responses broadcast to connected clients"
+        - "Sylphie-initiated comments broadcast with timestamp"
+        - "Typing indicator shown during Type 2 processing"
+        - "Connection tracking for multiple clients"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T002]
+    complexity: M
+
+  - id: E6-T011
+    meta:
+      title: "Social Drive Contingency Tracker"
+      description: |
+        Implement the Social comment quality tracking system per CANON behavioral contingency.
+
+        CANON spec: If the guardian responds to a Sylphie-initiated comment within 30 seconds,
+        trigger extra reinforcement (Social -0.15 + Satisfaction +0.10).
+
+        Design:
+        - SocialContingencyService (internal to Communication module)
+        - trackSylphieInitiated(utteranceId: string, timestamp: Date): void
+        - checkGuardianResponse(guardianMessageTimestamp: Date): SocialContingencyResult | null
+        - 30-second window with small tolerance (35s to account for processing)
+        - Only tracks Sylphie-INITIATED comments (not responses to guardian input)
+        - Reports contingency matches to Drive Engine via IActionOutcomeReporter
+
+        Behavioral science input (Skinner):
+        - This is a variable-interval reinforcement schedule
+        - Risk: optimizing for fast responses over quality
+        - Mitigation: quality is measured by WHETHER guardian responds, not just timing
+        - Track both response latency and engagement quality for behavioral auditing
+
+        Developmental perspective (Piaget):
+        - Early comments are LLM-generated with low graph grounding
+        - Over time, comments increasingly reflect graph knowledge
+        - Guardian response rate is a proxy for communication quality development
+
+        Implementation:
+        - In-memory map of pending Sylphie-initiated utterances
+        - On guardian message: check if any pending utterance within 30s window
+        - If match: emit SOCIAL_CONTINGENCY_MET event to TimescaleDB
+        - If match: report to Drive Engine for reinforcement
+        - Expired entries cleaned up periodically
+
+        Test coverage:
+        - Sylphie initiates → guardian responds within 30s → contingency met
+        - Sylphie initiates → guardian responds after 30s → no contingency
+        - Sylphie responds (not initiated) → guardian responds → no contingency
+        - Multiple pending utterances → correct one matched
+        - Expired entries cleaned up
+      acceptance_criteria:
+        - "Tracks Sylphie-initiated utterances with timestamps"
+        - "Detects guardian response within 30-second window"
+        - "Only triggers on Sylphie-INITIATED comments (not responses)"
+        - "Emits SOCIAL_CONTINGENCY_MET event to TimescaleDB"
+        - "Reports to Drive Engine via IActionOutcomeReporter"
+        - "Expired entries cleaned up (no memory leak)"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E6-T002]
+    complexity: M
+
+  - id: E6-T012
+    meta:
+      title: "CommunicationService Facade (Public API)"
+      description: |
+        Implement ICommunicationService — the public facade that other modules use to
+        interact with the Communication subsystem.
+
+        This is the orchestrator that wires together all internal services (parser, response
+        generator, person modeling, voice, chatbox, social tracking) into a coherent pipeline.
+
+        Methods:
+        - handleGuardianInput(raw: string, source: 'TEXT' | 'VOICE', personId: string): Promise<ParsedInput>
+          * Parse input via InputParserService
+          * Update person model from conversation
+          * Check for Social contingency (guardian responding to Sylphie)
+          * Emit communication event to TimescaleDB (has_learnable=true)
+          * Return structured ParsedInput to Decision Making
+
+        - generateResponse(intent: ActionIntent, conversationId: string): Promise<CommunicationResponse>
+          * Read current drive state via IDriveStateReader
+          * Assemble context via LlmContextAssembler
+          * Generate response via ResponseGenerator (includes Theater validation)
+          * Deliver via TTS and/or Chatbox
+          * Emit communication event to TimescaleDB
+          * Return response with cost and Theater check results
+
+        - initiateComment(topic: string, driveContext: DriveSnapshot): Promise<CommunicationResponse>
+          * Called when Decision Making selects a "speak" action (Social drive)
+          * Generate unprompted comment
+          * Track for Social contingency (30s window)
+          * Deliver via TTS and/or Chatbox
+
+        CANON constraint: This facade coordinates but does not decide. Action selection
+        remains in Decision Making. Communication translates intent to speech.
+
+        Test coverage:
+        - Full input pipeline: raw text → parsed → returned to caller
+        - Full output pipeline: intent → context → LLM → validate → deliver
+        - Initiate comment pipeline: topic → generate → track → deliver
+        - Drive state read on every response generation
+        - Events emitted at each stage
+        - Person model updated from conversation
+      acceptance_criteria:
+        - "handleGuardianInput returns structured ParsedInput"
+        - "generateResponse includes Theater validation"
+        - "initiateComment tracked for Social contingency"
+        - "Drive state read on every response generation call"
+        - "All communication events emitted to TimescaleDB"
+        - "Person model updated from conversation data"
+        - "Facade does not select actions (Decision Making boundary respected)"
+    agents: [vox, forge, cortex]
+    model: sonnet
+    dependencies: [E6-T003, E6-T004, E6-T005, E6-T006, E6-T007, E6-T008, E6-T009, E6-T010, E6-T011]
+    complexity: L
+
+  - id: E6-T013
+    meta:
+      title: "Integration Tests & End-to-End Verification"
+      description: |
+        Integration tests verifying the Communication subsystem works end-to-end and
+        respects all CANON constraints.
+
+        Test suites:
+
+        1. Input-Output Loop:
+        - Guardian sends text → parsed → response generated → delivered via chatbox
+        - Guardian sends voice → STT → parsed → response generated → TTS + chatbox
+        - Voice failure → graceful degradation to text
+
+        2. Theater Prohibition:
+        - Response with high emotional valence + low corresponding drive → Theater detected
+        - Theater detected → regeneration → minimal response on failure
+        - Zero reinforcement multiplier verified
+        - Correct responses with matching drive state → pass validation
+
+        3. Person Model Isolation:
+        - Person model created in isolated Grafeo
+        - No edges between person KG and WKG (query verification)
+        - Person model accessible only through sanitized interface
+
+        4. Social Contingency:
+        - Sylphie initiates → guardian responds within 30s → contingency event emitted
+        - Sylphie initiates → no response → no contingency
+        - Non-initiated response → no contingency
+
+        5. Guardian Asymmetry:
+        - Guardian correction → CORRECTION feedback type → 3x weight tag
+        - Guardian confirmation → CONFIRMATION feedback type → 2x weight tag
+
+        6. Type 2 Cost:
+        - Every LLM call → cost event in TimescaleDB
+        - Cost includes latency and token count
+        - No "free" LLM calls
+
+        7. Event Emission:
+        - All communication events in TimescaleDB
+        - Learnable events tagged has_learnable=true
+        - Provenance correct on all emitted events
+
+        8. Latency:
+        - Measure end-to-end response time
+        - Target: < 2 seconds for text, < 3 seconds for voice
+        - Identify bottlenecks
+
+        9. Attractor State Prevention:
+        - Verify no path exists for Communication to write to Drive Engine evaluation
+        - Verify no path for person model to contaminate WKG
+        - Verify LLM does not select actions (only translates intent)
+
+        Deliverables:
+        - Integration test suite covering all 9 areas
+        - Performance benchmark for latency
+        - Behavioral audit template for ongoing Theater monitoring
+      acceptance_criteria:
+        - "All 9 test areas pass"
+        - "Theater Prohibition enforced end-to-end"
+        - "Person model isolation verified (no WKG contamination)"
+        - "Social contingency tracking verified"
+        - "Type 2 cost tracked on every LLM call"
+        - "End-to-end latency measured and documented"
+        - "No CANON violations in any test path"
+    agents: [vox, forge, cortex]
+    model: sonnet
+    dependencies: [E6-T012]
+    complexity: L

@@ -1,0 +1,1002 @@
+[
+  {
+    "id": "canon-a-27-1-claude-md-critical-constraints-001",
+    "description": "Observatory NEVER writes to CB's Neo4j. Observatory has read-only access via the observatory_reader credentials. Nothing is written back to CB's graph or state from Observatory.",
+    "scope": "observatory",
+    "source": "CANON A.27.1, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-002",
+    "description": "CB NEVER reads from TimescaleDB or Observatory. TimescaleDB is the Observatory process's database only.",
+    "scope": "all",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-29-1-claude-md-critical-constraints-003",
+    "description": "Telemetry emission NEVER blocks the executor. Use fire-and-forget bounded asyncio queue (maxsize 100). Separate drain task consumes the queue. Queue overflow drops oldest entry. Executor never awaits telemetry delivery. Enqueue constraint: <1ms.",
+    "scope": "executor-engine",
+    "source": "CANON A.29.1, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-6-claude-md-critical-constraints-004",
+    "description": "All Observatory dashboard data is session-level granularity or coarser (Ashby C6). No per-utterance feedback loops back to the guardian.",
+    "scope": "observatory",
+    "source": "CANON A.27.6, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-005",
+    "description": "EdgeFilter (the query interface) uses field names source_node_id and target_node_id. KnowledgeEdge (the data model) uses source_id and target_id. These are different — never mix them.",
+    "scope": "graph",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-26-3-claude-md-critical-constraints-006",
+    "description": "CAN_PRODUCE edges go FROM action:speak TO PhraseNode. Correct query pattern: ()-[:CAN_PRODUCE]->(p:PhraseNode). NEVER query: (p:PhraseNode)-[:CAN_PRODUCE]->().",
+    "scope": "graph",
+    "source": "CANON A.26.3, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-007",
+    "description": "Consolidation should be pressure-driven (cognitive_awareness drive), not timer-driven. A timer is a fallback only.",
+    "scope": "maintenance-engine",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-claude-md-critical-constraints-008",
+    "description": "Boredom and curiosity are time-based accumulators computed on the ESP32, not pure functions of core drives. They have rise/decay rates, guardian-drop events, and server-timeout pause behavior.",
+    "scope": "drive-engine",
+    "source": "CANON A.30, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-22-3-claude-md-critical-constraints-009",
+    "description": "ESP32 is the sole authority on drive pressure values. Software cannot override computed drive values except via the explicit /drives/override endpoint, which is for debugging only.",
+    "scope": "drive-engine",
+    "source": "CANON A.22.3, CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-010",
+    "description": "PhraseNode IDs follow the format: phrase:{sha256_12} (first 12 characters of SHA-256 hash of the normalized text).",
+    "scope": "graph",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-011",
+    "description": "CAN_PRODUCE edge IDs follow the format: edge:can_produce:{source}:{target}.",
+    "scope": "graph",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-critical-constraints-012",
+    "description": "All timestamps must be timezone-aware UTC. Use shared.time_utils.utc_now() — never use datetime.now() or naive datetimes.",
+    "scope": "all",
+    "source": "CLAUDE.md Critical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-11-013",
+    "description": "Every node and edge in the graph must carry provenance metadata. Valid provenance source categories are: SENSOR, GUARDIAN, INFERENCE, GUARDIAN_APPROVED_INFERENCE, TAUGHT_PROCEDURE, BEHAVIORAL_INFERENCE. No other categories are permitted without a CANON amendment.",
+    "scope": "graph",
+    "source": "CANON A.11",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-11-014",
+    "description": "BEHAVIORAL_INFERENCE provenance requires: (1) minimum 3 independent observations, not a single session; (2) confidence decays at standard ACT-R decay rate without revalidation; (3) every BEHAVIORAL_INFERENCE node carries derived_from edges traceable to specific PhraseNode episodes. BEHAVIORAL_INFERENCE is non-transitive — it cannot be the source for further INFERENCE chains.",
+    "scope": "graph",
+    "source": "CANON A.11",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-18-015",
+    "description": "TAUGHT_PROCEDURE provenance is restricted to: ProceduralTemplate, ProcedureStep, WorkedExample, ConceptPrimitive, ValueNode (bootstrap values 0-20), WordSenseNode (bootstrap), WordFormNode (bootstrap + ~270 irregular forms), semantic edge type vocabulary nodes, and logical axiom nodes. TAUGHT_PROCEDURE is NOT for world knowledge — never use it for COMPUTES_TO edges or IS_A/HAS_PROPERTY semantic facts.",
+    "scope": "graph",
+    "source": "CANON A.18",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-1-016",
+    "description": "The knowledge graph is organized into three domains within a single Neo4j database: MathDomain (ProceduralTemplates, ValueNodes, COMPUTES_TO edges), LanguageDomain (WordFormNodes, WordSenseNodes, PhraseNodes, CAN_PRODUCE, HEARD_DURING, SUPERSEDES, SyntacticTemplates), AbstractDomain (ConceptPrimitive nodes). These are NEVER physically separated into distinct databases.",
+    "scope": "graph",
+    "source": "CANON A.20.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-2-017",
+    "description": "Cross-domain edges (DENOTES, IS_A, DEPENDS_ON) are first-class graph citizens with transactional guarantees, provenance requirements, and confidence tracking. They must never be replaced by application-layer joins across separate databases.",
+    "scope": "graph",
+    "source": "CANON A.20.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-3-018",
+    "description": "Parallel querying of separate knowledge domains is achieved through concurrent Python async execution (asyncio.gather via DomainDispatcher), not through database separation.",
+    "scope": "graph",
+    "source": "CANON A.20.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-5-019",
+    "description": "Any new knowledge domain added must: (a) use explicit label-based namespacing; (b) establish at least one cross-domain bridge edge type to AbstractDomain or existing domain at introduction; (c) be planned with DomainDispatcher parallel execution model.",
+    "scope": "graph",
+    "source": "CANON A.20.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-1-020",
+    "description": "Motor commands are graph-mediated. Executor Engine writes ExplorationTarget nodes to the knowledge graph when deciding to move. No direct Executor Engine → Layer 1 function calls for navigation that bypass the knowledge graph.",
+    "scope": "executor-engine",
+    "source": "CANON P2-A.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-5-021",
+    "description": "Information flows primarily upward across layers: sensors → perception → knowledge graph → Drive Engine/Executor. Layer 2 (Perception) may query Layer 3 (Knowledge Graph) only through a narrow, defined persistence-check interface for object identity matching. This is not a general read capability.",
+    "scope": "all",
+    "source": "CANON A.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-1-022",
+    "description": "The Drive Engine is the ESP32 microcontroller. It computes the full pressure vector from all drives including cross-modulation. It does NOT select actions, access the knowledge graph, or communicate with the guardian.",
+    "scope": "drive-engine",
+    "source": "CANON A.23.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-5-023",
+    "description": "The Executor Engine reads the pressure vector but cannot write to it. Software metrics report DIRECTLY to the ESP32 via HTTP POST. The Executor cannot intercept or suppress metric reporting. The executor loop structure is fixed and not learnable.",
+    "scope": "executor-engine",
+    "source": "CANON A.23.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-4-024",
+    "description": "The Executor Engine must respond to pressure — it selects HOW to respond but not WHETHER to respond. A pressure vector that is only logged is prohibited. Ignoring pressure produces the Affective Dissociation failure mode.",
+    "scope": "executor-engine",
+    "source": "CANON A.17.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-25-4-a-23-2-025",
+    "description": "When no learned procedure is available for the current pressure state, CB responds with the shrug fallback (honest admission of incomprehension). No LLM is consulted. New procedures enter the graph only through guardian teaching and organic language acquisition.",
+    "scope": "executor-engine",
+    "source": "CANON A.25.4, A.23.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-7-026",
+    "description": "The Reasoning Circle (A.23.7 step 3) operates entirely in memory during execution. No graph writes occur within the Reasoning Circle. Only the final execution decision produces graph writes (DecisionNode audit trail, PhraseNode).",
+    "scope": "executor-engine",
+    "source": "CANON A.23.7",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-7-027",
+    "description": "ThinkingMore cycles in the Reasoning Circle are terminated by: Anxiety pressure accumulation (primary), 2-second wall-clock timeout (secondary), 3-iteration ceiling (tertiary). The Executor owns the cycle-back decision, not the Reasoning Circle.",
+    "scope": "executor-engine",
+    "source": "CANON A.23.7",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-6-028",
+    "description": "Homeostatic emotional expression without corresponding homeostatic state is prohibited (Homeostatic Theater). CB's guardian-facing language must reflect actual drive state. Pre-Phase-2, the system must not perform emotional states it does not have.",
+    "scope": "executor-engine",
+    "source": "CANON A.17.6",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-22-1-029",
+    "description": "Moral Valence is the only homeostatic axis that persists across sessions. It is stored in the knowledge graph with INFERENCE provenance and loaded at session start. All other drives initialize from baseline at each session start.",
+    "scope": "drive-engine",
+    "source": "CANON A.22.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-22-1-030",
+    "description": "Moral Standing does NOT return to 1.0 within the same session as a violation. Decay phases: Phase 1 (recent < 3 sessions): half-life ~2 sessions. Phase 2 (3-10 sessions): half-life ~5 sessions. Phase 3 (>10 sessions): gradual to baseline. Guardian remediation confirmation adds +0.2 immediately.",
+    "scope": "drive-engine",
+    "source": "CANON A.22.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-1-031",
+    "description": "Skill packages may NOT contain: COMPUTES_TO instance edges, IS_A or HAS_PROPERTY edges encoding semantic world knowledge, any node carrying SENSOR/GUARDIAN/INFERENCE provenance, or pre-computed confidence scores above 0.15 bootstrap baseline.",
+    "scope": "graph",
+    "source": "CANON A.21.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-3-032",
+    "description": "Every node and edge created by a skill package must carry the property installed_by_skill: <package_id>. This is the idempotency key for clean uninstall.",
+    "scope": "graph",
+    "source": "CANON A.21.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-3-033",
+    "description": "The SkillPackageValidator must enforce CANON constraints as a hard block before any YAML package touches the graph. Required checks: canon_provenance must be TAUGHT_PROCEDURE, all node types in A.18 permitted list, no prohibited edges, at least one cross-domain bridge per new domain, all declared requires packages already installed.",
+    "scope": "graph",
+    "source": "CANON A.21.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-5-034",
+    "description": "The anchor layer cannot be removed by any reset operation: registry:skills node, EvolutionRule nodes (TYPE_CREATION_THRESHOLD, GUARDIAN_NAME_TRIGGERS_TYPE, PREDICTION_ERROR_DEMOTION, Disambiguation Efficiency Ratio), AbstractDomain ConceptPrimitive nodes (integer, set, operation, comparison, result), ObservationSession schema node. These carry SYSTEM_BOOTSTRAP provenance.",
+    "scope": "graph",
+    "source": "CANON A.21.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-6-035",
+    "description": "Three reset modes with distinct semantics: reset --hard wipes all TAUGHT_PROCEDURE + installed_by_skill tagged nodes (preserves anchor layer and experience layer). reset --experience wipes all SENSOR/GUARDIAN/INFERENCE/COMPUTES_TO experience nodes (preserves anchor and skill layers). uninstall <skill> deletes all nodes where installed_by_skill == skill_id.",
+    "scope": "graph",
+    "source": "CANON A.21.6",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-3-claude-md-key-technical-patterns-036",
+    "description": "ACT-R confidence formula: min(1.0, base + 0.12*ln(count) - d*ln(hours+1)). Per-type decay rates: ProceduralTemplate d=0.05, WordFormNode d=0.04, PhraseNode d=0.03, ConceptPrimitive d=0.02. Default rate 0.05 applies to any node type without an explicit rate. Per-type rates stored as meta-schema rules in graph, not hardcoded.",
+    "scope": "graph",
+    "source": "CANON A.17.3, CLAUDE.md Key Technical Patterns",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-2-claude-md-key-technical-patterns-037",
+    "description": "ACT-R thresholds: Procedural cap 0.50, Guardian confirmation base 0.60, Retrieval threshold 0.50 (CANON value). Note: implementation currently uses 0.20 — see CANON A.23.2 note.",
+    "scope": "graph",
+    "source": "CANON A.23.2, CLAUDE.md Key Technical Patterns",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-2-038",
+    "description": "Dynamic action threshold formula: threshold = base - (base - floor) * fill_ratio, where fill_ratio = min(1.0, total_pressure / 11.0). Base = 0.15, floor = 0.05. Under high total pressure, threshold drops — CB will attempt any action above minimum confidence.",
+    "scope": "executor-engine",
+    "source": "CANON A.23.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-3-2-039",
+    "description": "Encoding strength formula for PhraseNode creation: arousal_factor = clamp(0.3, (total_pressure - anxiety) / 5.0, 1.5); novelty_factor = clamp(0.5, 1.0 + prediction_error * 2.0, 2.0); anxiety_penalty = clamp(0.2, 1.0 - anxiety, 1.0); encoding_strength = arousal_factor * novelty_factor * anxiety_penalty.",
+    "scope": "conversation-engine",
+    "source": "CANON A.24.3.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-4-a-22-3-040",
+    "description": "The ESP32 pressure vector is 12 floats (60 bytes) at packet version 0x03: 4 core drives + 8 complement drives. Social occupies index 11 (0-based). Broadcast via UDP at 10Hz. Must be backward compatible with v2 (56-byte, 11-drive) and v1 (48-byte, 9-drive) packets.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.4, A.22.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-3-a-30-4-041",
+    "description": "The 12 drives: Core (index 0-3): System Health, Moral Valence, Integrity, Cognitive Awareness. Complement (index 4-11): Guilt, Curiosity, Boredom, Anxiety, Satisfaction, Sadness, Information Integrity, Social.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.3, A.30.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-2-042",
+    "description": "Anxiety represents self-uncertainty and indecision, NOT social anxiety. Anxiety drifts naturally as drives accumulate (+0.004/tick). Every decisive action relieves anxiety (-0.08 to -0.10). The nothing action does NOT relieve anxiety.",
+    "scope": "drive-engine",
+    "source": "CANON A.23.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-1-043",
+    "description": "Boredom accumulator parameters: BOREDOM_RISE_RATE = 0.008/s × (1 - max_core_pressure). BOREDOM_GUARDIAN_DROP = 0.50 per guardian input. BOREDOM_SIGNAL_DROP = 0.30 on cry reflex. BOREDOM_DECAY_RATE = 0.001/s. Accumulation pauses when no server contact for SERVER_TIMEOUT_MS (15000ms).",
+    "scope": "drive-engine",
+    "source": "CANON A.30.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-2-044",
+    "description": "Curiosity accumulator parameters: CURIOSITY_BASE_RISE_RATE = 0.003/s. CURIOSITY_COGAWARE_AMPLIFY = 0.5 × cognitive_awareness × base rate. CURIOSITY_SIGNAL_DROP = 0.25 on coo reflex. CURIOSITY_DECAY_RATE = 0.001/s. Accumulation pauses on server timeout.",
+    "scope": "drive-engine",
+    "source": "CANON A.30.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-4-045",
+    "description": "Social accumulator parameters: SOCIAL_RISE_RATE = 0.007/s baseline. SOCIAL_QUESTION_AMPLIFY = 0.003/s per open question (capped at 5 questions). SOCIAL_GUARDIAN_DROP = 0.55 per answer event (also awards: Boredom -0.20, Anxiety -0.15). SOCIAL_SIGNAL_DROP = 0.25 on giggle reflex. SOCIAL_DECAY_RATE = 0.001/s. Same server-timeout pause behavior.",
+    "scope": "drive-engine",
+    "source": "CANON A.30.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-4-046",
+    "description": "explore_graph (comment eligibility) requires: Social > 0.40 AND Curiosity > 0.40. Without both conditions met, explore_graph does not fire on Social pressure alone.",
+    "scope": "executor-engine",
+    "source": "CANON A.30.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-30-5-047",
+    "description": "Information Integrity signal = clamp(0.0, count(nodes where confidence < 0.5) / max(1, total_node_count), 1.0). Reported to ESP32 once per maintenance cycle.",
+    "scope": "maintenance-engine",
+    "source": "CANON A.30.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-25-1-048",
+    "description": "action:reflex:giggle fires involuntarily when Social >= 0.80. Effect: Social -0.25 (partial relief), Anxiety +0.08 (giggling escalates anxious energy). It is NOT learned and NOT a CAN_PRODUCE target. It serves the social drive.",
+    "scope": "executor-engine",
+    "source": "CANON A.25.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-25-1-049",
+    "description": "CB boots with exactly two selectable genome actions: action:nothing (idle, confidence 1.0, SERVES_DRIVE all) and action:speak (composite, starts with NO children — all speech content is learned via OLA). CB starts mute. No pre-wired utterances.",
+    "scope": "executor-engine",
+    "source": "CANON A.25.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-25-2-a-26-1-050",
+    "description": "CAN_PRODUCE is a SCHEMA-level edge. It requires a weighted readiness score meeting the promotion threshold. Hard floor: minimum 3 guardian encounters before a PhraseNode is eligible for CAN_PRODUCE regardless of other criteria scores. Weights and thresholds are stored as meta-schema rules (guardian-tunable).",
+    "scope": "maintenance-engine",
+    "source": "CANON A.25.2, A.26.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-26-2-a-26-4-051",
+    "description": "PhraseNode confidence decay rate is 0.03 (slowest decay class). Encounter counting: same phrase heard within 60 seconds = one episode (not multiple encounters). Cross-session encounters get 1.5x confidence increment (spacing bonus). Internal rehearsal counts at 0.5x weighting.",
+    "scope": "graph",
+    "source": "CANON A.26.2, A.26.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-26-3-052",
+    "description": "HEARD_DURING edges (PhraseNode → PhraseNode self-reference) carry: drive_snapshot (11-float pressure vector), encoding_strength, prediction_error, session_id, and YOLO co-detections.",
+    "scope": "graph",
+    "source": "CANON A.26.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-26-5-053",
+    "description": "Echoic behavior (repeating recently heard phrases) is a speak handler runtime rule, NOT a graph edge. It fires if a phrase was heard in the last N seconds AND curiosity is elevated. Successful echoing patterns may graduate to CAN_PRODUCE through consolidation.",
+    "scope": "conversation-engine",
+    "source": "CANON A.26.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-054",
+    "description": "Every action wrapped in a Predictive Action Envelope: predict pressure effects before execution, capture before/after graph diff during execution via event bus, compute prediction error afterward. Prediction error reports to ESP32 via /metrics endpoint (prediction_error field).",
+    "scope": "executor-engine",
+    "source": "CANON A.24",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-3-1-055",
+    "description": "Static predictions are used until an action accumulates 10 observations, then switches to observed effect averages for predictions.",
+    "scope": "executor-engine",
+    "source": "CANON A.24.3.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-1-056",
+    "description": "The Predictive Action Envelope graph diff is captured by observing event bus emissions during the action's execution window (NODE_CREATED, EDGE_CREATED, etc.). No new infrastructure required beyond the existing event bus.",
+    "scope": "executor-engine",
+    "source": "CANON A.24.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-10-a-14-057",
+    "description": "ObservationSession is one continuous camera-on period from process start to process stop. Sessions do NOT close during Neo4j outages — observations produced during outages may be buffered in-session and flushed on recovery. No persistent cross-session replay log is permitted (would constitute a memory system outside the graph per A.10).",
+    "scope": "backend",
+    "source": "CANON A.10, A.14",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-14-058",
+    "description": "Observations lost because an infrastructure outage duration exceeds session lifetime are logged at CRITICAL severity and are NOT recovered. A diagnostic JSON sidecar at session end is permitted for human inspection, but the system must never read it on startup.",
+    "scope": "backend",
+    "source": "CANON A.14",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-15-059",
+    "description": "All conversation is graph-mediated. CB's speech output is produced by the Executor Engine selecting learned PhraseNodes through pressure-driven action selection. Guardian input is parsed by InputParser into PhraseNodes using whitespace tokenization and punctuation detection — NOT LLM extraction.",
+    "scope": "conversation-engine",
+    "source": "CANON A.15",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-15-claude-md-architecture-060",
+    "description": "Every utterance becomes a PhraseNode (PRECEDES chain). InterpretationNode for parsed results. The guardian web interface is conversational (natural language), not a control panel — no approve/reject buttons or forms that bypass schema evolution.",
+    "scope": "conversation-engine",
+    "source": "CANON A.15, CLAUDE.md Architecture",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-16-061",
+    "description": "Structured guardian actions (naming, correction, approval, rejection, teaching) carry GUARDIAN provenance in the resulting graph changes. Casual conversation that produces no graph changes is stored in in-memory session history only (ephemeral, not persisted across sessions in Phase 1.5).",
+    "scope": "conversation-engine",
+    "source": "CANON A.16",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-19-062",
+    "description": "Problem-solving traces are first-class graph artifacts. Intermediate reasoning steps must be recorded in the knowledge graph with INFERRED provenance before session ends. External responses to guardian are summaries of graph-backed reasoning — the graph holds the work.",
+    "scope": "executor-engine",
+    "source": "CANON A.19",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-7-063",
+    "description": "Neo4j Community Edition is the only graph storage backend. The labeled property graph model is used with three-level schema (instance, schema, meta-schema).",
+    "scope": "graph",
+    "source": "CANON A.7",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-10-064",
+    "description": "Memory is query patterns against the knowledge graph. There is no separate memory database. Graph health management (confidence decay, consolidation, pruning) are graph-internal operations.",
+    "scope": "all",
+    "source": "CANON A.10",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-active-plan-e11-note-065",
+    "description": "Neo4j graph properties for edges use the prop_ prefix. Always query e.prop_production_count not e.production_count. This is an implementation detail from E11.",
+    "scope": "graph",
+    "source": "CLAUDE.md Active Plan (E11 note)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-architecture-principles-066",
+    "description": "The web interface graph visualization is read-only. The guardian interacts via natural language, not control-panel widgets.",
+    "scope": "backend",
+    "source": "CANON Architecture Principles",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-6-067",
+    "description": "Schema type creation and splitting/merging always require guardian approval. Only PropertyExpectation demotion (lowering confidence on expected properties) is permitted autonomous action. Autonomous actions produce a low-priority post-hoc notification to the guardian.",
+    "scope": "graph",
+    "source": "CANON A.6",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-2-068",
+    "description": "Bootstrap EvolutionRule nodes (TYPE_CREATION_THRESHOLD, GUARDIAN_NAME_TRIGGERS_TYPE, PREDICTION_ERROR_DEMOTION) carry INFERENCE provenance. Health management rules are not category-formation rules and are created when the health management system is implemented, not during bootstrap.",
+    "scope": "graph",
+    "source": "CANON A.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-2-069",
+    "description": "TYPE_CREATION_THRESHOLD configuration (whether multi-session evidence is required) is stored as a property on the EvolutionRule graph node, not hardcoded. Default is multi-session evidence required.",
+    "scope": "graph",
+    "source": "CANON A.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-18-070",
+    "description": "COMPUTES_TO instance edges and semantic relationships between words (IS_A, HAS_PROPERTY, CAUSES) are NEVER pre-loaded. Every specific computational result and semantic fact must be computed, observed, or taught through guardian conversation.",
+    "scope": "graph",
+    "source": "CANON A.18",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-28-071",
+    "description": "The FE Agent (browser-side Claude Haiku) has read-only access to the last 5 minutes of CB telemetry. It cannot write to CB's graph, modify CB's state, or send commands to CB.",
+    "scope": "frontend",
+    "source": "CANON A.28",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-28-1-072",
+    "description": "FE Agent requires VITE_ANTHROPIC_API_KEY environment variable. It must be hidden when the key is not set (graceful degradation per Ashby C4).",
+    "scope": "frontend",
+    "source": "CANON A.28.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-3-073",
+    "description": "Observatory calls Claude Haiku for linguistic analysis of guardian utterances. Results are written to TimescaleDB only. CB has no awareness this analysis exists.",
+    "scope": "observatory",
+    "source": "CANON A.27.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-4-074",
+    "description": "Observatory attractor detection runs every 30 seconds, evaluating all active attractor states. Risk scores are 0.0-1.0. Warnings are emitted — no automated action is taken.",
+    "scope": "observatory",
+    "source": "CANON A.27.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-2-075",
+    "description": "Observatory telemetry is ingested into TimescaleDB with compression at 7 days and retention policy: 30 days raw, 1 year aggregates, forever session summaries. Graph topology polled from Neo4j every 60 seconds.",
+    "scope": "observatory",
+    "source": "CANON A.27.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-29-3-076",
+    "description": "Every telemetry message must include schema_version integer. Version increments when fields are added/removed/renamed. Additive changes (new optional fields) do not require a version bump.",
+    "scope": "all",
+    "source": "CANON A.29.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-7-failure-mode-10-077",
+    "description": "The Curiosity floor of 0.1 must be preserved even at minimum Moral Standing. Moral Standing suppression of Curiosity is capped at a 70% reduction. This prevents Moral Paralysis attractor state.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.7 (failure mode 10)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-7-failure-mode-11-078",
+    "description": "Guardian proximity Anxiety reduction weight must be < 0.05. Repair behavior triggered by low Moral Standing must terminate when Moral Standing returns above threshold. This prevents Moral-Guardian Orbit attractor state.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.7 (failure mode 11)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-7-failure-mode-12-079",
+    "description": "Satisfaction-to-Curiosity potentiation is capped at Satisfaction = 0.8. No further potentiation above that level. This prevents the Expansive (Hypomanic) attractor state.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.7 (failure mode 12)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-7-failure-mode-14-080",
+    "description": "If Anxiety is sustained above 0.7 for more than N consecutive windows, escalate to diagnostic mode and guardian notification. This prevents Anxiety Tunnel attractor state.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.7 (failure mode 14)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-7-failure-mode-15-081",
+    "description": "If Satisfaction reaches floor (0.1), trigger diagnostic escalation and guardian notification. Do NOT silently clamp behavior. This prevents the Depressive Attractor state.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.7 (failure mode 15)",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-core-philosophy-1-082",
+    "description": "No pre-committed knowledge seeded from LLM training data or external datasets. Every node and edge must originate from direct sensory experience, guardian teaching, or inference from those two sources.",
+    "scope": "all",
+    "source": "CANON Core Philosophy §1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-5-083",
+    "description": "The system has exactly one ObservationSession schema node type (A.10). An ExplorationEpisode is added as a sub-session unit in Phase 3, linking to ExplorationTarget nodes and all observations made during the episode.",
+    "scope": "graph",
+    "source": "CANON P2-A.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-4-084",
+    "description": "Exploration observations motivated by active exploration carry SENSOR provenance (epistemically correct: sensors produced the data). The ExplorationTarget node that motivated movement is linked to resulting observation nodes via a motivated_by edge. A new ACTIVE or EXPLORATION provenance category is prohibited.",
+    "scope": "graph",
+    "source": "CANON P2-A.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-3-085",
+    "description": "Spatial processing infrastructure is permitted without earning (distance measurement, proximity detection, occupancy, directional orientation, odometry formulas). Spatial knowledge must still be earned (room categories, region relationships, spatial property expectations, room labels).",
+    "scope": "layer2_perception",
+    "source": "CANON P2-A.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-3-086",
+    "description": "Odometry formulas are infrastructure. The learned mapping between physical movement and visual field change is knowledge earned through motor babbling — not infrastructure.",
+    "scope": "layer2_perception",
+    "source": "CANON P2-A.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-planning-rules-087",
+    "description": "No code is written without epic-level planning validated against the CANON document. The CANON is immutable during implementation. Changes require explicit approval from Jim.",
+    "scope": "all",
+    "source": "CANON Planning Rules",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-9-088",
+    "description": "CANON gap escalation process: document the question in docs/decisions/ as a pending decision record with options and trade-offs, continue on non-blocked items, Jim reviews at session start. Agents do not resolve CANON gaps themselves.",
+    "scope": "all",
+    "source": "CANON A.9",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-5-089",
+    "description": "Cognitive degradation under pressure must be EMERGENT from pressure dynamics (gradient suppression narrowing action categories), not prescribed if/then degradation rules. Scripted degradation profiles are explicitly prohibited.",
+    "scope": "executor-engine",
+    "source": "CANON A.17.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-1-090",
+    "description": "The Drive Engine (ESP32) computes drive signals using an isolated hardware architecture. Co-Being's software stack must NOT evaluate its own drive state. A pressure vector computed within Co-Being's own Python stack violates signal isolation.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-1-a-22-3-091",
+    "description": "Software-derived signals (Integrity metrics, Cognitive Awareness metrics, prediction error) are reported TO the ESP32 via HTTP POST for evaluation. They are generated in software but evaluated on isolated hardware. Co-Being cannot intercept or modify the reporting.",
+    "scope": "backend",
+    "source": "CANON A.17.1, A.22.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-architecture-claude-md-current-state-092",
+    "description": "Layer 4 is canonically the Drive Engine (ESP32) + Executor Engine. The layer4_reasoning/ directory contains dormant LLM code (legacy). LLM code is retained but not active in runtime. Enable only via COBEING_LLM_ENABLED=true.",
+    "scope": "backend",
+    "source": "CANON Architecture, CLAUDE.md Current State",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-17-2-093",
+    "description": "The primary valence signal (Moral Valence drive) is driven by prediction errors, not external reward labels. Unexpected positive outcome: valence rises. Expected positive outcome that does not arrive: valence drops below baseline.",
+    "scope": "drive-engine",
+    "source": "CANON A.17.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-4-094",
+    "description": "A new SkillPackage installation that declares a new knowledge domain requires explicit guardian awareness before the domain's nodes are committed to the graph.",
+    "scope": "graph",
+    "source": "CANON A.21.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-2-095",
+    "description": "SkillPackage dependencies use SKILL_REQUIRES edges between SkillPackage nodes (distinct from procedural DEPENDS_ON edges between ProceduralTemplates). The installer traverses SKILL_REQUIRES edges. Circular dependencies are detected as graph cycles and rejected.",
+    "scope": "graph",
+    "source": "CANON A.21.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-2-096",
+    "description": "The SkillRegistry is a single META-SCHEMA level node (node_id: registry:skills). It is not a config file and not a filesystem scan. It carries REGISTERS edges to every installed SkillPackage node.",
+    "scope": "graph",
+    "source": "CANON A.21.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-21-7-097",
+    "description": "Skill management (install, uninstall, list, reset modes) must be exposed through the guardian web UI — not exclusively CLI. Reset operations via web UI require explicit guardian confirmation before execution.",
+    "scope": "frontend",
+    "source": "CANON A.21.7",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-4-098",
+    "description": "Cross-domain edge density (ratio of cross-domain edges to total edges) is a monitored graph health signal. Declining cross-domain connectivity indicates degrading comprehension capability.",
+    "scope": "graph",
+    "source": "CANON A.20.4",
+    "severity": "should",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-2-099",
+    "description": "Object detection algorithms (OpenCV, YOLO, EfficientNet-B0 embeddings for visual identity matching) are permitted processing infrastructure — they do not constitute pre-loaded knowledge. Object categories and object property expectations must be earned through experience.",
+    "scope": "layer2_perception",
+    "source": "CANON A.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-13-technical-constraints-100",
+    "description": "EfficientNet-B0 via ONNX Runtime is for pure visual feature extraction for object identity matching only. No semantic or linguistic contamination. Sentence-transformers are deferred until the graph is large enough to benefit from fast local similarity search.",
+    "scope": "layer2_perception",
+    "source": "CANON A.13, Technical Constraints",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-2-101",
+    "description": "Phase 1 A.6 milestones (Object Individuation, Persistence, Basic Categorization, Guardian-Assisted Differentiation) must remain unbroken throughout Phase 2 and beyond. If Phase 1 milestones regress, Phase 2 work pauses until restored.",
+    "scope": "all",
+    "source": "CANON P2-A.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-6-102",
+    "description": "Interoceptive vocabulary (ability to describe drive state) is NOT innate and must be learned through guardian interaction. Language must reflect actual drive state (A.17.6 theater prohibition) — CB describes the EFFECT of pressure ('I have questions I want to ask' when Curiosity is high), not raw axis values.",
+    "scope": "conversation-engine",
+    "source": "CANON A.23.6",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-3-1-103",
+    "description": "Prediction accuracy (MAE across all 12 drives) feeds back into the drive engine: accurate predictions relieve Integrity, Cognitive Awareness, Sadness, and Information Integrity pressure. Inaccurate predictions increase Sadness, Integrity, and Information Integrity pressure.",
+    "scope": "executor-engine",
+    "source": "CANON A.24.3.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-5-104",
+    "description": "The IndirectCausalLoop from Observatory passes through an autonomous human decision at every iteration (Observatory → dashboard → guardian insight → guardian speech → CB input). This preserves A.17.1 isolation. There is no automated write-back path from Observatory to CB.",
+    "scope": "observatory",
+    "source": "CANON A.27.5",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-architecture-principles-105",
+    "description": "Guardian-facing web interface is conversational, not a control panel. No approve/reject buttons or forms that bypass the schema evolution process. The graph visualization panel is read-only.",
+    "scope": "frontend",
+    "source": "CANON Architecture Principles",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-3-106",
+    "description": "Phase 1 curiosity is question generation only — no physical exploration. Curiosity becomes meaningful only after the graph has enough structure to define expectations. Early Phase 1 will have minimal curiosity activity.",
+    "scope": "backend",
+    "source": "CANON A.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-4-107",
+    "description": "The guardian interaction model supports both async (queue-based, non-blocking) and sync (conversational, real-time) modes. Schema proposals during conversation still enter the async approval queue — the conversational channel does NOT bypass the proposal pipeline.",
+    "scope": "conversation-engine",
+    "source": "CANON A.4",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-6-108",
+    "description": "Attractor state detection for Phase 3 (motor) attractor states must be suspended or heavily damped during the motor-perceptual babbling period (estimated weeks 1-3 of Phase 3). Stereotyped behavior during babbling is expected and productive.",
+    "scope": "observatory",
+    "source": "CANON P2-A.6",
+    "severity": "should",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-documentation-rules-109",
+    "description": "Session logs must be written after every implementation session that modifies src/cobeing/. Location: docs/sessions/YYYY-MM-DD-{slug}.md. Max 20 lines. Required sections: Changes, Wiring Changes, Known Issues, Gotchas for Next Session.",
+    "scope": "all",
+    "source": "CLAUDE.md Documentation Rules",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-documentation-rules-110",
+    "description": "Package _MANIFEST.md must be updated when .py files are added or removed from a package. Read the _MANIFEST.md first when working in any package.",
+    "scope": "all",
+    "source": "CLAUDE.md Documentation Rules",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-documentation-rules-111",
+    "description": "event-registry.md must be updated when event-related .py files are changed.",
+    "scope": "all",
+    "source": "CLAUDE.md Documentation Rules",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-documentation-rules-112",
+    "description": "Files over 200 lines must include a Debugging quick-ref block in the module docstring with: common failure patterns, what to check when things go wrong, and a Changed: phase history line.",
+    "scope": "all",
+    "source": "CLAUDE.md Documentation Rules",
+    "severity": "should",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-documentation-rules-113",
+    "description": "Run python scripts/gen_codebase_index.py and python scripts/gen_dep_map.py after adding files or changing imports.",
+    "scope": "all",
+    "source": "CLAUDE.md Documentation Rules",
+    "severity": "should",
+    "scopeType": "service"
+  },
+  {
+    "id": "claude-md-verification-114",
+    "description": "This project does NOT use automated tests (no pytest, jest, vitest, or unittest). Verification is via Playwright MCP E2E against the running application.",
+    "scope": "all",
+    "source": "CLAUDE.md Verification",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-22-1-115",
+    "description": "Moral Standing typed payload (beyond a scalar) must carry: list of currently inhibited action classes, recency timestamp per active violation, severity grade per active violation. Scalar Moral Standing alone cannot produce specific action-class inhibition.",
+    "scope": "drive-engine",
+    "source": "CANON A.22.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-22-1-116",
+    "description": "Moral Standing's natural decay uses three phases. Recovery acceleration: guardian remediation confirmation adds +0.2 immediately. Core drives except Moral Valence initialize from baseline at each session start.",
+    "scope": "drive-engine",
+    "source": "CANON A.22.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-23-7-117",
+    "description": "The Reasoning Circle four phases: (1) Decomposition — MEANS edge traversal + depth-bounded BFS → ContextBundle. (2) Resolution — spreading activation with lateral inhibition in-memory → InferenceResult. (3) Validation — check InferenceResult against CONTRADICTS edges. (4) Output — SymbolicReasoningSummary gating Executor action branches.",
+    "scope": "executor-engine",
+    "source": "CANON A.23.7",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-24-2-a-24-3-1-118",
+    "description": "Before any action executes, a prediction (ActionPrediction) is generated: predicted_nodes_created, predicted_edges_created, predicted_confidence_delta, predicted_pressure_impact. Predictions start coarse and improve with experience. MAE across 12 drives is the accuracy metric.",
+    "scope": "executor-engine",
+    "source": "CANON A.24.2, A.24.3.1",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-25-3-119",
+    "description": "When a speak action executes, the utterance is broadcast on the conversation WebSocket channel as a cb_speech message type. Frontend renders these with a green 'CB speaks' indicator.",
+    "scope": "backend",
+    "source": "CANON A.25.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-26-3-120",
+    "description": "CAN_PRODUCE edge properties include: production_confidence (starts 0.0), production_count, discriminative_context (learned from HEARD_DURING patterns), and deprecation metadata.",
+    "scope": "graph",
+    "source": "CANON A.26.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-p2-a-3-121",
+    "description": "Spatial processing infrastructure (distance measurement, proximity detection, occupancy assessment, odometry formulas) is permitted from Phase 2 without earning. Spatial knowledge categories, region relationships, and spatial property expectations must be earned through exploration or guardian teaching.",
+    "scope": "layer2_perception",
+    "source": "CANON P2-A.3",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-20-2-122",
+    "description": "The cross-domain edges DENOTES, IS_A (LanguageDomain → AbstractDomain), and DEPENDS_ON (MathDomain → AbstractDomain) are non-negotiable — they are the mechanism by which language comprehension of mathematical concepts is possible.",
+    "scope": "graph",
+    "source": "CANON A.20.2",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-28-2-123",
+    "description": "Guardian usage guideline: establish guardian-free periods (minimum 5 minutes) to allow autonomous development. Session-level reflection is healthy; per-utterance micro-management is harmful.",
+    "scope": "frontend",
+    "source": "CANON A.28.2",
+    "severity": "prefer",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-6-124",
+    "description": "A.6 Milestone 5 (Autonomous Schema Refinement) stretch goal: autonomous actions are limited to PropertyExpectation demotion only (lowering confidence on expected properties). Type creation, splitting, and merging always require guardian approval.",
+    "scope": "graph",
+    "source": "CANON A.6",
+    "severity": "must",
+    "scopeType": "service"
+  },
+  {
+    "id": "canon-a-27-1-125",
+    "description": "Observatory is a completely separate OS process: python -m observatory. No imports from src/cobeing/. No shared memory. Only connections: (1) WebSocket subscription to CB's telemetry broadcast (read-only), (2) read-only Neo4j queries via observatory_reader user.",
+    "scope": "observatory",
+    "source": "CANON A.27.1",
+    "severity": "must",
+    "scopeType": "service"
+  }
+]

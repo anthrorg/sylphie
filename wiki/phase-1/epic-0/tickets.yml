@@ -1,0 +1,474 @@
+epic: 0
+title: "Scaffold + Full Interface Skeleton"
+phase: 1
+created: 2026-03-28
+status: planned
+
+# Synthesized from 5 agent analyses: Forge (module structure), Sentinel (infrastructure),
+# Atlas (knowledge interfaces), Canon (CANON compliance), Ashby (systems coherence).
+#
+# Key corrections incorporated:
+# - Canon: ArbitrationResult as discriminated union, feedbackSource required, actionId required on reinforcement events
+# - Canon: ILlmService moved to shared (prevents cross-subsystem dependency)
+# - Canon: Theater validator signature must include DriveSnapshot
+# - Ashby: DriveSnapshot enriched with deltas, tick counter, rule match result
+# - Ashby: First-class types for all 7 CANON health metrics
+# - Ashby: Centralized event type enum (stigmergic channel legibility)
+# - Ashby: TYPE_1_GRADUATION and TYPE_1_DEMOTION event types
+# - Atlas: Contradiction detection returns discriminated union, not throws
+# - Sentinel: Two PostgreSQL pools (admin + runtime), Grafeo stub interface only
+
+tickets:
+  - id: E0-T001
+    meta:
+      title: "Project scaffold: package.json, tsconfig, NestJS bootstrap"
+      description: |
+        Initialize the NestJS monolith. Create package.json with all required
+        dependencies (NestJS 10+, neo4j-driver, pg, class-validator, RxJS,
+        @nestjs/config, @nestjs/websockets, @nestjs/platform-ws, rxjs).
+        Create tsconfig.json with strict: true. Create src/main.ts and
+        src/app.module.ts (importing stub modules added in later tickets).
+        Add ESLint + Prettier config. No Grafeo SDK yet (stub only per Sentinel).
+        No Anthropic/OpenAI SDKs yet (those belong to E6).
+      acceptance_criteria:
+        - "package.json exists with all NestJS core dependencies"
+        - "tsconfig.json has strict: true, no implicit any"
+        - "src/main.ts bootstraps a NestJS application"
+        - "src/app.module.ts exists (imports added in later tickets)"
+        - "ESLint + Prettier configs exist"
+        - "npm install succeeds without errors"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E0-T002
+    meta:
+      title: "Docker Compose and .env.example"
+      description: |
+        Create docker-compose.yml with 3 containers: neo4j:5-community,
+        timescale/timescaledb:latest-pg17, postgres:17. No Grafeo container
+        (embedded in NestJS process per Sentinel analysis). TimescaleDB database
+        named sylphie_events (not sylphie) to avoid confusion with system DB.
+        Create .env.example with all environment variables (42 vars across 6
+        groups per Sentinel spec). Include two PostgreSQL user sets (admin +
+        runtime) for RLS enforcement. No init SQL scripts mounted (those are E1).
+      acceptance_criteria:
+        - "docker-compose.yml defines neo4j, timescaledb, postgres services"
+        - "All services have healthchecks, volumes, restart policies"
+        - ".env.example documents every variable with comments and defaults"
+        - "docker compose config validates without errors"
+        - "Two PostgreSQL user sets defined (admin + sylphie_app runtime)"
+        - "No Grafeo container (documented as embedded)"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E0-T003
+    meta:
+      title: "Shared types: provenance, confidence, drive"
+      description: |
+        Create the foundational type files that have zero cross-module dependencies.
+
+        src/shared/types/provenance.types.ts:
+        - ProvenanceSource union type (SENSOR, GUARDIAN, LLM_GENERATED, INFERENCE,
+          plus extended: GUARDIAN_APPROVED_INFERENCE, TAUGHT_PROCEDURE, BEHAVIORAL_INFERENCE, SYSTEM_BOOTSTRAP)
+        - CoreProvenanceSource (the 4 main types)
+        - PROVENANCE_BASE_CONFIDENCE map (SENSOR: 0.40, GUARDIAN: 0.60, LLM_GENERATED: 0.35, INFERENCE: 0.30)
+
+        src/shared/types/confidence.types.ts:
+        - ACTRParams interface (base, count, decayRate, lastRetrievalAt)
+        - CONFIDENCE_THRESHOLDS const (retrieval: 0.50, ceiling: 0.60, graduation: 0.80, etc.)
+        - DEFAULT_DECAY_RATES const (per node type)
+        - computeConfidence() PURE FUNCTION (not interface method -- Canon Standard 6)
+        - applyGuardianWeight() pure function (2x confirm, 3x correct)
+
+        src/shared/types/drive.types.ts:
+        - DriveName enum (12 drives, indexed 0-11)
+        - DRIVE_INDEX_ORDER array
+        - PressureVector interface (readonly, all 12 drives)
+        - PressureDelta interface
+        - DriveSnapshot interface (enriched per Ashby: pressureVector, timestamp,
+          tickNumber, driveDeltas, ruleMatchResult, totalPressure)
+      acceptance_criteria:
+        - "ProvenanceSource type includes all 8 provenance sources"
+        - "PROVENANCE_BASE_CONFIDENCE has exactly 4 entries matching CANON values"
+        - "computeConfidence() is an exported pure function, not a class method"
+        - "computeConfidence() enforces Confidence Ceiling (clamp at 0.60 when count===0)"
+        - "DriveName enum has exactly 12 entries matching CANON drive names"
+        - "DriveSnapshot includes timestamp, tickNumber, driveDeltas (per Ashby)"
+        - "All types are readonly (immutable snapshots)"
+        - "npx tsc --noEmit passes for these files"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E0-T001]
+    complexity: M
+
+  - id: E0-T004
+    meta:
+      title: "Shared types: events, knowledge, action, IPC, LLM"
+      description: |
+        Create type files that depend on the foundational types from T003.
+
+        src/shared/types/event.types.ts:
+        - SubsystemSource union (5 subsystems)
+        - EventType discriminated union (centralized enum per Ashby -- single source
+          of truth for all event type strings). Must include:
+          Decision Making: DECISION_CYCLE_STARTED, TYPE_1_SELECTED, TYPE_2_SELECTED,
+            SHRUG_SELECTED, ACTION_EXECUTED, PREDICTION_CREATED, PREDICTION_EVALUATED,
+            EPISODE_ENCODED, TYPE_1_GRADUATION, TYPE_1_DEMOTION
+          Communication: INPUT_RECEIVED, INPUT_PARSED, RESPONSE_GENERATED,
+            RESPONSE_DELIVERED, GUARDIAN_CORRECTION, GUARDIAN_CONFIRMATION,
+            SOCIAL_COMMENT_INITIATED
+          Learning: CONSOLIDATION_CYCLE_STARTED, CONSOLIDATION_CYCLE_COMPLETED,
+            ENTITY_EXTRACTED, EDGE_REFINED, CONTRADICTION_DETECTED
+          Drive: DRIVE_TICK, DRIVE_RULE_APPLIED, DRIVE_RELIEF, SELF_EVALUATION_RUN,
+            OPPORTUNITY_DETECTED, RULE_PROPOSED, PREDICTION_ACCURACY_EVALUATED
+          Planning: OPPORTUNITY_INTAKE, SIMULATION_COMPLETED, PLAN_PROPOSED,
+            PLAN_VALIDATED, PLAN_VALIDATION_FAILED, PLAN_CREATED, PLANNING_RATE_LIMITED
+          Metrics: BEHAVIORAL_DIVERSITY_SAMPLE, PREDICTION_MAE_SAMPLE,
+            GUARDIAN_RESPONSE_LATENCY (per Canon gap 6)
+        - SylphieEvent base interface (id, type, timestamp, subsystem, sessionId,
+          driveSnapshot, schemaVersion, correlationId)
+        - LearnableEvent extending SylphieEvent (hasLearnable, content, guardianFeedbackType,
+          source, salience)
+        - Reinforcement event subtypes with REQUIRED actionId (per Canon Standard 2)
+
+        src/shared/types/knowledge.types.ts:
+        - KnowledgeNode (id, labels, type, provenance, actrParams, createdAt, updatedAt, properties)
+        - KnowledgeEdge (id, sourceId, targetId, relationship, provenance, actrParams, properties)
+        - EdgeFilter, NodeFilter
+        - UpsertResult discriminated union (success | contradiction per Atlas risk 7)
+
+        src/shared/types/action.types.ts:
+        - ActionProcedureData interface
+        - ActionCandidate interface (includes motivatingDrive per Ashby Loop 4)
+        - ArbitrationResult discriminated union: TYPE_1 | TYPE_2 | SHRUG (per Canon Standard 4)
+        - DriveCategory type
+        - SelectedAction, ActionOutcome interfaces
+
+        src/shared/types/ipc.types.ts:
+        - DriveIPCMessage envelope
+        - DriveIPCMessageType union (inbound + outbound)
+        - ActionOutcomePayload (with required feedbackSource per Canon Standard 5,
+          theaterPenaltyApplied per Canon Standard 1)
+        - SoftwareMetricsPayload (with llmCallCount, llmLatencyMs,
+          cognitiveEffortPressure per Canon Gap 4)
+        - DriveSnapshotPayload, OpportunityCreatedPayload
+
+        src/shared/types/llm.types.ts:
+        - LlmRequest, LlmResponse, LlmContext, Type2CostEstimate
+        - (Lives in shared, not communication, per Canon subsystem boundary fix)
+
+        src/shared/types/metrics.types.ts:
+        - HealthMetrics interface (all 7 CANON metrics as first-class types per Ashby)
+        - Type1Type2Ratio, PredictionMAEMetric, ProvenanceRatio, BehavioralDiversityIndex,
+          GuardianResponseRate, InteroceptiveAccuracy, MeanDriveResolutionTime
+      acceptance_criteria:
+        - "EventType is a single centralized union type (no string literals elsewhere)"
+        - "Reinforcement event subtypes have required actionId field"
+        - "ArbitrationResult is discriminated union with TYPE_1, TYPE_2, SHRUG variants"
+        - "ActionOutcomePayload has required feedbackSource field"
+        - "SoftwareMetricsPayload includes LLM cost fields"
+        - "UpsertResult is discriminated union (success | contradiction)"
+        - "All 7 CANON health metrics have TypeScript types"
+        - "LlmRequest/LlmResponse live in shared, not communication"
+        - "npx tsc --noEmit passes for all shared type files"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E0-T003]
+    complexity: L
+
+  - id: E0-T005
+    meta:
+      title: "Shared config and exceptions"
+      description: |
+        src/shared/config/app.config.ts:
+        - Validated config schema using class-validator
+        - All sections: neo4j, timescaledb, postgres, grafeo, llm, app
+
+        src/shared/config/database.config.ts:
+        - Neo4jConfig, TimescaleConfig, PostgresConfig (two user sets), GrafeoConfig
+        - DatabaseConfig aggregate interface
+
+        src/shared/exceptions/:
+        - SylphieException base class
+        - KnowledgeException, DriveException, CommunicationException,
+          LearningException, PlanningException, DecisionMakingException
+        - ProvenanceMissingError, ConfidenceCeilingViolation, ContradictionDetectedError,
+          DriveUnavailableError (per Atlas flagged types)
+
+        src/shared/shared.module.ts:
+        - @Global() module exporting ConfigModule
+
+        src/shared/index.ts:
+        - Barrel re-exporting all types, config, exceptions
+      acceptance_criteria:
+        - "Config validates on startup with class-validator"
+        - "Config fails fast with clear message on invalid env"
+        - "All 6 domain exception classes exist"
+        - "SharedModule is @Global()"
+        - "Barrel index.ts re-exports everything"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E0-T003, E0-T004]
+    complexity: M
+
+  - id: E0-T006
+    meta:
+      title: "Events module stub"
+      description: |
+        src/events/interfaces/events.interfaces.ts:
+        - IEventService: record(), query(), queryLearnableEvents(),
+          queryEventFrequency(), queryPattern(), markProcessed()
+
+        src/events/events.tokens.ts:
+        - EVENTS_SERVICE Symbol token
+
+        src/events/events.service.ts:
+        - EventsService stub implementing IEventService
+        - All methods throw new Error('Not implemented')
+
+        src/events/events.module.ts:
+        - Provides EVENTS_SERVICE -> EventsService
+        - Exports EVENTS_SERVICE
+
+        src/events/index.ts:
+        - Barrel exporting interfaces, tokens, module
+      acceptance_criteria:
+        - "IEventService interface has all 6 methods with full signatures"
+        - "EventsService stub compiles and satisfies the interface"
+        - "EVENTS_SERVICE token is a Symbol"
+        - "EventsModule exports EVENTS_SERVICE"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E0-T004]
+    complexity: S
+
+  - id: E0-T007
+    meta:
+      title: "Knowledge module stubs"
+      description: |
+        src/knowledge/interfaces/knowledge.interfaces.ts:
+        - IWkgService: 17 methods per Atlas spec (upsertNode, findNode, upsertEdge,
+          queryEdges, queryActionCandidates, queryContext with optional maxDepth,
+          querySubgraph, recordRetrievalAndUse, queryGraphStats, queryByProvenance,
+          contradiction detection returns UpsertResult discriminated union)
+        - ISelfKgService: 7 methods (getCurrentModel, updateSelfConcept,
+          getLastSnapshotTimestamp per Atlas risk 3, plus capability/pattern queries)
+        - IOtherKgService: 9 methods (all require personId as first param per Atlas isolation)
+        - IConfidenceService: 5 methods (compute, recordUse, checkCeiling,
+          applyGuardianWeight, batchRecompute)
+
+        src/knowledge/knowledge.tokens.ts:
+        - WKG_SERVICE, SELF_KG_SERVICE, OTHER_KG_SERVICE, NEO4J_DRIVER,
+          CONFIDENCE_SERVICE Symbol tokens
+
+        Stub service classes for each interface.
+
+        src/knowledge/knowledge.module.ts:
+        - Provides all tokens
+        - Exports WKG_SERVICE, SELF_KG_SERVICE, OTHER_KG_SERVICE, CONFIDENCE_SERVICE
+
+        src/knowledge/index.ts
+      acceptance_criteria:
+        - "IWkgService has 17+ methods with full signatures and JSDoc"
+        - "ISelfKgService has 7+ methods"
+        - "IOtherKgService requires personId on every method"
+        - "IConfidenceService wraps pure function with stateful tracking"
+        - "All stubs compile and satisfy their interfaces"
+        - "5 DI tokens defined as Symbols"
+        - "Provenance is required (not optional) on upsert methods"
+        - "upsertNode/upsertEdge return UpsertResult discriminated union"
+        - "npx tsc --noEmit passes"
+    agents: [atlas, forge]
+    model: sonnet
+    dependencies: [E0-T004, E0-T005]
+    complexity: L
+
+  - id: E0-T008
+    meta:
+      title: "Drive engine module stubs"
+      description: |
+        src/drive-engine/interfaces/drive-engine.interfaces.ts:
+        - IDriveStateReader: getCurrentState(), driveState$ Observable, getTotalPressure()
+        - IActionOutcomeReporter: reportOutcome(), reportMetrics()
+        - IRuleProposer: proposeRule()
+        - IOpportunityDetector: evaluatePredictions(), detectOpportunities()
+        - IDriveProcessManager: start(), stop(), isHealthy() (per Canon concern 1)
+
+        src/drive-engine/drive-engine.tokens.ts:
+        - DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, RULE_PROPOSER,
+          DRIVE_PROCESS_MANAGER Symbol tokens
+
+        Stub service classes. DriveReaderService stub returns a default DriveSnapshot.
+
+        src/drive-engine/drive-engine.module.ts:
+        - Exports only DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, RULE_PROPOSER
+        - Does NOT export IDriveProcessManager (internal only)
+
+        src/drive-engine/index.ts
+      acceptance_criteria:
+        - "IDriveStateReader has ZERO write methods (Canon Standard 6)"
+        - "driveState$ is typed as Observable<DriveSnapshot>"
+        - "IDriveProcessManager exists for lifecycle management"
+        - "Module exports only read-side tokens"
+        - "All stubs compile"
+        - "npx tsc --noEmit passes"
+    agents: [drive, forge]
+    model: sonnet
+    dependencies: [E0-T003, E0-T004]
+    complexity: M
+
+  - id: E0-T009
+    meta:
+      title: "Decision making module stubs"
+      description: |
+        src/decision-making/interfaces/decision-making.interfaces.ts:
+        - IDecisionMakingService: processInput(), getCognitiveContext(), reportOutcome()
+        - IEpisodicMemoryService: encode(), getRecentEpisodes(), queryByContext()
+          (return types include ageWeight for degradation per Canon Gap 3)
+        - IArbitrationService: arbitrate() returning ArbitrationResult discriminated union
+        - IPredictionService: generatePrediction(), evaluatePrediction()
+        - IActionRetrieverService: retrieve(), bootstrapActionTree()
+        - IConfidenceUpdaterService: update()
+        - IExecutorEngine: transition(), forceIdle(), getState()
+
+        src/decision-making/decision-making.tokens.ts
+
+        Stub service classes for each. Directory structure:
+        arbitration/, episodic-memory/, prediction/, executor/, action-retrieval/
+
+        src/decision-making/decision-making.module.ts
+        src/decision-making/index.ts
+      acceptance_criteria:
+        - "IArbitrationService.arbitrate() returns ArbitrationResult (TYPE_1|TYPE_2|SHRUG)"
+        - "IEpisodicMemoryService return types include ageWeight"
+        - "7 interfaces with full method signatures"
+        - "All stubs compile"
+        - "npx tsc --noEmit passes"
+    agents: [cortex, forge]
+    model: sonnet
+    dependencies: [E0-T004, E0-T005]
+    complexity: M
+
+  - id: E0-T010
+    meta:
+      title: "Communication module stubs"
+      description: |
+        src/communication/interfaces/communication.interfaces.ts:
+        - ICommunicationService: handleGuardianInput(), generateResponse(), initiateComment()
+        - IInputParserService: parse()
+        - IPersonModelingService: getPersonModel(), updatePersonModel()
+        - ITheaterValidator: validate(responseContent, driveSnapshot) -> TheaterValidationResult
+          (signature locked per Canon Standard 1 -- must accept both response AND drive state)
+        - ISttService: transcribe()
+        - ITtsService: synthesize()
+
+        NOTE: ILlmService lives in src/shared/types/llm.interfaces.ts (per Canon fix)
+        with token LLM_SERVICE in shared tokens. Communication module provides implementation,
+        but the interface is importable by Planning and Learning without cross-subsystem dependency.
+
+        src/communication/communication.tokens.ts
+        Stub service classes.
+        src/communication/communication.module.ts
+        src/communication/index.ts
+      acceptance_criteria:
+        - "ITheaterValidator.validate() accepts BOTH responseContent AND driveSnapshot"
+        - "ILlmService interface is in src/shared/ (not communication)"
+        - "ILlmService has isAvailable() for Lesion Test support (per Canon Gap 5)"
+        - "All stubs compile"
+        - "npx tsc --noEmit passes"
+    agents: [vox, forge]
+    model: sonnet
+    dependencies: [E0-T004, E0-T005]
+    complexity: M
+
+  - id: E0-T011
+    meta:
+      title: "Learning module stubs"
+      description: |
+        src/learning/interfaces/learning.interfaces.ts:
+        - ILearningService: runMaintenanceCycle(), shouldConsolidate()
+        - IEntityExtractionService: extract() -> ExtractedEntity[] with provenance: 'LLM_GENERATED' literal type
+          (per Canon provenance concern 3 -- prevents accidental GUARDIAN provenance from LLM extraction)
+        - IEdgeRefinementService: refine()
+        - IContradictionDetector: check()
+
+        src/learning/learning.tokens.ts
+        Stub service classes.
+        Subdirectories: consolidation/, entity-extraction/, edge-refinement/, contradiction/
+        src/learning/learning.module.ts
+        src/learning/index.ts
+      acceptance_criteria:
+        - "IEntityExtractionService.extract() return type has provenance: 'LLM_GENERATED' literal"
+        - "4 interfaces with full method signatures"
+        - "All stubs compile"
+        - "npx tsc --noEmit passes"
+    agents: [learning, forge]
+    model: sonnet
+    dependencies: [E0-T004, E0-T005]
+    complexity: S
+
+  - id: E0-T012
+    meta:
+      title: "Planning module stubs"
+      description: |
+        src/planning/interfaces/planning.interfaces.ts:
+        - IPlanningService: processOpportunity(), getOpportunityQueue()
+        - IOpportunityResearchService: research()
+        - ISimulationService: simulate()
+        - IConstraintValidationService: validate()
+        - IProcedureCreationService: create()
+        - IPlanningRateLimiter: canProceed(), getState()
+
+        Opportunity type must include priority: number and createdAt: Date
+        for decay calculation (per Canon Gap 2).
+
+        src/planning/planning.tokens.ts
+        Stub service classes.
+        Subdirectories: research/, simulation/, validation/, creation/
+        src/planning/planning.module.ts
+        src/planning/index.ts
+      acceptance_criteria:
+        - "Opportunity type has priority and createdAt for decay"
+        - "6 interfaces with full method signatures"
+        - "All stubs compile"
+        - "npx tsc --noEmit passes"
+    agents: [planner, forge]
+    model: sonnet
+    dependencies: [E0-T004, E0-T005]
+    complexity: S
+
+  - id: E0-T013
+    meta:
+      title: "Web module stubs and AppModule wiring"
+      description: |
+        src/web/web.module.ts
+        Controller stubs: HealthController, DrivesController, GraphController,
+          ConversationController, MetricsController
+        Gateway stubs: TelemetryGateway, ConversationGateway, GraphGateway
+        src/web/index.ts
+
+        Wire AppModule to import all 8 modules:
+        SharedModule, EventsModule, KnowledgeModule, DriveEngineModule,
+        DecisionMakingModule, CommunicationModule, LearningModule,
+        PlanningModule, WebModule
+
+        Final verification: npx tsc --noEmit passes with zero errors.
+        No circular dependencies at the module import level.
+      acceptance_criteria:
+        - "5 controller stubs exist"
+        - "3 gateway stubs exist"
+        - "AppModule imports all 8 modules"
+        - "npx tsc --noEmit passes with zero errors across entire project"
+        - "No circular dependency warnings from NestJS"
+        - "Every interface has at least one stub implementing it"
+        - "All barrel index.ts files export correctly"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E0-T006, E0-T007, E0-T008, E0-T009, E0-T010, E0-T011, E0-T012]
+    complexity: M

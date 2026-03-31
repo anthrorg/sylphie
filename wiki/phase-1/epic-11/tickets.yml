@@ -1,0 +1,473 @@
+epic: 11
+title: "Frontend Port & Media Integration"
+phase: 1
+created: 2026-03-30
+status: planned
+
+# Jim's decisions (2026-03-30):
+#   1. Webcam: Active perception input (Phase 1) — feeds Decision Making
+#   2. Skills: External concept upload — requires CANON A.13 amendment
+#   3. WebRTC: Yes — for webcam feed integration
+#
+# CANON amendments required:
+#   - A.13: Activate for Phase 1 with guardian-controlled concept upload
+#   - Phase 1 scope: Clarify webcam as Phase 1 Video input mechanism
+
+tickets:
+  # =========================================================================
+  # WAVE 1: Backend Foundations (must complete before frontend work)
+  # =========================================================================
+
+  - id: E11-T001
+    meta:
+      title: "WebSocket adapter types and protocol negotiation"
+      description: |
+        Define co-being wire format types (CoBeing_DriveFrame, CoBeing_ConversationTurn,
+        CoBeing_GraphNode, CoBeing_GraphEdge) in src/web/adapters/. Add WireProtocol
+        discriminator type ('sylphie-native' | 'cobeing-v1') to websocket interfaces.
+        Clients indicate protocol via ?protocol=cobeing-v1 query param on WS connect.
+        Default is sylphie-native for backward compatibility.
+      acceptance_criteria:
+        - "Four co-being interface types defined with snake_case field names"
+        - "WireProtocol type exported from src/web/interfaces/"
+        - "Gateway base can read protocol from connection query params"
+        - "npx tsc --noEmit passes"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E11-T002
+    meta:
+      title: "schema_level field in GraphNodeDto and WKG population"
+      description: |
+        Add schema_level: 'instance' | 'schema' | 'meta_schema' to GraphNodeDto.
+        Update WkgService node upsert to populate schema_level based on node label:
+        Entity/Concept/Procedure/Utterance → instance, SchemaType/SchemaRelType → schema,
+        MetaRule → meta_schema. Prerequisite for graph adapter.
+      acceptance_criteria:
+        - "GraphNodeDto has schema_level field"
+        - "WkgService.upsertNode() populates schema_level"
+        - "Existing Neo4j nodes get schema_level on next access"
+        - "GET /api/graph/snapshot returns schema_level on every node"
+    agents: [atlas]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E11-T003
+    meta:
+      title: "TTS audio delivery gap fix"
+      description: |
+        CommunicationService.generateResponse() synthesizes TTS audio but discards the
+        buffer — it never reaches the browser. Add audioBase64 and audioFormat fields to
+        ConversationOutgoingMessage. ConversationGateway propagates TTS audio from
+        generateResponse() into the outgoing WebSocket frame. Base64-encode MP3 buffer.
+        On TTS failure, fields are absent (text-only fallback).
+      acceptance_criteria:
+        - "ConversationOutgoingMessage has optional audioBase64 and audioFormat fields"
+        - "ConversationGateway includes base64 audio in response messages when TTS succeeds"
+        - "TTS failure results in text-only message (no crash)"
+        - "Audio format is mp3, playable by browser HTMLAudioElement"
+    agents: [vox]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E11-T004
+    meta:
+      title: "STT format detection fix"
+      description: |
+        SttService hardcodes .wav extension for temp files but browsers send audio/webm
+        or audio/ogg. Fix: detect format from Content-Type header or buffer magic bytes
+        and set temp file extension accordingly. Whisper API accepts webm, ogg, wav, mp3.
+      acceptance_criteria:
+        - "SttService accepts audio/webm and audio/ogg without error"
+        - "Temp file extension matches actual audio format"
+        - "POST /api/voice/transcribe works with browser MediaRecorder output"
+    agents: [vox]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E11-T005
+    meta:
+      title: "Conversation isThinking indicator"
+      description: |
+        Add metadata.isThinking: true emission to ConversationGateway before routing
+        input to CommunicationService. Clear after response is sent. Frontend uses
+        this for thinking indicator display.
+      acceptance_criteria:
+        - "ConversationGateway emits system message with isThinking: true before processing"
+        - "isThinking is cleared (system message with isThinking: false) after response sent"
+        - "No change to existing response message format"
+    agents: [vox]
+    model: sonnet
+    dependencies: []
+    complexity: S
+
+  - id: E11-T006
+    meta:
+      title: "Decision Making event instrumentation"
+      description: |
+        Decision Making subsystem must emit TYPE_1_DECISION, TYPE_2_DECISION,
+        PREDICTION_EVALUATED, and ARBITRATION_COMPLETE events to TimescaleDB.
+        These are required by Observatory endpoints (developmental stage, comprehension
+        accuracy) but are not currently written. Add event emission to the executor
+        and arbitration services.
+      acceptance_criteria:
+        - "TYPE_1_DECISION events emitted on every Type 1 action selection"
+        - "TYPE_2_DECISION events emitted on every Type 2 action selection"
+        - "PREDICTION_EVALUATED events include absoluteError field"
+        - "Events queryable from TimescaleDB"
+    agents: [cortex]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E11-T007
+    meta:
+      title: "Session lifecycle service"
+      description: |
+        The sessions table exists in PostgreSQL but nothing writes to it. Create a
+        SessionService that writes session start/end to PostgreSQL. On session close,
+        compute HealthMetrics snapshot across all three databases and store as
+        metrics_snapshot JSONB. Add metrics_snapshot column to sessions table via
+        migration in PostgresInitService.
+      acceptance_criteria:
+        - "sessions table has metrics_snapshot JSONB column"
+        - "SessionService.startSession() inserts row with started_at"
+        - "SessionService.closeSession() sets ended_at and computes metrics_snapshot"
+        - "metrics_snapshot contains all 7 CANON health metrics"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: []
+    complexity: L
+
+  # =========================================================================
+  # WAVE 2: WebSocket Adapters + New Endpoints
+  # =========================================================================
+
+  - id: E11-T008
+    meta:
+      title: "Telemetry WebSocket adapter (co-being protocol)"
+      description: |
+        Implement telemetry.adapter.ts: transforms Sylphie TelemetryFrame to flat
+        snake_case CoBeing_DriveFrame. TelemetryGateway supports dual-protocol via
+        ?protocol=cobeing-v1 query param. Unbatch frames to single drive snapshots.
+        Include executor state fields with defaults when unavailable.
+      acceptance_criteria:
+        - "Adapter converts drives array to flat {system_health, moral_valence, ...} object"
+        - "camelCase drive names converted to snake_case"
+        - "?protocol=cobeing-v1 clients receive co-being format"
+        - "Default (no param) clients receive unchanged Sylphie format"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E11-T001]
+    complexity: M
+
+  - id: E11-T009
+    meta:
+      title: "Conversation WebSocket adapter (co-being protocol)"
+      description: |
+        Implement conversation.adapter.ts: maps ConversationOutgoingMessage to co-being
+        format. Maps theaterCheck.passed → is_grounded. Generates turn_id from
+        sessionId + message counter. Includes audioBase64 pass-through.
+        ConversationGateway supports dual-protocol.
+      acceptance_criteria:
+        - "is_grounded mapped from theaterCheck.passed (true when absent)"
+        - "turn_id generated for each message"
+        - "audioBase64 passed through to co-being format"
+        - "Dual-protocol support via query param"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E11-T001, E11-T003]
+    complexity: M
+
+  - id: E11-T010
+    meta:
+      title: "Graph WebSocket adapter (co-being protocol)"
+      description: |
+        Implement graph.adapter.ts: maps id → node_id/edge_id, sourceId →
+        source_node_id, relationship → edge_type. Populates schema_level from
+        GraphNodeDto. Converts timestamps to ISO format. GraphUpdatesGateway
+        supports dual-protocol. Sends initial snapshot on connect.
+      acceptance_criteria:
+        - "Field names mapped to co-being convention"
+        - "schema_level included on every node"
+        - "Initial graph snapshot sent on new ?protocol=cobeing-v1 connection"
+        - "Dual-protocol support"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E11-T001, E11-T002]
+    complexity: M
+
+  - id: E11-T011
+    meta:
+      title: "Observatory endpoints (7 analytics APIs)"
+      description: |
+        Add GET /api/metrics/observatory/* endpoints to MetricsController:
+        vocabulary-growth (Neo4j), drive-evolution (TimescaleDB continuous agg),
+        action-diversity (TimescaleDB), developmental-stage (TimescaleDB),
+        session-comparison (PostgreSQL metrics_snapshot), comprehension-accuracy
+        (TimescaleDB), phrase-recognition (Neo4j CAN_PRODUCE edges).
+        Create drive_evolution_hourly continuous aggregate.
+        Wire MetricsModule into WebModule imports.
+      acceptance_criteria:
+        - "All 7 /api/metrics/observatory/* endpoints return valid JSON"
+        - "drive_evolution_hourly continuous aggregate created on startup"
+        - "Endpoints degrade gracefully when no data exists (empty arrays, not 500s)"
+        - "MetricsModule properly imported in WebModule"
+    agents: [sentinel]
+    model: sonnet
+    dependencies: [E11-T006, E11-T007]
+    complexity: L
+
+  - id: E11-T012
+    meta:
+      title: "Skills management endpoints with concept upload"
+      description: |
+        Skills controller: GET /api/skills (list procedures), GET /api/skills/:id,
+        DELETE /api/skills/:id (soft-delete). POST /api/skills/upload for guardian
+        concept upload — accepts concept definitions that enter the WKG with
+        GUARDIAN provenance at 0.60 base confidence. Upload requires guardian
+        authentication. Skills table in PostgreSQL with RLS (is_system protection).
+        CANON A.13 amendment required.
+      acceptance_criteria:
+        - "GET /api/skills returns Procedure nodes from WKG"
+        - "POST /api/skills/upload accepts concept definitions"
+        - "Uploaded concepts have GUARDIAN provenance and 0.60 confidence"
+        - "Skills table has RLS protecting is_system rows"
+        - "Soft-delete lowers confidence below retrieval threshold"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  # =========================================================================
+  # WAVE 3: Media Module (WebRTC + Camera)
+  # =========================================================================
+
+  - id: E11-T013
+    meta:
+      title: "MediaModule scaffold with WebRTC signaling"
+      description: |
+        Create src/media/ module with WebRTC signaling gateway at /ws/media.
+        Handles offer/answer/ICE candidate exchange for browser↔backend media
+        sessions. Includes MediaConfig in AppConfig (STUN servers, TURN optional,
+        camera device ID, FPS). Add to AppModule imports.
+      acceptance_criteria:
+        - "MediaModule registered in AppModule"
+        - "WebRTC signaling gateway accepts offer/answer/ice-candidate messages"
+        - "MediaConfig with STUN server defaults in AppConfig"
+        - "Missing media config is a startup warning, not a crash"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E11-T014
+    meta:
+      title: "Camera streaming endpoint (MJPEG via ffmpeg)"
+      description: |
+        GET /api/camera/stream returns multipart/x-mixed-replace JPEG frames from
+        webcam via ffmpeg child process. Configurable FPS (default 15). Accepts
+        ?source=webcam (default) for Phase 1; ?source=chassis reserved for Phase 2.
+        ?annotated=1 accepted but ignored in Phase 1. Graceful degradation: returns
+        static placeholder image if ffmpeg unavailable or camera not found.
+      acceptance_criteria:
+        - "GET /api/camera/stream returns MJPEG when webcam available"
+        - "Returns placeholder image when camera unavailable"
+        - "Configurable via CAMERA_DEVICE_ID and CAMERA_FPS env vars"
+        - "ffmpeg process cleaned up on client disconnect"
+        - "?annotated param accepted but ignored"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T013]
+    complexity: L
+
+  # =========================================================================
+  # WAVE 4: Frontend Port
+  # =========================================================================
+
+  - id: E11-T015
+    meta:
+      title: "Vite project scaffold and co-being source copy"
+      description: |
+        Create frontend/ as Vite + React + TypeScript project. Copy co-being
+        frontend source. Configure Vite proxy for /api → localhost:3000 and
+        /ws → ws://localhost:3000. Replace @cobeing/shared imports with local
+        types in frontend/src/types/. Add frontend scripts to root package.json
+        (frontend:dev, frontend:build). Remove demo mode code entirely.
+      acceptance_criteria:
+        - "frontend/ directory exists with working Vite config"
+        - "npm run frontend:dev starts Vite dev server"
+        - "All @cobeing/shared imports replaced with local types"
+        - "No demo mode code (no /ws/demo/* paths, no DemoPage component)"
+        - "Vite proxy correctly forwards /api and /ws to backend"
+    agents: [forge]
+    model: sonnet
+    dependencies: []
+    complexity: L
+
+  - id: E11-T016
+    meta:
+      title: "Frontend WebSocket integration (3 channels)"
+      description: |
+        Update useWebSocket hook to connect to Sylphie's WebSocket paths with
+        ?protocol=cobeing-v1. Wire conversation, telemetry, and graph channels.
+        Implement sylphieToDisplayMessage() adapter for conversation messages.
+        Merge drive state from both telemetry and conversation sources.
+        Connection status dots in TopBar reflect actual WS state.
+      acceptance_criteria:
+        - "Three WebSocket connections established on app load"
+        - "Conversation messages display in ConversationPanel"
+        - "Drive radar chart updates from telemetry stream"
+        - "Graph panel renders WKG nodes from graph WebSocket"
+        - "Connection status dots show green/red per channel"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T008, E11-T009, E11-T010, E11-T015]
+    complexity: L
+
+  - id: E11-T017
+    meta:
+      title: "Voice recording and playback UI"
+      description: |
+        Frontend useVoiceRecording hook: MediaRecorder → POST /api/voice/transcribe
+        → return transcription text. Low confidence (<0.5) shows "did you mean?"
+        confirmation before sending. Audio playback: decode audioBase64 from
+        conversation responses → HTMLAudioElement. Mute/unmute toggle.
+      acceptance_criteria:
+        - "Mic button records audio and transcribes via backend"
+        - "Low-confidence transcriptions shown for guardian confirmation"
+        - "Sylphie's audio responses play automatically when unmuted"
+        - "Mute toggle persists across messages"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T003, E11-T004, E11-T015]
+    complexity: M
+
+  - id: E11-T018
+    meta:
+      title: "Drive visualization with full [-10, 1] range"
+      description: |
+        DriveRadarChart and DriveBarChart display all 12 drives from live WebSocket
+        driveSnapshot. MUST use full [-10.0, 1.0] range — no clipping of negative
+        relief values. "Loading" state before first snapshot. Staleness indicator
+        after 5 seconds without update. Raw numeric values visible on hover.
+        CANON §Theater Prohibition: no smoothing, rounding, or fabrication.
+      acceptance_criteria:
+        - "Radar chart axis range is [-10.0, 1.0], not [0.0, 1.0]"
+        - "Negative drive values (extended relief) visually distinct from zero"
+        - "Loading state shown before first drive data received"
+        - "Stale indicator after 5s without update"
+        - "Numeric values visible (tooltip or label)"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T016]
+    complexity: M
+
+  - id: E11-T019
+    meta:
+      title: "Graph visualization with provenance and confidence"
+      description: |
+        Cytoscape graph panel shows provenance via node color/icon for all 4 types
+        (SENSOR, GUARDIAN, LLM_GENERATED, INFERENCE). Filter bar supports provenance
+        filter. Confidence values displayed on nodes/edges. schema_level filter
+        (instance/schema/meta_schema). NodeInspector drawer shows full node detail.
+      acceptance_criteria:
+        - "Four provenance types visually distinguishable (color-coded)"
+        - "Provenance filter works in filter bar"
+        - "Confidence values visible on hover or as labels"
+        - "schema_level filter toggles instance/schema/meta_schema"
+        - "NodeInspector shows all node properties including provenance"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T016]
+    complexity: M
+
+  - id: E11-T020
+    meta:
+      title: "Camera panel with WebRTC and MJPEG fallback"
+      description: |
+        CameraPanel attempts WebRTC connection for webcam feed. Falls back to
+        MJPEG via <img src="/api/camera/stream">. "Camera unavailable" overlay
+        when neither works. useWebRTC hook connects to /ws/media for signaling.
+      acceptance_criteria:
+        - "WebRTC video displays when available"
+        - "Falls back to MJPEG stream on WebRTC failure"
+        - "Camera unavailable overlay on total failure"
+        - "No crash when camera is not connected"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T013, E11-T014, E11-T015]
+    complexity: M
+
+  - id: E11-T021
+    meta:
+      title: "Observatory Dashboard frontend"
+      description: |
+        ObservatoryDashboard fetches from /api/metrics/observatory/* (7 endpoints).
+        Vocabulary growth chart, drive evolution heatmap, action diversity bar chart,
+        developmental stage indicator, session comparison table, comprehension accuracy
+        line chart, phrase recognition ratio. Graceful degradation per endpoint.
+        Experiential Provenance Ratio as first-class metric.
+      acceptance_criteria:
+        - "All 7 Observatory sections render when data available"
+        - "Individual endpoint failures don't break entire dashboard"
+        - "Experiential Provenance Ratio prominently displayed"
+        - "Empty state messaging when no sessions have run"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T011, E11-T015]
+    complexity: L
+
+  - id: E11-T022
+    meta:
+      title: "Skills Manager, FE Agent, and remaining panels"
+      description: |
+        Skills Manager: list/upload/deactivate skills via /api/skills endpoints.
+        Upload UI for guardian concept definitions. FE Agent panel: labeled as
+        "Observatory Assistant (read-only)" — NOT Sylphie's voice. Zero write
+        access. Separate Claude instance from Communication subsystem.
+        InnerMonologue panel: verbatim TimescaleDB event payloads only.
+        SystemLogs and MaintenanceLogs panels. AttractorAlertBanner.
+        TheaterCheckIndicator on Sylphie messages.
+      acceptance_criteria:
+        - "Skills list displays Procedure nodes from WKG"
+        - "Concept upload form works via POST /api/skills/upload"
+        - "FE Agent clearly labeled as separate from Sylphie"
+        - "Inner monologue shows verbatim event text, not LLM summaries"
+        - "Theater check violations visible on affected messages"
+        - "Attractor alerts display when thresholds breached"
+    agents: [vox]
+    model: sonnet
+    dependencies: [E11-T012, E11-T016]
+    complexity: L
+
+  # =========================================================================
+  # WAVE 5: E2E Verification
+  # =========================================================================
+
+  - id: E11-T023
+    meta:
+      title: "End-to-end verification with Playwright"
+      description: |
+        Full E2E test: start backend + frontend, verify all WebSocket connections,
+        send a message through conversation panel, verify drive chart updates,
+        verify graph renders, check Observatory loads. Copy API keys from co-being
+        .env for STT/TTS testing. Verify voice recording + playback works.
+        Verify camera panel loads (or shows unavailable gracefully).
+      acceptance_criteria:
+        - "All 3 WebSocket connections green in TopBar"
+        - "Text message sent and response received"
+        - "Drive radar chart shows live values"
+        - "Graph panel renders bootstrap nodes"
+        - "Observatory dashboard loads without errors"
+        - "Voice input/output works with API keys configured"
+        - "Camera panel handles absence gracefully"
+    agents: [proof]
+    model: sonnet
+    dependencies: [E11-T016, E11-T017, E11-T018, E11-T019, E11-T020, E11-T021, E11-T022]
+    complexity: L

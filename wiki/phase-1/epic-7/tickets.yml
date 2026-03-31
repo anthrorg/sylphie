@@ -1,0 +1,958 @@
+epic: 7
+title: "Learning (Consolidation Pipeline)"
+phase: 1
+created: 2026-03-29
+status: planned
+
+tickets:
+  - id: E7-T001
+    meta:
+      title: "Learning Types & Interface Refinement"
+      description: |
+        Refine E0 stub interfaces for real implementation. Define all types needed across the
+        Learning subsystem: ConsolidationResult, ConsolidationBatch, ExtractedEntity,
+        EntityResolution, ExtractedEdge, Contradiction, ContradictionType, ContradictionResolution,
+        JobResult, LearningCycleMetrics, ProvenanceHealth, and SalienceScore.
+
+        This ticket grounds all subsequent work. Every other ticket imports from these types.
+
+        Deliverables:
+        - Refined ILearningService interface with full method signatures
+        - Refined IEntityExtractionService interface
+        - Refined IEdgeRefinementService interface
+        - Refined IContradictionDetector interface
+        - ILearningJob interface (shouldRun(), run() → JobResult)
+        - IConsolidationService interface (selectBatch, consolidate)
+        - IEventRankerService interface (rankBySalience)
+        - IMaintenanceCycleService interface (cycle orchestration)
+        - ConsolidationResult type with entity/edge extraction results
+        - ConsolidationBatch type with salience-ranked events
+        - ExtractedEntity type with provenance, base confidence, resolution status
+        - EntityResolution enum (EXACT_MATCH, FUZZY_MATCH, AMBIGUOUS, NEW)
+        - ExtractedEdge type with relationship, confidence, provenance
+        - Contradiction type with 4 conflict types (DIRECT, CONFIDENCE, SCHEMA, TEMPORAL)
+        - ContradictionResolution enum (PREFER_GUARDIAN, MERGE, FLAG_AMBIGUOUS)
+        - JobResult type (success, artifact count, issues, latency_ms)
+        - LearningCycleMetrics type (cycle duration, events processed, entities extracted, edges refined, contradictions found)
+        - ProvenanceHealth type (experiential_ratio, llm_dependency_ratio, guardian_ratio, health_status)
+        - SalienceScore type (base_salience, recency_boost, total_score)
+
+        Acceptance criteria:
+        - "All interfaces compile with npx tsc --noEmit"
+        - "Every type has JSDoc with CANON reference"
+        - "Provenance field present on all entity/edge types"
+        - "Base confidence assigned by provenance source (GUARDIAN 0.60, SENSOR 0.40, LLM_GENERATED 0.35, INFERENCE 0.30)"
+        - "ILearningJob interface matches (shouldRun(): boolean, run(): Promise<JobResult>)"
+        - "No use of 'any' type"
+    agents: [learning, forge]
+    model: sonnet
+    dependencies: []
+    complexity: M
+
+  - id: E7-T002
+    meta:
+      title: "LearningModule Skeleton & DI Wiring"
+      description: |
+        Replace the E0 stub LearningModule with the real module structure. Wire all
+        providers, imports, and exports. Establish the module boundary.
+
+        Module imports: EventsModule, KnowledgeModule, ConfigModule
+        Module injects (read-only): DRIVE_STATE_READER from DriveEngineModule, LLM_SERVICE
+        from CommunicationModule, EVENTS_SERVICE from EventsModule, WKG_SERVICE from
+        KnowledgeModule, CONFIDENCE_SERVICE from KnowledgeModule
+
+        Directory structure:
+        src/learning/
+        ├── learning.module.ts
+        ├── learning.service.ts              # Public facade (ILearningService)
+        ├── consolidation/
+        │   ├── consolidation.service.ts
+        │   ├── event-ranker.service.ts
+        │   └── maintenance-cycle.service.ts
+        ├── extraction/
+        │   ├── entity-extraction.service.ts
+        │   ├── edge-refinement.service.ts
+        │   └── contradiction-detector.service.ts
+        ├── jobs/
+        │   ├── temporal-pattern.job.ts
+        │   ├── procedure-formation.job.ts
+        │   ├── correction-processing.job.ts
+        │   ├── sentence-processing.job.ts
+        │   ├── pattern-generalization.job.ts
+        │   └── job-registry.service.ts
+        ├── metrics/
+        │   ├── provenance-health.service.ts
+        │   └── learning-metrics.service.ts
+        ├── interfaces/
+        │   └── learning.interfaces.ts
+        └── index.ts                         # Barrel export
+
+        Exports (public): LEARNING_SERVICE, LEARNING_JOB_REGISTRY
+        Internal only: ConsolidationService, EventRankerService, MaintenanceCycleService,
+        EntityExtractionService, EdgeRefinementService, ContradictionDetectorService,
+        all job classes, ProvenanceHealthService, LearningMetricsService
+
+        Deliverables:
+        - Full module file with imports, providers, exports
+        - Empty service classes implementing interfaces from T001
+        - Configuration schema additions (learning cycle settings, batch sizing)
+        - All DI tokens registered
+        - Barrel export (index.ts) exposing only public API
+
+        Acceptance criteria:
+        - "Module compiles and loads in NestJS"
+        - "No circular dependencies"
+        - "DriveStateReader, LlmService, EventsService, WkgService injected as read-only"
+        - "No direct import of module internals"
+        - "npx tsc --noEmit passes"
+        - "NestJS app starts with LearningModule loaded"
+    agents: [forge]
+    model: sonnet
+    dependencies: [E7-T001]
+    complexity: S
+
+  - id: E7-T003
+    meta:
+      title: "Maintenance Cycle Orchestrator"
+      description: |
+        Implement the pressure-driven maintenance cycle that consolidates learnable events
+        into the World Knowledge Graph. Executes periodically driven by Cognitive Awareness
+        drive pressure combined with time-based fallback.
+
+        Design:
+        - MaintenanceCycleService orchestrates the full cycle
+        - Trigger: Cognitive Awareness drive > 0.6 OR every 5 minutes (whichever fires first)
+        - Rate limiting: minimum 30 seconds between cycles, maximum 60 seconds timeout per cycle
+        - Adaptive batch sizing: default 5 events per cycle, reduce to 3 if contradictions >= 2
+        - Each cycle follows this order:
+          1. MAINTENANCE_CYCLE_START event emitted to TimescaleDB
+          2. Select batch of learnable events via EventRankerService (T004)
+          3. Extract entities via EntityExtractionService (T005)
+          4. Refine edges via EdgeRefinementService (T006)
+          5. Detect contradictions via ContradictionDetectorService (T007)
+          6. Execute learning jobs in dependency order (T014)
+          7. Update provenance health metrics
+          8. MAINTENANCE_CYCLE_COMPLETE event emitted to TimescaleDB
+        - Emit cycle metrics to Events module
+        - Track cycle duration (should typically complete in < 5s for normal batches)
+        - One-way communication: can READ drive values, cannot WRITE to evaluation function
+
+        CANON constraints:
+        - Drive isolation: can READ Cognitive Awareness pressure, cannot WRITE to drives
+        - One-way communication backbone: all subsystems write events to TimescaleDB
+        - Max 5 events per cycle (hard ceiling, CANON constraint §Events)
+
+        Error handling:
+        - If any phase fails: emit MAINTENANCE_CYCLE_FAILED event, continue to next cycle
+        - Don't block on single failures; other phases proceed
+        - Log per-phase errors to TimescaleDB
+
+        Test coverage:
+        - Trigger on Cognitive Awareness > 0.6
+        - Trigger on 5-minute timeout
+        - Rate limit prevents cycles < 30s apart
+        - Batch sizing reduces when contradictions detected
+        - All events emitted correctly
+        - Timeout enforcement at 60s
+      acceptance_criteria:
+        - "Trigger: Cognitive Awareness > 0.6 OR every 5 minutes"
+        - "Rate limit: minimum 30s between cycles"
+        - "Timeout: maximum 60s per cycle"
+        - "Batch sizing: adaptive (5 normal, 3 when contradictions >= 2)"
+        - "MAINTENANCE_CYCLE_START/COMPLETE events emitted to TimescaleDB"
+        - "Cycle metrics tracked and reported"
+        - "One-way communication enforced (READ only on drive state)"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T002]
+    complexity: L
+
+  - id: E7-T004
+    meta:
+      title: "Event Consolidation Service (Salience Ranking)"
+      description: |
+        Implement the event selection and ranking pipeline that picks the most salient
+        learnable events for each maintenance cycle.
+
+        Design:
+        - EventRankerService queries TimescaleDB for events with has_learnable=true
+        - Salience-based ranking algorithm with multiple factors:
+          * Guardian corrections: +0.50 (Immutable Standard 5: Guardian Asymmetry)
+          * Guardian teachings: +0.40
+          * Guardian confirmations: +0.20
+          * Prediction failures: +0.30 (signals misalignment)
+          * Novel entities: +0.25 (new knowledge signal)
+          * Recency boost: +0.02 per hour since event (freshness matters)
+          * Total salience = base_score + sum(boosts), capped at 1.0
+        - rankBySalience(events: Event[]): SalienceScore[] returns scored and sorted events
+        - selectBatch(limit: number): Event[] returns top N events, updates them as "processing"
+        - Mark events as processed after consolidation to avoid re-learning
+
+        CANON constraints:
+        - Max 5 events per cycle (hard ceiling, CANON constraint)
+        - Guardian feedback carries special weight (3x for corrections, 2x for confirmations)
+        - All ranked events include provenance metadata in result
+
+        Implementation notes:
+        - Query TimescaleDB with timestamp filters (e.g., last 30 minutes)
+        - Use cumulative learning session context (don't just pick recent events)
+        - Provenance field determines boost: GUARDIAN events get highest priority
+
+        Test coverage:
+        - Guardian correction ranked higher than neutral observation
+        - Novel entity receives salience boost
+        - Prediction failure receives boost
+        - Recent events slightly boosted over old
+        - Batch selection respects max 5 ceiling
+        - Events marked as processed don't appear in next batch
+      acceptance_criteria:
+        - "Ranks events by salience: guardian corrections (+0.50), teachings (+0.40), confirmations (+0.20), failures (+0.30), novel (+0.25)"
+        - "Recency boost applied (+0.02 per hour)"
+        - "Guardian Asymmetry respected (3x corrections, 2x confirmations)"
+        - "Max 5 events per batch (hard ceiling)"
+        - "Events marked as processed after selection"
+        - "All rankings include provenance in result"
+    agents: [learning, sentinel]
+    model: sonnet
+    dependencies: [E7-T002]
+    complexity: M
+
+  - id: E7-T005
+    meta:
+      title: "Entity Extraction Service (LLM-Assisted)"
+      description: |
+        Implement entity identification from learnable events via LLM-assisted extraction
+        with provenance tracking and base confidence assignment.
+
+        Design:
+        - EntityExtractionService.extract(events: Event[]): Promise<ExtractedEntity[]>
+        - For each event: parse text via LLM, identify entities, resolve against WKG
+        - Provenance determination based on event source:
+          * GUARDIAN corrections/teachings → provenance GUARDIAN (base 0.60)
+          * SENSOR observations (robot proprioception/vision) → SENSOR (base 0.40)
+          * All other LLM-extracted entities → LLM_GENERATED (base 0.35)
+        - Base confidence assignment per provenance (ACT-R model §Confidence Dynamics):
+          * GUARDIAN: 0.60
+          * SENSOR: 0.40
+          * LLM_GENERATED: 0.35
+          * INFERENCE: 0.30
+        - Entity resolution against WKG:
+          * Exact match: link to existing node, boost confidence
+          * Fuzzy match: flag for review (ambiguous), don't commit without guardian verification
+          * New entity: create node with assigned provenance and base confidence
+        - Ambiguous entity handling (Shrug Imperative):
+          * If LLM uncertain about entity identity (confidence < 0.45): flag as AMBIGUOUS
+          * Do NOT guess or merge ambiguous entities
+          * Let guardian or later cycles disambiguate
+        - LLM cost tracking: record tokens and latency per extraction call in Events module
+        - All extracted entities include timestamp and source event ID for provenance chain
+
+        CANON constraints:
+        - Confidence Ceiling: no entity > 0.60 without retrieval-and-use (graduated later)
+        - Provenance never erased: maintain source chain for Lesion Test
+        - Shrug Imperative: ambiguous entities flagged, not guessed
+
+        v1 reference: co-being/packages/learning/src/services/entity-extraction.service.ts
+        (adapt structure, ensure provenance tagging matches v2 spec)
+
+        Test coverage:
+        - Extract entity from guardian teaching → GUARDIAN provenance at 0.60
+        - Extract entity from sensor observation → SENSOR provenance at 0.40
+        - Extract entity from LLM inference → LLM_GENERATED provenance at 0.35
+        - Exact match against WKG → linked to existing node
+        - Fuzzy match → flagged AMBIGUOUS, not committed
+        - Novel entity → new node created with base confidence
+        - Cost event emitted for LLM call
+      acceptance_criteria:
+        - "Provenance assigned by event source (GUARDIAN/SENSOR/LLM_GENERATED)"
+        - "Base confidence correct: GUARDIAN 0.60, SENSOR 0.40, LLM_GENERATED 0.35, INFERENCE 0.30"
+        - "Entity resolution: exact match, fuzzy match → AMBIGUOUS, new → create node"
+        - "Confidence Ceiling enforced (no entity > 0.60 initial)"
+        - "Ambiguous entities flagged, not guessed"
+        - "Cost event emitted per LLM extraction call"
+        - "Provenance chain maintained for Lesion Test"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T002]
+    complexity: L
+
+  - id: E7-T006
+    meta:
+      title: "Edge Refinement Service (Relationship Extraction)"
+      description: |
+        Implement relationship identification between extracted entities via LLM-assisted
+        edge refinement with provenance chain tracking and confidence ceiling enforcement.
+
+        Design:
+        - EdgeRefinementService.refine(entities: ExtractedEntity[]): Promise<ExtractedEdge[]>
+        - For each pair of entities: propose relationships via LLM
+        - All LLM-refined edges carry LLM_GENERATED provenance at base 0.35
+        - Provenance chain: preserve original entity provenance, track refinement via refined_by metadata
+          * Example: edge between (GUARDIAN entity) and (SENSOR entity) inherits context
+          * Metadata: {original_provenance: ["GUARDIAN", "SENSOR"], refined_by: "LLM_GENERATED"}
+        - Confidence Ceiling enforced: no edge > 0.60 without retrieval-and-use
+          * New extracted edges start at or below confidence ceiling
+          * Graduate through repeated successful use (§Type 1 Graduation)
+        - Relationship types supported:
+          * HAS_PROPERTY (attribute)
+          * IS_A (taxonomy)
+          * CAN_PRODUCE (behavior from phrase)
+          * RESPONSE_TO (temporal contingency)
+          * FOLLOWS_PATTERN (structural)
+          * TRIGGERS (causality)
+          * SUPERSEDES (correction)
+          * CORRECTED_BY (inverse)
+        - Special handling for CAN_PRODUCE edges:
+          * Created when phrase shows positive outcome in conversation
+          * Links PhraseNode to ActionNode
+          * Tracks behavioral contingency
+        - LLM cost tracking: record tokens and latency per refinement call
+        - All refined edges include timestamp and source entity IDs for provenance chain
+
+        CANON constraints:
+        - Confidence Ceiling: no edge > 0.60 initially
+        - Provenance chains preserved (never erased)
+        - LLM_GENERATED edges at 0.35 base, GUARDIAN edges never overwritten
+
+        v1 reference: co-being/packages/learning/src/services/edge-refinement.service.ts
+        (adapt for v2 with provenance chain tracking)
+
+        Test coverage:
+        - Extract relationship between extracted entities
+        - LLM-refined edges at 0.35 base confidence
+        - CAN_PRODUCE edge created for phrase with positive outcome
+        - Confidence ceiling enforced (no edge > 0.60)
+        - Provenance chain tracked (original entity provenance preserved)
+        - Cost event emitted for LLM refinement call
+      acceptance_criteria:
+        - "All LLM-refined edges carry LLM_GENERATED provenance at 0.35 base"
+        - "Provenance chain preserved (original entity provenance tracked)"
+        - "Confidence ceiling enforced (no edge > 0.60 initial)"
+        - "CAN_PRODUCE edges created for positive behavioral outcomes"
+        - "8 relationship types supported (HAS_PROPERTY, IS_A, CAN_PRODUCE, RESPONSE_TO, FOLLOWS_PATTERN, TRIGGERS, SUPERSEDES, CORRECTED_BY)"
+        - "Cost event emitted per LLM refinement call"
+        - "refined_by metadata tracks LLM contribution"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T005]
+    complexity: L
+
+  - id: E7-T007
+    meta:
+      title: "Contradiction Detection Service"
+      description: |
+        Implement detection of contradictions in extracted knowledge with provenance-aware
+        resolution and Information Integrity drive integration.
+
+        Design:
+        - ContradictionDetectorService.detect(extracted: ExtractedEntity[] | ExtractedEdge[]): Promise<Contradiction[]>
+        - Detect 4 types of contradictions:
+          1. DIRECT_CONFLICT: entities/edges have opposite truth values (e.g., "is-red" vs "is-blue")
+          2. CONFIDENCE_CONFLICT: same knowledge from different provenance sources at high confidence variance
+          3. SCHEMA_CONFLICT: entities violate type constraints (e.g., attribute on wrong entity type)
+          4. TEMPORAL_CONFLICT: causality violations (effect before cause, cycles in FOLLOWS_PATTERN)
+        - Provenance-aware resolution (Immutable Standard 5: Guardian Asymmetry):
+          * Resolution priority: GUARDIAN > SENSOR > LLM_GENERATED > INFERENCE
+          * GUARDIAN edges never overwritten (surface to guardian for review)
+          * When conflict detected: prefer higher-provenance source
+        - ContradictionResolution enum options:
+          * PREFER_GUARDIAN: use GUARDIAN source, discard others
+          * MERGE: combine both sources (e.g., average confidence, preserve both edges)
+          * FLAG_AMBIGUOUS: mark both as uncertain, wait for guardian clarification
+        - Information Integrity drive integration:
+          * All contradictions emit CONTRADICTION_DETECTED event to TimescaleDB
+          * Information Integrity drive relief proportional to confidence gap (0.6 - 0.3 = 0.3 relief)
+          * Resolved contradictions: apply relief
+          * Unresolved contradictions: create mild Anxiety pressure (anxiety +0.05)
+        - Edge case handling:
+          * Self-contradictions (same node with conflicting edges): flag as schema issue
+          * Temporal paradoxes (cycles in causality): temporal conflict, cannot auto-resolve
+          * Guardian vs LLM conflict: always surface to guardian, never auto-resolve
+
+        Test coverage:
+        - Direct conflict detected (opposite edge values)
+        - Confidence conflict detected (high variance from different sources)
+        - Schema conflict detected (attribute on wrong type)
+        - Temporal conflict detected (causality violations)
+        - GUARDIAN > SENSOR > LLM_GENERATED resolution respected
+        - GUARDIAN edges never overwritten
+        - CONTRADICTION_DETECTED event emitted
+        - Information Integrity drive relief proportional to gap
+        - Unresolved contradictions trigger Anxiety pressure
+      acceptance_criteria:
+        - "Detects all 4 contradiction types (DIRECT, CONFIDENCE, SCHEMA, TEMPORAL)"
+        - "Provenance-aware resolution: GUARDIAN > SENSOR > LLM_GENERATED > INFERENCE"
+        - "GUARDIAN edges never overwritten (surface to guardian)"
+        - "CONTRADICTION_DETECTED event emitted to TimescaleDB"
+        - "Information Integrity drive relief computed and reported"
+        - "Unresolved contradictions create Anxiety pressure (+0.05)"
+        - "Edge cases handled (self-contradictions, temporal paradoxes)"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T005, E7-T006]
+    complexity: L
+
+  - id: E7-T008
+    meta:
+      title: "Temporal Pattern Detection Job"
+      description: |
+        Port v1 TemporalPatternJob to v2 architecture. Detects temporal phrase patterns
+        in conversations and creates RESPONSE_TO edges recording behavioral contingencies.
+
+        Design:
+        - TemporalPatternJob implements ILearningJob interface
+        - shouldRun(): boolean checks if sufficient events in current cycle
+        - run(): Promise<JobResult> executes pattern detection
+        - Detect guardian response patterns within conversation windows:
+          * Look for phrases that co-occur within N turns (configurable, default 3)
+          * Example: Sylphie says phrase P → Guardian responds with phrase Q within 3 turns
+          * Infer: phrase P triggers/evokes response pattern Q
+        - Create RESPONSE_TO edges:
+          * Edge from PhraseNode(P) to PhraseNode(Q)
+          * Confidence based on frequency (more co-occurrences → higher confidence)
+          * Provenance: LLM_GENERATED (pattern inference at 0.35 base)
+        - Track conversation context:
+          * Query events from current and previous cycles
+          * Maintain conversation thread structure
+          * Use turn ordering to compute temporal proximity
+        - All RESPONSE_TO edges carry timestamp and source events
+        - Cost tracking: latency and any LLM calls made
+
+        CANON constraints:
+        - Respects ILearningJob interface (shouldRun(), run())
+        - All edges carry appropriate provenance
+        - Confidence ceiling enforced (starts at 0.35, may graduate through use)
+
+        v1 reference: co-being/packages/learning/src/jobs/temporal-pattern.job.ts
+        (adapt to v2 ILearningJob interface, keep pattern detection logic)
+
+        Test coverage:
+        - Phrase pair co-occurs within conversation window
+        - RESPONSE_TO edge created with appropriate confidence
+        - Edge provenance set to LLM_GENERATED at 0.35
+        - shouldRun() returns true when events available
+        - Job completes within latency budget
+      acceptance_criteria:
+        - "Implements ILearningJob (shouldRun(), run())"
+        - "Detects temporal phrase patterns within conversation windows"
+        - "Creates RESPONSE_TO edges with confidence based on frequency"
+        - "Provenance: LLM_GENERATED at 0.35 base"
+        - "Respects conversation thread structure"
+        - "Cost tracking recorded"
+        - "JobResult returned with artifact count and latency"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T004]
+    complexity: M
+
+  - id: E7-T009
+    meta:
+      title: "Procedure Formation Job"
+      description: |
+        Port v1 ProcedureFormationJob. Clusters RESPONSE_TO edges by word overlap and
+        proposes ActionProcedure abstractions for repeated response patterns.
+
+        Design:
+        - ProcedureFormationJob implements ILearningJob interface
+        - shouldRun(): boolean checks if sufficient RESPONSE_TO edges clustered
+        - run(): Promise<JobResult> executes procedure formation
+        - Cluster RESPONSE_TO edges by word overlap:
+          * Collect RESPONSE_TO edges from current cycle + recent cycles
+          * Compute word overlap (Jaccard similarity) between edge pairs
+          * Cluster at similarity threshold (configurable, default 0.4)
+          * Example: "how to X" and "how can I X" cluster together as pattern
+        - LLM-assisted ActionProcedure proposal:
+          * For each cluster: present to LLM as "observed pattern"
+          * LLM proposes abstraction: "User asks for help, respond with encouragement and suggestions"
+          * LLM proposes trigger: "triggered by HOW or HELP phrases"
+          * LLM assigns confidence to proposal (0.3-0.7 range)
+        - Validation before commit:
+          * Proposed procedure validated against cluster accuracy
+          * Procedure must explain >= 70% of edges in cluster
+          * If validation fails: propose lower confidence, don't commit
+        - Commit validated proposals to WKG:
+          * Create ActionProcedureNode with trigger condition
+          * Link to cluster edges via DERIVED_FROM edges
+          * All procedures carry LLM_GENERATED provenance at 0.35
+          * Procedures eligible for Type 1 graduation (separate epic)
+        - Cost tracking: LLM calls and latency
+
+        CANON constraints:
+        - All proposals validated before committing to WKG (never trust LLM completely)
+        - Procedures start at 0.35 (LLM_GENERATED), may graduate
+        - Cluster accuracy threshold (70% minimum)
+
+        v1 reference: co-being/packages/learning/src/jobs/procedure-formation.job.ts
+        (adapt to v2 validation pipeline)
+
+        Test coverage:
+        - Multiple RESPONSE_TO edges with word overlap clustered correctly
+        - LLM proposes abstraction for cluster
+        - Validation checks cluster accuracy (>= 70%)
+        - Valid proposal committed to WKG
+        - Failed validation prevents commit
+        - Procedures carry LLM_GENERATED provenance at 0.35
+      acceptance_criteria:
+        - "Implements ILearningJob (shouldRun(), run())"
+        - "Clusters RESPONSE_TO edges by word overlap (Jaccard similarity)"
+        - "LLM-assisted ActionProcedure proposal"
+        - "Validation before commit (>= 70% cluster accuracy)"
+        - "Proposals committed to WKG with LLM_GENERATED provenance at 0.35"
+        - "Cost tracking recorded"
+        - "JobResult returned with artifact count and latency"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T008]
+    complexity: M
+
+  - id: E7-T010
+    meta:
+      title: "Correction Processing Job"
+      description: |
+        Port v1 CorrectionProcessingJob. Processes guardian corrections (SUPERSEDES edges)
+        and creates CORRECTED_BY edges, penalizing incorrect CAN_PRODUCE edges.
+
+        Design:
+        - CorrectionProcessingJob implements ILearningJob interface
+        - shouldRun(): boolean checks if guardian corrections in current events
+        - run(): Promise<JobResult> executes correction processing
+        - Process SUPERSEDES edges (created by Communication when guardian corrects Sylphie):
+          * Find SUPERSEDES edges in current consolidation batch
+          * SUPERSEDES(old_phrase, new_phrase): guardian said "no, it's X not Y"
+          * Create CORRECTED_BY edge: old_phrase → new_phrase (inverse link)
+        - Penalize incorrect CAN_PRODUCE edges:
+          * If old_phrase had CAN_PRODUCE edges: reduce their confidence
+          * Penalty: confidence *= 0.7 (30% reduction)
+          * Rationale: if phrase leads to wrong outcome, it's less reliable
+          * Track penalty in edge metadata: {corrected_confidence: old_conf * 0.7}
+        - Guardian correction weight (Immutable Standard 5):
+          * Guardian corrections carry 3x weight in learning
+          * Apply additional confidence boost to CORRECTED_BY edge: +0.15 (beyond base)
+          * Example: CORRECTED_BY edge starts at 0.35 (LLM if inferred), gets +0.15 → 0.50
+        - All SUPERSEDES/CORRECTED_BY edges carry GUARDIAN provenance
+        - Cost tracking: edge updates and latency
+
+        CANON constraints:
+        - Guardian Asymmetry (Immutable Standard 5): 3x weight on corrections
+        - Penalize incorrect edges (confidence reduction)
+        - Preserve original confidence in metadata for audit trail
+
+        v1 reference: co-being/packages/learning/src/jobs/correction-processing.job.ts
+        (adapt for v2 with Guardian Asymmetry enforced)
+
+        Test coverage:
+        - SUPERSEDES edge processed correctly
+        - CORRECTED_BY edge created
+        - CAN_PRODUCE edges penalized (confidence reduced 30%)
+        - Guardian correction weight applied (+3x, +0.15 confidence boost)
+        - Metadata preserves original confidence for audit
+      acceptance_criteria:
+        - "Implements ILearningJob (shouldRun(), run())"
+        - "Processes SUPERSEDES edges from guardian corrections"
+        - "Creates CORRECTED_BY inverse edges"
+        - "Penalizes incorrect CAN_PRODUCE edges (confidence *= 0.7)"
+        - "Guardian correction weight applied (3x, +0.15 confidence boost)"
+        - "All edges carry GUARDIAN provenance"
+        - "Original confidence preserved in metadata"
+        - "JobResult returned with artifact count and latency"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T004]
+    complexity: M
+
+  - id: E7-T011
+    meta:
+      title: "Sentence Processing Jobs (Splitting + Structure)"
+      description: |
+        Port v1 SentenceSplittingJob and SentenceStructureJob. Splits multi-sentence
+        PhraseNodes into individual sentence nodes and extracts grammatical structure.
+
+        Design:
+        - SentenceSplittingJob implements ILearningJob interface
+        - shouldRun(): boolean checks if multi-sentence phrases in batch
+        - run(): Promise<JobResult> executes sentence splitting
+        - Identify PhraseNodes with multiple sentences:
+          * Query WKG for phrase nodes with sentence_count > 1
+          * Split into individual sentences
+          * Create new PhraseNode for each sentence
+          * Preserve parent-child relationship via PARENT_PHRASE edge
+        - Example: "The cat sat. It purred." → two new phrases, linked to original
+
+        SentenceStructureJob (internal to same job, executes after splitting):
+        - shouldRun(): checks if newly-split phrases available
+        - run(): extracts grammatical structure for each phrase
+        - Build template slots:
+          * Identify subject, verb, object, modifiers using LLM-assisted parsing
+          * Create SlotNode for each identified slot
+          * Link via FILLS_SLOT edges
+        - Create FOLLOWS_PATTERN edges:
+          * Pattern: "Subject Verb Object" template
+          * Link similar phrases via FOLLOWS_PATTERN to same template
+          * Confidence based on pattern consistency
+        - LLM-assisted TRIGGERS edge proposals:
+          * For each sentence: propose what might trigger it
+          * "The cat purred" → triggered by "petting the cat" or "cat is happy"
+          * Propose TRIGGERS edges with confidence
+          * Only commit validated proposals (>= 0.45 confidence)
+        - All new edges carry LLM_GENERATED provenance at 0.35
+        - Cost tracking: LLM parsing calls and latency
+
+        CANON constraints:
+        - Sentence splitting preserves parent-child relationships
+        - TRIGGERS proposals validated before commit
+        - All edges carry appropriate provenance
+
+        v1 reference: co-being/packages/learning/src/jobs/sentence-splitting.job.ts and
+        sentence-structure.job.ts (combine into single job for v2)
+
+        Test coverage:
+        - Multi-sentence phrase split into individual sentences
+        - Parent-child relationships preserved
+        - Grammatical structure extracted
+        - FOLLOWS_PATTERN edges created for similar structures
+        - TRIGGERS edges proposed with validation
+        - All edges carry LLM_GENERATED provenance
+      acceptance_criteria:
+        - "Implements ILearningJob (shouldRun(), run())"
+        - "Splits multi-sentence phrases into individual nodes"
+        - "Parent-child relationships via PARENT_PHRASE edges"
+        - "Grammatical structure extracted (template slots)"
+        - "FOLLOWS_PATTERN edges created for similar structures"
+        - "TRIGGERS edges proposed with validation (>= 0.45)"
+        - "All edges carry LLM_GENERATED provenance at 0.35"
+        - "JobResult returned with artifact count and latency"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T008]
+    complexity: M
+
+  - id: E7-T012
+    meta:
+      title: "Pattern Generalization + Symbolic Decomposition Jobs"
+      description: |
+        Port v1 PatternGeneralizationJob and SymbolicDecompositionJob. Identifies sibling
+        phrase clusters and proposes ConceptPrimitive abstractions. Decomposes phrases at
+        word level into semantic units.
+
+        Design:
+        - PatternGeneralizationJob implements ILearningJob interface
+        - shouldRun(): boolean checks if sufficient phrase clusters available
+        - run(): Promise<JobResult> executes pattern generalization
+        - Identify sibling phrase clusters:
+          * Phrases that share FOLLOWS_PATTERN edges (same template)
+          * Example: "I like cats", "I like dogs", "I like pizza" all follow "I like X"
+          * Cluster by shared template and structural similarity
+        - LLM-assisted ConceptPrimitive proposal:
+          * For each cluster: identify common semantic concept
+          * Propose ConceptPrimitiveNode: "LIKING" concept
+          * Connect original phrases via HAS_INSTANCE edges
+          * Assign confidence to concept (0.3-0.7)
+        - Validation before commit:
+          * Concept must apply to >= 80% of cluster phrases
+          * If validation fails: don't commit, may retry with lower threshold later
+        - Commit validated concepts to WKG:
+          * Create ConceptPrimitiveNode with LLM_GENERATED provenance at 0.35
+          * Link cluster phrases via HAS_INSTANCE edges
+          * Concepts eligible for Type 1 graduation
+
+        SymbolicDecompositionJob (internal, executes after generalization):
+        - shouldRun(): checks if phrases available for decomposition
+        - run(): decomposes phrases at word level
+        - Word-level decomposition via sub-services:
+          * Identify semantic units (words/tokens with distinct meaning)
+          * Create WordNode for each unit
+          * Link phrase to words via CONTAINS_WORD edges
+          * Create word-level relationships (HOW_WORDS_RELATE)
+        - Example: "happy cat" → happy(adjective), cat(noun), MODIFIES(happy→cat)
+        - Word decomposition enables later pattern matching at finer granularity
+        - All word nodes and edges carry appropriate provenance
+        - Cost tracking: LLM calls and latency
+
+        CANON constraints:
+        - All proposals validated before committing to WKG
+        - Concept validation >= 80% cluster coverage
+        - Provenance tracked on all new nodes/edges
+
+        v1 reference: co-being/packages/learning/src/jobs/pattern-generalization.job.ts
+        and symbolic-decomposition.job.ts (combine into single job for v2)
+
+        Test coverage:
+        - Phrase cluster identified by shared template
+        - LLM proposes ConceptPrimitive for cluster
+        - Validation checks >= 80% cluster coverage
+        - Valid concept committed to WKG
+        - Failed validation prevents commit
+        - Word-level decomposition creates word nodes and relationships
+        - All nodes/edges carry appropriate provenance
+      acceptance_criteria:
+        - "Implements ILearningJob (shouldRun(), run())"
+        - "Identifies sibling phrase clusters by shared template"
+        - "LLM-assisted ConceptPrimitive proposal"
+        - "Validation before commit (>= 80% cluster coverage)"
+        - "Concepts committed to WKG with LLM_GENERATED provenance at 0.35"
+        - "Word-level decomposition creates semantic units"
+        - "Word nodes and relationships created"
+        - "Cost tracking recorded"
+        - "JobResult returned with artifact count and latency"
+    agents: [learning]
+    model: sonnet
+    dependencies: [E7-T009, E7-T011]
+    complexity: M
+
+  - id: E7-T013
+    meta:
+      title: "Provenance Health Metrics & Lesion Test"
+      description: |
+        Implement the provenance health assessment system and Lesion Test for evaluating
+        knowledge quality and reducing LLM dependency.
+
+        Design:
+        - ProvenanceHealthService computes health metrics on demand
+        - computeHealth(scope: 'GLOBAL' | 'MODULE' | 'ENTITY'): ProvenanceHealth
+        - Three key metrics:
+          1. Experiential ratio: (SENSOR + GUARDIAN edges) / total edges
+             * High ratio (>0.6) = knowledge grounded in experience/guidance
+             * Low ratio (<0.3) = knowledge depends heavily on inference
+          2. LLM dependency ratio: LLM_GENERATED edges / total edges
+             * High ratio (>0.7) = system may be hallucinating knowledge
+             * Low ratio (<0.3) = good balance with other provenance sources
+          3. Guardian ratio: GUARDIAN edges / total edges
+             * Indicates how much knowledge is explicitly taught vs inferred
+             * Target: >= 0.15 (at least 15% explicitly taught)
+
+        - Health status classification:
+          * HEALTHY: experiential > 0.6 AND llm_dependency < 0.5 AND guardian >= 0.15
+          * DEVELOPING: intermediate values (trending toward healthy)
+          * UNHEALTHY: experiential < 0.3 OR llm_dependency > 0.7 OR guardian < 0.05
+
+        - Lesion Test query (CANON verification tool):
+          * Query: what knowledge remains without LLM_GENERATED edges?
+          * Execute: WKG query excluding all edges with LLM_GENERATED provenance
+          * Result: subgraph of "hard knowledge" (experiential + guardian)
+          * Metric: lesion_size / full_graph_size = resilience ratio
+          * Target: >= 0.4 (at least 40% survives lesion)
+
+        - Periodic metrics emission:
+          * Emit PROVENANCE_HEALTH event to TimescaleDB every N cycles (configurable, default 10)
+          * Event includes: overall health status, all three ratios, lesion resilience
+          * Trend tracking: compare across cycles to detect drift
+
+        - API endpoint for metrics dashboard:
+          * GET /api/learning/health → returns current ProvenanceHealth + trends
+          * GET /api/learning/lesion-test → executes lesion test, returns subgraph
+          * Used by dashboard to visualize knowledge quality over time
+
+        - Integration with Information Integrity drive:
+          * Low health status may trigger Information Integrity pressure
+          * Guardian teaching may increase health status and resolve pressure
+
+        CANON constraints:
+        - Lesion Test is non-destructive (read-only, doesn't modify WKG)
+        - Provenance distinctions never erased (fundamental to Lesion Test)
+        - Health assessment informs drive state (separate epic for drive integration)
+
+        Test coverage:
+        - Compute health metrics correctly
+        - Classify health status (HEALTHY/DEVELOPING/UNHEALTHY)
+        - Execute Lesion Test query
+        - Compute resilience ratio
+        - Emit metrics events to TimescaleDB
+        - API endpoints return correct data
+        - Trends tracked across cycles
+      acceptance_criteria:
+        - "Compute experiential ratio (SENSOR + GUARDIAN / total)"
+        - "Compute LLM dependency ratio (LLM_GENERATED / total)"
+        - "Compute guardian ratio (GUARDIAN / total)"
+        - "Classify health: HEALTHY (exp > 0.6, llm < 0.5, guard >= 0.15), DEVELOPING, UNHEALTHY"
+        - "Lesion Test query excludes LLM_GENERATED edges"
+        - "Compute resilience ratio (lesion_size / full_size)"
+        - "Emit PROVENANCE_HEALTH events to TimescaleDB"
+        - "API endpoints for health metrics and Lesion Test"
+        - "Trend tracking across cycles"
+    agents: [learning, sentinel]
+    model: sonnet
+    dependencies: [E7-T006, E7-T007]
+    complexity: M
+
+  - id: E7-T014
+    meta:
+      title: "Learning Job Registry & Orchestration"
+      description: |
+        Implement the job registry pattern that manages all 7 learning jobs and executes
+        them in correct dependency order during the maintenance cycle.
+
+        Design:
+        - JobRegistry service maintains list of all learning jobs
+        - Jobs registered at startup:
+          1. TemporalPatternJob (E7-T008)
+          2. ProcedureFormationJob (E7-T009)
+          3. CorrectionProcessingJob (E7-T010)
+          4. SentenceProcessingJob (E7-T011)
+          5. PatternGeneralizationJob (E7-T012)
+          6. SymbolicDecompositionJob (E7-T012)
+        - Dependency ordering enforced by registry:
+          * Job can only run if its dependencies completed successfully in current cycle
+          * Example: ProcedureFormationJob depends on TemporalPatternJob (needs RESPONSE_TO edges)
+          * Example: PatternGeneralizationJob depends on SentenceProcessingJob (needs sentence templates)
+        - Per-job shouldRun() gating:
+          * Each job checks if preconditions met before execution
+          * Example: TemporalPatternJob.shouldRun() checks if events in batch
+          * Example: ProcedureFormationJob.shouldRun() checks if RESPONSE_TO edges created
+          * Prevents unnecessary work if conditions not met
+        - Per-job error isolation:
+          * One job failure doesn't kill the maintenance cycle
+          * If job.run() throws: catch error, emit JOB_FAILED event, continue to next job
+          * All job errors logged to TimescaleDB for debugging
+          * Cycle continues and completes, reports which jobs failed
+        - Job execution metrics:
+          * Track per-job latency
+          * Track artifacts created per job (edges created, nodes created)
+          * Track errors per job
+          * All metrics logged to TimescaleDB as JOB_EXECUTION events
+        - Cycle completion:
+          * After all jobs complete: emit MAINTENANCE_CYCLE_COMPLETE with final metrics
+          * Report total time, total artifacts, any failures
+          * Update cycle count in system state
+
+        - Orchestration flow (called by MaintenanceCycleService):
+          1. Call registry.executeJobsForCycle()
+          2. For each job in dependency order:
+             a. Check job.shouldRun() → if false, skip
+             b. Try: result = job.run()
+             c. Catch: log error, continue
+             d. Emit JOB_EXECUTION event with result/error
+          3. Return final cycle metrics
+          4. MaintenanceCycleService emits MAINTENANCE_CYCLE_COMPLETE
+
+        CANON constraints:
+        - All jobs implement ILearningJob interface
+        - Dependency order enforced
+        - Error isolation prevents cascading failures
+        - All execution metrics tracked
+
+        Test coverage:
+        - All jobs registered at startup
+        - Dependency order respected (second job waits for first)
+        - shouldRun() gating prevents unnecessary execution
+        - Job failure caught, cycle continues
+        - Metrics correctly computed per job
+        - Final cycle metrics aggregated
+      acceptance_criteria:
+        - "All 7 jobs registered with dependency order"
+        - "Each job checked via shouldRun() before execution"
+        - "Job failures isolated (one failure doesn't kill cycle)"
+        - "Per-job execution metrics tracked (latency, artifacts, errors)"
+        - "JOB_EXECUTION events emitted to TimescaleDB"
+        - "Dependency order enforced (job N waits for job N-1)"
+        - "Cycle completes even if some jobs fail"
+        - "Final cycle metrics aggregated and reported"
+    agents: [learning, forge]
+    model: sonnet
+    dependencies: [E7-T008, E7-T009, E7-T010, E7-T011, E7-T012]
+    complexity: M
+
+  - id: E7-T015
+    meta:
+      title: "Integration Testing & Verification"
+      description: |
+        Integration tests verifying the Learning subsystem works end-to-end and respects
+        all CANON constraints.
+
+        Test suites:
+
+        1. End-to-End Event Consolidation:
+        - Learnable event → consolidation cycle → WKG growth
+        - Verify events marked as has_learnable=true are processed
+        - Verify entities extracted from events
+        - Verify edges created between entities
+        - Verify all new graph content carries appropriate provenance
+
+        2. Max 5 Events Per Cycle:
+        - Create batch of 10 learnable events
+        - Run consolidation cycle
+        - Verify exactly 5 events processed (or fewer if fewer available)
+        - Verify remaining 5 available for next cycle
+        - Hard ceiling enforcement verified
+
+        3. Provenance Tagging:
+        - Guardian correction event → extracted entities/edges marked GUARDIAN provenance
+        - SENSOR observation → SENSOR provenance
+        - LLM inference → LLM_GENERATED provenance
+        - Verify all new graph content carries correct provenance source
+        - Verify provenance never erased in subsequent operations
+
+        4. Confidence Ceiling Enforcement:
+        - Extract new entities/edges from LLM inference
+        - Verify confidence <= 0.60 (LLM_GENERATED at 0.35 base)
+        - Verify GUARDIAN edges at 0.60 base
+        - Verify no entity/edge initially exceeds ceiling
+        - Verify no automatic graduation without retrieval-and-use
+
+        5. Contradiction Detection:
+        - Create conflicting entities/edges in consolidation batch
+        - Run consolidation → detect contradictions
+        - Verify all 4 contradiction types detected
+        - Verify GUARDIAN edges never overwritten (surface to guardian)
+        - Verify CONTRADICTION_DETECTED events emitted
+        - Verify Information Integrity drive relief computed
+
+        6. Guardian Asymmetry:
+        - Guardian correction event (3x weight)
+        - Guardian confirmation event (2x weight)
+        - LLM inference event (1x weight)
+        - Verify weights applied correctly in confidence/reinforcement
+        - Verify guardian feedback outweighs algorithmic evaluation
+
+        7. Lesion Test:
+        - Build knowledge graph with mixed provenance
+        - Run Lesion Test query (exclude LLM_GENERATED)
+        - Verify resilience ratio computed (lesion_size / full_size)
+        - Verify target >= 0.4 for healthy knowledge
+        - Verify trend tracking across cycles
+
+        8. Type 2 Cost Tracking:
+        - Each consolidation cycle involves LLM calls (extraction, refinement, proposal)
+        - Verify costs tracked and emitted to TimescaleDB
+        - Verify latency and token counts recorded
+        - Verify cost metrics informable for Type 1 graduation decisions
+
+        9. Job Orchestration:
+        - Run maintenance cycle
+        - Verify all applicable jobs executed in dependency order
+        - Verify job metrics emitted to TimescaleDB
+        - Verify one job failure doesn't kill cycle
+        - Verify cycle completes with final metrics
+
+        10. Attractor State Prevention:
+        - Verify no path exists for Learning to write to Drive Engine evaluation
+        - Verify no path for WKG to write to Self KG (isolation)
+        - Verify no path for Learning to modify drive rules
+        - Verify one-way communication (read drive, write events)
+
+        Deliverables:
+        - Integration test suite covering all 10 areas (e.g., test/integration/learning.spec.ts)
+        - End-to-end test with sample learnable events
+        - Provenance chain audit (verify no provenance erased)
+        - Confidence ceiling audit (verify no ceiling violations)
+        - Type 2 cost report (total LLM calls, token usage, latency)
+        - Lesion Test results and resilience metrics
+        - Job orchestration metrics
+
+        Acceptance criteria:
+        - "All 10 test areas pass"
+        - "Max 5 events per cycle enforced (hard ceiling)"
+        - "Provenance tagging correct on all extracted entities/edges"
+        - "Confidence ceiling enforced (no entity/edge > 0.60 initial)"
+        - "All 4 contradiction types detected"
+        - "GUARDIAN edges never overwritten (surface to guardian)"
+        - "Guardian Asymmetry enforced (3x corrections, 2x confirmations)"
+        - "Lesion Test executed, resilience ratio >= 0.4 for healthy"
+        - "All Type 2 costs tracked and reported"
+        - "Job orchestration respects dependency order"
+        - "One job failure doesn't kill cycle"
+        - "No CANON violations in any test path"
+        - "npx tsc --noEmit passes"
+    agents: [learning, forge]
+    model: sonnet
+    dependencies: [E7-T013, E7-T014]
+    complexity: M

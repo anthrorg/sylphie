@@ -1,0 +1,137 @@
+# Phase 1: The Complete System — Progress Tracker
+# Updated after each epic completion
+
+phase: 1
+title: "The Complete System"
+status: in_progress
+started: 2026-03-29
+
+# Epic dependency graph:
+# E0 → E1, E2, E3 (parallel) → E4 → E5, E6 (parallel) → E7 → E8 → E9 → E10
+
+epics:
+  - id: 0
+    title: "Scaffold + Full Interface Skeleton"
+    status: complete
+    complexity: L
+    tickets_total: 13
+    tickets_complete: 13
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "91 TypeScript files, all interfaces defined, npx tsc --noEmit passes"
+
+  - id: 1
+    title: "Database Infrastructure"
+    status: complete
+    complexity: L
+    tickets_total: 9
+    tickets_complete: 9
+    blocked_by: [0]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "All 5 databases wired: Neo4j driver+constraints, PostgreSQL DDL+RLS+two-pool, TimescaleDB hypertable+compression+retention, Grafeo Self KG, Grafeo per-person Other KG. Health check module + startup verification. Grafeo validated (passed all 5 criteria). npx tsc --noEmit passes."
+
+  - id: 2
+    title: "Events Module (TimescaleDB Backbone)"
+    status: complete
+    complexity: L
+    tickets_total: 9
+    tickets_complete: 9
+    blocked_by: [0, 1]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "Full EventsService: record() with boundary validation, query() with dynamic filtering/pagination, queryLearnableEvents() with SKIP LOCKED, queryEventFrequency() for Drive Engine, queryPattern() for Planning, markProcessed/Batch. Event builders (6 subsystem-typed). Exception hierarchy. 144 unit tests passing. npx tsc --noEmit passes."
+
+  - id: 3
+    title: "Knowledge Module (WKG + Self KG + Other KG)"
+    status: complete
+    complexity: XL
+    tickets_total: 10
+    tickets_complete: 10
+    blocked_by: [0, 1]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "Grafeo spike validated (v0.5.28 viable). WkgService: full Neo4j CRUD with upsertNode/Edge, queryContext BFS, contradiction detection, provenance enforcement. ConfidenceService: ACT-R formula wrapper, lazy confidence computation, Guardian Asymmetry (2x/3x). SelfKgService: Grafeo-backed self-model with capabilities, drive patterns, behavioral patterns. OtherKgService: per-person isolated Grafeo instances. KnowledgeModule wired with EventsModule. 67 unit tests. npx tsc --noEmit passes. Jim decisions defaulted: Option B (single WkgNode), Option C (3x retrieval_count), Option B (flag+proceed contradictions), flat domain structure."
+
+  - id: 4
+    title: "Drive Engine (Isolated Process)"
+    status: complete
+    complexity: XL
+    tickets_total: 15
+    tickets_complete: 15
+    blocked_by: [0, 1, 2]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "71 TypeScript files. IPC infrastructure (child_process.fork, health monitor, recovery). 12-drive tick loop at 100Hz with accumulation/decay/cross-modulation/clamping. Rule engine with PostgreSQL rule loading, pattern matching, default affect, LRU cache. All 5 CANON behavioral contingencies (satisfaction habituation, anxiety amplification, guilt repair, social comment quality, curiosity information gain). Theater Prohibition enforcement (pre/post-flight). Self-evaluation with circuit breaker and baseline adjustment. Prediction evaluation with MAE computation and Type 1 graduation. Opportunity detection with priority scoring, cold-start dampening, decay. Event emission with batching to TimescaleDB. PostgreSQL RLS (3 roles, write-protection verified at startup). Cross-module integration (Decision Making, Communication, Learning, Planning). 205 tests passing in 5.3s. npx tsc --noEmit passes."
+
+  - id: 5
+    title: "Decision Making (Core Cognitive Loop)"
+    status: complete
+    complexity: XL
+    tickets_total: 20
+    tickets_complete: 20
+    blocked_by: [2, 3, 4]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "36 TypeScript files. ExecutorEngine 8-state machine with timeout recovery. EpisodicMemory ring buffer (50 episodes) with encoding gate and Jaccard similarity. ProcessInput orchestrator with 9 input categories and SHA-256 context fingerprinting. PredictionService with per-action MAE history. ArbitrationService with dynamic threshold and Type 1/2/SHRUG discrimination. ThresholdComputation with anxiety/guilt/curiosity drive modulation clamped [0.30, 0.70]. ConfidenceUpdater with 3-path ACT-R logic and Guardian Asymmetry (2x/3x). Type1Tracker state machine (UNCLASSIFIED→TYPE_2_ONLY→TYPE_1_CANDIDATE→GRADUATED→DEMOTED). ShruggableActionService enforcing CANON Standard 4. ActionHandlerRegistry with 8 handlers. DecisionEventLogger with batch writes. AttractorMonitor detecting 5 dysfunction patterns. Consolidation interface for Learning handoff. Full DecisionMakingService facade wiring 11 injected services through 8-state cognitive loop. 173 unit tests + 13 integration tests passing. npx tsc --noEmit passes."
+
+  - id: 6
+    title: "Communication (Input/Output + Person Modeling)"
+    status: complete
+    complexity: L
+    tickets_total: 13
+    tickets_complete: 13
+    blocked_by: [2, 3, 4]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "13 tickets implemented. Full Communication subsystem: InputParserService (LLM-mediated 6-intent classification), ResponseGeneratorService (context assembly + LLM + Theater validation pipeline), TheaterValidatorService (keyword-based emotion-drive correlation, 43 tests), PersonModelingService (per-person Grafeo isolation), LlmService (Anthropic SDK + cost tracking + retry), LlmContextAssemblerService (CANON A.6 drive narrative + Theater instruction), SttService + TtsService (OpenAI APIs + graceful degradation), ChatboxGateway (WebSocket + thread management), SocialContingencyService (30s window tracking), CommunicationService facade (full orchestration). 249 tests passing across 12 suites. npx tsc --noEmit passes."
+
+  - id: 7
+    title: "Learning (Consolidation Pipeline)"
+    status: complete
+    complexity: L
+    tickets_total: 15
+    tickets_complete: 15
+    blocked_by: [2, 3, 4, 6]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "19 TypeScript files + 1 test file. Full consolidation pipeline: MaintenanceCycleService (pressure-driven + timer fallback, adaptive batch sizing, 60s timeout), EventRankerService (salience ranking with guardian asymmetry), EntityExtractionService (LLM-assisted, provenance-aware), EdgeRefinementService (8 relationship types, provenance chain), ContradictionDetectorService (4 types: DIRECT/CONFIDENCE/SCHEMA/TEMPORAL, guardian write-protection), 5 learning jobs (TemporalPattern, ProcedureFormation, CorrectionProcessing, SentenceProcessing, PatternGeneralization), JobRegistryService (dependency-ordered execution with error isolation), ConsolidationService (batch selection + pipeline orchestration), ProvenanceHealthService (Lesion Test, health metrics), LearningMetricsService, LearningService facade. 48 integration tests passing. npx tsc --noEmit passes."
+
+  - id: 8
+    title: "Planning (Opportunity-to-Procedure Pipeline)"
+    status: complete
+    complexity: L
+    tickets_total: 20
+    tickets_complete: 20
+    blocked_by: [2, 3, 4, 5]
+    started: 2026-03-29
+    completed: 2026-03-29
+    notes: "20 TypeScript files + 10 test files. Full 6-stage pipeline: OpportunityQueueService (priority decay, cold-start dampening), PlanningRateLimiter (dual-cap), OpportunityResearchService (TimescaleDB + WKG evidence), SimulationService (candidate generation, conservative sparse estimates), PlanProposalService (assembly + revision), ConstraintValidationService (4 checkers, all 6 CANON Immutable Standards), ProcedureCreationService (WKG LLM_GENERATED at 0.35), PlanEvaluationService (MAE + ACT-R + guardian asymmetry), PlanningPipelineService (6-stage orchestrator), PlanningService facade (background queue loop). 8 new event types (15 total planning). PlanningConfig with 14 env vars. 159 tests passing. npx tsc --noEmit passes."
+
+  - id: 9
+    title: "Dashboard API and WebSocket Gateways"
+    status: complete
+    complexity: M
+    tickets_total: 19
+    tickets_complete: 19
+    blocked_by: [2, 3, 4, 5]
+    started: 2026-03-30
+    completed: 2026-03-30
+    notes: "36 TypeScript source files + 11 test files. 268 tests passing. Full WebModule: 6 REST controllers (Health, Drives, Graph, Conversation, Metrics, Voice), 3 WebSocket gateways (Telemetry, GraphUpdates, Conversation), ConnectionManagerService, exception filters, DevelopmentGuard. 9 new WEB event types. 15 env vars. All CANON constraints enforced: read-only drives, read-only graph, Theater Prohibition in responses, Guardian Asymmetry in feedback routing. npx tsc --noEmit passes."
+
+  - id: 10
+    title: "Integration and End-to-End Verification"
+    status: complete
+    complexity: L
+    tickets_total: 18
+    tickets_complete: 18
+    blocked_by: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    started: 2026-03-30
+    completed: 2026-03-30
+    notes: "Testing + Metrics modules: TestingModule (conditional), MetricsModule (always-on), DatabaseFixturesService, 3 Lesion Mode services, DriftDetectionService, AttractorDetectionService. 9 integration test files: full-loop, graduation, 6 CANON standards, contingencies, provenance, personality, drift, planning, baseline. 5 testing event types. All 7 health metrics documented. All 6 attractor states monitored. All 3 lesion tests passing. Phase 1 'must prove' 6/6 complete. npx tsc --noEmit passes."
+
+# Summary
+total_epics: 11
+epics_complete: 11
+total_tickets: 161
+tickets_complete: 161

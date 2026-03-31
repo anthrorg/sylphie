@@ -1,0 +1,26 @@
+{
+  "name": "@sylphie/sylphie-pkg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codebase Personal Knowledge Graph — queryable map of the entire codebase for Claude Code agents",
+  "main": "./dist/mcp-server/index.js",
+  "scripts": {
+    "build": "tsc",
+    "mcp-server": "node dist/mcp-server/index.js",
+    "sync-pkg": "tsx src/sync/sync-pipeline.ts",
+    "seed-pkg": "tsx src/ingestion/initial-seed.ts",
+    "add-constraint": "tsx src/ingestion/manual-constraints.ts",
+    "validate-pkg": "tsx src/sync/integrity-checker.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "neo4j-driver": "^5.27.0",
+    "ts-morph": "^25.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
