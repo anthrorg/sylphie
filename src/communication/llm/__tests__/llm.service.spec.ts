@@ -1,5 +1,5 @@
 /**
- * Unit tests for LlmServiceImpl.
+ * Unit tests for AnthropicLlmService.
  *
  * Tests cover:
  * - Cost estimation (pre-call)
@@ -7,10 +7,10 @@
  * - Token counting and cost calculation
  */
 
-import { LlmServiceImpl } from '../llm.service';
+import { AnthropicLlmService } from '../anthropic-llm.service';
 import type { LlmRequest } from '../../../shared/types/llm.types';
 
-describe('LlmServiceImpl', () => {
+describe('AnthropicLlmService', () => {
   describe('estimateCost', () => {
     /**
      * Create a minimal mock service for cost estimation testing.
@@ -42,7 +42,7 @@ describe('LlmServiceImpl', () => {
         getCurrentState: jest.fn(),
       };
 
-      return new LlmServiceImpl(
+      return new AnthropicLlmService(
         mockConfigService as any,
         mockEventService as any,
         mockMetricsReporter as any,
@@ -182,7 +182,7 @@ describe('LlmServiceImpl', () => {
       const mockMetricsReporter = { reportMetrics: jest.fn() };
       const mockDriveStateReader = { getCurrentState: jest.fn() };
 
-      const service = new LlmServiceImpl(
+      const service = new AnthropicLlmService(
         mockConfigService as any,
         mockEventService as any,
         mockMetricsReporter as any,
@@ -209,7 +209,7 @@ describe('LlmServiceImpl', () => {
       const mockMetricsReporter = { reportMetrics: jest.fn() };
       const mockDriveStateReader = { getCurrentState: jest.fn() };
 
-      const service = new LlmServiceImpl(
+      const service = new AnthropicLlmService(
         mockConfigService as any,
         mockEventService as any,
         mockMetricsReporter as any,

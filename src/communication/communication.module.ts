@@ -9,9 +9,9 @@
  *   INPUT_PARSER_SERVICE   → InputParserService
  *   PERSON_MODELING_SERVICE→ PersonModelingService
  *   THEATER_VALIDATOR      → TheaterValidatorService
- *   STT_SERVICE            → SttService (OpenAI Whisper)
- *   TTS_SERVICE            → TtsService (OpenAI TTS)
- *   LLM_SERVICE            → LlmServiceImpl (Anthropic Claude API)
+ *   STT_SERVICE            → DeepgramSttService
+ *   TTS_SERVICE            → ElevenLabsTtsService
+ *   LLM_SERVICE            → OllamaLlmService | AnthropicLlmService (via LLM_PROVIDER env)
  *
  * Exports:
  *   COMMUNICATION_SERVICE  — Decision Making calls generateResponse() and
@@ -23,7 +23,7 @@
  *                            in their imports array to receive this export.
  *
  * Import rationale:
- *   ConfigModule: LlmServiceImpl reads AppConfig for API key and model.
+ *   ConfigModule: LLM services read AppConfig for provider selection and keys.
  *   KnowledgeModule: InputParserService resolves entities against the WKG.
  *   EventsModule: CommunicationService emits INPUT_RECEIVED, INPUT_PARSED,
  *                 RESPONSE_GENERATED, RESPONSE_DELIVERED events.
@@ -53,17 +53,22 @@ import {
   CHATBOX_GATEWAY,
 } from './communication.tokens';
 
+import { ConfigService } from '@nestjs/config';
+import type { AppConfig } from '../shared/config/app.config';
 import { CommunicationService } from './communication.service';
 import { InputParserService } from './input-parser/input-parser.service';
 import { PersonModelingService } from './person-modeling/person-modeling.service';
 import { TheaterValidatorService } from './theater-validator/theater-validator.service';
-import { SttService } from './voice/stt.service';
-import { TtsService } from './voice/tts.service';
-import { LlmServiceImpl } from './llm/llm.service';
+import { DeepgramSttService } from './voice/deepgram-stt.service';
+import { ElevenLabsTtsService } from './voice/elevenlabs-tts.service';
+import { AnthropicLlmService } from './llm/anthropic-llm.service';
+import { OllamaLlmService } from './llm/ollama-llm.service';
 import { ResponseGeneratorService } from './response-generator/response-generator.service';
 import { LlmContextAssemblerService } from './response-generator/llm-context-assembler.service';
 import { SocialContingencyService } from './social/social-contingency.service';
 import { ChatboxGateway } from './chatbox/chatbox.gateway';
+import { EVENTS_SERVICE } from '../events';
+import { ACTION_OUTCOME_REPORTER, DRIVE_STATE_READER } from '../drive-engine';
 
 @Module({
   imports: [
@@ -91,15 +96,28 @@ import { ChatboxGateway } from './chatbox/chatbox.gateway';
     },
     {
       provide: STT_SERVICE,
-      useClass: SttService,
+      useClass: DeepgramSttService,
     },
     {
       provide: TTS_SERVICE,
-      useClass: TtsService,
+      useClass: ElevenLabsTtsService,
     },
     {
       provide: LLM_SERVICE,
-      useClass: LlmServiceImpl,
+      useFactory: (
+        configService: ConfigService<{ app: AppConfig }>,
+        eventService: any,
+        metricsReporter: any,
+        driveStateReader: any,
+      ) => {
+        const config = configService.get<AppConfig>('app');
+        const provider = config?.llm.provider ?? 'ollama';
+        if (provider === 'anthropic') {
+          return new AnthropicLlmService(configService, eventService, metricsReporter, driveStateReader);
+        }
+        return new OllamaLlmService(configService, eventService, metricsReporter, driveStateReader);
+      },
+      inject: [ConfigService, EVENTS_SERVICE, ACTION_OUTCOME_REPORTER, DRIVE_STATE_READER],
     },
     {
       provide: RESPONSE_GENERATOR,

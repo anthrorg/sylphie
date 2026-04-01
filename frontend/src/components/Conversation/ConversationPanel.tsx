@@ -256,7 +256,7 @@ export const ConversationPanel: React.FC = () => {
   const feedRef = useRef<HTMLDivElement>(null)
   const textFieldRef = useRef<HTMLInputElement>(null)
 
-  const { messages, voiceState, wsState, addMessage, toggleMute } = useAppStore()
+  const { messages, isThinking, voiceState, wsState, addMessage, toggleMute } = useAppStore()
   const { sendMessage, sendTextMessage } = useConversationWebSocket()
   // isProcessing = audio sent to server for STT, waiting for transcription result
   const {
@@ -389,6 +389,55 @@ export const ConversationPanel: React.FC = () => {
             onClick={message.type === 'cb_speech' ? () => setRatingTarget(message) : undefined}
           />
         ))}
+
+        {/* Typing indicator — shown when Sylphie is processing (thinking) */}
+        {isThinking && (
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-start',
+              mb: 1.5,
+            }}
+          >
+            <Box
+              sx={{
+                p: '8px 16px',
+                borderRadius: 2,
+                bgcolor: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
+              }}
+            >
+              <Box
+                sx={{
+                  display: 'flex',
+                  gap: '4px',
+                  alignItems: 'center',
+                  '@keyframes bounce': {
+                    '0%, 60%, 100%': { transform: 'translateY(0)' },
+                    '30%': { transform: 'translateY(-4px)' },
+                  },
+                  '& span': {
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: 'rgba(184,217,198,0.5)',
+                    display: 'inline-block',
+                  },
+                  '& span:nth-of-type(1)': { animation: 'bounce 1.2s infinite 0s' },
+                  '& span:nth-of-type(2)': { animation: 'bounce 1.2s infinite 0.2s' },
+                  '& span:nth-of-type(3)': { animation: 'bounce 1.2s infinite 0.4s' },
+                }}
+              >
+                <span />
+                <span />
+                <span />
+              </Box>
+            </Box>
+          </Box>
+        )}
       </Box>
 
       <WordRatingDrawer

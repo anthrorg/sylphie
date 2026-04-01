@@ -63,6 +63,17 @@ Tracks architectural and feature differences between Sylphie's current implement
 
 ---
 
+## Status
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| 1. LLM Provider (Ollama) | **DONE** | OllamaLlmService + AnthropicLlmService with factory. LLM_PROVIDER env var. GPU/CPU model routing. |
+| 2. STT (Deepgram) | **DONE** | DeepgramSttService replaces OpenAI Whisper. Direct buffer upload, per-word confidence. |
+| 3. TTS (ElevenLabs) | **DONE** | ElevenLabsTtsService replaces OpenAI TTS. Acknowledgment cache retained. |
+| 4. Events content | **DONE** | All four event sites now populate hasLearnable, content, source, salience. |
+
+---
+
 ## 5. (Future items — add as discovered)
 
 <!-- Add new gaps here as they surface -->

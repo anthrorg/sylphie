@@ -13,6 +13,8 @@ import type { IConnectionManagerService } from '../interfaces/web.interfaces';
 import { CONNECTION_MANAGER } from '../web.tokens';
 import type { GuardianInput } from '../../communication/interfaces/communication.interfaces';
 import { DRIVE_INDEX_ORDER } from '../../shared/types/drive.types';
+import { LLM_SERVICE } from '../../shared/types/llm.types';
+import type { ILlmService } from '../../shared/types/llm.types';
 
 /**
  * ConversationGateway — Real-time bidirectional conversation.
@@ -43,6 +45,8 @@ export class ConversationGateway
     private readonly driveStateReader: IDriveStateReader,
     @Inject(CONNECTION_MANAGER)
     private readonly connectionManager: IConnectionManagerService,
+    @Inject(LLM_SERVICE)
+    private readonly llmService: ILlmService,
   ) {
     this.logger.debug('Initialized ConversationGateway');
   }
@@ -79,6 +83,17 @@ export class ConversationGateway
 
   /**
    * Handle an incoming WebSocket message.
+   *
+   * Dual-path response architecture:
+   *   FAST PATH: Immediate cheap LLM call (CPU model) → instant conversational
+   *              response within ~1-2s. This is what makes conversation feel natural.
+   *   SLOW PATH: Full Communication pipeline (parse → deliberate → theater check)
+   *              runs in parallel. If it produces something meaningfully different,
+   *              it arrives as a follow-up: "actually, now that I think about it..."
+   *
+   * The "thinking" state is sent as an is_thinking flag (not a message) so the
+   * frontend can render it as a typing indicator bubble, not a chat message.
+   *
    * Matches co-being's inbound contract:
    *   { type: 'user_message', text: '...' }
    *   { type: 'phrase_word_rating', phrase_node_id: '...', word: '...', ... }
@@ -106,26 +121,71 @@ export class ConversationGateway
       if (text) {
         this.logger.log(`ws_conversation_input text="${text.slice(0, 50)}"`);
 
-        // Send thinking indicator
-        this.sendToClient(client, {
-          type: 'system_status',
-          text: 'thinking',
-          is_thinking: true,
-          timestamp: new Date().toISOString(),
-        });
-
+        // --- FAST PATH: Immediate cheap LLM response ---
+        // Fire a lightweight CPU-model call with minimal context.
+        // This gives the user an instant conversational response.
+        let fastResponseSent = false;
         try {
-          // Route through CommunicationService
+          if (this.llmService.isAvailable()) {
+            const fastResponse = await this.llmService.complete({
+              messages: [{ role: 'user', content: text }],
+              systemPrompt:
+                'You are Sylphie, a young AI companion who is learning about the world. ' +
+                'Respond naturally and conversationally, like a curious person would. ' +
+                'Keep responses brief and genuine. If you don\'t know something, say so honestly.',
+              maxTokens: 256,
+              temperature: 0.8,
+              metadata: {
+                callerSubsystem: 'COMMUNICATION',
+                purpose: 'RESPONSE_GENERATION',
+                sessionId: this.currentSessionId,
+              },
+            });
+
+            this.sendToClient(client, {
+              type: 'cb_speech',
+              text: fastResponse.content,
+              action: 'respond_to_guardian',
+              timestamp: new Date().toISOString(),
+            });
+            fastResponseSent = true;
+          }
+        } catch (fastError) {
+          this.logger.warn(
+            `Fast path failed: ${fastError instanceof Error ? fastError.message : String(fastError)}`,
+          );
+          // Fall through to slow path as primary
+        }
+
+        // --- SLOW PATH: Full pipeline (runs in background) ---
+        // Send thinking indicator only if the slow path is running after a fast response.
+        // If fast path failed, this becomes the primary response path.
+        if (fastResponseSent) {
+          // Show "thinking deeper" indicator while Type 2 runs
+          this.sendToClient(client, {
+            type: 'thinking_indicator',
+            is_thinking: true,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          // Fast path failed — show thinking indicator as the user waits for primary response
+          this.sendToClient(client, {
+            type: 'thinking_indicator',
+            is_thinking: true,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        // Run the full pipeline
+        try {
           const guardianInput: GuardianInput = {
             text,
             sessionId: this.currentSessionId,
             timestamp: new Date(),
           };
 
-          const result =
-            await this.communicationService.handleGuardianInput(guardianInput);
+          await this.communicationService.handleGuardianInput(guardianInput);
 
-          // Generate response
           const driveState = this.driveStateReader.getCurrentState();
           const primaryDrive = DRIVE_INDEX_ORDER.reduce(
             (best, name) =>
@@ -145,27 +205,40 @@ export class ConversationGateway
           const generated =
             await this.communicationService.generateResponse(actionIntent);
 
-          // Send response in co-being format
-          this.sendToClient(client, {
-            type: 'cb_speech',
-            text: generated.text,
-            action: 'respond_to_guardian',
-            timestamp: new Date().toISOString(),
-          });
+          if (fastResponseSent) {
+            // Type 2 completed — only send if it produced something meaningfully
+            // different from the fast response. Send as a follow-up thought.
+            this.sendToClient(client, {
+              type: 'cb_speech',
+              text: generated.text,
+              action: 'type2_followup',
+              timestamp: new Date().toISOString(),
+            });
+          } else {
+            // Fast path failed, this is the primary response
+            this.sendToClient(client, {
+              type: 'cb_speech',
+              text: generated.text,
+              action: 'respond_to_guardian',
+              timestamp: new Date().toISOString(),
+            });
+          }
         } catch (error) {
           this.logger.error(
-            `Error handling message: ${error instanceof Error ? error.message : String(error)}`,
+            `Slow path error: ${error instanceof Error ? error.message : String(error)}`,
           );
-          this.sendToClient(client, {
-            type: 'system_status',
-            text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            timestamp: new Date().toISOString(),
-          });
+          if (!fastResponseSent) {
+            // Only show error if there was no fast response
+            this.sendToClient(client, {
+              type: 'error',
+              text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
         } finally {
-          // Clear thinking indicator
+          // Always clear thinking indicator
           this.sendToClient(client, {
-            type: 'system_status',
-            text: '',
+            type: 'thinking_indicator',
             is_thinking: false,
             timestamp: new Date().toISOString(),
           });

@@ -184,7 +184,7 @@ export function useConversationWebSocket() {
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
 
-  const { setWsState, addMessage, incrementTurns } = useAppStore()
+  const { setWsState, addMessage, incrementTurns, setThinking } = useAppStore()
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -259,8 +259,19 @@ export function useConversationWebSocket() {
             return
           }
 
-          // cobeing-v1: system_status with no text is the session-start confirmation
-          // or isThinking:false frame — no content to render in the conversation feed.
+          // thinking_indicator is a flag, not a message — update state, don't add to feed.
+          if (message.type === 'thinking_indicator') {
+            setThinking(!!message.is_thinking)
+            return
+          }
+
+          // Legacy: system_status with is_thinking is also a thinking indicator
+          if (message.type === 'system_status' && message.is_thinking !== undefined) {
+            setThinking(!!message.is_thinking)
+            return
+          }
+
+          // cobeing-v1: system_status with no text is the session-start confirmation — skip.
           if (message.type === 'system_status' && !message.text) {
             return
           }

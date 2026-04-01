@@ -175,9 +175,11 @@ export interface PlanningConfig {
  * response generation. Never for decision making.
  */
 export interface LlmConfig {
-  /** Anthropic API key. Required for LLM calls. */
+  /** Which LLM provider to use. 'ollama' (default) or 'anthropic'. */
+  readonly provider: 'ollama' | 'anthropic';
+  /** Anthropic API key. Required when provider=anthropic. */
   readonly anthropicApiKey: string;
-  /** Model identifier. Default: 'claude-sonnet-4-20250514' */
+  /** Model identifier for Anthropic. Default: 'claude-sonnet-4-20250514' */
   readonly model: string;
   /** Maximum tokens for Type 2 deliberation calls. Default: 4096 */
   readonly maxTokens: number;
@@ -188,7 +190,48 @@ export interface LlmConfig {
 }
 
 /**
- * OpenAI Voice API configuration (STT and TTS).
+ * Ollama local inference configuration.
+ *
+ * Two-model architecture:
+ *   - GPU model: Slow but capable. Used for Type 2 deliberation, Learning,
+ *     and Planning where reasoning quality matters.
+ *   - CPU model: Fast and lightweight. Used for conversation response
+ *     generation where latency matters more than depth.
+ */
+export interface OllamaConfig {
+  /** Base URL for the Ollama HTTP API. Default: 'http://localhost:11434' */
+  readonly baseUrl: string;
+  /** GPU model for high-inference tasks (Type 2, Learning, Planning). */
+  readonly gpuModel: string;
+  /** CPU model for fast/lightweight tasks (conversation responses). */
+  readonly cpuModel: string;
+}
+
+/**
+ * Deepgram STT configuration.
+ *
+ * CANON §Communication: Voice is the preferred channel, not the only channel.
+ * Voice failures never block system operation (graceful degradation).
+ */
+export interface DeepgramConfig {
+  /** Deepgram API key. Required for STT calls. */
+  readonly apiKey: string;
+}
+
+/**
+ * ElevenLabs TTS configuration.
+ */
+export interface ElevenLabsConfig {
+  /** ElevenLabs API key. Required for TTS calls. */
+  readonly apiKey: string;
+  /** Voice ID for synthesis. */
+  readonly voiceId: string;
+  /** Model ID. Default: 'eleven_monolingual_v1' */
+  readonly modelId: string;
+}
+
+/**
+ * OpenAI Voice API configuration (legacy, kept for backward compatibility).
  *
  * CANON §Communication: Voice is the preferred channel, not the only channel.
  * Voice failures never block system operation (graceful degradation).
@@ -273,6 +316,9 @@ export interface AppConfig {
   readonly grafeo: GrafeoConfig;
   readonly planning: PlanningConfig;
   readonly llm: LlmConfig;
+  readonly ollama: OllamaConfig;
+  readonly deepgram: DeepgramConfig;
+  readonly elevenlabs: ElevenLabsConfig;
   readonly openaiVoice: OpenAiVoiceConfig;
   readonly media: MediaConfig;
 }
@@ -433,12 +479,29 @@ export const appConfig = registerAs('app', (): AppConfig => ({
   },
 
   llm: {
+    provider: (process.env['LLM_PROVIDER'] ?? 'ollama') as 'ollama' | 'anthropic',
     anthropicApiKey: process.env['ANTHROPIC_API_KEY'] ?? '',
     model: process.env['LLM_MODEL'] ?? 'claude-sonnet-4-20250514',
     maxTokens: parseInt(process.env['LLM_MAX_TOKENS'] ?? '4096', 10),
     temperature: parseFloat(process.env['LLM_TEMPERATURE'] ?? '0.7'),
     costTrackingEnabled:
       (process.env['LLM_COST_TRACKING_ENABLED'] ?? 'true') === 'true',
+  },
+
+  ollama: {
+    baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434',
+    gpuModel: process.env['OLLAMA_GPU_MODEL'] ?? 'gemma3:27b',
+    cpuModel: process.env['OLLAMA_CPU_MODEL'] ?? 'qwen2.5:7b',
+  },
+
+  deepgram: {
+    apiKey: process.env['DEEPGRAM_API_KEY'] ?? '',
+  },
+
+  elevenlabs: {
+    apiKey: process.env['ELEVENLABS_API_KEY'] ?? '',
+    voiceId: process.env['ELEVENLABS_VOICE_ID'] ?? '',
+    modelId: process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_monolingual_v1',
   },
 
   openaiVoice: {

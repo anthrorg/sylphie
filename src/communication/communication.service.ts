@@ -146,6 +146,11 @@ export class CommunicationService implements ICommunicationService {
           sessionId: input.sessionId,
           driveSnapshot,
           schemaVersion: 1,
+          hasLearnable: true,
+          content: input.text,
+          guardianFeedbackType: 'none',
+          source: 'GUARDIAN',
+          salience: 0.5,
         } as any);
         eventIds.push(inputReceivedEventId);
       } catch (eventError) {
@@ -229,6 +234,10 @@ export class CommunicationService implements ICommunicationService {
       // Step 6: Emit INPUT_PARSED event
       const inputParsedEventId = randomUUID();
       try {
+        const feedbackType = parsedInput?.guardianFeedbackType ?? 'none';
+        const parsedSalience = feedbackType === 'correction' ? 0.9
+          : feedbackType === 'confirmation' ? 0.7
+          : 0.5;
         await this.eventService.record({
           type: 'INPUT_PARSED',
           timestamp: new Date(),
@@ -236,6 +245,11 @@ export class CommunicationService implements ICommunicationService {
           sessionId: input.sessionId,
           driveSnapshot,
           schemaVersion: 1,
+          hasLearnable: true,
+          content: parsedInput?.rawText ?? text,
+          guardianFeedbackType: feedbackType,
+          source: 'GUARDIAN',
+          salience: parsedSalience,
         } as any);
         eventIds.push(inputParsedEventId);
       } catch (eventError) {
@@ -369,6 +383,11 @@ export class CommunicationService implements ICommunicationService {
           sessionId: intent.driveSnapshot.sessionId || conversationId,
           driveSnapshot: response.driveSnapshot,
           schemaVersion: 1,
+          hasLearnable: true,
+          content: response.text,
+          guardianFeedbackType: 'none',
+          source: 'LLM_GENERATED',
+          salience: 0.4,
         } as any);
       } catch (eventError) {
         this.logger.warn(
@@ -499,6 +518,11 @@ export class CommunicationService implements ICommunicationService {
           sessionId: driveSnapshot.sessionId,
           driveSnapshot: response.driveSnapshot,
           schemaVersion: 1,
+          hasLearnable: true,
+          content: response.text,
+          guardianFeedbackType: 'none',
+          source: 'LLM_GENERATED',
+          salience: 0.3,
         } as any);
       } catch (eventError) {
         this.logger.warn(

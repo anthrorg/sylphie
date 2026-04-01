@@ -1,8 +1,8 @@
 /**
- * LlmServiceImpl — concrete implementation of ILlmService via the Anthropic API.
+ * AnthropicLlmService — ILlmService implementation via the Anthropic API.
  *
  * Implements ILlmService from src/shared/types/llm.types.ts.
- * Registered under the LLM_SERVICE token by CommunicationModule.
+ * Selected when LLM_PROVIDER=anthropic. Fallback provider.
  *
  * Three subsystems inject ILlmService (Communication, Learning, Planning).
  * The interface is shared; only this implementation is registered. Other
@@ -10,7 +10,7 @@
  *
  * CANON §Dual-Process Cognition: Every complete() call must have its
  * latencyMs and tokensUsed reported to the Drive Engine by the caller via
- * SoftwareMetricsPayload. The LlmServiceImpl itself does not report cost —
+ * SoftwareMetricsPayload. The AnthropicLlmService itself does not report cost —
  * it returns the data; the caller is responsible for reporting it.
  *
  * isAvailable() returns false when:
@@ -67,12 +67,12 @@ const MAX_RETRIES = 3;
 const CIRCUIT_BREAKER_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------
-// LlmServiceImpl
+// AnthropicLlmService
 // ---------------------------------------------------------------------------
 
 @Injectable()
-export class LlmServiceImpl implements ILlmService {
-  private readonly logger = new Logger('LlmServiceImpl');
+export class AnthropicLlmService implements ILlmService {
+  private readonly logger = new Logger('AnthropicLlmService');
   private readonly client: Anthropic;
   private readonly apiKey: string;
   private readonly model: string;

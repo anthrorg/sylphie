@@ -56,6 +56,7 @@ interface AppState {
 
   // Conversation
   messages: ConversationMessage[]
+  isThinking: boolean
 
   // Session info
   sessionStats: SessionStats
@@ -106,6 +107,7 @@ interface AppState {
   setGraphData: (data: GraphSnapshot) => void
   setGraphStats: (stats: GraphStats) => void
   addMessage: (message: ConversationMessage) => void
+  setThinking: (thinking: boolean) => void
   setSessionStats: (stats: Partial<SessionStats>) => void
   incrementTurns: () => void
   resetStasisCount: () => void
@@ -157,6 +159,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   graphStats: { nodes: 0, edges: 0 },
 
   messages: [],
+  isThinking: false,
 
   sessionStats: {
     session_cost_usd: 0,
@@ -236,6 +239,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => ({
       messages: [...prev.messages, message],
     })),
+
+  setThinking: (thinking) => set({ isThinking: thinking }),
 
   setSessionStats: (stats) =>
     set((prev) => ({
