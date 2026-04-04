@@ -1,0 +1,84 @@
+// Sensory pipeline types
+export {
+  EMBEDDING_DIM,
+  type VideoDetection,
+  type SensoryFrame,
+  type ModalityType,
+} from './sensory-frame';
+export { type ModalityEncoder } from './modality-encoder.interface';
+
+// Drive system types
+export {
+  DriveName,
+  DRIVE_INDEX_ORDER,
+  DRIVE_RANGE,
+  CORE_DRIVES,
+  COMPLEMENT_DRIVES,
+  INITIAL_DRIVE_STATE,
+  clampDriveValue,
+  computeTotalPressure,
+  type PressureVector,
+  type PressureDelta,
+  type RuleMatchResult,
+  type DriveSnapshot,
+} from './drive.types';
+
+// IPC types (Drive Engine isolation boundary)
+export {
+  DriveIPCMessageType,
+  type DriveIPCMessage,
+  type ActionOutcomePayload,
+  type SoftwareMetricsPayload,
+  type SessionStartPayload,
+  type SessionEndPayload,
+  type DriveSnapshotPayload,
+  type OpportunityCreatedPayload,
+  type DriveEventPayload,
+  type HealthStatusPayload,
+  type OpportunityPriority,
+  type OpportunityClassification,
+} from './ipc.types';
+
+// Provenance types
+export {
+  type CoreProvenanceSource,
+  type ExtendedProvenanceSource,
+  type ProvenanceSource,
+  PROVENANCE_BASE_CONFIDENCE,
+  resolveBaseConfidence,
+} from './provenance.types';
+
+// Event types
+export * from './event.types';
+
+// Action types
+export * from './action.types';
+
+// Confidence types
+export {
+  CONFIDENCE_THRESHOLDS,
+  DEFAULT_DECAY_RATES,
+  computeConfidence,
+  applyGuardianWeight,
+  qualifiesForGraduation,
+  qualifiesForDemotion,
+  type ACTRParams,
+} from './confidence.types';
+
+// Metrics types
+export * from './metrics.types';
+
+// LLM types
+export {
+  LLM_SERVICE,
+  type LlmMessage,
+  type LlmRequest,
+  type LlmCallMetadata,
+  type LlmResponse,
+  type EpisodeSummary,
+  type WkgContextEntry,
+  type PersonModelSummary,
+  type LlmContext,
+  type Type2CostEstimate,
+  type ILlmService,
+} from './llm.types';

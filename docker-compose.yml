@@ -1,0 +1,138 @@
+services:
+  neo4j-world:
+    image: neo4j:5-community
+    container_name: sylphie-neo4j-world
+    ports:
+      - "7474:7474" # HTTP browser
+      - "7687:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/sylphie_world
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_transaction_timeout: 30s
+    volumes:
+      - neo4j_world_data:/data
+      - neo4j_world_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sylphie_world 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  neo4j-self:
+    image: neo4j:5-community
+    container_name: sylphie-neo4j-self
+    ports:
+      - "7475:7474" # HTTP browser
+      - "7690:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/sylphie_self
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_transaction_timeout: 30s
+    volumes:
+      - neo4j_self_data:/data
+      - neo4j_self_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sylphie_self 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  neo4j-other:
+    image: neo4j:5-community
+    container_name: sylphie-neo4j-other
+    ports:
+      - "7476:7474" # HTTP browser
+      - "7689:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/sylphie_other
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_transaction_timeout: 30s
+    volumes:
+      - neo4j_other_data:/data
+      - neo4j_other_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sylphie_other 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    container_name: sylphie-postgres
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: sylphie_admin
+      POSTGRES_PASSWORD: sylphie_admin_dev
+      POSTGRES_DB: sylphie_system
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sylphie_admin -d sylphie_system"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: sylphie-timescaledb
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: sylphie
+      POSTGRES_PASSWORD: sylphie_events_dev
+      POSTGRES_DB: sylphie_events
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./infra/timescaledb/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sylphie -d sylphie_events"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  perception:
+    build:
+      context: ./packages/perception-service
+      dockerfile: Dockerfile
+    container_name: sylphie-perception
+    ports:
+      - "${PERCEPTION_PORT:-8430}:8430"
+    environment:
+      COBEING_PERCEPTION_CAMERA__DEVICE: "${PERCEPTION_CAMERA_DEVICE:-0}"
+      COBEING_PERCEPTION_CAMERA__WIDTH: "1280"
+      COBEING_PERCEPTION_CAMERA__HEIGHT: "720"
+      COBEING_PERCEPTION_CAMERA__FPS: "15"
+      COBEING_PERCEPTION_DETECTION__MODEL_PATH: "yolov8n.pt"
+      COBEING_PERCEPTION_DETECTION__CONFIDENCE_THRESHOLD: "0.25"
+    # GPU passthrough for YOLO inference (requires NVIDIA Container Toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8430/perception/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  neo4j_world_data:
+  neo4j_world_logs:
+  neo4j_self_data:
+  neo4j_self_logs:
+  neo4j_other_data:
+  neo4j_other_logs:
+  postgres_data:
+  timescaledb_data:

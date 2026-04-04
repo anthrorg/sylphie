@@ -1,0 +1,143 @@
+sylphie/
+├── README.md
+├── package.json                          # monorepo root (workspaces)
+├── tsconfig.base.json
+├── docker-compose.yml                    # TimescaleDB, Neo4j, Postgres
+├── architecture.yaml                     # the manifest (copy of sylphie-architecture.yaml)
+│
+├── packages/
+│   │
+│   ├── shared/                           # shared types, constants, utilities
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── types/
+│   │       │   ├── tick-event.ts          # TickEvent shape — used by decision-making + drive-engine
+│   │       │   ├── drive-vector.ts        # drive sensor pressure vector type
+│   │       │   ├── opportunity.ts         # Opportunity shape — drive-engine → planning
+│   │       │   └── response-event.ts      # ResponseEvent — communication → learning
+│   │       ├── storage/
+│   │       │   ├── timescale.client.ts    # shared TimescaleDB connection
+│   │       │   ├── neo4j.client.ts        # shared Neo4j connection (WKG)
+│   │       │   └── postgres.client.ts     # shared Postgres connection
+│   │       └── index.ts
+│   │
+│   ├── decision-making/                  # PANEL 1
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── inputs/
+│   │       │   ├── drive-sensor.input.ts
+│   │       │   ├── text.input.ts
+│   │       │   ├── video.input.ts
+│   │       │   └── audio.input.ts
+│   │       ├── executor/
+│   │       │   └── executor-engine.ts     # main loop — routes to type1/type2
+│   │       ├── monologue/
+│   │       │   └── inner-monologue.ts     # reads episodic memory + WKG
+│   │       ├── prediction/
+│   │       │   └── make-prediction.ts     # generates predictions from WKG
+│   │       ├── reasoning/
+│   │       │   ├── reasoning-engine.ts    # evaluates type1 vs type2 candidates
+│   │       │   ├── type-1.handler.ts      # reflex path
+│   │       │   └── type-2.handler.ts      # deliberative path (planning, LLM)
+│   │       ├── action/
+│   │       │   ├── makes-choice.ts        # final selection, emits tick event
+│   │       │   └── system-reacts.ts       # executes chosen action
+│   │       ├── storage/
+│   │       │   ├── episodic-memory.ts     # TimescaleDB read/write for episodes
+│   │       │   └── wkg.reader.ts          # Neo4j reads for monologue + prediction
+│   │       └── index.ts
+│   │
+│   ├── communication/                    # PANEL 2
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── input/
+│   │       │   └── input-parser.ts        # parses text, extracts person entities
+│   │       ├── evaluation/
+│   │       │   └── other-evaluation.ts    # refine edges via LLM for entities
+│   │       ├── output/
+│   │       │   ├── text-response.ts       # generates response text
+│   │       │   ├── tts.ts                 # text-to-speech output
+│   │       │   └── chatbox.ts             # text display output
+│   │       ├── storage/
+│   │       │   └── timescale.writer.ts    # writes context events
+│   │       └── index.ts
+│   │
+│   ├── learning/                         # PANEL 3
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── maintenance/
+│   │       │   └── maintenance-cycle.ts   # triggers the learning pipeline
+│   │       ├── pipeline/
+│   │       │   ├── update-wkg.ts          # reads unlearned events from timescale
+│   │       │   ├── upsert-entities.ts     # writes entities to WKG
+│   │       │   ├── extract-edges.ts       # extracts edges from entities
+│   │       │   ├── add-conversation-entry.ts
+│   │       │   └── add-can-produce-edges.ts
+│   │       ├── storage/
+│   │       │   ├── timescale.reader.ts    # reads hasLearned=false events
+│   │       │   └── wkg.writer.ts          # writes to Neo4j WKG
+│   │       └── index.ts
+│   │
+│   ├── drive-engine/                     # PANEL 4
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── evaluation/
+│   │       │   └── self-evaluation.ts     # reads KG(Self), feeds tick
+│   │       ├── tick/
+│   │       │   └── tick-event.ts          # reads last 10 events from timescale
+│   │       ├── rules/
+│   │       │   ├── find-rule.ts           # reads postgres for matching rule
+│   │       │   ├── affect-drives.ts       # applies found rule
+│   │       │   ├── default-affect.ts      # fallback when no rule found
+│   │       │   └── evaluate-new-rule.ts   # writes new rule to postgres
+│   │       ├── prediction/
+│   │       │   └── evaluate-prediction.ts # compares prediction to drive sensors
+│   │       ├── opportunity/
+│   │       │   ├── opportunity-eval.ts    # when prediction fails
+│   │       │   ├── recurring-check.ts     # is this pattern recurring?
+│   │       │   ├── high-impact-check.ts   # is this high impact?
+│   │       │   ├── create-opportunity.ts  # emits to planning panel
+│   │       │   └── create-potential-opportunity.ts
+│   │       ├── affect/
+│   │       │   └── drive-affect.ts        # when prediction is accurate
+│   │       ├── sensors/
+│   │       │   └── drive-sensors.ts       # drive sensor input reader
+│   │       ├── storage/
+│   │       │   ├── kg-self.reader.ts      # Neo4j KG(Self) reads
+│   │       │   ├── timescale.reader.ts    # event history reads
+│   │       │   └── postgres.client.ts     # rules read/write
+│   │       └── index.ts
+│   │
+│   ├── planning/                         # PANEL 5
+│   │   ├── package.json
+│   │   └── src/
+│   │       ├── opportunity/
+│   │       │   └── opportunity.handler.ts # receives from drive-engine
+│   │       ├── research/
+│   │       │   └── research-opportunity.ts # reads event frequency from timescale
+│   │       ├── simulation/
+│   │       │   └── run-simulations.ts
+│   │       ├── plan/
+│   │       │   ├── propose-plan.ts        # generates plan, loops if rejected
+│   │       │   ├── llm-constraint-engine.ts
+│   │       │   └── create-plan-procedure.ts # writes action to WKG
+│   │       ├── storage/
+│   │       │   ├── timescale.reader.ts
+│   │       │   └── wkg.writer.ts          # adds actions to WKG
+│   │       └── index.ts
+│   │
+│   └── infrastructure/                   # DB setup, migrations, docker helpers
+│       ├── package.json
+│       └── src/
+│           ├── timescale/
+│           │   └── migrations/
+│           ├── neo4j/
+│           │   └── seeds/
+│           └── postgres/
+│               └── migrations/
+│
+└── apps/
+    └── sylphie/                          # main entrypoint — boots all panels
+        ├── package.json
+        └── src/
+            └── main.ts

@@ -1,0 +1,258 @@
+# ============================================================================
+# SYLPHIE 2.0 — Migration Action Plan
+# ============================================================================
+#
+# Rules:
+#   - You (Jim) pick the order. This is a menu, not a sequence.
+#   - Each item is one branch off main.
+#   - For each item: read the old co-being code, understand it, place it
+#     into the new structure, refactor to fit the new package boundaries.
+#   - co-being repo stays untouched as read-only reference.
+#   - "Done" means: it compiles, its tests pass (if any), and it wires
+#     into the rest of the system without breaking anything already merged.
+#
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# PHASE 0: Scaffolding (do this first, it's just structure)
+# --------------------------------------------------------------------------
+
+- id: scaffold
+  name: "Initialize repo + monorepo structure"
+  what: >
+    Create the sylphie repo, set up the monorepo workspace config,
+    tsconfig, docker-compose (TimescaleDB, Neo4j, Postgres), and
+    empty package.json files for each panel package.
+    Copy in architecture.yaml and directory-structure.txt.
+    No real logic — just the skeleton so everything has a home.
+  creates:
+    - monorepo root config
+    - packages/shared with empty type stubs
+    - packages/decision-making (empty)
+    - packages/communication (empty)
+    - packages/learning (empty)
+    - packages/drive-engine (empty)
+    - packages/planning (empty)
+    - packages/infrastructure (empty)
+    - apps/sylphie (empty main.ts)
+    - docker-compose.yml
+  co_being_reference: "root package.json, tsconfig, docker configs"
+
+# --------------------------------------------------------------------------
+# PUNCH LIST: Pick any of these in any order after scaffold
+# --------------------------------------------------------------------------
+
+- id: shared-types
+  name: "Shared types + DB clients"
+  what: >
+    Pull over the core type definitions that cross panel boundaries:
+    TickEvent, DriveVector, Opportunity, ResponseEvent.
+    Set up the TimescaleDB, Neo4j, and Postgres client wrappers.
+  co_being_reference: >
+    packages/backend/src/types/,
+    packages/shared/ (if it exists),
+    any DB connection setup files
+  depends_on: [scaffold]
+
+- id: drive-sensors
+  name: "Drive sensor input (ESP32 decoder)"
+  panel: drive-engine
+  what: >
+    The ESP32 UDP pressure vector decoder. Reads the 12-axis drive
+    datagram, decodes packed float32s with CRC check.
+  co_being_reference: "Esp32PressureService, drive sensor decoding"
+  depends_on: [shared-types]
+
+- id: kg-self
+  name: "KG(Self) reader"
+  panel: drive-engine
+  what: >
+    Neo4j read layer for the self-knowledge graph.
+    Used by self-evaluation in the drive engine.
+  co_being_reference: "Graph persistence layer, KG-Self queries"
+  depends_on: [shared-types]
+
+- id: self-evaluation
+  name: "Self Evaluation"
+  panel: drive-engine
+  what: >
+    Reads KG(Self), synchronously feeds tick event.
+  co_being_reference: "Self evaluation service"
+  depends_on: [kg-self]
+
+- id: tick-event
+  name: "Tick Event + Timescale reads"
+  panel: drive-engine
+  what: >
+    The tick event handler. Reads last 10 events and frequency counts
+    from TimescaleDB. This is the heartbeat of the drive engine.
+  co_being_reference: "Tick event emission, timescale event queries"
+  depends_on: [self-evaluation, shared-types]
+
+- id: drive-rules
+  name: "Rule system (find/affect/default/evaluate)"
+  panel: drive-engine
+  what: >
+    The full rule evaluation chain: find_rule from Postgres,
+    affect_drives if found, default_affect if not, evaluate_new_rule
+    writes back to Postgres.
+  co_being_reference: "Drive categorizer, rule evaluation logic"
+  depends_on: [tick-event]
+
+- id: prediction-eval
+  name: "Prediction evaluation + opportunity creation"
+  panel: drive-engine
+  what: >
+    Evaluate prediction against drive sensors. If inaccurate →
+    opportunity eval → recurring check → high impact check →
+    create opportunity or create potential opportunity.
+    If accurate → drive affect.
+  co_being_reference: "Prediction evaluation, opportunity creation logic"
+  depends_on: [drive-rules, drive-sensors]
+
+- id: input-parser
+  name: "Input Parser"
+  panel: communication
+  what: >
+    Parses incoming text input. Extracts person entities (Person_Jim).
+    Emits context events to TimescaleDB and response events.
+  co_being_reference: "Input parsing, entity extraction"
+  depends_on: [shared-types]
+
+- id: other-eval
+  name: "Other Evaluation (Refine Edges LLM)"
+  panel: communication
+  what: >
+    When a person entity is detected, refines edges using LLM.
+  co_being_reference: "Other evaluation service, LLM edge refinement"
+  depends_on: [input-parser]
+
+- id: text-output
+  name: "Text output + TTS + Chatbox"
+  panel: communication
+  what: >
+    Response generation. Text node receives response events and
+    routes to TTS and/or chatbox output.
+  co_being_reference: "Response generation, TTS integration, chatbox"
+  depends_on: [input-parser]
+
+- id: maintenance-cycle
+  name: "Maintenance Cycle"
+  panel: learning
+  what: >
+    The trigger that kicks off the learning pipeline.
+    This is what drives the whole knowledge acquisition flow.
+  co_being_reference: "MaintenanceCycleRunner, maintenance loop"
+  depends_on: [shared-types]
+
+- id: update-wkg
+  name: "Update WKG (read unlearned events)"
+  panel: learning
+  what: >
+    Reads TimescaleDB for query/response events where hasLearned=false.
+    Marks them (mark=5). Feeds into upsert entities.
+  co_being_reference: "Maintenance event queries, hasLearned flag logic"
+  depends_on: [maintenance-cycle]
+
+- id: upsert-entities
+  name: "Upsert Entities to WKG"
+  panel: learning
+  what: >
+    Takes unlearned events and writes/updates entity nodes
+    in the World Knowledge Graph (Neo4j).
+  co_being_reference: "Entity upsert logic, Neo4j write operations"
+  depends_on: [update-wkg]
+
+- id: extract-edges
+  name: "Extract edges + conversation entry + can_produce edges"
+  panel: learning
+  what: >
+    The tail of the learning pipeline: extract edges from upserted
+    entities, add conversation entries, add can_produce edges to
+    phrases added.
+  co_being_reference: >
+    Edge extraction, conversation entry creation,
+    can_produce edge logic, phrase node handling
+  depends_on: [upsert-entities]
+
+- id: inner-monologue
+  name: "Inner Monologue"
+  panel: decision-making
+  what: >
+    Reads episodic memory (TimescaleDB) and WKG (Neo4j) to
+    formulate what to do. Feeds the executor engine.
+  co_being_reference: "Inner monologue / reasoning trace"
+  depends_on: [shared-types]
+
+- id: make-prediction
+  name: "Make Prediction"
+  panel: decision-making
+  what: >
+    Generates predictions from the WKG. Multiple predictions
+    can run simultaneously.
+  co_being_reference: "Prediction generation logic"
+  depends_on: [shared-types]
+
+- id: executor-engine
+  name: "Executor Engine"
+  panel: decision-making
+  what: >
+    The main decision loop. Receives sensory inputs + inner monologue
+    output, routes to Type 1 or Type 2 path.
+  co_being_reference: "Executor loop, action dispatch"
+  depends_on: [inner-monologue, make-prediction]
+
+- id: type1-type2
+  name: "Type 1 / Type 2 paths + Reasoning Engine"
+  panel: decision-making
+  what: >
+    Type 1 (reflex, high confidence) and Type 2 (effortful, LLM-assisted)
+    paths. Both feed reasoning engine which evaluates candidates.
+    Type 1 must convince reasoning engine it's better than Type 2.
+  co_being_reference: "Action retriever, reasoning engine, Type 1/2 logic"
+  depends_on: [executor-engine]
+
+- id: makes-choice
+  name: "Makes Choice + System Reacts"
+  panel: decision-making
+  what: >
+    Final action selection. Emits tick event to timescale and drive engine.
+    System reacts executes the chosen action.
+  co_being_reference: "Action selection, tick event emission"
+  depends_on: [type1-type2]
+
+- id: opportunity-handler
+  name: "Opportunity Handler"
+  panel: planning
+  what: >
+    Receives opportunities from the drive engine.
+    Entry point to the planning pipeline.
+  co_being_reference: "Opportunity handling (may be new)"
+  depends_on: [prediction-eval]
+
+- id: research-opportunity
+  name: "Research Opportunity"
+  panel: planning
+  what: >
+    Reads event frequency from TimescaleDB to research the opportunity.
+  co_being_reference: "Event frequency analysis (may be new)"
+  depends_on: [opportunity-handler]
+
+- id: simulation-and-plan
+  name: "Run Simulations + Propose Plan + LLM Constraint Engine"
+  panel: planning
+  what: >
+    Runs simulations, proposes a plan, validates through LLM constraint
+    engine. Loops back to propose if plan doesn't pass.
+    On pass → creates plan procedure, adds action to WKG.
+  co_being_reference: "Planning logic (may be partially new)"
+  depends_on: [research-opportunity]
+
+- id: timescale-writer
+  name: "Timescale event recording (Decision Making)"
+  panel: decision-making
+  what: >
+    Records every event in great detail to TimescaleDB:
+    inputs, predictions, current drive sensors, audio stats.
+  co_being_reference: "Event logging, TimescaleDB write layer"
+  depends_on: [makes-choice]

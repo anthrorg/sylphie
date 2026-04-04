@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "cmd",
+      "args": ["/c", "npx", "@playwright/mcp"]
+    },
+    "sylphie-pkg": {
+      "command": "node",
+      "args": ["./packages/sylphie-pkg/dist/mcp-server/index.js"],
+      "env": {
+        "SYLPHIE_PKG_NEO4J_URI": "bolt://localhost:7691",
+        "SYLPHIE_PKG_NEO4J_USER": "neo4j",
+        "SYLPHIE_PKG_NEO4J_PASSWORD": "sylphie-pkg-local"
+      }
+    }
+  }
+}

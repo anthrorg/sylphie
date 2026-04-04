@@ -1,0 +1,387 @@
+# ============================================================================
+# SYLPHIE 2.0 — Architecture Manifest
+# Source: sylphie2.png diagram (sole source of truth)
+# Generated: 2026-04-02
+# ============================================================================
+
+panels:
+
+  # ==========================================================================
+  # PANEL 1: DECISION MAKING (top-left)
+  # ==========================================================================
+  decision_making:
+    inputs:
+      - drive_sensors
+      - text_input
+      - video
+      - audio
+
+    components:
+
+      executor_engine:
+        receives_from:
+          - inputs (drive_sensors, text_input, video, audio)
+          - inner_monologue
+        emits_to:
+          - type_1_path
+          - type_2_path
+          - system_reacts
+
+      inner_monologue:
+        label: "Inner Monologuing about what to do"
+        reads:
+          - episodic_memory
+          - world_knowledge_graph
+        feeds: executor_engine
+
+      episodic_memory:
+        type: storage
+        read_by: inner_monologue
+
+      world_knowledge_graph:
+        type: storage
+        read_by: inner_monologue
+
+      make_prediction:
+        note: "Multiple prediction nodes shown — runs more than one prediction"
+        reads: world_knowledge_graph
+
+      type_1_path:
+        label: "Type 1 — Reflex, High Confidence Actions"
+        condition: "Must convince Reasoning Engine it's better than Type 2"
+        receives_from: executor_engine
+        emits_to: reasoning_engine
+
+      type_2_path:
+        label: "Type 2 — Effort, Thinking, Planning, LLM assisted"
+        receives_from: executor_engine
+        emits_to: reasoning_engine
+
+      reasoning_engine:
+        receives_from:
+          - type_1_path
+          - type_2_path
+        emits_to: makes_choice
+
+      makes_choice:
+        receives_from: reasoning_engine
+        emits_to:
+          - timescale (tick_event)
+          - drive_engine (tick_event)
+          - system_reacts
+
+      timescale:
+        type: storage
+        annotation: >
+          This is where we record every event in great detail.
+          Includes inputs, predictions, current drive sensors, audio stats.
+        written_by: makes_choice (tick_event)
+
+      system_reacts:
+        receives_from: makes_choice
+
+    cross_panel:
+      - to: drive_engine
+        via: tick_event
+        annotation: "Makes judgment about action. This is where we judge actions to build a target personality."
+      - from: drive_engine
+        via: failed_predictions
+        annotation: "Failed predictions give more weight to type 2"
+
+  # ==========================================================================
+  # PANEL 2: COMMUNICATION (top-center)
+  # ==========================================================================
+  communication:
+    example_input: "'My name is Jim'"
+
+    components:
+
+      text_input:
+        feeds: input_parser
+
+      input_parser:
+        receives_from: text_input
+        emits_to:
+          - timescale_db (context_event)
+          - other_evaluation (person_jim)
+          - text (response_event)
+        extracts:
+          - person_entity: "Person_Jim"
+
+      other_evaluation:
+        label: "Other Evaluation"
+        receives_from: input_parser (Person_Jim)
+        operations:
+          - refine_edges_llm: "Refine Edges(LLM)"
+
+      timescale_db:
+        type: storage
+        written_by: input_parser
+
+      text:
+        label: "Text"
+        receives_from: input_parser (response_event)
+        emits_to:
+          - tts
+          - chatbox
+
+      tts:
+        receives_from: text
+
+      chatbox:
+        receives_from: text
+
+    cross_panel:
+      - to: learning
+        via: response_event
+        condition: "if Person entity"
+
+  # ==========================================================================
+  # PANEL 3: LEARNING (top-right)
+  # ==========================================================================
+  learning:
+    components:
+
+      maintenance_cycle:
+        emits_to: update_wkg
+
+      update_wkg:
+        label: "Update WKG"
+        receives_from: maintenance_cycle
+        reads: timescale_db
+        read_note: "query and response events with hasLearned=false, mark=5"
+        emits_to: upsert_entities
+
+      timescale_db:
+        type: storage
+        read_by: update_wkg
+
+      upsert_entities:
+        label: "Upsert Entities"
+        receives_from: update_wkg
+        writes_to: world_knowledge_graph
+        emits_to: extract_edges
+
+      world_knowledge_graph:
+        type: storage
+        written_by: upsert_entities
+
+      extract_edges:
+        label: "Extract edges"
+        receives_from: upsert_entities
+        emits_to: add_conversation_entry
+
+      add_conversation_entry:
+        label: "Add conversation entry"
+        receives_from: extract_edges
+        emits_to: add_can_produce_edges
+
+      add_can_produce_edges:
+        label: "Add can_produce edges to phrases added"
+        receives_from: add_conversation_entry
+
+    cross_panel:
+      - from: communication
+        via: response_event
+        condition: "if Person entity"
+
+  # ==========================================================================
+  # PANEL 4: DRIVE ENGINE (bottom-left)
+  # ==========================================================================
+  drive_engine:
+    components:
+
+      kg_self:
+        label: "KG(Self)"
+        type: storage
+        read_by: self_evaluation
+
+      self_evaluation:
+        label: "Self Evaluation"
+        reads: kg_self
+        connection_to_tick: synchronous
+        emits_to: tick_event
+
+      tick_event:
+        label: "Tick Event"
+        receives_from: self_evaluation (synchronous)
+        reads: timescale_db
+        read_note: "Last 10 events, Frequency Count"
+        emits_to: find_rule
+
+      timescale_db:
+        type: storage
+        read_by: tick_event
+
+      find_rule:
+        label: "Find Rule"
+        reads: postgres
+        emits_to:
+          - affect_drives (if found)
+          - default_affect (if not found)
+
+      postgres:
+        type: storage
+        read_by: find_rule
+        written_by: evaluate_new_rule
+
+      affect_drives:
+        label: "Affect Drives"
+        condition: "Rule found = Yes"
+        receives_from: find_rule
+        emits_to: evaluate_new_rule
+
+      default_affect:
+        label: "Default Affect"
+        condition: "Rule found = No"
+        receives_from: find_rule
+        connection_to_evaluate: synchronous
+
+      evaluate_new_rule:
+        label: "Evaluate New Rule"
+        receives_from:
+          - affect_drives
+          - default_affect (synchronous)
+        writes_to: postgres
+        emits_to: evaluate_prediction
+
+      evaluate_prediction:
+        label: "Evaluate Prediction"
+        receives_from: evaluate_new_rule
+        reads: drive_sensors
+        emits_to: prediction_accurate_check
+
+      drive_sensors:
+        type: input
+        read_by: evaluate_prediction
+
+      prediction_accurate_check:
+        label: "Prediction accurate?"
+        type: decision
+        receives_from: evaluate_prediction
+        yes: drive_affect
+        no: opportunity_eval
+
+      drive_affect:
+        label: "?? Drive Affect"
+        condition: "Prediction accurate = Yes"
+
+      opportunity_eval:
+        label: "Opportunity Eval"
+        condition: "Prediction accurate = No"
+        emits_to: recurring_check
+
+      recurring_check:
+        label: "Recurring?"
+        type: decision
+        yes: create_opportunity
+        no: high_impact_check
+
+      create_opportunity:
+        label: "Create Opportunity"
+        condition: "Recurring = Yes"
+
+      high_impact_check:
+        label: "High Impact?"
+        type: decision
+        receives_from: recurring_check (no path)
+        yes: create_opportunity
+        no: create_potential_opportunity
+
+      create_potential_opportunity:
+        label: "Create potential opportunity"
+        condition: "High Impact = No"
+
+    cross_panel:
+      - from: decision_making
+        via: tick_event
+      - to: decision_making
+        via: failed_predictions
+        annotation: "Failed predictions give more weight to type 2"
+      - to: planning
+        via: opportunity (from create_opportunity)
+
+  # ==========================================================================
+  # PANEL 5: PLANNING (bottom-right)
+  # ==========================================================================
+  planning:
+    components:
+
+      opportunity:
+        label: "Opportunity"
+        receives_from: drive_engine.create_opportunity
+        emits_to: research_opportunity
+
+      research_opportunity:
+        label: "Research Opportunity"
+        receives_from: opportunity
+        reads: timescale_db
+        read_note: "Event Frequency??"
+        emits_to: run_simulations
+
+      timescale_db:
+        type: storage
+        read_by: research_opportunity
+
+      run_simulations:
+        label: "Run Simulations"
+        receives_from: research_opportunity
+        emits_to: propose_plan
+
+      propose_plan:
+        label: "Propose Plan"
+        receives_from:
+          - run_simulations
+          - passes_check (no path — loops back)
+        emits_to: llm_constraint_engine
+
+      llm_constraint_engine:
+        label: "LLM Constraint Engine"
+        receives_from: propose_plan
+        emits_to: passes_check
+
+      passes_check:
+        label: "Passes?"
+        type: decision
+        receives_from: llm_constraint_engine
+        yes: create_plan_procedure
+        no: propose_plan (loop)
+
+      create_plan_procedure:
+        label: "Create Plan Procedure"
+        condition: "Passes = Yes"
+        writes_to: world_knowledge_graph
+        write_note: "Adds action in WKG"
+
+    cross_panel:
+      - from: drive_engine
+        via: opportunity
+
+# ============================================================================
+# SHARED INFRASTRUCTURE (as shown across panels)
+# ============================================================================
+shared_storage:
+
+  timescale_db:
+    used_by:
+      - decision_making: "write tick events (inputs, predictions, drive sensors, audio stats)"
+      - communication: "write context events from input parser"
+      - learning: "read query/response events with hasLearned=false"
+      - drive_engine: "read last 10 events, frequency counts"
+      - planning: "read event frequency for opportunity research"
+
+  world_knowledge_graph:
+    label: "WKG"
+    used_by:
+      - decision_making: "read by inner monologue and make_prediction"
+      - learning: "write — upsert entities, extract edges, add can_produce edges"
+      - planning: "write — create plan procedure adds actions"
+
+  kg_self:
+    label: "KG(Self)"
+    used_by:
+      - drive_engine: "read by self evaluation"
+
+  postgres:
+    used_by:
+      - drive_engine: "read rules (find_rule), write rules (evaluate_new_rule)"

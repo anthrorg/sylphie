@@ -1,0 +1,25 @@
+{
+  "name": "sylphie",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "yarn workspace sylphie-frontend dev",
+    "build": "yarn workspace sylphie-frontend build",
+    "lint": "yarn workspace sylphie-frontend lint",
+    "lint:fix": "yarn workspace sylphie-frontend lint:fix",
+    "format": "yarn workspace sylphie-frontend format",
+    "format:check": "yarn workspace sylphie-frontend format:check",
+    "type-check": "yarn workspace sylphie-frontend type-check",
+    "build:shared": "yarn workspace @sylphie/shared build",
+    "prisma:generate": "yarn workspace @sylphie/shared prisma:generate",
+    "prisma:migrate": "yarn workspace @sylphie/shared prisma:migrate",
+    "dev:backend": "yarn workspace @sylphie/app dev",
+    "build:backend": "yarn workspace @sylphie/app build",
+    "start:backend": "yarn workspace @sylphie/app start"
+  }
+}
