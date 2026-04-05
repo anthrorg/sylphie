@@ -8,12 +8,16 @@ import {
 import { Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
+import { TtsService } from '../services/tts.service';
 
 @WebSocketGateway({ path: '/ws/conversation' })
 export class ConversationGateway implements OnGatewayConnection {
   private readonly logger = new Logger(ConversationGateway.name);
 
-  constructor(private readonly tickSampler: TickSamplerService) {}
+  constructor(
+    private readonly tickSampler: TickSamplerService,
+    private readonly tts: TtsService,
+  ) {}
 
   handleConnection(client: WebSocket) {
     this.logger.log('Conversation client connected');
@@ -23,7 +27,7 @@ export class ConversationGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage('message')
-  handleMessage(
+  async handleMessage(
     @MessageBody() data: { text: string; type: string },
     @ConnectedSocket() client: WebSocket,
   ) {
@@ -35,12 +39,31 @@ export class ConversationGateway implements OnGatewayConnection {
     this.tickSampler.updateText(data.text);
 
     // TODO: Route through executor engine, produce real response
-    client.send(
-      JSON.stringify({
-        type: 'cb_speech',
-        text: '',
-        turn_id: `stub-${Date.now()}`,
-      }),
-    );
+    const responseText = '';
+    const turnId = `stub-${Date.now()}`;
+
+    // Synthesise TTS audio for the response if available
+    let audioBase64: string | undefined;
+    const audioFormat = 'audio/mpeg';
+
+    if (responseText && this.tts.available) {
+      const audioBuffer = await this.tts.synthesize(responseText);
+      if (audioBuffer) {
+        audioBase64 = audioBuffer.toString('base64');
+      }
+    }
+
+    const response: Record<string, unknown> = {
+      type: 'cb_speech',
+      text: responseText,
+      turn_id: turnId,
+    };
+
+    if (audioBase64) {
+      response.audioBase64 = audioBase64;
+      response.audioFormat = audioFormat;
+    }
+
+    client.send(JSON.stringify(response));
   }
 }

@@ -1,6 +1,7 @@
 // Config
 export { neo4jConfig, timescaleConfig, postgresConfig } from './config/database.config';
 export { ollamaConfig } from './config/ollama.config';
+export { voiceConfig } from './config/voice.config';
 
 // Storage - Prisma (PostgreSQL)
 export { PrismaService } from './storage/prisma.service';

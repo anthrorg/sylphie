@@ -1,42 +1,28 @@
-import { Controller, Get, Post, Delete, Param, Body, HttpCode } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, Logger } from '@nestjs/common';
+import { WkgBootstrapService } from '../services/wkg-bootstrap.service';
 
 @Controller('skills')
 export class SkillsController {
-  @Get()
-  listSkills() {
-    return { skills: [], total: 0, activeCount: 0, type1Count: 0 };
-  }
+  private readonly logger = new Logger(SkillsController.name);
 
-  @Post('upload')
-  @HttpCode(201)
-  uploadSkill(@Body() body: { label: string; type: string; properties: Record<string, unknown> }) {
-    return {
-      skill: {
-        id: 'stub',
-        label: body.label,
-        type: body.type,
-        confidence: 0,
-        provenance: 'GUARDIAN',
-        useCount: 0,
-        predictionMae: null,
-        isType1: false,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: null,
-        deactivated: false,
-      },
-      enforcedProvenance: 'GUARDIAN',
-      enforcedConfidence: 0,
-      relationshipsCreated: 0,
-    };
-  }
-
-  @Delete(':id')
-  deactivateSkill(@Param('id') _id: string) {
-    return { message: 'not implemented' };
-  }
+  constructor(private readonly wkgBootstrap: WkgBootstrapService) {}
 
   @Post('reset')
-  resetSkills(@Body() _body: { scope: string; confirm: boolean }) {
-    return { success: true, operation: 'reset', nodes_deleted: 0, edges_deleted: 0 };
+  @HttpCode(200)
+  async resetWkg(@Body() body: { confirm: boolean }) {
+    if (!body.confirm) {
+      return { success: false, message: 'Confirmation required' };
+    }
+
+    this.logger.warn('WKG reset requested by guardian');
+    const result = await this.wkgBootstrap.resetAndBootstrap();
+
+    return {
+      success: true,
+      operation: 'wkg-reset',
+      nodes_deleted: result.nodesDeleted,
+      edges_deleted: result.edgesDeleted,
+      nodes_created: result.nodesCreated,
+    };
   }
 }

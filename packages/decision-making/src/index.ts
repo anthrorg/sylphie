@@ -2,6 +2,7 @@
 export { TextEncoder } from './inputs/encoders/text.encoder';
 export { VideoEncoder } from './inputs/encoders/video.encoder';
 export { DriveEncoder } from './inputs/encoders/drive.encoder';
+export { AudioEncoder, type AudioChunk } from './inputs/encoders/audio.encoder';
 export { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 export { TickSamplerService } from './inputs/sampling/tick-sampler';
 export { ModalityRegistryService } from './inputs/registry/modality-registry.service';

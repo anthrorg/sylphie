@@ -17,16 +17,32 @@ interface Detection {
   bbox_y_max: number
 }
 
+interface FaceDetection {
+  confidence: number
+  bbox_x_min: number
+  bbox_y_min: number
+  bbox_x_max: number
+  bbox_y_max: number
+  landmarks: [number, number][] | null
+}
+
+export type AnnotationLayer = 'objects' | 'faces'
+
 export interface UsePerceptionReturn {
   canvasRef: React.RefObject<HTMLCanvasElement | null>
   active: boolean
   error: string | null
+  layers: AnnotationLayer[]
+  setLayers: (layers: AnnotationLayer[]) => void
 }
 
 /**
  * Captures camera via getUserMedia, streams JPEG frames over WebSocket
- * to NestJS → YOLO, receives detection JSON back, and draws bounding
- * boxes client-side on the canvas. No annotated images are transferred.
+ * to NestJS -> YOLO + MediaPipe, receives detection JSON back, and draws
+ * bounding boxes client-side on the canvas.
+ *
+ * Supports two annotation layers (objects + faces) that can be toggled
+ * independently via the `layers` / `setLayers` interface.
  */
 export function usePerception(): UsePerceptionReturn {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -36,12 +52,20 @@ export function usePerception(): UsePerceptionReturn {
   const intervalRef = useRef<number | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const detectionsRef = useRef<Detection[]>([])
+  const faceDetectionsRef = useRef<FaceDetection[]>([])
   const rafRef = useRef<number | null>(null)
+  const layersRef = useRef<AnnotationLayer[]>(['objects', 'faces'])
 
   const [active, setActive] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [layers, setLayersState] = useState<AnnotationLayer[]>(['objects', 'faces'])
 
   const { setCameraState } = useAppStore()
+
+  const setLayers = useCallback((newLayers: AnnotationLayer[]) => {
+    setLayersState(newLayers)
+    layersRef.current = newLayers
+  }, [])
 
   const cleanup = useCallback(() => {
     if (intervalRef.current !== null) clearInterval(intervalRef.current)
@@ -120,11 +144,12 @@ export function usePerception(): UsePerceptionReturn {
           }, 1000 / CAPTURE_FPS)
         }
 
-        // Receive detection JSON (not images)
+        // Receive multi-layer detection JSON
         ws.onmessage = (event: MessageEvent) => {
           try {
             const data = JSON.parse(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data))
             detectionsRef.current = data.detections ?? []
+            faceDetectionsRef.current = data.faces ?? []
           } catch {
             // Not JSON — ignore
           }
@@ -133,6 +158,7 @@ export function usePerception(): UsePerceptionReturn {
         ws.onclose = () => {
           if (intervalRef.current !== null) { clearInterval(intervalRef.current); intervalRef.current = null }
           detectionsRef.current = []
+          faceDetectionsRef.current = []
           setCameraState({ feedMode: 'local' })
         }
 
@@ -166,25 +192,58 @@ export function usePerception(): UsePerceptionReturn {
         // Draw raw camera frame
         ctx.drawImage(video, 0, 0)
 
-        // Draw YOLO bounding boxes
-        const dets = detectionsRef.current
-        for (const d of dets) {
-          const x = d.bbox_x_min
-          const y = d.bbox_y_min
-          const w = d.bbox_x_max - d.bbox_x_min
-          const h = d.bbox_y_max - d.bbox_y_min
+        const activeLayers = layersRef.current
 
-          ctx.strokeStyle = '#00ff00'
-          ctx.lineWidth = 2
-          ctx.strokeRect(x, y, w, h)
+        // Draw YOLO object bounding boxes (green)
+        if (activeLayers.includes('objects')) {
+          const dets = detectionsRef.current
+          for (const d of dets) {
+            const x = d.bbox_x_min
+            const y = d.bbox_y_min
+            const w = d.bbox_x_max - d.bbox_x_min
+            const h = d.bbox_y_max - d.bbox_y_min
 
-          const label = `${d.label_raw} ${Math.round(d.confidence * 100)}%`
-          ctx.font = '14px monospace'
-          const metrics = ctx.measureText(label)
-          ctx.fillStyle = '#00ff00'
-          ctx.fillRect(x, y - 18, metrics.width + 6, 18)
-          ctx.fillStyle = '#000000'
-          ctx.fillText(label, x + 3, y - 4)
+            ctx.strokeStyle = '#00ff00'
+            ctx.lineWidth = 2
+            ctx.strokeRect(x, y, w, h)
+
+            // Label
+            const label = `${d.label_raw} ${(d.confidence * 100).toFixed(0)}%`
+            ctx.font = '12px monospace'
+            ctx.fillStyle = '#00ff00'
+            ctx.fillText(label, x, y > 14 ? y - 4 : y + h + 14)
+          }
+        }
+
+        // Draw face bounding boxes (cyan) + landmarks (pink dots)
+        if (activeLayers.includes('faces')) {
+          const faces = faceDetectionsRef.current
+          for (const f of faces) {
+            const x = f.bbox_x_min
+            const y = f.bbox_y_min
+            const w = f.bbox_x_max - f.bbox_x_min
+            const h = f.bbox_y_max - f.bbox_y_min
+
+            ctx.strokeStyle = '#00bfff'
+            ctx.lineWidth = 2
+            ctx.strokeRect(x, y, w, h)
+
+            // Confidence label
+            const label = `face ${(f.confidence * 100).toFixed(0)}%`
+            ctx.font = '12px monospace'
+            ctx.fillStyle = '#00bfff'
+            ctx.fillText(label, x, y > 14 ? y - 4 : y + h + 14)
+
+            // Landmark dots
+            if (f.landmarks) {
+              ctx.fillStyle = '#ff4081'
+              for (const [lx, ly] of f.landmarks) {
+                ctx.beginPath()
+                ctx.arc(lx, ly, 2, 0, Math.PI * 2)
+                ctx.fill()
+              }
+            }
+          }
         }
 
         rafRef.current = requestAnimationFrame(draw)
@@ -196,5 +255,5 @@ export function usePerception(): UsePerceptionReturn {
     return () => { cancelled = true; cleanup() }
   }, [cleanup, setCameraState])
 
-  return { canvasRef, active, error }
+  return { canvasRef, active, error, layers, setLayers }
 }

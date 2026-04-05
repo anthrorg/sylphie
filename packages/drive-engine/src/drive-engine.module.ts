@@ -25,7 +25,7 @@
  * implementation needs database credentials for RuleProposerService).
  */
 
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit, OnModuleDestroy, Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { POSTGRES_RUNTIME_POOL } from '@sylphie/shared';
@@ -98,4 +98,21 @@ import { IpcChannelService } from './ipc-channel/ipc-channel.service';
     // DRIVE_PROCESS_MANAGER is intentionally NOT exported — internal only
   ],
 })
-export class DriveEngineModule {}
+export class DriveEngineModule implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(DriveEngineModule.name);
+
+  constructor(
+    @Inject(DRIVE_PROCESS_MANAGER)
+    private readonly processManager: DriveProcessManagerService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    this.logger.log('Starting Drive Engine...');
+    await this.processManager.start();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.logger.log('Stopping Drive Engine...');
+    await this.processManager.stop();
+  }
+}

@@ -8,22 +8,16 @@ import {
   Chip,
   Alert,
   Divider,
-  CircularProgress,
-  Button,
   Tooltip,
 } from '@mui/material'
 import {
   Send as SendIcon,
-  Mic as MicIcon,
-  Stop as StopIcon,
   VolumeUp as VolumeUpIcon,
   VolumeOff as VolumeOffIcon,
-  MicOff as MicOffIcon,
   WarningAmber as WarningAmberIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
 import { useConversationWebSocket } from '../../hooks/useWebSocket'
-import { useVoiceRecording } from '../../hooks/useVoiceRecording'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { ConversationMessage } from '../../types'
 import { WordRatingDrawer } from './WordRatingDrawer'
@@ -32,6 +26,7 @@ import { WordRatingDrawer } from './WordRatingDrawer'
 // thinking=processing indicator, error=system error
 const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => void }> = ({ message, onClick }) => {
   const isGuardian = message.type === 'guardian'
+  const isTranscription = message.type === 'transcription'
   const isThinking = message.type === 'thinking'
   const isError = message.type === 'error'
   const isResponse = message.type === 'response'
@@ -46,7 +41,7 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
       onClick={onClick}
       sx={{
         display: 'flex',
-        justifyContent: isGuardian ? 'flex-end' : 'flex-start',
+        justifyContent: isGuardian || isTranscription ? 'flex-end' : 'flex-start',
         mb: 1.5,
         cursor: onClick ? 'pointer' : 'default',
       }}
@@ -58,22 +53,34 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
           borderRadius: 2,
           bgcolor: isGuardian
             ? 'rgba(184, 217, 198, 0.18)'
-            : isError
-              ? 'rgba(244, 67, 54, 0.15)'
-              : isThinking
-                ? 'rgba(255,255,255,0.04)'
-                : isCbSpeech
-                  ? 'rgba(76, 175, 80, 0.12)'
-                  : 'rgba(255,255,255,0.06)',
+            : isTranscription
+              ? 'rgba(100, 181, 246, 0.12)'
+              : isError
+                ? 'rgba(244, 67, 54, 0.15)'
+                : isThinking
+                  ? 'rgba(255,255,255,0.04)'
+                  : isCbSpeech
+                    ? 'rgba(76, 175, 80, 0.12)'
+                    : 'rgba(255,255,255,0.06)',
           border: isGuardian
             ? '1px solid rgba(184, 217, 198, 0.3)'
-            : isError
-              ? '1px solid rgba(244, 67, 54, 0.3)'
-              : isCbSpeech
-                ? '1px solid rgba(76, 175, 80, 0.3)'
-                : '1px solid rgba(255,255,255,0.08)',
+            : isTranscription
+              ? '1px solid rgba(100, 181, 246, 0.3)'
+              : isError
+                ? '1px solid rgba(244, 67, 54, 0.3)'
+                : isCbSpeech
+                  ? '1px solid rgba(76, 175, 80, 0.3)'
+                  : '1px solid rgba(255,255,255,0.08)',
         }}
       >
+        {isTranscription && (
+          <Typography
+            variant="caption"
+            sx={{ mb: 0.5, display: 'block', color: 'rgba(100,181,246,0.9)', fontSize: '0.65rem' }}
+          >
+            voice
+          </Typography>
+        )}
         {isCbSpeech && (
           <Typography
             variant="caption"
@@ -152,139 +159,31 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
   )
 }
 
-// Overlay shown when a transcription has confidence < 0.5
-interface PendingTranscriptionOverlayProps {
-  text: string
-  confidence: number
-  onConfirm: () => void
-  onReject: () => void
-  onTypeInstead: () => void
-}
-
-const PendingTranscriptionOverlay: React.FC<PendingTranscriptionOverlayProps> = ({
-  text,
-  confidence,
-  onConfirm,
-  onReject,
-  onTypeInstead,
-}) => (
-  <Box
-    sx={{
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      zIndex: 10,
-      bgcolor: 'rgba(20, 20, 30, 0.97)',
-      border: '1px solid rgba(255, 152, 0, 0.4)',
-      borderBottom: 'none',
-      borderRadius: '8px 8px 0 0',
-      p: 2,
-    }}
-  >
-    <Typography
-      variant="caption"
-      sx={{ color: 'rgba(255,152,0,0.9)', display: 'block', mb: 0.5, fontSize: '0.65rem' }}
-    >
-      Low confidence ({(confidence * 100).toFixed(0)}%) — did you mean:
-    </Typography>
-    <Typography
-      variant="body2"
-      sx={{
-        color: 'rgba(255,255,255,0.9)',
-        fontStyle: 'italic',
-        mb: 1.5,
-        px: 1,
-        py: 0.5,
-        bgcolor: 'rgba(255,255,255,0.05)',
-        borderRadius: 1,
-        borderLeft: '2px solid rgba(255,152,0,0.5)',
-      }}
-    >
-      &ldquo;{text}&rdquo;
-    </Typography>
-    <Box sx={{ display: 'flex', gap: 1 }}>
-      <Button
-        size="small"
-        variant="contained"
-        onClick={onConfirm}
-        sx={{
-          bgcolor: 'rgba(76,175,80,0.2)',
-          color: 'rgba(76,175,80,0.9)',
-          border: '1px solid rgba(76,175,80,0.4)',
-          textTransform: 'none',
-          fontSize: '0.75rem',
-          '&:hover': { bgcolor: 'rgba(76,175,80,0.35)' },
-        }}
-      >
-        Send it
-      </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        onClick={onReject}
-        sx={{
-          color: 'rgba(255,255,255,0.6)',
-          borderColor: 'rgba(255,255,255,0.2)',
-          textTransform: 'none',
-          fontSize: '0.75rem',
-          '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' },
-        }}
-      >
-        Try again
-      </Button>
-      <Button
-        size="small"
-        variant="text"
-        onClick={onTypeInstead}
-        sx={{
-          color: 'rgba(255,255,255,0.4)',
-          textTransform: 'none',
-          fontSize: '0.75rem',
-          '&:hover': { color: 'rgba(255,255,255,0.7)', bgcolor: 'transparent' },
-        }}
-      >
-        Type instead
-      </Button>
-    </Box>
-  </Box>
-)
-
 export const ConversationPanel: React.FC = () => {
   const [input, setInput] = useState('')
   const [ratingTarget, setRatingTarget] = useState<ConversationMessage | null>(null)
   const feedRef = useRef<HTMLDivElement>(null)
-  const textFieldRef = useRef<HTMLInputElement>(null)
 
   const { messages, isThinking, voiceState, wsState, addMessage, toggleMute } = useAppStore()
   const { sendMessage, sendTextMessage } = useConversationWebSocket()
-  // isProcessing = audio sent to server for STT, waiting for transcription result
-  const {
-    isRecording,
-    isProcessing,
-    toggleRecording,
-    pendingTranscription,
-    confirmTranscription,
-    rejectTranscription,
-  } = useVoiceRecording()
 
   // Auto-scroll chat to bottom when new messages arrive
   useAutoScroll(feedRef, [messages])
 
-  // Listen for voice text dispatched by useVoiceRecording after confirmation
+  // Listen for STT voice transcriptions and send them through the same
+  // path as typed text so they get the same treatment end-to-end.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const custom = e as CustomEvent<{ text: string }>
-      const trimmed = custom.detail.text.trim()
-      if (!trimmed || wsState.conversation !== 'connected') return
-      // sendTextMessage wraps the payload in the NestJS ws adapter envelope
-      // { event: 'message', data: { text, type: 'message' } } as required by
-      // @SubscribeMessage('message') on ConversationGateway.
-      sendTextMessage(trimmed)
+    const handleVoiceText = (e: Event) => {
+      const { text } = (e as CustomEvent<{ text: string }>).detail
+      if (!text.trim() || wsState.conversation !== 'connected') return
+
+      addMessage({ type: 'guardian', text })
+      sendTextMessage(text)
     }
-    window.addEventListener('sylphie:voice_text', handler)
-    return () => window.removeEventListener('sylphie:voice_text', handler)
-  }, [sendTextMessage, wsState.conversation])
+
+    window.addEventListener('sylphie:voice_text', handleVoiceText)
+    return () => window.removeEventListener('sylphie:voice_text', handleVoiceText)
+  }, [wsState.conversation, addMessage, sendTextMessage])
 
   const handleSendMessage = () => {
     if (!input.trim() || wsState.conversation !== 'connected') return
@@ -318,14 +217,7 @@ export const ConversationPanel: React.FC = () => {
     }
   }
 
-  // "Type instead" button in the overlay: dismiss overlay and focus the text field
-  const handleTypeInstead = () => {
-    rejectTranscription()
-    setTimeout(() => textFieldRef.current?.focus(), 50)
-  }
-
   const isConnected = wsState.conversation === 'connected'
-  const micDisabled = voiceState.permissionDenied || isProcessing
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
@@ -345,21 +237,6 @@ export const ConversationPanel: React.FC = () => {
         </Alert>
       )}
 
-      {/* Microphone permission denied banner */}
-      {voiceState.permissionDenied && (
-        <Alert
-          severity="error"
-          sx={{
-            borderRadius: 0,
-            bgcolor: 'rgba(244, 67, 54, 0.1)',
-            color: 'rgba(244, 120, 100, 0.9)',
-            border: '1px solid rgba(244, 67, 54, 0.25)',
-            '& .MuiAlert-icon': { color: 'rgba(244, 67, 54, 0.8)' },
-          }}
-        >
-          Microphone access denied. Enable it in your browser and reload.
-        </Alert>
-      )}
 
       {/* Message feed */}
       <Box
@@ -448,17 +325,6 @@ export const ConversationPanel: React.FC = () => {
 
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />
 
-      {/* Low-confidence transcription confirmation overlay */}
-      {pendingTranscription && (
-        <PendingTranscriptionOverlay
-          text={pendingTranscription.text}
-          confidence={pendingTranscription.confidence}
-          onConfirm={confirmTranscription}
-          onReject={rejectTranscription}
-          onTypeInstead={handleTypeInstead}
-        />
-      )}
-
       {/* Input area */}
       <Paper
         elevation={0}
@@ -470,7 +336,6 @@ export const ConversationPanel: React.FC = () => {
       >
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
           <TextField
-            inputRef={textFieldRef}
             fullWidth
             multiline
             maxRows={4}
@@ -506,55 +371,6 @@ export const ConversationPanel: React.FC = () => {
           >
             <SendIcon />
           </IconButton>
-
-          {/* Mic button */}
-          <Tooltip
-            title={
-              voiceState.permissionDenied
-                ? 'Microphone access denied'
-                : isRecording
-                  ? 'Stop recording'
-                  : 'Start recording'
-            }
-          >
-            <span>
-              <IconButton
-                onClick={toggleRecording}
-                disabled={micDisabled}
-                sx={{
-                  color: isRecording ? '#f44336' : voiceState.permissionDenied ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.5)',
-                  border: '1px solid',
-                  borderColor: isRecording
-                    ? 'rgba(244,67,54,0.5)'
-                    : isProcessing
-                      ? 'rgba(255,152,0,0.4)'
-                      : voiceState.permissionDenied
-                        ? 'rgba(255,255,255,0.08)'
-                        : 'rgba(255,255,255,0.15)',
-                  bgcolor: isRecording ? 'rgba(244,67,54,0.1)' : 'transparent',
-                  // Pulsing animation while recording
-                  animation: isRecording ? 'pulse 1.2s ease-in-out infinite' : 'none',
-                  '@keyframes pulse': {
-                    '0%': { boxShadow: '0 0 0 0 rgba(244,67,54,0.4)' },
-                    '70%': { boxShadow: '0 0 0 6px rgba(244,67,54,0)' },
-                    '100%': { boxShadow: '0 0 0 0 rgba(244,67,54,0)' },
-                  },
-                  '&:hover': { bgcolor: isRecording ? 'rgba(244,67,54,0.2)' : 'rgba(255,255,255,0.08)' },
-                  '&:disabled': { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.08)' },
-                }}
-              >
-                {isProcessing ? (
-                  <CircularProgress size={24} sx={{ color: 'rgba(255,152,0,0.7)' }} />
-                ) : voiceState.permissionDenied ? (
-                  <MicOffIcon />
-                ) : isRecording ? (
-                  <StopIcon />
-                ) : (
-                  <MicIcon />
-                )}
-              </IconButton>
-            </span>
-          </Tooltip>
 
           {/* Mute/unmute speaker toggle */}
           <Tooltip title={voiceState.muted ? 'Unmute audio' : 'Mute audio'}>

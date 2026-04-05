@@ -66,8 +66,8 @@ const SoftwareMetricsPayloadSchema = z.object({
   cognitiveEffortPressure: z.number().min(0).max(1.0),
   tokenCount: z.number().int().min(0),
   estimatedCostUsd: z.number().min(0),
-  windowStartAt: z.date(),
-  windowEndAt: z.date(),
+  windowStartAt: z.coerce.date(),
+  windowEndAt: z.coerce.date(),
 });
 
 /**
@@ -84,7 +84,7 @@ const SessionStartPayloadSchema = z.object({
       DriveNameSchema,
       z.number().min(-10.0).max(1.0),
     ),
-    timestamp: z.date(),
+    timestamp: z.coerce.date(),
     tickNumber: z.number().int().min(0),
     driveDeltas: z.record(DriveNameSchema, z.number()),
     ruleMatchResult: z.object({
@@ -124,7 +124,7 @@ const DriveSnapshotPayloadSchema = z.object({
       DriveNameSchema,
       z.number().min(-10.0).max(1.0),
     ),
-    timestamp: z.date(),
+    timestamp: z.coerce.date(),
     tickNumber: z.number().int().min(0),
     driveDeltas: z.record(DriveNameSchema, z.number()),
     ruleMatchResult: z.object({
@@ -186,7 +186,7 @@ const DriveEventPayloadSchema = z.object({
       DriveNameSchema,
       z.number().min(-10.0).max(1.0),
     ),
-    timestamp: z.date(),
+    timestamp: z.coerce.date(),
     tickNumber: z.number().int().min(0),
     driveDeltas: z.record(DriveNameSchema, z.number()),
     ruleMatchResult: z.object({
@@ -221,7 +221,7 @@ const HealthStatusPayloadSchema = z.object({
 
 const DriveIPCMessageEnvelopeSchema = z.object({
   type: z.nativeEnum(DriveIPCMessageType),
-  timestamp: z.date(),
+  timestamp: z.coerce.date(),
 });
 
 // ---------------------------------------------------------------------------

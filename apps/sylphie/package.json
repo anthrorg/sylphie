@@ -25,10 +25,10 @@
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
-    "dotenv-cli": "^7.0.0",
     "@types/bcrypt": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.0",
     "@types/ws": "^8.0.0",
+    "dotenv-cli": "^7.0.0",
     "typescript": "^5.3.3"
   }
 }

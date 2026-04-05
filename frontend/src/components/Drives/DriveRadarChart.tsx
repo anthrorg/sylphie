@@ -34,9 +34,8 @@ const RADAR_DRIVES: DriveEntry[] = [
   { key: 'social', label: 'Social', core: false },
 ]
 
-// CANON: full drive range is [-10.0, 1.0].
-// With min: -10 the radar center = -10; the zero ring sits at 10/11 ~91% of radius,
-// making negative values (extended relief) clearly visible as inward collapse past that ring.
+// Radar shows pressure only: [0, 1]. Relief is visible as values dropping toward zero.
+// Negative values are clamped to 0 so the radar shape stays clean.
 const radarOptions: ChartOptions<'radar'> = {
   responsive: true,
   maintainAspectRatio: true,
@@ -48,7 +47,6 @@ const radarOptions: ChartOptions<'radar'> = {
   plugins: {
     tooltip: {
       callbacks: {
-        // Show exact numeric value with drive label -- never round or smooth
         label: (ctx) => {
           const drive = RADAR_DRIVES[ctx.dataIndex]
           const label = drive ? drive.label : ctx.label
@@ -60,37 +58,17 @@ const radarOptions: ChartOptions<'radar'> = {
   },
   scales: {
     r: {
-      // Full CANON range: [-10.0, 1.0]
-      min: -10,
+      min: 0,
       max: 1,
-      // Display tick labels at critical thresholds so the zero crossing is visually obvious
       ticks: {
         display: true,
-        stepSize: 5,
+        stepSize: 0.25,
         font: { size: 8 },
-        color: (ctx) => {
-          // Highlight the zero tick in amber so the neutral boundary is unmistakable
-          const value = ctx.tick?.value ?? 0
-          if (value === 0) return 'rgba(255, 152, 0, 0.9)'
-          return 'rgba(255,255,255,0.4)'
-        },
+        color: 'rgba(255,255,255,0.4)',
         backdropColor: 'transparent',
-        // Only show -10, -5, 0, 1 to avoid clutter
-        callback: (value) => {
-          const v = Number(value)
-          if (v === -10 || v === -5 || v === 0 || v === 1) return String(v)
-          return null
-        },
       },
       pointLabels: { font: { size: 10 }, color: 'rgba(255,255,255,0.7)' },
-      grid: {
-        color: (ctx) => {
-          // Paint the zero ring amber to mark the neutral/pressure boundary
-          const value = ctx.tick?.value ?? 0
-          if (value === 0) return 'rgba(255, 152, 0, 0.45)'
-          return 'rgba(255,255,255,0.1)'
-        },
-      },
+      grid: { color: 'rgba(255,255,255,0.1)' },
       angleLines: { color: 'rgba(255,255,255,0.1)' },
     },
   },
@@ -108,7 +86,7 @@ export const DriveRadarChart: React.FC = () => {
     (pressureTimestampMs > 0 && Date.now() - pressureTimestampMs > 5000)
 
   const labels = RADAR_DRIVES.map((d) => d.label)
-  const getValue = (d: DriveEntry): number => pressure[d.key] ?? 0
+  const getValue = (d: DriveEntry): number => Math.max(0, pressure[d.key] ?? 0)
 
   // Two overlapping datasets: core (green) and complement (orange)
   const coreValues = RADAR_DRIVES.map((d) => (d.core ? getValue(d) : 0))

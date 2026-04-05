@@ -59,14 +59,16 @@ export class PerceptionGateway
 
       if (!response.ok) return;
 
-      const detections = await response.json();
+      const result = await response.json();
+      // result = { detections: [...], faces: [...] }
 
-      // Send detections JSON to browser (it draws boxes client-side)
+      // Send full multi-layer result to browser (it draws boxes client-side)
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ detections }));
+        client.send(JSON.stringify(result));
       }
 
-      // Feed detections into the sensory pipeline
+      // Feed object detections into the sensory pipeline
+      const detections = result.detections ?? [];
       if (detections.length > 0) {
         this.tickSampler.updateVideoDetections(
           detections.map((d: any) => ({

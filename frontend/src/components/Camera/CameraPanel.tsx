@@ -1,16 +1,16 @@
 import React, { useCallback } from 'react'
-import { Box, IconButton, Typography } from '@mui/material'
+import { Box, Chip, IconButton, Typography } from '@mui/material'
 import {
   Fullscreen as ExpandIcon,
   FullscreenExit as CollapseIcon,
   VideocamOff as VideocamOffIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
-import { usePerception } from '../../hooks/usePerception'
+import { usePerception, AnnotationLayer } from '../../hooks/usePerception'
 
 export const CameraPanel: React.FC = () => {
   const { cameraState, setCameraState } = useAppStore()
-  const { canvasRef, active, error } = usePerception()
+  const { canvasRef, active, error, layers, setLayers } = usePerception()
 
   const isPip = cameraState.mode === 'pip'
 
@@ -21,6 +21,14 @@ export const CameraPanel: React.FC = () => {
   const handleCollapse = useCallback(() => {
     setCameraState({ mode: 'pip' })
   }, [setCameraState])
+
+  const toggleLayer = useCallback((layer: AnnotationLayer) => {
+    if (layers.includes(layer)) {
+      setLayers(layers.filter((l) => l !== layer))
+    } else {
+      setLayers([...layers, layer])
+    }
+  }, [layers, setLayers])
 
   // ---------------------------------------------------------------------------
   // Feed content — canvas with annotated YOLO frames, or unavailable placeholder
@@ -128,8 +136,30 @@ export const CameraPanel: React.FC = () => {
         }}
       >
         <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.8)' }}>
-          Camera Feed {active ? '(YOLO)' : ''}
+          Camera Feed {active ? '(YOLO + MediaPipe)' : ''}
         </Typography>
+
+        {active && (
+          <Box sx={{ display: 'flex', gap: 0.5, mr: 1 }}>
+            <Chip
+              label="Objects"
+              size="small"
+              color={layers.includes('objects') ? 'success' : 'default'}
+              variant={layers.includes('objects') ? 'filled' : 'outlined'}
+              onClick={() => toggleLayer('objects')}
+              sx={{ cursor: 'pointer', fontSize: '0.7rem', height: 24 }}
+            />
+            <Chip
+              label="Faces"
+              size="small"
+              color={layers.includes('faces') ? 'info' : 'default'}
+              variant={layers.includes('faces') ? 'filled' : 'outlined'}
+              onClick={() => toggleLayer('faces')}
+              sx={{ cursor: 'pointer', fontSize: '0.7rem', height: 24 }}
+            />
+          </Box>
+        )}
+
         <IconButton
           onClick={handleCollapse}
           size="small"

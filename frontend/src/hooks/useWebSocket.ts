@@ -282,6 +282,19 @@ export function useConversationWebSocket() {
           // Both count as completed turns for session statistics and stasis detection.
           if (message.type === 'response' || message.type === 'cb_speech') {
             incrementTurns()
+
+            // If the response carries inline TTS audio, dispatch a CustomEvent
+            // so AudioPanel and useVoiceRecording can play it
+            if (message.audioBase64 && message.audioFormat) {
+              window.dispatchEvent(
+                new CustomEvent('sylphie:audio_response', {
+                  detail: {
+                    audioBase64: message.audioBase64,
+                    audioFormat: message.audioFormat,
+                  },
+                }),
+              )
+            }
           }
         } catch (error) {
           console.warn('[Conversation] Invalid JSON message:', event.data)

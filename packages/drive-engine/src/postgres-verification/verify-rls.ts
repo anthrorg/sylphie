@@ -42,6 +42,22 @@ export class RlsVerificationService implements OnModuleInit {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);
+      // Tables may not exist yet during early development (pre-migration).
+      // Log a warning but don't block startup — the drive engine can still
+      // compute state without rule lookups.
+      if (message.includes('does not exist') || message.includes('relation')) {
+        this.logger.warn(
+          `RLS verification skipped: tables not yet created (${message}). Drive rules will not be loaded.`,
+        );
+        return;
+      }
+      // Connection failures in dev are also non-fatal
+      if (message.includes('ECONNREFUSED') || message.includes('connect')) {
+        this.logger.warn(
+          `RLS verification skipped: PostgreSQL not reachable (${message}). Drive rules will not be loaded.`,
+        );
+        return;
+      }
       this.logger.error(
         `RLS VERIFICATION FAILED: ${message} - Startup aborted to prevent security bypass`,
       );

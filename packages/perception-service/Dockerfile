@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 curl \
+    libgl1 libglib2.0-0 libgles2 libegl1 curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY cobeing/ cobeing/
 COPY main.py .
+COPY blaze_face_short_range.tflite .
 
 ENV PYTHONPATH=/app
 EXPOSE 8430

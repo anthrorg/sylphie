@@ -3,6 +3,7 @@ import { Subject } from 'rxjs';
 import { SensoryFrame, VideoDetection } from '@sylphie/shared';
 import { SensoryFusionService } from '../fusion/sensory-fusion';
 import { ModalityRegistryService } from '../registry/modality-registry.service';
+import { AudioChunk } from '../encoders/audio.encoder';
 
 /**
  * Tick-driven sensory frame production.
@@ -51,6 +52,10 @@ export class TickSamplerService {
 
   updateVideoDetections(detections: VideoDetection[]): void {
     this.update('video', detections);
+  }
+
+  updateAudio(chunk: AudioChunk): void {
+    this.update('audio', chunk);
   }
 
   // ── Tick sampling ───────────────────────────────────────────────

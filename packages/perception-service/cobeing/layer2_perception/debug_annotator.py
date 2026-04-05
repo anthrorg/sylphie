@@ -137,31 +137,6 @@ class DebugAnnotator:
         # Bounding box
         cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
 
-        # Label line 1: "{label} {confidence%}"
-        label = f"{det.label_raw} {det.confidence:.0%}"
-        self._put_text_bg(img, label, x1, y1 - 22, color)
-
-        # Label line 2: "T{id} {state} f{frames}"
-        track_info = f"T{track.track_id} {track.state.value.upper()} f{track.frames_seen}"
-        self._put_text_bg(img, track_info, x1, y1 - 8, color)
-
-        # Persistence info (below line 2, inside box top)
-        pr = persistence_results.get(track.track_id)
-        if pr is not None:
-            if pr.matched_node_id:
-                short_id = pr.matched_node_id[:8]
-                p_text = f"KNOWN:{short_id} {pr.confidence:.0%}"
-            elif pr.ambiguous_candidates:
-                p_text = "AMBIGUOUS"
-            else:
-                p_text = "NEW"
-
-            if pr.surprise_flag:
-                p_text += " [!]"
-
-            p_color = (0, 0, 200) if pr.surprise_flag else (200, 200, 200)
-            self._put_text_bg(img, p_text, x1 + 2, y1 + 14, p_color, scale=0.35)
-
         # Color swatches (dominant colors along bottom edge of box)
         if track.features and track.features.dominant_colors:
             swatch_size = 8
@@ -202,11 +177,6 @@ class DebugAnnotator:
 
             # Arrow from subject to object
             cv2.arrowedLine(img, (sx, sy), (ox, oy), _SPATIAL_COLOR, 1, tipLength=0.05)
-
-            # Predicate label at midpoint
-            mx = (sx + ox) // 2
-            my = (sy + oy) // 2
-            self._put_text_bg(img, rel.predicate, mx, my, _SPATIAL_COLOR, scale=0.35)
 
     def _draw_status_bar(
         self,

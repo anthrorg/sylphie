@@ -16,10 +16,6 @@
 
 import { Logger } from '@nestjs/common';
 import { IpcChannelService } from './ipc-channel.service';
-import {
-  DriveIPCMessage,
-  DriveIPCMessageType,
-} from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,10 +81,10 @@ export class HealthMonitor {
       `Starting health monitor (check interval: ${this.checkIntervalMs}ms, heartbeat timeout: ${this.heartbeatTimeoutMs}ms)`,
     );
 
-    // Record DRIVE_SNAPSHOT arrivals to track liveness
-    this.ipcChannel.onMessage(DriveIPCMessageType.DRIVE_SNAPSHOT, () => {
-      this.lastSnapshotTime = Date.now();
-    });
+    // Snapshot arrivals are tracked via recordSnapshot() called by
+    // DriveProcessManagerService — we do NOT register an onMessage handler
+    // here because IpcChannelService supports only one handler per type
+    // and registering would overwrite the process manager's handler.
 
     // Run periodic health check
     this.checkIntervalHandle = setInterval(() => {

@@ -32,6 +32,7 @@ import { SkillManager } from './components/Skills/SkillManager'
 import { NodeInspector } from './components/Graph/NodeInspector'
 import { FEAgentPanel } from './components/FEAgent/FEAgentPanel'
 import { CameraPanel } from './components/Camera/CameraPanel'
+import { AudioPanel } from './components/Audio/AudioPanel'
 import { useGraphWebSocket, useTelemetryWebSocket } from './hooks/useWebSocket'
 
 const GAP = 8
@@ -71,6 +72,11 @@ const Dashboard = () => {
               <DriveRadarChart />
             </Panel>
           </Box>
+
+          {/* Audio strip — always-on mic stream + FFT visualization */}
+          <Panel sx={{ mb: `${GAP}px` }}>
+            <AudioPanel />
+          </Panel>
 
           {/* Row 2: video | maintenance | system-logs | sidebar */}
           <Box sx={{ display: 'flex', gap: `${GAP}px`, mb: `${GAP}px`, alignItems: 'stretch' }}>

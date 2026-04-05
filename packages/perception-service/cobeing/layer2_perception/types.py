@@ -251,6 +251,40 @@ class TrackedObject(BaseModel):
     last_seen_at: datetime | None = None
 
 
+class FaceDetection(BaseModel):
+    """A single face detection produced by the MediaPipe face detector.
+
+    One ``FaceDetection`` corresponds to one face bounding box returned by
+    MediaPipe for a single frame. Multiple face detections may be produced
+    for the same frame.
+
+    Bounding box coordinates are in pixel space relative to the top-left
+    corner of the frame, matching the ``Detection`` coordinate system.
+
+    Attributes:
+        confidence: MediaPipe detection confidence score, in [0.0, 1.0].
+        bbox_x_min: Left edge of the bounding box in pixels.
+        bbox_y_min: Top edge of the bounding box in pixels.
+        bbox_x_max: Right edge of the bounding box in pixels.
+        bbox_y_max: Bottom edge of the bounding box in pixels.
+        landmarks: MediaPipe returns 6 keypoints (right eye, left eye,
+            nose tip, mouth center, right ear, left ear) as ``(x, y)``
+            pixel coordinates. ``None`` if landmark extraction failed.
+        frame_id: The ``frame_id`` of the :class:`Frame` this detection
+            was produced from.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    confidence: float = Field(ge=0.0, le=1.0)
+    bbox_x_min: float
+    bbox_y_min: float
+    bbox_x_max: float
+    bbox_y_max: float
+    landmarks: list[tuple[float, float]] | None = None
+    frame_id: str = Field(min_length=1)
+
+
 class PersistenceResult(BaseModel):
     """Result of querying Layer 3 for an object matching a tracked detection.
 
@@ -298,6 +332,7 @@ class PersistenceResult(BaseModel):
 
 __all__ = [
     "Detection",
+    "FaceDetection",
     "FeatureProfile",
     "Frame",
     "PersistenceResult",

@@ -147,10 +147,12 @@ export class DriveProcessManagerService implements IDriveProcessManager {
    */
   private attachMessageHandlers(): void {
     // DRIVE_SNAPSHOT: Forward to DriveReaderService to update subscribers
+    // Also record arrival in the health monitor for liveness tracking.
     this.ipcChannel.onMessage(
       DriveIPCMessageType.DRIVE_SNAPSHOT,
       (message: DriveIPCMessage<DriveSnapshotPayload>) => {
         try {
+          this.healthMonitor.recordSnapshot();
           this.driveReaderService.updateSnapshot(message.payload.snapshot);
         } catch (error) {
           this.logger.error(

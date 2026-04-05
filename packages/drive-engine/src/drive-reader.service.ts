@@ -188,9 +188,5 @@ export class DriveReaderService implements IDriveStateReader {
     this.snapshotSubject.next(snapshot);
     this.lastValidSnapshotTimestamp = snapshot.timestamp;
 
-    this.logger.debug('Snapshot updated', {
-      tickNumber: snapshot.tickNumber,
-      totalPressure: snapshot.totalPressure,
-    });
   }
 }

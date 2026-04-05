@@ -10,18 +10,21 @@ import {
   timescaleConfig,
   postgresConfig,
   ollamaConfig,
+  voiceConfig,
 } from '@sylphie/shared';
 import {
   ModalityRegistryService,
   TextEncoder,
   VideoEncoder,
   DriveEncoder,
+  AudioEncoder,
   SensoryFusionService,
   TickSamplerService,
 } from '@sylphie/decision-making';
+import { DriveEngineModule } from '@sylphie/drive-engine';
 import { GraphController } from './controllers/graph.controller';
 import { SkillsController } from './controllers/skills.controller';
-import { DrivesController } from './controllers/drives.controller';
+import { DrivesController, PressureController } from './controllers/drives.controller';
 import { VoiceController } from './controllers/voice.controller';
 import { MetricsController } from './controllers/metrics.controller';
 import { DebugController } from './controllers/debug.controller';
@@ -30,17 +33,24 @@ import { GraphGateway } from './gateways/graph.gateway';
 import { ConversationGateway } from './gateways/conversation.gateway';
 import { TelemetryGateway } from './gateways/telemetry.gateway';
 import { PerceptionGateway } from './gateways/perception.gateway';
+import { AudioGateway } from './gateways/audio.gateway';
 import { SensoryLoggerService } from './services/sensory-logger.service';
+import { DrivePublisherService } from './services/drive-publisher.service';
+import { WkgQueryService } from './services/wkg-query.service';
+import { WkgBootstrapService } from './services/wkg-bootstrap.service';
+import { SttService } from './services/stt.service';
+import { TtsService } from './services/tts.service';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: path.resolve(process.cwd(), '.env'),
-      load: [neo4jConfig, timescaleConfig, postgresConfig, ollamaConfig],
+      load: [neo4jConfig, timescaleConfig, postgresConfig, ollamaConfig, voiceConfig],
     }),
     PrismaModule,
     TimescaleModule,
+    DriveEngineModule,
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -82,6 +92,7 @@ import { SensoryLoggerService } from './services/sensory-logger.service';
     GraphController,
     SkillsController,
     DrivesController,
+    PressureController,
     VoiceController,
     MetricsController,
     DebugController,
@@ -92,14 +103,21 @@ import { SensoryLoggerService } from './services/sensory-logger.service';
     TextEncoder,
     VideoEncoder,
     DriveEncoder,
+    AudioEncoder,
     SensoryFusionService,
     TickSamplerService,
     SensoryLoggerService,
+    DrivePublisherService,
+    WkgQueryService,
+    WkgBootstrapService,
+    SttService,
+    TtsService,
     // Gateways
     GraphGateway,
     ConversationGateway,
     TelemetryGateway,
     PerceptionGateway,
+    AudioGateway,
   ],
 })
 export class AppModule {}

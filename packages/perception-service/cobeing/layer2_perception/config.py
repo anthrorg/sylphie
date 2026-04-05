@@ -155,6 +155,34 @@ class TrackingConfig(BaseModel):
     )
 
 
+class FaceDetectionConfig(BaseModel):
+    """MediaPipe face detection configuration.
+
+    Controls the MediaPipe face detector's inference parameters.
+
+    Attributes:
+        confidence_threshold: Minimum detection confidence to retain a
+            face bounding box. Range [0.0, 1.0].
+        model_selection: MediaPipe model variant. ``0`` selects the
+            short-range model optimised for faces within 2 metres of the
+            camera. ``1`` selects the full-range model for faces up to
+            5 metres away.
+    """
+
+    confidence_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence to retain a face detection",
+    )
+    model_selection: int = Field(
+        default=0,
+        ge=0,
+        le=1,
+        description="0 = short-range (< 2m), 1 = full-range (< 5m)",
+    )
+
+
 class PersistenceCheckConfig(BaseModel):
     """Configuration for the Layer 2 -> Layer 3 persistence-check interface.
 
@@ -255,6 +283,7 @@ class PerceptionConfig(BaseSettings):
 
     camera: CameraConfig = Field(default_factory=CameraConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
+    face_detection: FaceDetectionConfig = Field(default_factory=FaceDetectionConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     persistence: PersistenceCheckConfig = Field(default_factory=PersistenceCheckConfig)
 
@@ -262,6 +291,7 @@ class PerceptionConfig(BaseSettings):
 __all__ = [
     "CameraConfig",
     "DetectionConfig",
+    "FaceDetectionConfig",
     "PerceptionConfig",
     "PersistenceCheckConfig",
     "TrackingConfig",

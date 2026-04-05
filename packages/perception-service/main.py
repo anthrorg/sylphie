@@ -87,8 +87,10 @@ class _AppState:
     pipeline_task: asyncio.Task | None = None  # background task running pipeline.run()
     debug_frame_store: Any | None = None  # DebugFrameStore
     detector: Any | None = None          # YoloDetector, for the /detect endpoint
+    face_detector: Any | None = None     # MediaPipeFaceDetector, for face detection
     config: Any | None = None            # PerceptionConfig
     model_loaded: bool = False
+    face_model_loaded: bool = False
     pipeline_active: bool = False
     tracker: Any | None = None           # IoUTracker, for tracked_objects count
 
@@ -145,6 +147,21 @@ async def _startup() -> None:
         _state.model_loaded = True
 
         logger.info("perception_service_startup_ok model=%s", cfg.detection.model_path)
+
+        # Face detector: MediaPipe face detection as a second layer.
+        try:
+            from cobeing.layer2_perception.face_detector import MediaPipeFaceDetector  # noqa: PLC0415
+
+            face_detector = MediaPipeFaceDetector(config=cfg.face_detection)
+            _state.face_detector = face_detector
+            _state.face_model_loaded = True
+            logger.info("perception_service_face_detector_ok")
+        except Exception as exc:
+            logger.warning(
+                "perception_service_face_detector_skip reason=%s error=%s",
+                type(exc).__name__,
+                exc,
+            )
 
     except ImportError as exc:
         logger.warning(
@@ -214,6 +231,7 @@ async def health() -> JSONResponse:
     return JSONResponse({
         "status": "ok",
         "model_loaded": _state.model_loaded,
+        "face_model_loaded": _state.face_model_loaded,
     })
 
 
@@ -273,18 +291,43 @@ async def detect(request: Request) -> JSONResponse:
         logger.error("detect_endpoint_error error=%s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Detection failed") from exc
 
-    return JSONResponse([
-        {
-            "label_raw": d.label_raw,
-            "confidence": d.confidence,
-            "bbox_x_min": d.bbox_x_min,
-            "bbox_y_min": d.bbox_y_min,
-            "bbox_x_max": d.bbox_x_max,
-            "bbox_y_max": d.bbox_y_max,
-            "frame_id": d.frame_id,
-        }
-        for d in detections
-    ])
+    # Run face detection in parallel if the face model is loaded.
+    face_detections_json: list[dict] = []
+    if _state.face_model_loaded and _state.face_detector is not None:
+        try:
+            face_detections = await loop.run_in_executor(
+                None, _state.face_detector.detect, frame
+            )
+            face_detections_json = [
+                {
+                    "confidence": f.confidence,
+                    "bbox_x_min": f.bbox_x_min,
+                    "bbox_y_min": f.bbox_y_min,
+                    "bbox_x_max": f.bbox_x_max,
+                    "bbox_y_max": f.bbox_y_max,
+                    "landmarks": f.landmarks,
+                    "frame_id": f.frame_id,
+                }
+                for f in face_detections
+            ]
+        except Exception as exc:
+            logger.warning("face_detect_endpoint_error error=%s", exc)
+
+    return JSONResponse({
+        "detections": [
+            {
+                "label_raw": d.label_raw,
+                "confidence": d.confidence,
+                "bbox_x_min": d.bbox_x_min,
+                "bbox_y_min": d.bbox_y_min,
+                "bbox_x_max": d.bbox_x_max,
+                "bbox_y_max": d.bbox_y_max,
+                "frame_id": d.frame_id,
+            }
+            for d in detections
+        ],
+        "faces": face_detections_json,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -362,11 +405,6 @@ def _annotate_frame(jpeg_bytes: bytes, detections: list) -> bytes:
         x1, y1 = int(d.bbox_x_min), int(d.bbox_y_min)
         x2, y2 = int(d.bbox_x_max), int(d.bbox_y_max)
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        label = f"{d.label_raw} {d.confidence:.0%}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw + 4, y1), (0, 255, 0), -1)
-        cv2.putText(img, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
     _, encoded = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 75])
     return encoded.tobytes()

@@ -19,7 +19,12 @@
  * actual drive computation (tick loop, rule evaluation) will be added in T005.
  */
 
-import { DriveIPCMessage, DriveIPCMessageType } from '@sylphie/shared';
+import {
+  DriveIPCMessage,
+  DriveIPCMessageType,
+  INITIAL_DRIVE_STATE,
+  computeTotalPressure,
+} from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Child Process State
@@ -146,22 +151,11 @@ function handleSoftwareMetrics(msg: DriveIPCMessage<any>): void {
  * this will contain the actual computed drive state from the current tick.
  */
 function sendDriveSnapshot(): void {
-  // Stub snapshot: all drives at zero, no pressure
+  // Phase 1: emit INITIAL_DRIVE_STATE on every tick.
+  // Real drive computation (rule evaluation, accumulation, decay) deferred to T005.
+  const pressureVector = { ...INITIAL_DRIVE_STATE };
   const snapshot = {
-    pressureVector: {
-      systemHealth: 0.2,
-      moralValence: 0.2,
-      integrity: 0.2,
-      cognitiveAwareness: 0.2,
-      guilt: 0.0,
-      curiosity: 0.3,
-      boredom: 0.4,
-      anxiety: 0.2,
-      satisfaction: 0.0,
-      sadness: 0.0,
-      focus: 0.0,
-      social: 0.5,
-    },
+    pressureVector,
     timestamp: new Date(),
     tickNumber: tickCount,
     driveDeltas: {
@@ -183,7 +177,7 @@ function sendDriveSnapshot(): void {
       eventType: 'TICK',
       matched: false,
     },
-    totalPressure: 2.5,
+    totalPressure: computeTotalPressure(pressureVector),
     sessionId: currentSessionId,
   };
 
@@ -243,14 +237,15 @@ process.on('message', onParentMessage);
 process.on('SIGTERM', () => onShutdown('SIGTERM'));
 process.on('SIGINT', () => onShutdown('SIGINT'));
 
-// Periodic tick (for now, just health maintenance)
-// In Phase 2+ (T005), this will be the main drive computation loop
+// Main drive computation tick loop.
+// Emits a DRIVE_SNAPSHOT to the parent process on each tick.
+// Phase 1: uses INITIAL_DRIVE_STATE values (real computation deferred to T005).
+// 10Hz (100ms) — will increase to 100Hz in T005 once rule evaluation is wired.
 const tickInterval = setInterval(() => {
   if (isRunning) {
-    // Tick 0: No snapshot emission in this stub
-    // The parent process will request health status separately
+    sendDriveSnapshot();
   }
-}, 100); // 100ms = 10Hz tick rate (10 ticks per second, aiming for 100Hz in T005)
+}, 100);
 
 // Graceful cleanup on exit
 process.on('exit', () => {
