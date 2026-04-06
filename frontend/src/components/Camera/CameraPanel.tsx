@@ -8,6 +8,14 @@ import {
 import { useAppStore } from '../../store'
 import { usePerception, AnnotationLayer } from '../../hooks/usePerception'
 
+const LAYER_CHIPS: { layer: AnnotationLayer; label: string; color: string }[] = [
+  { layer: 'objects',       label: 'Objects',  color: '#00ff00' },
+  { layer: 'face-mesh',     label: 'Mesh',     color: '#00bfff' },
+  { layer: 'face-dots',     label: 'Dots',     color: '#ff4081' },
+  { layer: 'face-contour',  label: 'Contour',  color: '#ffa500' },
+  { layer: 'face-bbox',     label: 'Bbox',     color: '#00bfff' },
+]
+
 export const CameraPanel: React.FC = () => {
   const { cameraState, setCameraState } = useAppStore()
   const { canvasRef, active, error, layers, setLayers } = usePerception()
@@ -31,7 +39,7 @@ export const CameraPanel: React.FC = () => {
   }, [layers, setLayers])
 
   // ---------------------------------------------------------------------------
-  // Feed content — canvas with annotated YOLO frames, or unavailable placeholder
+  // Feed content
   // ---------------------------------------------------------------------------
 
   const feedContent = (() => {
@@ -135,28 +143,35 @@ export const CameraPanel: React.FC = () => {
           minHeight: 40,
         }}
       >
-        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.8)' }}>
-          Camera Feed {active ? '(YOLO + MediaPipe)' : ''}
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.8)', mr: 1, whiteSpace: 'nowrap' }}>
+          Camera Feed
         </Typography>
 
         {active && (
-          <Box sx={{ display: 'flex', gap: 0.5, mr: 1 }}>
-            <Chip
-              label="Objects"
-              size="small"
-              color={layers.includes('objects') ? 'success' : 'default'}
-              variant={layers.includes('objects') ? 'filled' : 'outlined'}
-              onClick={() => toggleLayer('objects')}
-              sx={{ cursor: 'pointer', fontSize: '0.7rem', height: 24 }}
-            />
-            <Chip
-              label="Faces"
-              size="small"
-              color={layers.includes('faces') ? 'info' : 'default'}
-              variant={layers.includes('faces') ? 'filled' : 'outlined'}
-              onClick={() => toggleLayer('faces')}
-              sx={{ cursor: 'pointer', fontSize: '0.7rem', height: 24 }}
-            />
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mr: 1 }}>
+            {LAYER_CHIPS.map(({ layer, label, color }) => {
+              const isOn = layers.includes(layer)
+              return (
+                <Chip
+                  key={layer}
+                  label={label}
+                  size="small"
+                  variant={isOn ? 'filled' : 'outlined'}
+                  onClick={() => toggleLayer(layer)}
+                  sx={{
+                    cursor: 'pointer',
+                    fontSize: '0.65rem',
+                    height: 22,
+                    bgcolor: isOn ? color : 'transparent',
+                    color: isOn ? '#000' : 'rgba(255,255,255,0.5)',
+                    borderColor: isOn ? color : 'rgba(255,255,255,0.2)',
+                    '&:hover': {
+                      bgcolor: isOn ? color : 'rgba(255,255,255,0.08)',
+                    },
+                  }}
+                />
+              )
+            })}
           </Box>
         )}
 

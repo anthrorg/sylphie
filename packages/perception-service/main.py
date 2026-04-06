@@ -306,12 +306,28 @@ async def detect(request: Request) -> JSONResponse:
                     "bbox_x_max": f.bbox_x_max,
                     "bbox_y_max": f.bbox_y_max,
                     "landmarks": f.landmarks,
+                    "blendshapes": f.blendshapes,
                     "frame_id": f.frame_id,
                 }
                 for f in face_detections
             ]
         except Exception as exc:
             logger.warning("face_detect_endpoint_error error=%s", exc)
+
+    # Face mesh connection topologies for wireframe rendering.
+    face_connections: list[list[int]] = []
+    face_oval: list[list[int]] = []
+    if _state.face_model_loaded:
+        try:
+            from cobeing.layer2_perception.face_detector import (  # noqa: PLC0415
+                get_face_connections,
+                get_face_oval_connections,
+            )
+
+            face_connections = get_face_connections()
+            face_oval = get_face_oval_connections()
+        except Exception:
+            pass
 
     return JSONResponse({
         "detections": [
@@ -322,11 +338,14 @@ async def detect(request: Request) -> JSONResponse:
                 "bbox_y_min": d.bbox_y_min,
                 "bbox_x_max": d.bbox_x_max,
                 "bbox_y_max": d.bbox_y_max,
+                "mask_polygon": d.mask_polygon,
                 "frame_id": d.frame_id,
             }
             for d in detections
         ],
         "faces": face_detections_json,
+        "face_connections": face_connections,
+        "face_oval": face_oval,
     })
 
 

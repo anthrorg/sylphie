@@ -1,0 +1,313 @@
+- generic [ref=e24]:
+  - banner [ref=e25]:
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - heading "Sylphie" [level=6] [ref=e29]
+        - paragraph [ref=e30]: "Session: 2:15"
+        - paragraph [ref=e31]: 1154 nodes, 0 edges
+      - generic [ref=e32]:
+        - paragraph [ref=e35]: Graph
+        - paragraph [ref=e38]: Chat
+        - paragraph [ref=e41]: Telemetry
+        - paragraph [ref=e44]: Audio
+        - paragraph [ref=e47]: Video
+        - button "Observatory" [ref=e48] [cursor=pointer]:
+          - img [ref=e50]
+          - text: Observatory
+        - button "Skills" [ref=e52] [cursor=pointer]:
+          - img [ref=e54]
+          - text: Skills
+  - generic [ref=e56]:
+    - generic [ref=e57]:
+      - generic [ref=e60]:
+        - generic [ref=e61]:
+          - 'button "Provenance: All" [ref=e62] [cursor=pointer]':
+            - generic [ref=e64]: All
+          - 'button "Provenance: Sensor" [ref=e65] [cursor=pointer]':
+            - generic [ref=e67]: Sensor
+          - 'button "Provenance: Guardian" [ref=e69] [cursor=pointer]':
+            - generic [ref=e71]: Guardian
+          - 'button "Provenance: LLM" [ref=e73] [cursor=pointer]':
+            - generic [ref=e75]: LLM
+          - 'button "Provenance: Inference" [ref=e77] [cursor=pointer]':
+            - generic [ref=e79]: Inference
+          - 'button "Provenance: Bootstrap" [ref=e81] [cursor=pointer]':
+            - generic [ref=e83]: Bootstrap
+        - generic [ref=e85]:
+          - 'button "Schema level: All" [ref=e86] [cursor=pointer]':
+            - generic [ref=e87]: All
+          - 'button "Schema level: Instance" [ref=e88] [cursor=pointer]':
+            - generic [ref=e89]: Instance
+          - 'button "Schema level: Schema" [ref=e90] [cursor=pointer]':
+            - generic [ref=e91]: Schema
+          - 'button "Schema level: MetaSchema" [ref=e92] [cursor=pointer]':
+            - generic [ref=e93]: MetaSchema
+      - generic [ref=e100]:
+        - generic [ref=e102]:
+          - heading "Welcome to Sylphie" [level=6] [ref=e103]
+          - paragraph [ref=e104]: Start a conversation by typing a message below
+        - separator [ref=e105]
+        - generic [ref=e107]:
+          - generic [ref=e109]:
+            - textbox "Teach me something or ask a question" [active] [ref=e110]: Hello, my name is Jim
+            - group
+          - button [ref=e231] [cursor=pointer]:
+            - img [ref=e232]
+          - button "Mute audio" [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+      - img [ref=e116]
+    - generic [ref=e119]:
+      - generic [ref=e120]:
+        - generic [ref=e121]: IN
+        - img [ref=e123]
+      - generic [ref=e125]: CONNECTING
+      - generic [ref=e126]:
+        - img [ref=e128]
+        - generic [ref=e129]: OUT
+    - generic [ref=e130]:
+      - generic [ref=e132]:
+        - generic [ref=e133]:
+          - paragraph [ref=e134]: Camera Feed
+          - button [ref=e135] [cursor=pointer]:
+            - img [ref=e136]
+        - generic [ref=e139]:
+          - img [ref=e140]
+          - paragraph [ref=e142]: Camera Not Available
+      - generic [ref=e144]:
+        - generic [ref=e145]:
+          - heading "Maintenance" [level=6] [ref=e146]
+          - generic [ref=e148]: live
+        - paragraph [ref=e150]: Connected — waiting for maintenance activity...
+      - generic [ref=e152]:
+        - generic [ref=e153]:
+          - heading "System Logs(61/200)" [level=6] [ref=e279]:
+            - text: System Logs
+            - generic [ref=e155]: (61/200)
+          - group [ref=e156]:
+            - button "all" [pressed] [ref=e157] [cursor=pointer]: all
+            - button "warn+" [ref=e158] [cursor=pointer]: warn+
+            - button "error" [ref=e159] [cursor=pointer]: error
+        - generic [ref=e160]:
+          - generic [ref=e161]:
+            - generic [ref=e162]: 16:06:21
+            - generic [ref=e163]: "[TelemetryGateway] Telemetry client connected"
+          - generic [ref=e164]:
+            - generic [ref=e165]: 16:06:21
+            - generic [ref=e166]: "[GraphGateway] Graph client disconnected (1 total)"
+          - generic [ref=e167]:
+            - generic [ref=e168]: 16:06:21
+            - generic [ref=e169]: "[ConversationGateway] Conversation client disconnected (1 total)"
+          - generic [ref=e170]:
+            - generic [ref=e171]: 16:06:21
+            - generic [ref=e172]: "[WkgQueryService] WKG snapshot: 1154 nodes, 0 edges"
+          - generic [ref=e173]:
+            - generic [ref=e174]: 16:06:21
+            - generic [ref=e175]: "[WkgQueryService] WKG snapshot: 1154 nodes, 0 edges"
+          - generic [ref=e176]:
+            - generic [ref=e177]: 16:06:22
+            - generic [ref=e178]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e179]:
+            - generic [ref=e180]: 16:06:24
+            - generic [ref=e181]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e182]:
+            - generic [ref=e183]: 16:06:26
+            - generic [ref=e184]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e185]:
+            - generic [ref=e186]: 16:06:28
+            - generic [ref=e187]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e235]:
+            - generic [ref=e236]: 16:06:30
+            - generic [ref=e237]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e238]:
+            - generic [ref=e239]: 16:06:32
+            - generic [ref=e240]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e241]:
+            - generic [ref=e242]: 16:06:34
+            - generic [ref=e243]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e245]:
+            - generic [ref=e246]: 16:06:36
+            - generic [ref=e247]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e248]:
+            - generic [ref=e249]: 16:06:38
+            - generic [ref=e250]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e252]:
+            - generic [ref=e253]: 16:06:40
+            - generic [ref=e254]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e255]:
+            - generic [ref=e256]: 16:06:42
+            - generic [ref=e257]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e258]:
+            - generic [ref=e259]: 16:06:44
+            - generic [ref=e260]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e261]:
+            - generic [ref=e262]: 16:06:46
+            - generic [ref=e263]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e264]:
+            - generic [ref=e265]: 16:06:48
+            - generic [ref=e266]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e267]:
+            - generic [ref=e268]: 16:06:50
+            - generic [ref=e269]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e270]:
+            - generic [ref=e271]: 16:06:52
+            - generic [ref=e272]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e273]:
+            - generic [ref=e274]: 16:06:54
+            - generic [ref=e275]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e276]:
+            - generic [ref=e277]: 16:06:56
+            - generic [ref=e278]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e280]:
+            - generic [ref=e281]: 16:06:58
+            - generic [ref=e282]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e283]:
+            - generic [ref=e284]: 16:07:00
+            - generic [ref=e285]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e286]:
+            - generic [ref=e287]: 16:07:02
+            - generic [ref=e288]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e289]:
+            - generic [ref=e290]: 16:07:04
+            - generic [ref=e291]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e292]:
+            - generic [ref=e293]: 16:07:06
+            - generic [ref=e294]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e295]:
+            - generic [ref=e296]: 16:07:08
+            - generic [ref=e297]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e298]:
+            - generic [ref=e299]: 16:07:10
+            - generic [ref=e300]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e301]:
+            - generic [ref=e302]: 16:07:12
+            - generic [ref=e303]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e304]:
+            - generic [ref=e305]: 16:07:14
+            - generic [ref=e306]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e307]:
+            - generic [ref=e308]: 16:07:16
+            - generic [ref=e309]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e310]:
+            - generic [ref=e311]: 16:07:18
+            - generic [ref=e312]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e313]:
+            - generic [ref=e314]: 16:07:20
+            - generic [ref=e315]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e316]:
+            - generic [ref=e317]: 16:07:22
+            - generic [ref=e318]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e319]:
+            - generic [ref=e320]: 16:07:24
+            - generic [ref=e321]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e322]:
+            - generic [ref=e323]: 16:07:26
+            - generic [ref=e324]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e325]:
+            - generic [ref=e326]: 16:07:28
+            - generic [ref=e327]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e328]:
+            - generic [ref=e329]: 16:07:30
+            - generic [ref=e330]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e331]:
+            - generic [ref=e332]: 16:07:32
+            - generic [ref=e333]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e334]:
+            - generic [ref=e335]: 16:07:34
+            - generic [ref=e336]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e337]:
+            - generic [ref=e338]: 16:07:36
+            - generic [ref=e339]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e340]:
+            - generic [ref=e341]: 16:07:38
+            - generic [ref=e342]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e343]:
+            - generic [ref=e344]: 16:07:40
+            - generic [ref=e345]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e346]:
+            - generic [ref=e347]: 16:07:42
+            - generic [ref=e348]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e349]:
+            - generic [ref=e350]: 16:07:44
+            - generic [ref=e351]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e352]:
+            - generic [ref=e353]: 16:07:46
+            - generic [ref=e354]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e355]:
+            - generic [ref=e356]: 16:07:48
+            - generic [ref=e357]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e358]:
+            - generic [ref=e359]: 16:07:50
+            - generic [ref=e360]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e361]:
+            - generic [ref=e362]: 16:07:52
+            - generic [ref=e363]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e364]:
+            - generic [ref=e365]: 16:07:54
+            - generic [ref=e366]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e367]:
+            - generic [ref=e368]: 16:07:56
+            - generic [ref=e369]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e370]:
+            - generic [ref=e371]: 16:07:58
+            - generic [ref=e372]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e373]:
+            - generic [ref=e374]: 16:08:00
+            - generic [ref=e375]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e376]:
+            - generic [ref=e377]: 16:08:02
+            - generic [ref=e378]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e379]:
+            - generic [ref=e380]: 16:08:04
+            - generic [ref=e381]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e382]:
+            - generic [ref=e383]: 16:08:06
+            - generic [ref=e384]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e385]:
+            - generic [ref=e386]: 16:08:08
+            - generic [ref=e387]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e388]:
+            - generic [ref=e389]: 16:08:10
+            - generic [ref=e390]: "[sensory] frame: [] | fused=zero | dim=768"
+          - generic [ref=e391]:
+            - generic [ref=e392]: 16:08:12
+            - generic [ref=e393]: "[sensory] frame: [] | fused=zero | dim=768"
+      - generic [ref=e188]:
+        - generic [ref=e190]:
+          - generic [ref=e191]: Executor State
+          - generic [ref=e192]:
+            - generic [ref=e193]:
+              - img [ref=e194]
+              - generic [ref=e196]: idle
+            - generic [ref=e197]:
+              - generic [ref=e198]: Category
+              - generic [ref=e199]: none
+            - generic [ref=e200]:
+              - generic [ref=e201]: Action
+              - generic [ref=e202]: none
+            - generic [ref=e203]:
+              - generic [ref=e204]: Confidence
+              - generic [ref=e205]: "--"
+            - generic [ref=e206]:
+              - generic [ref=e207]: Transitions
+              - generic [ref=e208]: "0"
+            - generic [ref=e209]:
+              - generic [ref=e210]: Threshold
+              - generic [ref=e211]: "0.000"
+        - generic [ref=e213]:
+          - generic [ref=e214]: Drive Engine
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - generic [ref=e217]: Sequence
+              - generic [ref=e218]: "2041"
+            - generic [ref=e219]:
+              - generic [ref=e220]: Timestamp
+              - generic [ref=e221]: 1775491692955ms
+            - generic [ref=e222]:
+              - generic [ref=e223]: Stale
+              - generic [ref=e224]: "no"
+            - generic [ref=e225]:
+              - generic [ref=e226]: Total pressure
+              - generic [ref=e227]: "2.20"
+            - generic [ref=e228]:
+              - generic [ref=e229]: Fill ratio
+              - generic [ref=e230]: "0.183"

@@ -99,9 +99,9 @@ class DetectionConfig(BaseModel):
     """
 
     model_path: str = Field(
-        default="yolov8n.pt",
+        default="yolov8n-seg.pt",
         min_length=1,
-        description="Path to YOLO model weights file",
+        description="Path to YOLO model weights file (use -seg variant for instance segmentation)",
     )
     confidence_threshold: float = Field(
         default=0.25,

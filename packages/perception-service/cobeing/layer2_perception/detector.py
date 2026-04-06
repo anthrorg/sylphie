@@ -180,14 +180,25 @@ class YoloDetector:
             class_ids = result.boxes.cls.tolist()
             names: dict[int, str] = result.names  # {class_id: class_name}
 
-            for xyxy, conf, cls_id in zip(boxes_xyxy, confidences, class_ids):
+            # Extract segmentation masks if available (yolov8n-seg models).
+            has_masks = result.masks is not None and hasattr(result.masks, "xy")
+            mask_polygons = result.masks.xy if has_masks else None
+
+            for i, (xyxy, conf, cls_id) in enumerate(
+                zip(boxes_xyxy, confidences, class_ids)
+            ):
                 if conf < self._config.confidence_threshold:
-                    # Belt-and-braces: YOLO respects conf at inference time but
-                    # we re-check here in case the model was called with a lower
-                    # threshold externally.
                     continue
 
                 label = names.get(int(cls_id), "unknown")
+
+                # Convert mask polygon (Nx2 numpy array) to list[list[float]].
+                mask_polygon: list[list[float]] | None = None
+                if mask_polygons is not None and i < len(mask_polygons):
+                    poly = mask_polygons[i]
+                    if len(poly) > 2:
+                        mask_polygon = [[float(pt[0]), float(pt[1])] for pt in poly]
+
                 detections.append(
                     Detection(
                         label_raw=label,
@@ -197,6 +208,7 @@ class YoloDetector:
                         bbox_x_max=float(xyxy[2]),
                         bbox_y_max=float(xyxy[3]),
                         frame_id=frame.frame_id,
+                        mask_polygon=mask_polygon,
                     )
                 )
 

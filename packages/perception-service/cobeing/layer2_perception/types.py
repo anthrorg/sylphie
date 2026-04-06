@@ -172,6 +172,7 @@ class Detection(BaseModel):
     bbox_x_max: float
     bbox_y_max: float
     frame_id: str = Field(min_length=1)
+    mask_polygon: list[list[float]] | None = None
 
 
 class FeatureProfile(BaseModel):
@@ -252,26 +253,26 @@ class TrackedObject(BaseModel):
 
 
 class FaceDetection(BaseModel):
-    """A single face detection produced by the MediaPipe face detector.
+    """A single face detection produced by the MediaPipe Face Landmarker.
 
-    One ``FaceDetection`` corresponds to one face bounding box returned by
-    MediaPipe for a single frame. Multiple face detections may be produced
-    for the same frame.
-
-    Bounding box coordinates are in pixel space relative to the top-left
-    corner of the frame, matching the ``Detection`` coordinate system.
+    One ``FaceDetection`` corresponds to one detected face with a full
+    478-point mesh, bounding box derived from landmark extremes, and
+    optional blendshapes (52 facial expressions).
 
     Attributes:
-        confidence: MediaPipe detection confidence score, in [0.0, 1.0].
+        confidence: Face detection confidence score, in [0.0, 1.0].
         bbox_x_min: Left edge of the bounding box in pixels.
         bbox_y_min: Top edge of the bounding box in pixels.
         bbox_x_max: Right edge of the bounding box in pixels.
         bbox_y_max: Bottom edge of the bounding box in pixels.
-        landmarks: MediaPipe returns 6 keypoints (right eye, left eye,
-            nose tip, mouth center, right ear, left ear) as ``(x, y)``
-            pixel coordinates. ``None`` if landmark extraction failed.
+        landmarks: 478 face mesh landmarks as ``(x, y)`` pixel
+            coordinates. ``None`` if landmark extraction failed.
         frame_id: The ``frame_id`` of the :class:`Frame` this detection
             was produced from.
+        blendshapes: Facial expression scores as a mapping from
+            expression name (e.g. ``"eyeBlinkLeft"``) to score in
+            [0.0, 1.0]. ``None`` if blendshape extraction was disabled
+            or failed.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -283,6 +284,7 @@ class FaceDetection(BaseModel):
     bbox_y_max: float
     landmarks: list[tuple[float, float]] | None = None
     frame_id: str = Field(min_length=1)
+    blendshapes: dict[str, float] | None = None
 
 
 class PersistenceResult(BaseModel):

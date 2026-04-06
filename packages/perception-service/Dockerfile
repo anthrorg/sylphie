@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY cobeing/ cobeing/
 COPY main.py .
 COPY blaze_face_short_range.tflite .
+COPY face_landmarker.task .
 
 ENV PYTHONPATH=/app
 EXPOSE 8430

@@ -15,6 +15,7 @@ interface Detection {
   bbox_y_min: number
   bbox_x_max: number
   bbox_y_max: number
+  mask_polygon: number[][] | null
 }
 
 interface FaceDetection {
@@ -23,10 +24,16 @@ interface FaceDetection {
   bbox_y_min: number
   bbox_x_max: number
   bbox_y_max: number
-  landmarks: [number, number][] | null
+  landmarks: number[][] | null
+  blendshapes: Record<string, number> | null
 }
 
-export type AnnotationLayer = 'objects' | 'faces'
+export type AnnotationLayer =
+  | 'objects'
+  | 'face-mesh'
+  | 'face-dots'
+  | 'face-contour'
+  | 'face-bbox'
 
 export interface UsePerceptionReturn {
   canvasRef: React.RefObject<HTMLCanvasElement | null>
@@ -38,11 +45,15 @@ export interface UsePerceptionReturn {
 
 /**
  * Captures camera via getUserMedia, streams JPEG frames over WebSocket
- * to NestJS -> YOLO + MediaPipe, receives detection JSON back, and draws
- * bounding boxes client-side on the canvas.
+ * to NestJS -> YOLO (segmentation) + MediaPipe (Face Landmarker),
+ * receives detection JSON back, and draws annotations client-side.
  *
- * Supports two annotation layers (objects + faces) that can be toggled
- * independently via the `layers` / `setLayers` interface.
+ * Object layer: polygon contour masks (falls back to bounding box).
+ * Face layers (independently toggleable):
+ *   - mesh: 124-connection wireframe
+ *   - dots: 478 individual landmark points
+ *   - contour: face oval outline (36 connections)
+ *   - bbox: simple bounding box
  */
 export function usePerception(): UsePerceptionReturn {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -53,12 +64,14 @@ export function usePerception(): UsePerceptionReturn {
   const streamRef = useRef<MediaStream | null>(null)
   const detectionsRef = useRef<Detection[]>([])
   const faceDetectionsRef = useRef<FaceDetection[]>([])
+  const faceConnectionsRef = useRef<number[][]>([])
+  const faceOvalRef = useRef<number[][]>([])
   const rafRef = useRef<number | null>(null)
-  const layersRef = useRef<AnnotationLayer[]>(['objects', 'faces'])
+  const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
 
   const [active, setActive] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [layers, setLayersState] = useState<AnnotationLayer[]>(['objects', 'faces'])
+  const [layers, setLayersState] = useState<AnnotationLayer[]>(['objects', 'face-mesh'])
 
   const { setCameraState } = useAppStore()
 
@@ -107,17 +120,14 @@ export function usePerception(): UsePerceptionReturn {
         setActive(true)
         setCameraState({ active: true, feedMode: 'local' })
 
-        // Start render loop — draws raw video + bounding box overlays
         startRenderLoop(video)
 
-        // Connect WebSocket for detection pipeline
         const ws = new WebSocket(`${WS_BASE}/ws/perception`)
         wsRef.current = ws
 
         ws.onopen = () => {
           setCameraState({ feedMode: 'webrtc' })
 
-          // Send JPEG frames at CAPTURE_FPS
           intervalRef.current = window.setInterval(() => {
             if (ws.readyState !== WebSocket.OPEN || !videoRef.current || !captureCanvasRef.current) return
 
@@ -144,12 +154,17 @@ export function usePerception(): UsePerceptionReturn {
           }, 1000 / CAPTURE_FPS)
         }
 
-        // Receive multi-layer detection JSON
         ws.onmessage = (event: MessageEvent) => {
           try {
             const data = JSON.parse(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data))
             detectionsRef.current = data.detections ?? []
             faceDetectionsRef.current = data.faces ?? []
+            if (data.face_connections?.length > 0) {
+              faceConnectionsRef.current = data.face_connections
+            }
+            if (data.face_oval?.length > 0) {
+              faceOvalRef.current = data.face_oval
+            }
           } catch {
             // Not JSON — ignore
           }
@@ -189,60 +204,108 @@ export function usePerception(): UsePerceptionReturn {
         const ctx = canvas.getContext('2d')
         if (!ctx) { rafRef.current = requestAnimationFrame(draw); return }
 
-        // Draw raw camera frame
         ctx.drawImage(video, 0, 0)
 
-        const activeLayers = layersRef.current
+        const al = layersRef.current
 
-        // Draw YOLO object bounding boxes (green)
-        if (activeLayers.includes('objects')) {
+        // --- Object layer: polygon contours or bounding boxes ---
+        if (al.includes('objects')) {
           const dets = detectionsRef.current
           for (const d of dets) {
-            const x = d.bbox_x_min
-            const y = d.bbox_y_min
-            const w = d.bbox_x_max - d.bbox_x_min
-            const h = d.bbox_y_max - d.bbox_y_min
-
             ctx.strokeStyle = '#00ff00'
             ctx.lineWidth = 2
-            ctx.strokeRect(x, y, w, h)
 
-            // Label
+            if (d.mask_polygon && d.mask_polygon.length > 2) {
+              ctx.beginPath()
+              ctx.moveTo(d.mask_polygon[0][0], d.mask_polygon[0][1])
+              for (let i = 1; i < d.mask_polygon.length; i++) {
+                ctx.lineTo(d.mask_polygon[i][0], d.mask_polygon[i][1])
+              }
+              ctx.closePath()
+              ctx.stroke()
+              ctx.fillStyle = 'rgba(0, 255, 0, 0.08)'
+              ctx.fill()
+            } else {
+              ctx.strokeRect(d.bbox_x_min, d.bbox_y_min,
+                d.bbox_x_max - d.bbox_x_min, d.bbox_y_max - d.bbox_y_min)
+            }
+
             const label = `${d.label_raw} ${(d.confidence * 100).toFixed(0)}%`
             ctx.font = '12px monospace'
             ctx.fillStyle = '#00ff00'
-            ctx.fillText(label, x, y > 14 ? y - 4 : y + h + 14)
+            ctx.fillText(label, d.bbox_x_min, d.bbox_y_min > 14 ? d.bbox_y_min - 4 : d.bbox_y_max + 14)
           }
         }
 
-        // Draw face bounding boxes (cyan) + landmarks (pink dots)
-        if (activeLayers.includes('faces')) {
-          const faces = faceDetectionsRef.current
+        // --- Face layers ---
+        const faces = faceDetectionsRef.current
+        const showMesh = al.includes('face-mesh')
+        const showDots = al.includes('face-dots')
+        const showContour = al.includes('face-contour')
+        const showBbox = al.includes('face-bbox')
+
+        if (showMesh || showDots || showContour || showBbox) {
+          const meshConns = faceConnectionsRef.current
+          const ovalConns = faceOvalRef.current
+
           for (const f of faces) {
-            const x = f.bbox_x_min
-            const y = f.bbox_y_min
-            const w = f.bbox_x_max - f.bbox_x_min
-            const h = f.bbox_y_max - f.bbox_y_min
+            const lm = f.landmarks
 
-            ctx.strokeStyle = '#00bfff'
-            ctx.lineWidth = 2
-            ctx.strokeRect(x, y, w, h)
+            // Face mesh wireframe (124 contour connections)
+            if (showMesh && lm && lm.length > 0 && meshConns.length > 0) {
+              ctx.strokeStyle = 'rgba(0, 191, 255, 0.45)'
+              ctx.lineWidth = 1
+              ctx.beginPath()
+              for (const conn of meshConns) {
+                const s = lm[conn[0]]
+                const e = lm[conn[1]]
+                if (s && e) {
+                  ctx.moveTo(s[0], s[1])
+                  ctx.lineTo(e[0], e[1])
+                }
+              }
+              ctx.stroke()
+            }
 
-            // Confidence label
-            const label = `face ${(f.confidence * 100).toFixed(0)}%`
-            ctx.font = '12px monospace'
-            ctx.fillStyle = '#00bfff'
-            ctx.fillText(label, x, y > 14 ? y - 4 : y + h + 14)
+            // Face contour (36 oval connections)
+            if (showContour && lm && lm.length > 0 && ovalConns.length > 0) {
+              ctx.strokeStyle = 'rgba(255, 165, 0, 0.7)'
+              ctx.lineWidth = 2
+              ctx.beginPath()
+              for (const conn of ovalConns) {
+                const s = lm[conn[0]]
+                const e = lm[conn[1]]
+                if (s && e) {
+                  ctx.moveTo(s[0], s[1])
+                  ctx.lineTo(e[0], e[1])
+                }
+              }
+              ctx.stroke()
+            }
 
-            // Landmark dots
-            if (f.landmarks) {
-              ctx.fillStyle = '#ff4081'
-              for (const [lx, ly] of f.landmarks) {
+            // Landmark dots (478 points)
+            if (showDots && lm && lm.length > 0) {
+              ctx.fillStyle = 'rgba(255, 64, 129, 0.6)'
+              for (const pt of lm) {
                 ctx.beginPath()
-                ctx.arc(lx, ly, 2, 0, Math.PI * 2)
+                ctx.arc(pt[0], pt[1], 1.2, 0, Math.PI * 2)
                 ctx.fill()
               }
             }
+
+            // Face bounding box
+            if (showBbox) {
+              ctx.strokeStyle = '#00bfff'
+              ctx.lineWidth = 2
+              ctx.strokeRect(f.bbox_x_min, f.bbox_y_min,
+                f.bbox_x_max - f.bbox_x_min, f.bbox_y_max - f.bbox_y_min)
+            }
+
+            // Confidence label (show if any face layer is active)
+            const label = `face ${(f.confidence * 100).toFixed(0)}%`
+            ctx.font = '12px monospace'
+            ctx.fillStyle = '#00bfff'
+            ctx.fillText(label, f.bbox_x_min, f.bbox_y_min > 14 ? f.bbox_y_min - 4 : f.bbox_y_max + 14)
           }
         }
 
