@@ -37,19 +37,28 @@ export class ProposalService implements IProposalService {
     research: ResearchResult,
     simulation: SimulationResult,
   ): Promise<PlanProposal> {
+    let proposal: PlanProposal;
+
     if (this.llm && this.llm.isAvailable()) {
       try {
-        return await this.proposeLlm(opportunity, research, simulation);
+        proposal = await this.proposeLlm(opportunity, research, simulation);
       } catch (err) {
         this.logger.warn(
           `LLM proposal failed, falling back to template: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
+        proposal = this.proposeTemplate(opportunity, simulation);
       }
+    } else {
+      proposal = this.proposeTemplate(opportunity, simulation);
     }
 
-    return this.proposeTemplate(opportunity, simulation);
+    // Attach predicted drive effects from simulation's best outcome.
+    return {
+      ...proposal,
+      predictedDriveEffects: simulation.bestOutcome?.estimatedDriveEffect ?? {},
+    };
   }
 
   async refine(
@@ -96,6 +105,10 @@ export class ProposalService implements IProposalService {
       `  Event frequency (7d): ${research.eventFrequency}`,
       `  Recent occurrences (24h): ${research.recentOccurrences}`,
       `  Patterns: ${research.contextPatterns.join(', ') || 'none detected'}`,
+      '',
+      ...(opportunity.payload.guardianInstruction
+        ? [``, `Guardian's instruction: "${opportunity.payload.guardianInstruction}"`]
+        : []),
       '',
       `Best simulation outcome:`,
       `  Category: ${best.actionCategory}`,
@@ -202,6 +215,7 @@ export class ProposalService implements IProposalService {
       actionSequence: steps,
       rationale: `Template-based response to ${classification} ` +
         `affecting ${opportunity.payload.affectedDrive}`,
+      predictedDriveEffects: {}, // Populated by the caller from simulation
     };
   }
 
@@ -233,6 +247,7 @@ export class ProposalService implements IProposalService {
           params: { purpose: 'execute_plan' },
         }],
         rationale: String(parsed.rationale ?? ''),
+        predictedDriveEffects: {}, // Populated by the caller from simulation
       };
     } catch {
       this.logger.warn('Failed to parse LLM proposal -- generating minimal fallback');
@@ -246,6 +261,7 @@ export class ProposalService implements IProposalService {
           params: { purpose: 'execute_plan' },
         }],
         rationale: 'Fallback due to LLM response parsing failure',
+        predictedDriveEffects: {}, // Populated by the caller from simulation
       };
     }
   }

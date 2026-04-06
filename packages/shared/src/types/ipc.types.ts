@@ -357,6 +357,13 @@ export interface OpportunityCreatedPayload {
    * Planning uses this to focus simulation on relevant drive effects.
    */
   readonly affectedDrive: DriveName;
+
+  /**
+   * Guardian's original instruction text when classification is GUARDIAN_TEACHING.
+   * Absent for Drive Engine-detected opportunities. Present when the guardian
+   * explicitly requested planning through conversation.
+   */
+  readonly guardianInstruction?: string;
 }
 
 /**

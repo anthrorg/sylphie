@@ -1,14 +1,12 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Neo4jService, Neo4jInstanceName, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
-import { VOCABULARY } from './wkg-vocabulary';
 
 /**
  * Seeds the World Knowledge Graph with bootstrap nodes on startup.
  *
- * Creates three categories of nodes:
+ * Creates two categories of nodes:
  *   1. CoBeing anchor — Sylphie's self-reference node
  *   2. Drive nodes — the 12 drives (not pre-connected to actions)
- *   3. Vocabulary — ~1000 common words for communication
  *
  * Idempotent — uses MERGE so re-runs are safe.
  */
@@ -72,28 +70,11 @@ export class WkgBootstrapService implements OnModuleInit {
         );
       }
 
-      // ── 3. Vocabulary words (batch via UNWIND) ───────────────────
-      // Deduplicate the vocabulary list before inserting
-      const uniqueWords = [...new Set(VOCABULARY)];
-
-      await session.run(
-        `UNWIND $words AS word
-         MERGE (w:Word {node_id: 'word:' + word})
-         ON CREATE SET
-           w.node_type       = 'Word',
-           w.schema_level    = 'schema',
-           w.label           = word,
-           w.provenance_type = 'GUARDIAN',
-           w.confidence      = 0.6,
-           w.created_at      = $now`,
-        { words: uniqueWords, now },
-      );
-
-      // ── 4. Verify counts ─────────────────────────────────────────
+      // ── 3. Verify counts ──────────────────────────────────────────
       const result = await session.run(`MATCH (n) RETURN count(n) AS cnt`);
       const cnt = result.records[0].get('cnt').toNumber();
       this.logger.log(
-        `WKG bootstrap complete: ${cnt} nodes (1 anchor + 12 drives + ${uniqueWords.length} words)`,
+        `WKG bootstrap complete: ${cnt} nodes (1 anchor + 12 drives)`,
       );
       return { nodes: cnt };
     } finally {

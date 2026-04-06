@@ -36,6 +36,7 @@ import {
   type InputParseResult,
   type DriveSnapshot,
   type ActionOutcome,
+  type OpportunityCreatedPayload,
 } from '@sylphie/shared';
 import {
   DECISION_MAKING_SERVICE,
@@ -43,7 +44,9 @@ import {
 } from '@sylphie/decision-making';
 import {
   DRIVE_STATE_READER,
+  ACTION_OUTCOME_REPORTER,
   type IDriveStateReader,
+  type IActionOutcomeReporter,
 } from '@sylphie/drive-engine';
 import { TtsService } from './tts.service';
 import { ConversationHistoryService } from './conversation-history.service';
@@ -81,6 +84,9 @@ export class CommunicationService implements OnModuleInit {
 
     @Inject(DRIVE_STATE_READER)
     private readonly driveStateReader: IDriveStateReader,
+
+    @Inject(ACTION_OUTCOME_REPORTER)
+    private readonly outcomeReporter: IActionOutcomeReporter,
 
     private readonly timescale: TimescaleService,
 
@@ -146,6 +152,14 @@ export class CommunicationService implements OnModuleInit {
     // person identification is implemented.
     this.personModel.setActivePerson('guardian');
     this.personModel.recordInteraction('guardian', text, 'user');
+
+    // Guardian Teaching Detection: check if this is a teaching/planning request.
+    // If detected, writes GUARDIAN_TEACHING_DETECTED event to TimescaleDB for
+    // Planning to pick up, and reports drive pressure via ActionOutcomeReporter.
+    const teaching = detectGuardianTeaching(text);
+    if (teaching) {
+      this.handleGuardianTeaching(teaching, sessionId);
+    }
 
     return {
       inputType,
@@ -248,6 +262,7 @@ export class CommunicationService implements OnModuleInit {
       latencyMs: response.latencyMs,
       llmCalled: response.arbitrationType === 'TYPE_2',
       costUsd: 0, // Local Ollama
+      knowledgeGrounding: response.knowledgeGrounding,
     };
 
     this.deliverySubject.next(delivery);
@@ -421,6 +436,83 @@ export class CommunicationService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
+  // Guardian Teaching
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handle a detected guardian teaching request.
+   *
+   * Two responsibilities:
+   * 1. Write a GUARDIAN_TEACHING_DETECTED event to TimescaleDB with the
+   *    opportunity payload (CANON: cross-subsystem communication via event backbone).
+   * 2. Report drive pressure via ActionOutcomeReporter to create motivational
+   *    pressure (CognitiveAwareness + affected drive).
+   */
+  private handleGuardianTeaching(
+    teaching: { affectedDrive: DriveName; instruction: string },
+    sessionId: string,
+  ): void {
+    const opportunityId = randomUUID();
+    const eventId = randomUUID();
+
+    // 1. Write GUARDIAN_TEACHING_DETECTED event with OpportunityCreatedPayload.
+    const opportunityPayload: OpportunityCreatedPayload = {
+      id: opportunityId,
+      contextFingerprint: `guardian-teaching:${teaching.instruction.substring(0, 80).toLowerCase().replace(/\s+/g, '-')}`,
+      classification: 'GUARDIAN_TEACHING',
+      priority: 'HIGH',
+      sourceEventId: eventId,
+      affectedDrive: teaching.affectedDrive,
+      guardianInstruction: teaching.instruction,
+    };
+
+    this.timescale.query(
+      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        eventId,
+        'GUARDIAN_TEACHING_DETECTED',
+        new Date(),
+        'COMMUNICATION',
+        sessionId,
+        JSON.stringify(this.driveStateReader.getCurrentState()),
+        JSON.stringify(opportunityPayload),
+        1,
+      ],
+    ).catch((err: unknown) => {
+      this.logger.warn(
+        `Failed to log GUARDIAN_TEACHING_DETECTED event: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+
+    // 2. Create drive pressure via outcome reporter.
+    //    CognitiveAwareness increases (need to learn) + affected drive increases.
+    this.outcomeReporter.reportOutcome({
+      actionId: `guardian-teaching-${opportunityId}`,
+      actionType: 'GuardianTeaching',
+      success: false,
+      driveEffects: {
+        [DriveName.CognitiveAwareness]: 0.3,
+        [teaching.affectedDrive]: 0.2,
+      },
+      feedbackSource: 'GUARDIAN',
+      theaterCheck: {
+        expressionType: 'none',
+        correspondingDrive: null,
+        driveValue: null,
+        isTheatrical: false,
+      },
+    });
+
+    this.logger.log(
+      `Guardian teaching detected: "${teaching.instruction.substring(0, 60)}..." ` +
+        `(affectedDrive=${teaching.affectedDrive}, opportunityId=${opportunityId})`,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Event Logging
   // ---------------------------------------------------------------------------
 
@@ -515,6 +607,58 @@ function computeValence(snapshot: DriveSnapshot): number {
   const negative = anxiety + sadness + guilt * 0.5;
   const raw = 0.5 + (positive - negative) * 0.25;
   return Math.min(1.0, Math.max(0.0, raw));
+}
+
+/**
+ * Detect whether the guardian is initiating a teaching/planning request.
+ *
+ * Teaching intent patterns:
+ *   - "you should learn to ..."
+ *   - "I want you to plan ..."
+ *   - "learn how to ..."
+ *   - "practice ..."
+ *   - "work on ..."
+ *   - "you need to ..."
+ *
+ * Returns null if no teaching intent is detected, or an object with the
+ * inferred affected drive and the original instruction text.
+ */
+function detectGuardianTeaching(text: string): {
+  affectedDrive: DriveName;
+  instruction: string;
+} | null {
+  const lower = text.toLowerCase().trim();
+
+  const teachingPatterns = [
+    /\b(?:you should|i want you to|learn (?:how )?to|try to|practice|work on|you need to)\b/,
+    /\b(?:plan how to|figure out how to|get better at|improve your)\b/,
+    /\b(?:start|begin) (?:learning|practicing|working on)\b/,
+  ];
+
+  const isTeaching = teachingPatterns.some((p) => p.test(lower));
+  if (!isTeaching) return null;
+
+  return {
+    affectedDrive: inferAffectedDrive(lower),
+    instruction: text,
+  };
+}
+
+/**
+ * Infer which drive the guardian's teaching instruction most likely affects.
+ * Falls back to CognitiveAwareness (learning need) if no specific drive is identified.
+ */
+function inferAffectedDrive(lower: string): DriveName {
+  if (/\b(greet|hello|social|people|friend|talk|convers)\b/.test(lower)) return DriveName.Social;
+  if (/\b(curious|learn|understand|know|explore|research)\b/.test(lower)) return DriveName.Curiosity;
+  if (/\b(calm|relax|anxious|worry|stress)\b/.test(lower)) return DriveName.Anxiety;
+  if (/\b(bored|boring|interest|engage)\b/.test(lower)) return DriveName.Boredom;
+  if (/\b(right|wrong|moral|ethical|fair)\b/.test(lower)) return DriveName.MoralValence;
+  if (/\b(focus|concentrate|attention|distract)\b/.test(lower)) return DriveName.Focus;
+  if (/\b(happy|satisfy|enjoy|pleased)\b/.test(lower)) return DriveName.Satisfaction;
+  if (/\b(sad|upset|lonely|miss)\b/.test(lower)) return DriveName.Sadness;
+  if (/\b(guilt|sorry|apologize|fault)\b/.test(lower)) return DriveName.Guilt;
+  return DriveName.CognitiveAwareness;
 }
 
 function detectGuardianFeedback(text: string): 'confirmation' | 'correction' | 'none' {

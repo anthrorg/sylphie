@@ -31,8 +31,10 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
   const isError = message.type === 'error'
   const isResponse = message.type === 'response'
   const isCbSpeech = message.type === 'cb_speech'
+  const isSylphie = isResponse || isCbSpeech
   // Backend may send 'text' or 'content' depending on message origin
   const displayText = message.text || message.content || ''
+  const grounding = message.knowledgeGrounding
 
   if (isThinking && !displayText) return null
 
@@ -59,18 +61,26 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
                 ? 'rgba(244, 67, 54, 0.15)'
                 : isThinking
                   ? 'rgba(255,255,255,0.04)'
-                  : isCbSpeech
-                    ? 'rgba(76, 175, 80, 0.12)'
-                    : 'rgba(255,255,255,0.06)',
+                  : isSylphie && grounding === 'LLM_ASSISTED'
+                    ? 'rgba(255, 183, 77, 0.10)'
+                    : isSylphie && grounding === 'UNKNOWN'
+                      ? 'rgba(255,255,255,0.04)'
+                      : isCbSpeech
+                        ? 'rgba(76, 175, 80, 0.12)'
+                        : 'rgba(255,255,255,0.06)',
           border: isGuardian
             ? '1px solid rgba(184, 217, 198, 0.3)'
             : isTranscription
               ? '1px solid rgba(100, 181, 246, 0.3)'
               : isError
                 ? '1px solid rgba(244, 67, 54, 0.3)'
-                : isCbSpeech
-                  ? '1px solid rgba(76, 175, 80, 0.3)'
-                  : '1px solid rgba(255,255,255,0.08)',
+                : isSylphie && grounding === 'LLM_ASSISTED'
+                  ? '1px solid rgba(255, 183, 77, 0.35)'
+                  : isSylphie && grounding === 'UNKNOWN'
+                    ? '1px solid rgba(255,255,255,0.15)'
+                    : isCbSpeech
+                      ? '1px solid rgba(76, 175, 80, 0.3)'
+                      : '1px solid rgba(255,255,255,0.08)',
         }}
       >
         {isTranscription && (
@@ -84,9 +94,22 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
         {isCbSpeech && (
           <Typography
             variant="caption"
-            sx={{ mb: 0.5, display: 'block', color: 'rgba(76,175,80,0.9)', fontSize: '0.65rem' }}
+            sx={{
+              mb: 0.5,
+              display: 'block',
+              fontSize: '0.65rem',
+              color: grounding === 'LLM_ASSISTED'
+                ? 'rgba(255,183,77,0.9)'
+                : grounding === 'UNKNOWN'
+                  ? 'rgba(255,255,255,0.4)'
+                  : 'rgba(76,175,80,0.9)',
+            }}
           >
-            Sylphie speaks
+            {grounding === 'LLM_ASSISTED'
+              ? 'Sylphie guesses (tool-assisted)'
+              : grounding === 'UNKNOWN'
+                ? 'Sylphie is uncertain'
+                : 'Sylphie speaks'}
           </Typography>
         )}
         {isThinking ? (
@@ -94,11 +117,22 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
             Thinking...
           </Typography>
         ) : (
-          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.85)', lineHeight: 1.5 }}>
+          <Typography
+            variant="body2"
+            sx={{
+              lineHeight: 1.5,
+              color: isSylphie && grounding === 'LLM_ASSISTED'
+                ? 'rgba(255,213,140,0.85)'
+                : isSylphie && grounding === 'UNKNOWN'
+                  ? 'rgba(255,255,255,0.5)'
+                  : 'rgba(255,255,255,0.85)',
+              fontStyle: isSylphie && grounding === 'LLM_ASSISTED' ? 'italic' : 'normal',
+            }}
+          >
             {displayText}
           </Typography>
         )}
-        {(message.intent_type || (isResponse && message.referenced_node_count != null)) && (
+        {(message.intent_type || (isResponse && message.referenced_node_count != null) || (isSylphie && grounding)) && (
           <Box sx={{ display: 'flex', gap: 0.5, mt: 0.75, flexWrap: 'wrap' }}>
             {message.intent_type && (
               <Chip
@@ -116,13 +150,29 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
                 sx={{ fontSize: '0.6rem', height: 18, color: 'rgba(184,217,198,0.6)', borderColor: 'rgba(184,217,198,0.25)' }}
               />
             )}
-            {/* 'grounded' = response was backed by existing graph knowledge, not fabricated */}
-            {isResponse && message.is_grounded === true && (
+            {/* Knowledge grounding badge — shows how the response relates to Sylphie's own knowledge */}
+            {isSylphie && grounding === 'GROUNDED' && (
               <Chip
-                label="grounded"
+                label="from memory"
                 size="small"
                 variant="outlined"
                 sx={{ fontSize: '0.6rem', height: 18, color: 'rgba(76,175,80,0.7)', borderColor: 'rgba(76,175,80,0.25)' }}
+              />
+            )}
+            {isSylphie && grounding === 'LLM_ASSISTED' && (
+              <Chip
+                label="tool-assisted guess"
+                size="small"
+                variant="outlined"
+                sx={{ fontSize: '0.6rem', height: 18, color: 'rgba(255,183,77,0.8)', borderColor: 'rgba(255,183,77,0.3)' }}
+              />
+            )}
+            {isSylphie && grounding === 'UNKNOWN' && (
+              <Chip
+                label="doesn't know"
+                size="small"
+                variant="outlined"
+                sx={{ fontSize: '0.6rem', height: 18, color: 'rgba(255,255,255,0.4)', borderColor: 'rgba(255,255,255,0.15)' }}
               />
             )}
           </Box>

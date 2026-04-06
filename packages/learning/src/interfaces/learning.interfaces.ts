@@ -32,6 +32,17 @@ export interface ILearningService {
    * @returns Summary of what the cycle did.
    */
   runMaintenanceCycle(): Promise<MaintenanceCycleResult>;
+
+  /**
+   * Run a single reflection cycle.
+   *
+   * Finds one completed conversation session (quiet for ≥10 min, ≥4 events,
+   * not yet reflected), analyzes it holistically via LLM, and persists
+   * extracted insights as Insight nodes in the WKG.
+   *
+   * @returns Summary of what the reflection cycle did.
+   */
+  runReflectionCycle(): Promise<ReflectionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,4 +240,83 @@ export interface ILearningEventLogger {
     payload: Record<string, unknown>,
     sessionId?: string,
   ): void;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Reflection (holistic session analysis)
+// ---------------------------------------------------------------------------
+
+/**
+ * The six categories of insight that reflection can extract from a
+ * completed conversation. Each represents a class of understanding that
+ * emerges only when viewing the conversation as a whole.
+ */
+export type InsightType =
+  | 'DELAYED_REALIZATION'
+  | 'MISSED_CONNECTION'
+  | 'IMPLICIT_INSTRUCTION'
+  | 'CONTRADICTION'
+  | 'THEMATIC_THREAD'
+  | 'TONAL_SHIFT';
+
+/**
+ * A single insight parsed from the LLM's reflection response.
+ */
+export interface ReflectionInsight {
+  readonly insightType: InsightType;
+  readonly description: string;
+  /** LLM self-assessed confidence [0.0, 1.0]. Capped at INFERENCE base (0.30) for WKG writes. */
+  readonly confidence: number;
+  readonly referencedEntities: readonly string[];
+  readonly suggestedEdge: {
+    readonly source: string;
+    readonly target: string;
+    readonly relType: string;
+  } | null;
+}
+
+/**
+ * Summary of a completed reflection cycle.
+ */
+export interface ReflectionResult {
+  readonly sessionId: string;
+  readonly insightsCreated: number;
+  readonly edgesCreated: number;
+  readonly wasNoop: boolean;
+}
+
+/**
+ * A session candidate returned by findReflectableSessions().
+ */
+export interface SessionCandidate {
+  readonly sessionId: string;
+  readonly lastEventAt: Date;
+  readonly eventCount: number;
+}
+
+/**
+ * Conversation Reflection service interface.
+ *
+ * Analyzes completed conversations holistically to extract insights that
+ * no single event could reveal: delayed realizations, missed connections,
+ * implicit instructions, contradictions, thematic threads, tonal shifts.
+ *
+ * LLM-assisted; skips gracefully when unavailable (Lesion Test support).
+ */
+export interface IConversationReflectionService {
+  /**
+   * Ensure the reflected_sessions tracking table exists (idempotent DDL).
+   */
+  ensureSchema(): Promise<void>;
+
+  /**
+   * Find sessions that are eligible for reflection: quiet for ≥ threshold,
+   * at least MIN_EVENTS events, and not yet reflected.
+   */
+  findReflectableSessions(): Promise<SessionCandidate[]>;
+
+  /**
+   * Analyze a completed session holistically and persist insights to WKG.
+   */
+  reflectOnSession(sessionId: string): Promise<ReflectionResult>;
 }

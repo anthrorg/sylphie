@@ -89,8 +89,25 @@ export class SimulationService implements ISimulationService {
       return effect <= MIN_RELIEF_THRESHOLD;
     });
 
-    const viable = viableOutcomes.length > 0;
-    const bestOutcome = viable ? viableOutcomes[0] : null;
+    let viable = viableOutcomes.length > 0;
+    let bestOutcome: SimulatedOutcome | null = viable ? viableOutcomes[0] : null;
+
+    // Guardian teaching always produces at least one viable outcome.
+    if (opportunity.payload.classification === 'GUARDIAN_TEACHING' && !viable) {
+      const guardianOutcome: SimulatedOutcome = {
+        description: `Guardian-directed: ${opportunity.payload.guardianInstruction ?? opportunity.payload.contextFingerprint}`,
+        actionCategory: 'GuardianTeaching',
+        estimatedDriveEffect: {
+          [affectedDrive]: -0.15,
+          [DriveName.CognitiveAwareness]: -0.10,
+        } as Partial<Record<DriveName, number>>,
+        confidenceEstimate: 0.5,
+        riskScore: 0.1,
+      };
+      outcomes.push(guardianOutcome);
+      viable = true;
+      bestOutcome = guardianOutcome;
+    }
 
     this.logger.debug(
       `Simulation for ${opportunity.payload.id}: ${outcomes.length} outcomes evaluated, ` +
@@ -113,7 +130,7 @@ export class SimulationService implements ISimulationService {
     research: ResearchResult,
   ): Promise<SimulatedOutcome | null> {
     // Query historical action outcomes for this category.
-    const rows = await this.timescale.query<{
+    const result = await this.timescale.query<{
       payload: string;
       count: string;
     }>(
@@ -126,7 +143,7 @@ export class SimulationService implements ISimulationService {
       [category, MAX_OUTCOMES_PER_CATEGORY],
     );
 
-    if (rows.length === 0) {
+    if (result.rows.length === 0) {
       // No historical data for this category. Generate a conservative estimate.
       return {
         description: `New ${category} behavior (no historical data)`,
@@ -142,7 +159,7 @@ export class SimulationService implements ISimulationService {
     let successCount = 0;
     let totalCount = 0;
 
-    for (const row of rows) {
+    for (const row of result.rows) {
       const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
       const count = parseInt(row.count, 10);
       totalCount += count;

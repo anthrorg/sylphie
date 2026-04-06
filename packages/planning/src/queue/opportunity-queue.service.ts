@@ -35,6 +35,9 @@ const PRIORITY_DECAY_RATE = 0.1;
 /** Minimum priority before an opportunity is dropped from the queue. */
 const DROP_THRESHOLD = 0.1;
 
+/** Priority for guardian-initiated teaching (above HIGH=1.0 to ensure queue jump). */
+const GUARDIAN_TEACHING_PRIORITY = 1.5;
+
 /** Maximum items in the queue. */
 const MAX_QUEUE_SIZE = 50;
 
@@ -70,8 +73,9 @@ export class OpportunityQueueService implements IOpportunityQueue {
       return false;
     }
 
-    // Rate-limit check.
-    if (this.isRateLimited()) {
+    // Rate-limit check -- GUARDIAN_TEACHING bypasses rate limiting.
+    const isGuardianTeaching = opportunity.payload.classification === 'GUARDIAN_TEACHING';
+    if (!isGuardianTeaching && this.isRateLimited()) {
       this.logger.debug('Planning rate-limited -- opportunity rejected');
       return false;
     }
@@ -171,7 +175,14 @@ export class OpportunityQueueService implements IOpportunityQueue {
 
 /**
  * Convert an OpportunityPriority string to a numeric initial priority.
+ * GUARDIAN_TEACHING classification overrides to GUARDIAN_TEACHING_PRIORITY (1.5).
  */
-export function priorityToNumeric(priority: OpportunityPriority): number {
+export function priorityToNumeric(
+  priority: OpportunityPriority,
+  classification?: string,
+): number {
+  if (classification === 'GUARDIAN_TEACHING') {
+    return GUARDIAN_TEACHING_PRIORITY;
+  }
   return PRIORITY_MAP[priority] ?? PRIORITY_MAP.LOW;
 }

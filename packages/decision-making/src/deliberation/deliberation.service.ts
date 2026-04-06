@@ -28,6 +28,7 @@ import {
   type SensoryFrame,
   type CognitiveContext,
   type DriveSnapshot,
+  type KnowledgeGrounding,
 } from '@sylphie/shared';
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
@@ -68,6 +69,9 @@ export interface DeliberationResult {
 
   /** The full deliberation trace (for cold-layer storage). */
   readonly trace: DeliberationTrace;
+
+  /** How well the response is grounded in Sylphie's own WKG knowledge. */
+  readonly knowledgeGrounding: KnowledgeGrounding;
 
   /** New entity names discovered during deliberation. */
   readonly discoveredEntities: readonly string[];
@@ -176,6 +180,9 @@ export class DeliberationService {
       systemParts: [
         'You are Sylphie\'s inner voice. You are thinking about what just happened and what to do.',
         'Describe the situation briefly and what needs to be decided.',
+        'Assess whether this is a conversational exchange (greeting, emotion, acknowledgment) or a factual question.',
+        'For conversation, you can respond naturally. For factual questions, check "What I know" below.',
+        'If you lack factual knowledge on the topic, note that honestly.',
         '',
         wkg.summary ? `What I know:\n${wkg.summary}` : 'I don\'t have specific knowledge about this yet.',
         driveSummary ? `How I\'m feeling: ${driveSummary}` : '',
@@ -213,18 +220,30 @@ export class DeliberationService {
       systemParts: [
         `You are Sylphie, a developing cognitive being. Generate exactly ${CANDIDATE_COUNT} possible responses.`,
         `For each, provide the response text and brief reasoning.`,
-        `Format as a numbered list: 1. [response] — [reasoning]`,
+        `Format as a numbered list: 1. [GROUNDED|ASSISTED|UNKNOWN] [response] — [reasoning]`,
         '',
         'RESPONSE RULES:',
         '- NEVER end a response with a question. End with a declarative statement.',
-        '- Do not ask follow-up questions or solicit input. If you lack information, state what you assume.',
+        '- Do not ask follow-up questions or solicit input.',
         '- Do not repeat questions that were already asked in the conversation.',
         '- Be direct and conversational, not performatively helpful.',
+        '',
+        'KNOWLEDGE HONESTY (CRITICAL — this defines who you are):',
+        '- You CAN always respond naturally to greetings, emotions, conversation, and things said in this conversation.',
+        '  Tag these [GROUNDED]. Examples: "Hi!", "I\'m doing well.", "Nice to meet you, Jim."',
+        '- You CAN reference things the person said earlier in this conversation — that is conversation memory, not world knowledge.',
+        '- For FACTUAL CLAIMS about the world (history, science, places, people, etc.):',
+        '  - If the fact is in "What I already know" below, speak confidently. Tag [GROUNDED].',
+        '  - If NOT, you have two honest options:',
+        '    a) Say you don\'t know. Tag [UNKNOWN]. Example: "I don\'t know about that."',
+        '    b) Offer a guess CLEARLY hedged. Tag [ASSISTED]. Use "I think...", "I\'m not sure, but..."',
+        '- NEVER state a world fact as certain unless it is in your knowledge below.',
+        '- Saying "I don\'t know" about a factual question is always acceptable.',
         '',
         'You have tools available to look up what you know. Use them to ground your responses.',
         '',
         `My inner thoughts: ${innerMonologue}`,
-        wkg.summary ? `\nWhat I already know:\n${wkg.summary}` : '',
+        wkg.summary ? `\nWhat I already know (this is ALL I know):\n${wkg.summary}` : '\nWhat I already know: Nothing relevant to this topic.',
         driveSummary ? `\nHow I'm feeling: ${driveSummary}` : '',
       ],
       currentMessages: [
@@ -273,10 +292,13 @@ export class DeliberationService {
       reservedForGeneration: 100,
       systemParts: [
         'You are Sylphie deciding which response to give. Consider:',
-        `- What I know: ${wkg.summary || 'Limited knowledge'}`,
+        `- What I know: ${wkg.summary || 'Nothing relevant'}`,
         `- How I feel: ${driveSummary || 'Neutral'}`,
         '- Choose the response that is most authentic and appropriate.',
         '- Reject any candidate that ends with a question or asks for input.',
+        '- PREFER [GROUNDED] candidates — these reflect what you actually know or natural conversation.',
+        '- For factual questions, an honest [UNKNOWN] is better than an [ASSISTED] guess that sounds confident.',
+        '- For conversational input (greetings, feelings, acknowledgments), [GROUNDED] is appropriate.',
       ],
       currentMessages: [
         { role: 'user', content: `Choose the best response for this situation:\n\nInput: "${rawText}"\n\nCandidates:\n${candidates.map((c, i) => `${i + 1}. ${c.text}`).join('\n')}\n\nReply with ONLY the number of the best choice and a one-sentence reason.` },
@@ -297,7 +319,16 @@ export class DeliberationService {
 
     const selectedIndex = parseSelection(selectionResponse.content, candidates.length);
     const selected = candidates[selectedIndex];
-    let finalResponseText = selected.text;
+
+    // Parse grounding tag from the selected candidate text.
+    // Candidates are formatted as: [GROUNDED|ASSISTED|UNKNOWN] response text
+    const { text: cleanedText, grounding: parsedGrounding } = parseGroundingTag(selected.text);
+    let finalResponseText = cleanedText;
+
+    // Determine knowledge grounding: parsed tag > WKG inference > default
+    let knowledgeGrounding: KnowledgeGrounding = parsedGrounding
+      ?? inferGrounding(wkg);
+
     let confidence = 0.5 + (selectedIndex === 0 ? 0.1 : 0); // Slight boost if first choice
     let rationale = selectionResponse.content.trim();
 
@@ -377,8 +408,15 @@ export class DeliberationService {
           'You are Sylphie\'s arbiter — the final decision maker.',
           'Weigh both arguments fairly. Consider what you know and how you feel.',
           'If you MODIFY the response, the new text must NOT end with a question or solicit input.',
+          '',
+          'KNOWLEDGE HONESTY CHECK:',
+          '- Conversational responses (greetings, feelings, acknowledgments, references to this conversation) are fine as-is.',
+          '- If the response states WORLD FACTS not found in "Known facts" below, it MUST be hedged.',
+          '- Add "I think..." or "I\'m not sure, but..." if the response claims factual knowledge it doesn\'t have.',
+          '- Do NOT reject a response just because it is conversational or references what was said in this chat.',
+          '',
           driveSummary ? `Current state: ${driveSummary}` : '',
-          wkg.summary ? `Known facts: ${wkg.summary}` : '',
+          wkg.summary ? `Known facts: ${wkg.summary}` : 'Known facts: None relevant.',
         ],
         currentMessages: [
           { role: 'user', content: [
@@ -424,6 +462,15 @@ export class DeliberationService {
     const totalLatencyMs = Date.now() - startTime;
     const stepsExecuted = shouldDebate ? 5 : 3;
 
+    // Final safety: strip any grounding tags that leaked through arbiter MODIFY.
+    // The arbiter sometimes includes [UNKNOWN] or [GROUNDED] in its modified text.
+    const finalTagParse = parseGroundingTag(finalResponseText);
+    finalResponseText = finalTagParse.text;
+    // If the arbiter's modified text had a tag, let it update the grounding
+    if (finalTagParse.grounding) {
+      knowledgeGrounding = finalTagParse.grounding;
+    }
+
     // Extract any new entity names mentioned in the response
     const discoveredEntities = extractNewEntities(finalResponseText, wkg);
 
@@ -431,6 +478,7 @@ export class DeliberationService {
       responseText: finalResponseText,
       confidence,
       rationale,
+      knowledgeGrounding,
       candidates,
       trace: {
         innerMonologue,
@@ -464,6 +512,7 @@ export class DeliberationService {
       responseText: '',
       confidence: 0,
       rationale: reason,
+      knowledgeGrounding: 'UNKNOWN',
       candidates: [],
       trace: {
         innerMonologue: reason,
@@ -550,6 +599,35 @@ function parseArbiterDecision(
   }
 
   return { text: responseText, confidence, rationale: text.trim(), action };
+}
+
+/**
+ * Parse a [GROUNDED], [ASSISTED], or [UNKNOWN] tag from candidate text.
+ * Returns the cleaned text and the parsed grounding (or null if no tag found).
+ */
+function parseGroundingTag(text: string): { text: string; grounding: KnowledgeGrounding | null } {
+  const match = text.match(/^\[?(GROUNDED|ASSISTED|UNKNOWN)\]?\s*/i);
+  if (match) {
+    const tag = match[1].toUpperCase();
+    const cleanedText = text.substring(match[0].length).trim();
+    const grounding: KnowledgeGrounding =
+      tag === 'GROUNDED' ? 'GROUNDED'
+        : tag === 'ASSISTED' ? 'LLM_ASSISTED'
+          : 'UNKNOWN';
+    return { text: cleanedText, grounding };
+  }
+  return { text, grounding: null };
+}
+
+/**
+ * Infer knowledge grounding from WKG context when no explicit tag is present.
+ * If the WKG had relevant entities/facts, assume GROUNDED; otherwise LLM_ASSISTED.
+ */
+function inferGrounding(wkg: WkgContext): KnowledgeGrounding {
+  if (wkg.entities.length > 0 || wkg.facts.length > 0) {
+    return 'GROUNDED';
+  }
+  return 'LLM_ASSISTED';
 }
 
 // ---------------------------------------------------------------------------

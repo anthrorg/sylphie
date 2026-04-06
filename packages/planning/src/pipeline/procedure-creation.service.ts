@@ -49,6 +49,12 @@ export class ProcedureCreationService implements IProcedureCreationService {
     const nodeId = randomUUID();
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
 
+    // Guardian-taught procedures get TAUGHT_PROCEDURE provenance and higher
+    // base confidence (0.50 meets retrieval threshold immediately).
+    const isGuardianTeaching = opportunity.payload.classification === 'GUARDIAN_TEACHING';
+    const provenanceType = isGuardianTeaching ? 'TAUGHT_PROCEDURE' : 'INFERENCE';
+    const confidence = isGuardianTeaching ? 0.50 : BASE_CONFIDENCE;
+
     try {
       await session.run(
         `CREATE (p:ActionProcedure {
@@ -57,7 +63,7 @@ export class ProcedureCreationService implements IProcedureCreationService {
            category: $category,
            trigger_context: $triggerContext,
            action_sequence: $actionSequence,
-           provenance_type: 'INFERENCE',
+           provenance_type: $provenanceType,
            confidence: $confidence,
            actr_base: $confidence,
            actr_count: 0,
@@ -66,7 +72,9 @@ export class ProcedureCreationService implements IProcedureCreationService {
            created_at: datetime(),
            source_opportunity_id: $opportunityId,
            source_classification: $classification,
-           rationale: $rationale
+           rationale: $rationale,
+           predicted_drive_effects: $predictedDriveEffects,
+           guardian_instruction: $guardianInstruction
          })
          RETURN p.node_id AS nodeId`,
         {
@@ -75,17 +83,20 @@ export class ProcedureCreationService implements IProcedureCreationService {
           category: proposal.category,
           triggerContext: proposal.triggerContext,
           actionSequence: JSON.stringify(proposal.actionSequence),
-          confidence: BASE_CONFIDENCE,
+          provenanceType,
+          confidence,
           decayRate: DECAY_RATE,
           opportunityId: opportunity.payload.id,
           classification: opportunity.payload.classification,
           rationale: proposal.rationale,
+          predictedDriveEffects: JSON.stringify(proposal.predictedDriveEffects),
+          guardianInstruction: opportunity.payload.guardianInstruction ?? null,
         },
       );
 
       this.logger.log(
         `Created ActionProcedure node: ${nodeId} (${proposal.name}, ` +
-          `confidence=${BASE_CONFIDENCE}, provenance=INFERENCE)`,
+          `confidence=${confidence}, provenance=${provenanceType})`,
       );
 
       return nodeId;

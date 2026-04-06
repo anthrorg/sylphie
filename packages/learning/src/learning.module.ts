@@ -36,6 +36,7 @@ import {
   CONVERSATION_ENTRY_SERVICE,
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
+  CONVERSATION_REFLECTION_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 
@@ -46,6 +47,7 @@ import { ExtractEdgesService } from './pipeline/extract-edges.service';
 import { ConversationEntryService } from './pipeline/conversation-entry.service';
 import { CanProduceEdgesService } from './pipeline/can-produce-edges.service';
 import { RefineEdgesService } from './pipeline/refine-edges.service';
+import { ConversationReflectionService } from './pipeline/conversation-reflection.service';
 import { LearningEventLoggerService } from './logging/learning-event-logger.service';
 
 @Module({
@@ -98,6 +100,12 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
     {
       provide: REFINE_EDGES_SERVICE,
       useClass: RefineEdgesService,
+    },
+
+    // ── Pipeline step 8: Conversation reflection (holistic session analysis) ──
+    {
+      provide: CONVERSATION_REFLECTION_SERVICE,
+      useClass: ConversationReflectionService,
     },
 
     // ── Event logger ─────────────────────────────────────────────────────────

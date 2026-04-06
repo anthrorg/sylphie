@@ -43,12 +43,14 @@ import {
 import type {
   ILearningService,
   MaintenanceCycleResult,
+  ReflectionResult,
   IUpdateWkgService,
   IUpsertEntitiesService,
   IExtractEdgesService,
   IConversationEntryService,
   ICanProduceEdgesService,
   IRefineEdgesService,
+  IConversationReflectionService,
   ILearningEventLogger,
   UnlearnedEvent,
 } from './interfaces/learning.interfaces';
@@ -59,6 +61,7 @@ import {
   CONVERSATION_ENTRY_SERVICE,
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
+  CONVERSATION_REFLECTION_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 
@@ -72,6 +75,9 @@ const MAX_EVENTS_PER_CYCLE = 5;
 /** Interval between automatic maintenance cycles in milliseconds. */
 const CYCLE_INTERVAL_MS = 60_000;
 
+/** Interval between reflection cycles in milliseconds. */
+const REFLECTION_INTERVAL_MS = 300_000; // 5 minutes
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -80,11 +86,17 @@ const CYCLE_INTERVAL_MS = 60_000;
 export class LearningService implements ILearningService, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LearningService.name);
 
-  /** Guard against overlapping cycles. */
+  /** Guard against overlapping maintenance cycles. */
   private cycleInFlight = false;
+
+  /** Guard against overlapping reflection cycles. */
+  private reflectionInFlight = false;
 
   /** Timer handle for the automatic maintenance cycle. */
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Timer handle for the automatic reflection cycle. */
+  private reflectionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     @Inject(UPDATE_WKG_SERVICE)
@@ -105,6 +117,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     @Inject(REFINE_EDGES_SERVICE)
     private readonly refineEdges: IRefineEdgesService,
 
+    @Inject(CONVERSATION_REFLECTION_SERVICE)
+    private readonly conversationReflection: IConversationReflectionService,
+
     @Inject(LEARNING_EVENT_LOGGER)
     private readonly eventLogger: ILearningEventLogger,
   ) {}
@@ -113,7 +128,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   // Lifecycle
   // ---------------------------------------------------------------------------
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
+    // Ensure the reflected_sessions table exists before starting timers.
+    await this.conversationReflection.ensureSchema();
+
     this.cycleTimer = setInterval(() => {
       this.runMaintenanceCycle().catch((err: unknown) => {
         this.logger.error(
@@ -124,8 +142,19 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       });
     }, CYCLE_INTERVAL_MS);
 
+    this.reflectionTimer = setInterval(() => {
+      this.runReflectionCycle().catch((err: unknown) => {
+        this.logger.error(
+          `Reflection cycle threw an unhandled error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }, REFLECTION_INTERVAL_MS);
+
     this.logger.log(
-      `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s`,
+      `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s, ` +
+        `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s`,
     );
   }
 
@@ -133,6 +162,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     if (this.cycleTimer !== null) {
       clearInterval(this.cycleTimer);
       this.cycleTimer = null;
+    }
+    if (this.reflectionTimer !== null) {
+      clearInterval(this.reflectionTimer);
+      this.reflectionTimer = null;
     }
     this.logger.log('Learning subsystem stopped');
   }
@@ -155,6 +188,32 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       return await this.executeCycle();
     } finally {
       this.cycleInFlight = false;
+    }
+  }
+
+  async runReflectionCycle(): Promise<ReflectionResult> {
+    if (this.reflectionInFlight) {
+      this.logger.debug('Reflection cycle already in flight — skipping');
+      return reflectionNoop();
+    }
+
+    this.reflectionInFlight = true;
+    try {
+      const candidates = await this.conversationReflection.findReflectableSessions();
+      if (candidates.length === 0) {
+        this.logger.debug('Reflection cycle: no reflectable sessions');
+        return reflectionNoop();
+      }
+
+      const candidate = candidates[0];
+      this.logger.log(
+        `Reflection cycle: reflecting on session ${candidate.sessionId} ` +
+          `(${candidate.eventCount} events, last activity ${candidate.lastEventAt.toISOString()})`,
+      );
+
+      return await this.conversationReflection.reflectOnSession(candidate.sessionId);
+    } finally {
+      this.reflectionInFlight = false;
     }
   }
 
@@ -307,6 +366,15 @@ function noop(): MaintenanceCycleResult {
     conversationsCreated: 0,
     canProduceEdgesCreated: 0,
     edgesRefined: 0,
+    wasNoop: true,
+  };
+}
+
+function reflectionNoop(): ReflectionResult {
+  return {
+    sessionId: '',
+    insightsCreated: 0,
+    edgesCreated: 0,
     wasNoop: true,
   };
 }

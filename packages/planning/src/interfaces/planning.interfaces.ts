@@ -179,6 +179,12 @@ export interface PlanProposal {
   readonly triggerContext: string;
   readonly actionSequence: readonly ActionStep[];
   readonly rationale: string;
+  /**
+   * Predicted drive effects from simulation's best outcome.
+   * Shows which drives this plan is expected to relieve when executed.
+   * Stored on the WKG node for post-execution prediction evaluation.
+   */
+  readonly predictedDriveEffects: Partial<Record<DriveName, number>>;
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,25 @@ import type { DriveSnapshot } from './drive.types';
 import type { ArbitrationResult } from './action.types';
 
 // ---------------------------------------------------------------------------
+// KnowledgeGrounding — How well a response is backed by Sylphie's own knowledge
+// ---------------------------------------------------------------------------
+
+/**
+ * Classification of how a response relates to Sylphie's actual knowledge.
+ *
+ * GROUNDED    — Response is based on entities/facts found in the WKG.
+ *               Sylphie speaks confidently because she has first-hand knowledge.
+ *
+ * LLM_ASSISTED — Response uses the LLM's general training knowledge, NOT
+ *                Sylphie's WKG. The response text is hedged with uncertainty
+ *                markers ("I think...", "I'm not sure, but...").
+ *
+ * UNKNOWN     — Sylphie has no knowledge (WKG or otherwise) and honestly
+ *               says she doesn't know.
+ */
+export type KnowledgeGrounding = 'GROUNDED' | 'LLM_ASSISTED' | 'UNKNOWN';
+
+// ---------------------------------------------------------------------------
 // CycleResponse — Decision Making → Communication handoff
 // ---------------------------------------------------------------------------
 
@@ -57,6 +76,13 @@ export interface CycleResponse {
 
   /** Token usage, if LLM was called. */
   readonly tokensUsed?: { readonly prompt: number; readonly completion: number };
+
+  /**
+   * How well the response is grounded in Sylphie's own knowledge.
+   * GROUNDED = WKG-backed, LLM_ASSISTED = hedged LLM knowledge, UNKNOWN = honest "I don't know".
+   * Defaults to GROUNDED for Type 1 (latent space patterns are already validated knowledge).
+   */
+  readonly knowledgeGrounding: KnowledgeGrounding;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +163,13 @@ export interface DeliveryPayload {
 
   /** LLM cost in USD (0 for local Ollama). */
   readonly costUsd?: number;
+
+  /**
+   * How well the response is grounded in Sylphie's own knowledge.
+   * Frontend can use this to color/badge the response:
+   *   GROUNDED    → normal color (confident)
+   *   LLM_ASSISTED → different color/italic (hedged, tool-assisted)
+   *   UNKNOWN     → muted/gray (honest "I don't know")
+   */
+  readonly knowledgeGrounding: KnowledgeGrounding;
 }

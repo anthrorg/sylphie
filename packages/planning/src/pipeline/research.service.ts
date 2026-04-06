@@ -65,7 +65,7 @@ export class ResearchService implements IResearchService {
            AND payload->>'contextFingerprint' = $1`,
         [contextFingerprint],
       );
-      const eventFrequency = parseInt(frequencyResult[0]?.count ?? '0', 10);
+      const eventFrequency = parseInt(frequencyResult.rows[0]?.count ?? '0', 10);
 
       // Query 2: Recent occurrences (last 24h).
       const recentResult = await this.timescale.query<{ count: string }>(
@@ -74,7 +74,7 @@ export class ResearchService implements IResearchService {
            AND payload->>'contextFingerprint' = $1`,
         [contextFingerprint],
       );
-      const recentOccurrences = parseInt(recentResult[0]?.count ?? '0', 10);
+      const recentOccurrences = parseInt(recentResult.rows[0]?.count ?? '0', 10);
 
       // Query 3: Related event summaries for pattern extraction.
       const relatedRows = await this.timescale.query<{
@@ -91,7 +91,7 @@ export class ResearchService implements IResearchService {
         [contextFingerprint, MAX_RELATED_EVENTS],
       );
 
-      const relatedEvents: EventSummary[] = relatedRows.map((row) => ({
+      const relatedEvents: EventSummary[] = relatedRows.rows.map((row) => ({
         eventId: row.id,
         type: row.type,
         timestamp: new Date(row.timestamp),
@@ -100,6 +100,11 @@ export class ResearchService implements IResearchService {
 
       // Extract context patterns from event payloads.
       const contextPatterns = this.extractPatterns(relatedEvents);
+
+      // For GUARDIAN_TEACHING, inject the guardian's instruction as a context pattern.
+      if (classification === 'GUARDIAN_TEACHING' && opportunity.payload.guardianInstruction) {
+        contextPatterns.push(`guardian-instruction:${opportunity.payload.guardianInstruction}`);
+      }
 
       // Determine sufficiency.
       const threshold = SUFFICIENCY_THRESHOLDS[classification] ?? 3;

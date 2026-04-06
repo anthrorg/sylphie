@@ -13,4 +13,4 @@
 
 export { LearningModule } from './learning.module';
 export { LEARNING_SERVICE } from './learning.tokens';
-export type { ILearningService, MaintenanceCycleResult } from './interfaces/learning.interfaces';
+export type { ILearningService, MaintenanceCycleResult, ReflectionResult } from './interfaces/learning.interfaces';

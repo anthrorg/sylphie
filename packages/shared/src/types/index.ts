@@ -80,6 +80,7 @@ export {
   type CycleResponse,
   type InputParseResult,
   type DeliveryPayload,
+  type KnowledgeGrounding,
 } from './communication.types';
 
 // Confidence types

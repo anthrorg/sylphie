@@ -204,20 +204,19 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
    */
   private async ingestOpportunities(): Promise<void> {
     try {
-      const rows = await this.timescale.query<{
+      const result = await this.timescale.query<{
         id: string;
         payload: string;
       }>(
         `SELECT id, payload FROM events
-         WHERE type = 'OPPORTUNITY_DETECTED'
-           AND subsystem = 'DRIVE_ENGINE'
+         WHERE type IN ('OPPORTUNITY_DETECTED', 'GUARDIAN_TEACHING_DETECTED')
            AND (payload->>'has_planned')::boolean IS NOT TRUE
          ORDER BY timestamp ASC
          LIMIT $1`,
         [MAX_INGEST_PER_CYCLE],
       );
 
-      for (const row of rows) {
+      for (const row of result.rows) {
         const opportunityPayload: OpportunityCreatedPayload = JSON.parse(
           typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload),
         );
@@ -231,8 +230,8 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
         const queued: QueuedOpportunity = {
           payload: opportunityPayload,
           enqueuedAt: new Date(),
-          initialPriority: priorityToNumeric(opportunityPayload.priority),
-          currentPriority: priorityToNumeric(opportunityPayload.priority),
+          initialPriority: priorityToNumeric(opportunityPayload.priority, opportunityPayload.classification),
+          currentPriority: priorityToNumeric(opportunityPayload.priority, opportunityPayload.classification),
         };
 
         const accepted = this.queue.enqueue(queued);
@@ -241,7 +240,24 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
           this.eventLogger.log('OPPORTUNITY_INTAKE', {
             opportunityId: opportunityPayload.id,
             queueSize: this.queue.size(),
+            classification: opportunityPayload.classification,
           });
+
+          // Guardian teaching gets immediate processing -- don't wait for the 30s timer.
+          if (opportunityPayload.classification === 'GUARDIAN_TEACHING') {
+            this.logger.log(
+              `Guardian teaching detected -- triggering immediate pipeline for ${opportunityPayload.id}`,
+            );
+            setImmediate(() => {
+              this.processNextOpportunity().catch((err: unknown) => {
+                this.logger.error(
+                  `Immediate guardian teaching pipeline failed: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              });
+            });
+          }
         } else {
           // Check if rate-limited (vs duplicate/cap)
           const status = this.queue.getStatus();
@@ -392,6 +408,8 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
         procedureNodeId: nodeId,
         proposalName: currentProposal.name,
         category: currentProposal.category,
+        predictedDriveEffects: currentProposal.predictedDriveEffects,
+        isGuardianTeaching: opportunity.payload.classification === 'GUARDIAN_TEACHING',
       });
 
       this.logger.log(

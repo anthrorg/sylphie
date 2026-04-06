@@ -56,7 +56,7 @@ export const SkillManager: React.FC = () => {
 
           <Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Wipe the entire World Knowledge Graph and re-bootstrap with the anchor node, 12 drive nodes, and core vocabulary.
+              Wipe the entire World Knowledge Graph and re-bootstrap with the anchor node and 12 drive nodes.
             </Typography>
 
             <Button
@@ -89,7 +89,6 @@ export const SkillManager: React.FC = () => {
           <Box component="ul" sx={{ mt: 1, mb: 2, pl: 2 }}>
             <li><Typography variant="body2">CoBeing anchor node (Sylphie)</Typography></li>
             <li><Typography variant="body2">12 drive nodes (core + complement)</Typography></li>
-            <li><Typography variant="body2">~1000 vocabulary words</Typography></li>
           </Box>
           <Alert severity="error">
             <strong>All learned knowledge, edges, and experience will be destroyed.</strong>

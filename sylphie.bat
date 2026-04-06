@@ -42,8 +42,13 @@ if %healthy% LSS %total% (
 echo       All %total% containers healthy.
 echo.
 
+:: Build shared package and generate Prisma client
+echo [3/4] Building shared package...
+call yarn prisma:generate
+call yarn build:shared
+
 :: Launch frontend and backend
-echo [3/3] Launching services...
+echo [4/4] Launching services...
 start "Sylphie Frontend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev"
 
 :: Launch backend in its own terminal
@@ -54,6 +59,7 @@ echo ========================================
 echo  Frontend:   http://localhost:5173
 echo  Backend:    http://localhost:3000
 echo  Perception: http://localhost:8430
+echo  SearXNG:    http://localhost:8888
 echo ========================================
 echo.
 echo Close this window anytime. Services run

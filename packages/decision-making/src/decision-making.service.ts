@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type GapType, type CycleResponse, type ArbitrationResult } from '@sylphie/shared';
+import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding } from '@sylphie/shared';
 import { DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, type IDriveStateReader, type IActionOutcomeReporter } from '@sylphie/drive-engine';
 import type {
   IDecisionMakingService,
@@ -487,6 +487,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             model: 'deliberation-pipeline',
             deliberationTrace: deliberationResult.trace,
             confidence: deliberationResult.confidence,
+            knowledgeGrounding: deliberationResult.knowledgeGrounding,
           });
         }
       } else {
@@ -517,6 +518,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             latencyMs: deliberationResult.totalLatencyMs,
             model: 'deliberation-pipeline',
             deliberationTrace: deliberationResult.trace,
+            knowledgeGrounding: deliberationResult.knowledgeGrounding,
             confidence: deliberationResult.confidence,
           });
         } else {
@@ -630,12 +632,17 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       let responseText = '';
       let responseModel: string | undefined;
       let responseTokens: { prompt: number; completion: number } | undefined;
+      let responseGrounding: KnowledgeGrounding = 'GROUNDED'; // Default for Type 1
 
       for (const result of executionResults) {
         if (result && typeof result['content'] === 'string') {
           responseText = result['content'] as string;
           responseModel = result['model'] as string | undefined;
           responseTokens = result['tokensUsed'] as { prompt: number; completion: number } | undefined;
+          // Extract knowledge grounding from deliberation results
+          if (result['knowledgeGrounding']) {
+            responseGrounding = result['knowledgeGrounding'] as KnowledgeGrounding;
+          }
           break;
         }
       }
@@ -652,6 +659,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         latencyMs: cycleLatencyMs,
         model: responseModel,
         tokensUsed: responseTokens,
+        knowledgeGrounding: responseGrounding,
       });
 
       // ── Latent space + WKG write-back ────────────────────────────────────

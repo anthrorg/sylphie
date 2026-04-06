@@ -631,13 +631,30 @@ function buildFacts(entities: WkgEntity[], relationships: WkgRelationship[]): Wk
   return facts;
 }
 
-/** Build a human-readable summary for LLM injection. */
+/**
+ * Build a human-readable summary for LLM injection.
+ *
+ * The summary is framed as a hard boundary: this is ALL Sylphie knows.
+ * Anything not listed here is outside her knowledge, and the LLM must
+ * not present it as Sylphie's own knowledge.
+ */
 function buildSummary(entities: WkgEntity[], facts: WkgFact[], procedures: WkgEntity[]): string {
+  if (entities.length === 0 && facts.length === 0 && procedures.length === 0) {
+    return 'You have NO knowledge about this topic. You must say you don\'t know, or clearly hedge any guess.';
+  }
+
   const parts: string[] = [];
+  parts.push('=== YOUR COMPLETE KNOWLEDGE ON THIS TOPIC (nothing beyond this) ===');
 
   if (entities.length > 0) {
     const entityList = entities
-      .map((e) => `${e.label} (${e.nodeType}, confidence: ${e.confidence.toFixed(2)})`)
+      .map((e) => {
+        const source = e.provenance === 'GUARDIAN' ? 'taught by guardian'
+          : e.provenance === 'SENSOR' ? 'observed directly'
+          : e.provenance === 'LLM_GENERATED' ? 'inferred (unvalidated)'
+          : 'inferred';
+        return `${e.label} (${e.nodeType}, confidence: ${e.confidence.toFixed(2)}, source: ${source})`;
+      })
       .join(', ');
     parts.push(`Known entities: ${entityList}`);
   }
@@ -645,7 +662,7 @@ function buildSummary(entities: WkgEntity[], facts: WkgFact[], procedures: WkgEn
   if (facts.length > 0) {
     const factList = facts
       .slice(0, 10)
-      .map((f) => `${f.subject} ${f.predicate} ${f.object}`)
+      .map((f) => `${f.subject} ${f.predicate} ${f.object} [confidence: ${f.confidence.toFixed(2)}]`)
       .join('; ');
     parts.push(`Known facts: ${factList}`);
   }
@@ -657,7 +674,9 @@ function buildSummary(entities: WkgEntity[], facts: WkgFact[], procedures: WkgEn
     parts.push(`Relevant procedures: ${procList}`);
   }
 
-  return parts.join('\n') || 'No specific WKG knowledge found for this context.';
+  parts.push('=== END OF KNOWLEDGE — anything beyond this is NOT yours to claim ===');
+
+  return parts.join('\n');
 }
 
 /** Sanitize a relationship type for use in Cypher (only alphanumeric + underscore). */

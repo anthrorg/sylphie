@@ -79,3 +79,13 @@ export const REFINE_EDGES_SERVICE = Symbol('REFINE_EDGES_SERVICE');
  * TimescaleDB. All pipeline steps use this for cycle observability.
  */
 export const LEARNING_EVENT_LOGGER = Symbol('LEARNING_EVENT_LOGGER');
+
+/**
+ * Injection token for ConversationReflectionService.
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Holistic conversation analysis: after a session goes quiet, reflects on
+ * the full conversation to extract insights not visible from individual events.
+ * LLM-assisted, skipped if unavailable (Lesion Test support).
+ */
+export const CONVERSATION_REFLECTION_SERVICE = Symbol('CONVERSATION_REFLECTION_SERVICE');

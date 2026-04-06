@@ -96,6 +96,12 @@ export interface ConversationMessage {
   // Audio fields present when the backend returns TTS audio inline
   audioBase64?: string
   audioFormat?: string
+  /**
+   * How well the response is grounded in Sylphie's own knowledge.
+   * GROUNDED = WKG-backed (confident), LLM_ASSISTED = hedged LLM knowledge,
+   * UNKNOWN = honest "I don't know".
+   */
+  knowledgeGrounding?: 'GROUNDED' | 'LLM_ASSISTED' | 'UNKNOWN'
 }
 
 // Transcription result awaiting guardian confirmation (confidence < 0.5)
