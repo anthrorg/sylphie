@@ -12,15 +12,7 @@ import {
   ollamaConfig,
   voiceConfig,
 } from '@sylphie/shared';
-import {
-  ModalityRegistryService,
-  TextEncoder,
-  VideoEncoder,
-  DriveEncoder,
-  AudioEncoder,
-  SensoryFusionService,
-  TickSamplerService,
-} from '@sylphie/decision-making';
+import { DecisionMakingModule } from '@sylphie/decision-making';
 import { DriveEngineModule } from '@sylphie/drive-engine';
 import { GraphController } from './controllers/graph.controller';
 import { SkillsController } from './controllers/skills.controller';
@@ -40,6 +32,9 @@ import { WkgQueryService } from './services/wkg-query.service';
 import { WkgBootstrapService } from './services/wkg-bootstrap.service';
 import { SttService } from './services/stt.service';
 import { TtsService } from './services/tts.service';
+import { CommunicationService } from './services/communication.service';
+import { ConversationHistoryService } from './services/conversation-history.service';
+import { PersonModelService } from './services/person-model.service';
 
 @Module({
   imports: [
@@ -51,6 +46,7 @@ import { TtsService } from './services/tts.service';
     PrismaModule,
     TimescaleModule,
     DriveEngineModule,
+    DecisionMakingModule,
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -98,20 +94,17 @@ import { TtsService } from './services/tts.service';
     DebugController,
   ],
   providers: [
-    // Sensory pipeline
-    ModalityRegistryService,
-    TextEncoder,
-    VideoEncoder,
-    DriveEncoder,
-    AudioEncoder,
-    SensoryFusionService,
-    TickSamplerService,
+    // Sensory pipeline providers are now inside DecisionMakingModule
     SensoryLoggerService,
     DrivePublisherService,
     WkgQueryService,
     WkgBootstrapService,
     SttService,
     TtsService,
+    // Communication subsystem
+    CommunicationService,
+    ConversationHistoryService,
+    PersonModelService,
     // Gateways
     GraphGateway,
     ConversationGateway,

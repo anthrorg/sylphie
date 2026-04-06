@@ -7,6 +7,8 @@ import { Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
 import { SttService, TranscriptResult } from '../services/stt.service';
+import { CommunicationService } from '../services/communication.service';
+import { ConversationHistoryService } from '../services/conversation-history.service';
 
 let nextClientId = 1;
 
@@ -47,6 +49,8 @@ export class AudioGateway
   constructor(
     private readonly tickSampler: TickSamplerService,
     private readonly stt: SttService,
+    private readonly communication: CommunicationService,
+    private readonly conversationHistory: ConversationHistoryService,
   ) {}
 
   handleConnection(client: WebSocket) {
@@ -130,7 +134,19 @@ export class AudioGateway
 
       if (fullText) {
         this.logger.log(`STT complete utterance: "${fullText}"`);
+
+        // Route through Communication subsystem for parsing + event logging
+        const sessionId = 'voice-session-' + Date.now();
+        this.communication.parseInput(fullText, sessionId);
+
+        // Feed into sensory pipeline for executor tick
         this.tickSampler.updateText(fullText);
+
+        // Push conversation history so LLM handler has context
+        this.tickSampler.update(
+          'conversation_history',
+          [...this.conversationHistory.getHistory()],
+        );
 
         // Send the complete accumulated utterance to the client
         if (state.ws.readyState === WebSocket.OPEN) {

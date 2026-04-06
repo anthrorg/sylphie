@@ -109,7 +109,7 @@ services:
       COBEING_PERCEPTION_CAMERA__WIDTH: "1280"
       COBEING_PERCEPTION_CAMERA__HEIGHT: "720"
       COBEING_PERCEPTION_CAMERA__FPS: "15"
-      COBEING_PERCEPTION_DETECTION__MODEL_PATH: "yolov8n.pt"
+      COBEING_PERCEPTION_DETECTION__MODEL_PATH: "yolov8n-seg.pt"
       COBEING_PERCEPTION_DETECTION__CONFIDENCE_THRESHOLD: "0.25"
     # GPU passthrough for YOLO inference (requires NVIDIA Container Toolkit)
     deploy:
@@ -126,6 +126,22 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: sylphie-searxng
+    ports:
+      - "8888:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://localhost:8888"
+    volumes:
+      - ./infra/searxng:/etc/searxng
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
   neo4j_world_data:

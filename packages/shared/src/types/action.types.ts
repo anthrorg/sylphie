@@ -19,6 +19,7 @@
 
 import type { DriveName } from './drive.types';
 import type { ProvenanceSource } from './provenance.types';
+import type { ShrugDetail } from './decision-making.types';
 
 // ---------------------------------------------------------------------------
 // Drive Category
@@ -207,6 +208,13 @@ export type ArbitrationResult =
        * but returned content below theater threshold."
        */
       readonly reason: string;
+      /**
+       * Structured breakdown of why the SHRUG was produced.
+       * Contains named gap types, candidate confidences, and the dynamic threshold.
+       * Enables downstream systems (Communication, Planning) to act on specific
+       * types of incomprehension rather than treating all SHRUGs identically.
+       */
+      readonly shrugDetail?: ShrugDetail;
     };
 
 // ---------------------------------------------------------------------------

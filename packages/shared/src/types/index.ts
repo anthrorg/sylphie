@@ -54,6 +54,34 @@ export * from './event.types';
 // Action types
 export * from './action.types';
 
+// Decision-making types
+export {
+  type EncodingDepth,
+  type EpisodeInput,
+  type Episode,
+  type Prediction,
+  type PredictionEvaluation,
+  type GapType,
+  type ShrugDetail,
+  type ContradictionScanResult,
+  type ContradictionEntry,
+  type ThresholdResult,
+  type CognitiveContext,
+  type ConsolidationCandidate,
+  type SemanticRelationship,
+  type SemanticConversion,
+  type ConsolidationResult,
+  type GraduationState,
+  type GraduationRecord,
+} from './decision-making.types';
+
+// Communication types
+export {
+  type CycleResponse,
+  type InputParseResult,
+  type DeliveryPayload,
+} from './communication.types';
+
 // Confidence types
 export {
   CONFIDENCE_THRESHOLDS,
