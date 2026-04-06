@@ -61,7 +61,7 @@ export class DecisionEventLoggerService implements IDecisionEventLogger, OnModul
   private readonly FLUSH_INTERVAL_MS = 100;
 
   constructor(
-    @Optional() private readonly timescale: TimescaleService | null,
+    private readonly timescale: TimescaleService,
   ) {}
 
   /**

@@ -47,15 +47,11 @@ export class SensoryStreamLoggerService implements OnModuleInit {
   private schemaReady = false;
 
   constructor(
-    @Optional() private readonly timescale: TimescaleService | null,
+    private readonly timescale: TimescaleService,
   ) {}
 
   async onModuleInit(): Promise<void> {
-    if (this.timescale) {
-      await this.ensureSchema();
-    } else {
-      this.logger.warn('TimescaleService unavailable — sensory stream will not be persisted.');
-    }
+    await this.ensureSchema();
   }
 
   /**
@@ -220,8 +216,59 @@ export class SensoryStreamLoggerService implements OnModuleInit {
         ON sensory_ticks (session_id, time DESC)
       `);
 
+      // Create the events table for decision/communication event logging.
+      await this.timescale.query(`
+        CREATE TABLE IF NOT EXISTS events (
+          id              TEXT PRIMARY KEY,
+          type            TEXT NOT NULL,
+          timestamp       TIMESTAMPTZ NOT NULL,
+          subsystem       TEXT NOT NULL,
+          session_id      TEXT,
+          drive_snapshot  JSONB,
+          payload         JSONB,
+          correlation_id  TEXT,
+          schema_version  INTEGER DEFAULT 1
+        )
+      `);
+
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS events_type_time_idx
+        ON events (type, timestamp DESC)
+      `);
+
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS events_subsystem_time_idx
+        ON events (subsystem, timestamp DESC)
+      `);
+
+      // Create voice_patterns table for voice latent space caching.
+      await this.timescale.query(`
+        CREATE TABLE IF NOT EXISTS voice_patterns (
+          id                UUID PRIMARY KEY,
+          text_hash         TEXT NOT NULL UNIQUE,
+          text_content      TEXT NOT NULL,
+          audio_data        TEXT NOT NULL,
+          audio_format      TEXT NOT NULL DEFAULT 'audio/mpeg',
+          emotional_valence FLOAT DEFAULT 0,
+          usage_count       INTEGER DEFAULT 0,
+          granularity       TEXT DEFAULT 'FULL_PHRASE',
+          source            TEXT DEFAULT 'TTS_BOOTSTRAP',
+          created_at        TIMESTAMPTZ NOT NULL,
+          last_used_at      TIMESTAMPTZ
+        )
+      `);
+
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS voice_patterns_hash_idx ON voice_patterns (text_hash)
+      `);
+
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS voice_patterns_usage_idx
+        ON voice_patterns (usage_count DESC, last_used_at DESC NULLS LAST)
+      `);
+
       this.schemaReady = true;
-      this.logger.log('sensory_ticks schema verified (hypertable + pgvector index)');
+      this.logger.log('All schemas verified (sensory_ticks + events + voice_patterns)');
     } catch (err) {
       this.logger.error(
         `Failed to ensure sensory_ticks schema: ${err instanceof Error ? err.message : String(err)}. ` +

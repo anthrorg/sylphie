@@ -6,6 +6,7 @@ import {
   Req,
   UseGuards,
   BadRequestException,
+  ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -35,10 +36,9 @@ export class AuthController {
       data: { username: body.username, passwordHash },
     });
 
-    const token = this.signToken({ sub: user.id, username: user.username });
     return {
       user: { id: user.id, username: user.username },
-      token,
+      message: 'Account created. An administrator must approve your account before you can log in.',
     };
   }
 
@@ -54,6 +54,10 @@ export class AuthController {
     const valid = await bcrypt.compare(body.password, user.passwordHash);
     if (!valid) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.approved) {
+      throw new ForbiddenException('Account pending approval');
     }
 
     const token = this.signToken({ sub: user.id, username: user.username });

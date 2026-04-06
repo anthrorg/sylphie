@@ -98,7 +98,7 @@ export class LatentSpaceService implements OnModuleInit {
   private schemaReady = false;
 
   constructor(
-    @Optional() private readonly timescale: TimescaleService | null,
+    private readonly timescale: TimescaleService,
   ) {}
 
   // ---------------------------------------------------------------------------

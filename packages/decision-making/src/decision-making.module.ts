@@ -33,7 +33,7 @@
 
 import { Module } from '@nestjs/common';
 import { DriveEngineModule } from '@sylphie/drive-engine';
-import { LLM_SERVICE } from '@sylphie/shared';
+import { LLM_SERVICE, TimescaleModule } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Injection tokens
@@ -103,7 +103,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // CANON §Drive Isolation: this import gives read-only access to drive state;
     // no subsystem may write to the evaluation function through this boundary.
     DriveEngineModule,
-    // TimescaleModule and Neo4jModule are @Global() — available without importing.
+    // TimescaleModule is @Global() but explicit import ensures DI resolution
+    // order is correct for services that inject it via @Optional().
+    TimescaleModule,
   ],
   providers: [
     // ── Token-bound cognitive loop services ─────────────────────────────────

@@ -48,6 +48,7 @@ import {
 import { TtsService } from './tts.service';
 import { ConversationHistoryService } from './conversation-history.service';
 import { PersonModelService } from './person-model.service';
+import { VoiceLatentSpaceService } from './voice-latent-space.service';
 
 // ---------------------------------------------------------------------------
 // CommunicationService
@@ -87,6 +88,7 @@ export class CommunicationService implements OnModuleInit {
     private readonly tts: TtsService,
     private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
+    private readonly voiceCache: VoiceLatentSpaceService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -189,18 +191,50 @@ export class CommunicationService implements OnModuleInit {
     // Theater Prohibition check (flag-only — log warning but don't block)
     const isGrounded = this.checkTheaterProhibition(response);
 
-    // TTS synthesis
+    // Voice output: check voice latent space FIRST, fall back to TTS on miss.
+    // Every TTS-generated utterance is captured and stored so the same text
+    // never hits the TTS API twice. ElevenLabs is a bootstrap dependency.
     let audioBase64: string | undefined;
-    const audioFormat = 'audio/mpeg';
+    let audioFormat = 'audio/mpeg';
+    let voiceCacheHit = false;
 
-    if (response.text && this.tts.available) {
-      try {
-        const audioBuffer = await this.tts.synthesize(response.text);
-        if (audioBuffer) {
-          audioBase64 = audioBuffer.toString('base64');
+    if (response.text) {
+      // Compute emotional valence from drive state for cache matching.
+      // Different emotional states need different audio even for the same text.
+      const valence = computeValence(response.driveSnapshot);
+
+      // Type 1 voice path: check cache
+      const cached = this.voiceCache.lookup(response.text, valence);
+
+      if (cached) {
+        audioBase64 = cached.pattern.audioBase64;
+        audioFormat = cached.pattern.audioFormat;
+        voiceCacheHit = true;
+        this.logger.debug(
+          `Voice cache HIT: "${response.text.substring(0, 30)}..." ` +
+            `(uses=${cached.pattern.usageCount})`,
+        );
+      } else if (this.tts.available) {
+        // Type 2 voice path: call TTS and capture the output
+        try {
+          const audioBuffer = await this.tts.synthesize(response.text);
+          if (audioBuffer) {
+            audioBase64 = audioBuffer.toString('base64');
+
+            // Store in voice latent space for future Type 1 retrieval
+            await this.voiceCache.store(
+              response.text,
+              audioBase64,
+              audioFormat,
+              valence,
+            );
+            this.logger.debug(
+              `Voice cache MISS → TTS generated + cached: "${response.text.substring(0, 30)}..."`,
+            );
+          }
+        } catch (err) {
+          this.logger.warn(`TTS synthesis failed: ${err}`);
         }
-      } catch (err) {
-        this.logger.warn(`TTS synthesis failed: ${err}`);
       }
     }
 
@@ -224,6 +258,7 @@ export class CommunicationService implements OnModuleInit {
       turnId: response.turnId,
       textLength: response.text.length,
       hasAudio: !!audioBase64,
+      voiceCacheHit,
       isGrounded,
       latencyMs: response.latencyMs,
     });
@@ -462,6 +497,27 @@ function classifyInput(text: string): InputParseResult['inputType'] {
   }
 
   return 'STATEMENT';
+}
+
+/**
+ * Compute a scalar emotional valence from the drive snapshot.
+ * Used by the voice latent space to match cached audio to emotional state.
+ * Range [0.0, 1.0] where 0 = very negative, 0.5 = neutral, 1.0 = very positive.
+ */
+function computeValence(snapshot: DriveSnapshot): number {
+  const pv = snapshot.pressureVector;
+  // Positive contributors
+  const satisfaction = pv[DriveName.Satisfaction] ?? 0;
+  const curiosity = pv[DriveName.Curiosity] ?? 0;
+  // Negative contributors
+  const anxiety = pv[DriveName.Anxiety] ?? 0;
+  const sadness = pv[DriveName.Sadness] ?? 0;
+  const guilt = pv[DriveName.Guilt] ?? 0;
+
+  const positive = satisfaction + curiosity * 0.5;
+  const negative = anxiety + sadness + guilt * 0.5;
+  const raw = 0.5 + (positive - negative) * 0.25;
+  return Math.min(1.0, Math.max(0.0, raw));
 }
 
 function detectGuardianFeedback(text: string): 'confirmation' | 'correction' | 'none' {

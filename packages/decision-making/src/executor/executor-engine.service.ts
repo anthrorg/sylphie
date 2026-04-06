@@ -193,13 +193,15 @@ export class ExecutorEngineService implements IExecutorEngine {
       }
     }
 
-    // Set a timeout for the incoming state.
-    this.stateTimeoutHandle = setTimeout(() => {
-      this.logger.warn(
-        `State timeout: ${this.currentState} exceeded ${getTimeoutForState(this.currentState)}ms. Forcing recovery.`,
-      );
-      this.forceIdle();
-    }, getTimeoutForState(targetState));
+    // Set a timeout for the incoming state (except IDLE — no timeout on rest state).
+    if (targetState !== ExecutorState.IDLE) {
+      this.stateTimeoutHandle = setTimeout(() => {
+        this.logger.warn(
+          `State timeout: ${this.currentState} exceeded ${getTimeoutForState(this.currentState)}ms. Forcing recovery.`,
+        );
+        this.forceIdle();
+      }, getTimeoutForState(targetState));
+    }
 
     // Check if the cycle completed (LEARNING -> IDLE).
     if (previousState === ExecutorState.LEARNING && targetState === ExecutorState.IDLE) {
