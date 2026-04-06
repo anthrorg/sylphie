@@ -35,3 +35,6 @@ npm-debug.log*
 # Claude Code
 .claude/
 logs/
+
+# PKG sync cursor
+packages/sylphie-pkg/.last-sync-commit

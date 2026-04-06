@@ -13,6 +13,8 @@ import {
   voiceConfig,
 } from '@sylphie/shared';
 import { DecisionMakingModule } from '@sylphie/decision-making';
+import { LearningModule } from '@sylphie/learning';
+import { PlanningModule } from '@sylphie/planning';
 import { DriveEngineModule } from '@sylphie/drive-engine';
 import { GraphController } from './controllers/graph.controller';
 import { SkillsController } from './controllers/skills.controller';
@@ -48,6 +50,8 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
     TimescaleModule,
     DriveEngineModule,
     DecisionMakingModule,
+    LearningModule,
+    PlanningModule,
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

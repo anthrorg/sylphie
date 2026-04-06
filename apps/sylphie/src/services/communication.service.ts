@@ -25,7 +25,7 @@
  * action.
  */
 
-import { Injectable, Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 import {
@@ -82,8 +82,7 @@ export class CommunicationService implements OnModuleInit {
     @Inject(DRIVE_STATE_READER)
     private readonly driveStateReader: IDriveStateReader,
 
-    @Optional()
-    private readonly timescale: TimescaleService | null,
+    private readonly timescale: TimescaleService,
 
     private readonly tts: TtsService,
     private readonly conversationHistory: ConversationHistoryService,
@@ -434,8 +433,6 @@ export class CommunicationService implements OnModuleInit {
     sessionId: string,
     payload: Record<string, unknown>,
   ): void {
-    if (!this.timescale) return;
-
     const id = randomUUID();
     const driveSnapshot = this.driveStateReader.getCurrentState();
 

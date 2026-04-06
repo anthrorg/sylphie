@@ -1,0 +1,164 @@
+[
+  {
+    "id": "drive-isolation-001",
+    "description": "Drive engine MUST run as an isolated process. Communication is one-way: drive engine emits drive sensor values, main process never writes into drive engine state.",
+    "scope": "drive-engine",
+    "scopeType": "service",
+    "source": "Architecture diagram, CANON",
+    "severity": "must",
+    "tags": ["isolation", "architectural"]
+  },
+  {
+    "id": "drive-isolation-002",
+    "description": "Drive rules live in PostgreSQL, NOT in the drive engine process memory. Drive engine reads rules from PostgreSQL at evaluation time.",
+    "scope": "drive-engine",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["isolation", "storage"]
+  },
+  {
+    "id": "kg-separation-001",
+    "description": "Three Neo4j instances must remain fully separate: WKG (world knowledge, port 7687), KG(Self) (port 7690), KG(Other) (port 7689). No cross-instance queries.",
+    "scope": "shared",
+    "scopeType": "service",
+    "source": "Architecture diagram, docker-compose",
+    "severity": "must",
+    "tags": ["isolation", "storage"]
+  },
+  {
+    "id": "timescale-write-001",
+    "description": "TimescaleDB is the event backbone. All subsystem events (tick_event, context_event, response_event) must be written to TimescaleDB for durability and audit.",
+    "scope": "shared",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["event-backbone", "storage"]
+  },
+  {
+    "id": "type1-type2-arbitration-001",
+    "description": "Type 1 (reflex) actions must convince the reasoning engine they are better than Type 2 (deliberate) before executing. Type 1 never bypasses reasoning.",
+    "scope": "decision-making",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["decision-making", "architectural"]
+  },
+  {
+    "id": "executor-tick-001",
+    "description": "The executor engine is the central cognitive loop. Every tick processes inputs, runs predictions, selects an action, and emits a tick_event to TimescaleDB and drive engine.",
+    "scope": "decision-making",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["decision-making", "architectural"]
+  },
+  {
+    "id": "learning-pipeline-001",
+    "description": "Learning pipeline reads events with hasLearned=false from TimescaleDB, extracts entities, upserts to WKG, extracts edges, then marks events as learned. This is the only path for new knowledge.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["learning", "pipeline"]
+  },
+  {
+    "id": "communication-attribution-001",
+    "description": "Text input must carry speaker identity (person entity) before entering encoders or episodic memory. Anonymous text must not be stored as attributed knowledge.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Architecture diagram, project requirement",
+    "severity": "must",
+    "tags": ["communication", "data-integrity"]
+  },
+  {
+    "id": "self-eval-kg-self-001",
+    "description": "Self-evaluation reads from KG(Self) only. It evaluates predictions against outcomes using the self-knowledge graph, not the world knowledge graph.",
+    "scope": "drive-engine",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["drive-engine", "storage"]
+  },
+  {
+    "id": "other-eval-kg-other-001",
+    "description": "Other evaluation (person modeling) reads/writes KG(Other) only. Person models are stored separately from world knowledge and self-knowledge.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["communication", "storage"]
+  },
+  {
+    "id": "planning-opportunity-001",
+    "description": "Planning subsystem processes opportunities detected by the drive engine. It researches, simulates, proposes plans, and validates via LLM constraints. Plans become procedures only after validation.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "should",
+    "tags": ["planning", "architectural"]
+  },
+  {
+    "id": "no-hardcoded-paths-001",
+    "description": "Never use __dirname or hardcoded absolute paths to reference repo-root files. Use process.cwd() for runtime path resolution.",
+    "scope": "shared",
+    "scopeType": "service",
+    "source": "Developer feedback",
+    "severity": "must",
+    "tags": ["code-quality", "portability"]
+  },
+  {
+    "id": "no-silent-stubs-001",
+    "description": "Wire pipelines end-to-end. Do not leave zero-vector placeholders or stub implementations silently. If something is not yet implemented, it must be explicitly flagged.",
+    "scope": "shared",
+    "scopeType": "service",
+    "source": "Developer feedback",
+    "severity": "must",
+    "tags": ["code-quality", "completeness"]
+  },
+  {
+    "id": "failed-predictions-feedback-001",
+    "description": "Failed predictions from the drive engine feed back to decision-making, giving more weight to Type 2 deliberation. This feedback loop must be preserved.",
+    "scope": "decision-making",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "should",
+    "tags": ["decision-making", "feedback-loop"]
+  },
+  {
+    "id": "wkg-act-r-confidence-001",
+    "description": "World Knowledge Graph edges should use ACT-R inspired confidence dynamics. Edge weights decay over time and strengthen with repeated activation.",
+    "scope": "shared",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "should",
+    "tags": ["knowledge-graph", "cognitive-model"]
+  },
+  {
+    "id": "frontend-read-only-001",
+    "description": "Frontend is a read-only dashboard and chat interface. It must not directly write to any database. All mutations flow through the NestJS backend API.",
+    "scope": "frontend",
+    "scopeType": "service",
+    "source": "Architecture",
+    "severity": "must",
+    "tags": ["frontend", "architectural"]
+  },
+  {
+    "id": "12-drives-001",
+    "description": "The drive engine computes exactly 12 drives. Adding or removing drives requires architectural review. Each drive has a rule set in PostgreSQL and a sensor value emitted per tick.",
+    "scope": "drive-engine",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "must",
+    "tags": ["drive-engine", "architectural"]
+  },
+  {
+    "id": "episodic-memory-001",
+    "description": "Episodic memory is read by the inner monologue to inform the executor engine. It must contain timestamped experiential records, not just factual knowledge.",
+    "scope": "decision-making",
+    "scopeType": "service",
+    "source": "Architecture diagram",
+    "severity": "should",
+    "tags": ["decision-making", "memory"]
+  }
+]

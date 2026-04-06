@@ -83,6 +83,7 @@ import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.serv
 import { WkgContextService } from './wkg/wkg-context.service';
 import { LatentSpaceService } from './latent-space/latent-space.service';
 import { DeliberationService } from './deliberation/deliberation.service';
+import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
 
 // ---------------------------------------------------------------------------
@@ -187,6 +188,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // ── Deliberation Pipeline (multi-step Type 2 reasoning)
     DeliberationService,
+    ContextWindowService,
     ToolRegistryService,
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────

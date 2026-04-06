@@ -59,6 +59,26 @@ services:
       retries: 5
     restart: unless-stopped
 
+  neo4j-pkg:
+    image: neo4j:5-community
+    container_name: sylphie-neo4j-pkg
+    ports:
+      - "7477:7474" # HTTP browser
+      - "7691:7687" # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/sylphie-pkg-local
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_transaction_timeout: 30s
+    volumes:
+      - neo4j_pkg_data:/data
+      - neo4j_pkg_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sylphie-pkg-local 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   postgres:
     image: postgres:17
     container_name: sylphie-postgres
@@ -150,5 +170,7 @@ volumes:
   neo4j_self_logs:
   neo4j_other_data:
   neo4j_other_logs:
+  neo4j_pkg_data:
+  neo4j_pkg_logs:
   postgres_data:
   timescaledb_data:

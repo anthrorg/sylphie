@@ -19,10 +19,13 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   DriveIPCMessage,
   DriveIPCMessageType,
   DriveSnapshotPayload,
+  TimescaleService,
+  type OpportunityCreatedPayload,
 } from '@sylphie/shared';
 import { IDriveProcessManager } from '../interfaces/drive-engine.interfaces';
 import { DriveReaderService } from '../drive-reader.service';
@@ -41,6 +44,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
   constructor(
     private driveReaderService: DriveReaderService,
     private ipcChannel: IpcChannelService,
+    private timescale: TimescaleService,
   ) {
     this.healthMonitor = new HealthMonitor(this.ipcChannel);
     this.recovery = new RecoveryMechanism(
@@ -162,15 +166,17 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       },
     );
 
-    // OPPORTUNITY_CREATED: Reserved for Planning subsystem (T006)
-    // For now, log and ignore
+    // OPPORTUNITY_CREATED: Write to TimescaleDB event backbone for Planning.
+    // CANON §No Circular Module Dependencies: Cross-subsystem communication
+    // flows through TimescaleDB, not direct service injection. Planning polls
+    // for OPPORTUNITY_DETECTED events with has_planned = false.
     this.ipcChannel.onMessage(
       DriveIPCMessageType.OPPORTUNITY_CREATED,
-      (message: DriveIPCMessage<any>) => {
+      (message: DriveIPCMessage<OpportunityCreatedPayload>) => {
         this.logger.debug(
           `Opportunity created: ${message.payload.id} (${message.payload.classification})`,
         );
-        // TODO (T006): Forward to Planning subsystem
+        this.writeOpportunityEvent(message.payload);
       },
     );
 
@@ -224,6 +230,44 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     throw new Error(
       `Initial health check timeout (waited ${timeoutMs}ms)`,
     );
+  }
+
+  /**
+   * Write an OPPORTUNITY_DETECTED event to TimescaleDB for Planning to poll.
+   *
+   * Fire-and-forget: errors are logged but do not propagate. The Planning
+   * subsystem ingests these events via polling (has_planned = false).
+   */
+  private writeOpportunityEvent(payload: OpportunityCreatedPayload): void {
+    const id = randomUUID();
+    const timestamp = new Date();
+
+    this.timescale
+      .query(
+        `INSERT INTO events
+           (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          'OPPORTUNITY_DETECTED',
+          timestamp,
+          'DRIVE_ENGINE',
+          'drive-engine-internal',
+          null,
+          JSON.stringify({
+            ...payload,
+            has_planned: false,
+          }),
+          1,
+        ],
+      )
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Failed to write opportunity event: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
   }
 }
 

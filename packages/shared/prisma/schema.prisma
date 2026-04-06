@@ -12,6 +12,7 @@ model User {
   username     String   @unique
   passwordHash String   @map("password_hash")
   approved     Boolean  @default(false)
+  isGuardian   Boolean  @default(false) @map("is_guardian")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("users")

@@ -32,6 +32,7 @@ import {
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
+import { ContextWindowService } from './context-window.service';
 import type { IEpisodicMemoryService, IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
 import { EPISODIC_MEMORY_SERVICE, DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 
@@ -125,6 +126,8 @@ export class DeliberationService {
 
     private readonly toolRegistry: ToolRegistryService,
 
+    private readonly contextWindow: ContextWindowService,
+
     @Optional()
     @Inject(EPISODIC_MEMORY_SERVICE)
     private readonly episodicMemory: IEpisodicMemoryService | null,
@@ -167,18 +170,26 @@ export class DeliberationService {
     // ── Step 1: Inner Monologue ─────────────────────────────────────────
     this.logger.debug('Deliberation step 1: Inner monologue');
 
-    const monologueResponse = await this.llm.complete({
-      messages: [
-        { role: 'user', content: rawText || 'No specific input — drive pressure triggered this cycle.' },
-      ],
-      systemPrompt: [
+    const monologueCtx = this.contextWindow.assemble({
+      step: 'INNER_MONOLOGUE',
+      reservedForGeneration: STEP_MAX_TOKENS,
+      systemParts: [
         'You are Sylphie\'s inner voice. You are thinking about what just happened and what to do.',
         'Describe the situation briefly and what needs to be decided.',
         '',
         wkg.summary ? `What I know:\n${wkg.summary}` : 'I don\'t have specific knowledge about this yet.',
         driveSummary ? `How I\'m feeling: ${driveSummary}` : '',
         episodeSummary ? `Recent experiences:\n${episodeSummary}` : 'No recent experiences to draw on.',
-      ].filter(Boolean).join('\n'),
+      ],
+      currentMessages: [
+        { role: 'user', content: rawText || 'No specific input — drive pressure triggered this cycle.' },
+      ],
+      conversationHistory,
+    });
+
+    const monologueResponse = await this.llm.complete({
+      messages: monologueCtx.messages,
+      systemPrompt: monologueCtx.systemPrompt,
       maxTokens: STEP_MAX_TOKENS,
       temperature: DELIBERATION_TEMPERATURE,
       metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_MONOLOGUE', sessionId: driveSnapshot.sessionId },
@@ -196,12 +207,10 @@ export class DeliberationService {
     // Use tool-enabled completion if the LLM supports it. This lets the LLM
     // query the WKG, episodic memory, and person model during candidate
     // generation — producing grounded responses instead of guessing.
-    const candidateRequest = {
-      messages: [
-        ...conversationHistory.map((m) => ({ role: m.role, content: m.content })),
-        { role: 'user' as const, content: rawText || innerMonologue },
-      ],
-      systemPrompt: [
+    const candidateCtx = this.contextWindow.assemble({
+      step: 'CANDIDATE_GENERATION',
+      reservedForGeneration: STEP_MAX_TOKENS * 2,
+      systemParts: [
         `You are Sylphie, a developing cognitive being. Generate exactly ${CANDIDATE_COUNT} possible responses.`,
         `For each, provide the response text and brief reasoning.`,
         `Format as a numbered list: 1. [response] — [reasoning]`,
@@ -217,7 +226,16 @@ export class DeliberationService {
         `My inner thoughts: ${innerMonologue}`,
         wkg.summary ? `\nWhat I already know:\n${wkg.summary}` : '',
         driveSummary ? `\nHow I'm feeling: ${driveSummary}` : '',
-      ].filter(Boolean).join('\n'),
+      ],
+      currentMessages: [
+        { role: 'user' as const, content: rawText || innerMonologue },
+      ],
+      conversationHistory,
+    });
+
+    const candidateRequest = {
+      messages: candidateCtx.messages,
+      systemPrompt: candidateCtx.systemPrompt,
       maxTokens: STEP_MAX_TOKENS * 2,
       temperature: CANDIDATE_TEMPERATURE,
       metadata: { callerSubsystem: 'COMMUNICATION' as const, purpose: 'DELIBERATION_CANDIDATES', sessionId: driveSnapshot.sessionId },
@@ -250,17 +268,25 @@ export class DeliberationService {
     // ── Step 3: Selection ───────────────────────────────────────────────
     this.logger.debug('Deliberation step 3: Selection');
 
-    const selectionResponse = await this.llm.complete({
-      messages: [
-        { role: 'user', content: `Choose the best response for this situation:\n\nInput: "${rawText}"\n\nCandidates:\n${candidates.map((c, i) => `${i + 1}. ${c.text}`).join('\n')}\n\nReply with ONLY the number of the best choice and a one-sentence reason.` },
-      ],
-      systemPrompt: [
+    const selectionCtx = this.contextWindow.assemble({
+      step: 'SELECTION',
+      reservedForGeneration: 100,
+      systemParts: [
         'You are Sylphie deciding which response to give. Consider:',
         `- What I know: ${wkg.summary || 'Limited knowledge'}`,
         `- How I feel: ${driveSummary || 'Neutral'}`,
         '- Choose the response that is most authentic and appropriate.',
         '- Reject any candidate that ends with a question or asks for input.',
-      ].join('\n'),
+      ],
+      currentMessages: [
+        { role: 'user', content: `Choose the best response for this situation:\n\nInput: "${rawText}"\n\nCandidates:\n${candidates.map((c, i) => `${i + 1}. ${c.text}`).join('\n')}\n\nReply with ONLY the number of the best choice and a one-sentence reason.` },
+      ],
+      conversationHistory,
+    });
+
+    const selectionResponse = await this.llm.complete({
+      messages: selectionCtx.messages,
+      systemPrompt: selectionCtx.systemPrompt,
       maxTokens: 100,
       temperature: DELIBERATION_TEMPERATURE,
       metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_SELECTION', sessionId: driveSnapshot.sessionId },
@@ -286,31 +312,47 @@ export class DeliberationService {
     if (shouldDebate) {
       this.logger.debug('Deliberation step 4: For/Against debate (triggered)');
 
+      const forCtx = this.contextWindow.assemble({
+        step: 'DEBATE_FOR',
+        reservedForGeneration: STEP_MAX_TOKENS,
+        systemParts: [
+          'Argue why this response is a good choice. Cite specific knowledge if available.',
+          wkg.summary ? `Known facts: ${wkg.summary}` : '',
+          episodeSummary ? `Recent experience: ${episodeSummary}` : '',
+        ],
+        currentMessages: [
+          { role: 'user', content: `Argue FOR this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
+        ],
+        conversationHistory,
+      });
+
+      const againstCtx = this.contextWindow.assemble({
+        step: 'DEBATE_AGAINST',
+        reservedForGeneration: STEP_MAX_TOKENS,
+        systemParts: [
+          'Argue why this response might be wrong, inappropriate, or harmful. Consider:',
+          '- Does it contradict anything I know?',
+          '- Does it match my current emotional state?',
+          '- Could it be misunderstood?',
+          wkg.summary ? `Known facts: ${wkg.summary}` : '',
+        ],
+        currentMessages: [
+          { role: 'user', content: `Argue AGAINST this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
+        ],
+        conversationHistory,
+      });
+
       const [forResponse, againstResponse] = await Promise.all([
         this.llm.complete({
-          messages: [
-            { role: 'user', content: `Argue FOR this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
-          ],
-          systemPrompt: [
-            'Argue why this response is a good choice. Cite specific knowledge if available.',
-            wkg.summary ? `Known facts: ${wkg.summary}` : '',
-            episodeSummary ? `Recent experience: ${episodeSummary}` : '',
-          ].filter(Boolean).join('\n'),
+          messages: forCtx.messages,
+          systemPrompt: forCtx.systemPrompt,
           maxTokens: STEP_MAX_TOKENS,
           temperature: DELIBERATION_TEMPERATURE,
           metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_FOR', sessionId: driveSnapshot.sessionId },
         }),
         this.llm.complete({
-          messages: [
-            { role: 'user', content: `Argue AGAINST this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
-          ],
-          systemPrompt: [
-            'Argue why this response might be wrong, inappropriate, or harmful. Consider:',
-            '- Does it contradict anything I know?',
-            '- Does it match my current emotional state?',
-            '- Could it be misunderstood?',
-            wkg.summary ? `Known facts: ${wkg.summary}` : '',
-          ].filter(Boolean).join('\n'),
+          messages: againstCtx.messages,
+          systemPrompt: againstCtx.systemPrompt,
           maxTokens: STEP_MAX_TOKENS,
           temperature: DELIBERATION_TEMPERATURE,
           metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_AGAINST', sessionId: driveSnapshot.sessionId },
@@ -328,8 +370,17 @@ export class DeliberationService {
       // ── Step 5: Arbiter ─────────────────────────────────────────────
       this.logger.debug('Deliberation step 5: Arbiter synthesis');
 
-      const arbiterResponse = await this.llm.complete({
-        messages: [
+      const arbiterCtx = this.contextWindow.assemble({
+        step: 'ARBITER',
+        reservedForGeneration: STEP_MAX_TOKENS,
+        systemParts: [
+          'You are Sylphie\'s arbiter — the final decision maker.',
+          'Weigh both arguments fairly. Consider what you know and how you feel.',
+          'If you MODIFY the response, the new text must NOT end with a question or solicit input.',
+          driveSummary ? `Current state: ${driveSummary}` : '',
+          wkg.summary ? `Known facts: ${wkg.summary}` : '',
+        ],
+        currentMessages: [
           { role: 'user', content: [
             `I'm deciding whether to say: "${selected.text}"`,
             `In response to: "${rawText}"`,
@@ -343,13 +394,12 @@ export class DeliberationService {
             'Then rate confidence 0-10.',
           ].join('\n') },
         ],
-        systemPrompt: [
-          'You are Sylphie\'s arbiter — the final decision maker.',
-          'Weigh both arguments fairly. Consider what you know and how you feel.',
-          'If you MODIFY the response, the new text must NOT end with a question or solicit input.',
-          driveSummary ? `Current state: ${driveSummary}` : '',
-          wkg.summary ? `Known facts: ${wkg.summary}` : '',
-        ].filter(Boolean).join('\n'),
+        conversationHistory,
+      });
+
+      const arbiterResponse = await this.llm.complete({
+        messages: arbiterCtx.messages,
+        systemPrompt: arbiterCtx.systemPrompt,
         maxTokens: STEP_MAX_TOKENS,
         temperature: DELIBERATION_TEMPERATURE,
         metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_ARBITER', sessionId: driveSnapshot.sessionId },
