@@ -235,6 +235,7 @@ export class ActionHandlerRegistryService {
           systemPrompt,
           maxTokens: 256,
           temperature: 0.7,
+          tier: 'quick',
           metadata: {
             callerSubsystem: 'COMMUNICATION',
             purpose: 'LLM_GENERATE_ACTION_STEP',

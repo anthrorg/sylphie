@@ -35,6 +35,21 @@ import type { DriveSnapshot } from './drive.types';
 export const LLM_SERVICE = Symbol('LLM_SERVICE');
 
 // ---------------------------------------------------------------------------
+// LLM Tiers
+// ---------------------------------------------------------------------------
+
+/**
+ * Model tier for LLM calls. Callers select the tier based on task complexity;
+ * the concrete implementation maps each tier to a specific model configured
+ * via environment variables.
+ *
+ *   quick  — Fast/small model. Trigger phrases, fact extraction, classification.
+ *   medium — Balanced model. Standard deliberation, conversation responses.
+ *   deep   — Largest/most capable. Complex reasoning, planning, multi-step debate.
+ */
+export type LlmTier = 'quick' | 'medium' | 'deep';
+
+// ---------------------------------------------------------------------------
 // LLM Request and Response
 // ---------------------------------------------------------------------------
 
@@ -93,6 +108,16 @@ export interface LlmRequest {
    * At minimum, callers should include the subsystem and call purpose.
    */
   readonly metadata: LlmCallMetadata;
+
+  /**
+   * Model tier to use for this call. Defaults to 'medium' if omitted.
+   *
+   * Each tier maps to a different Ollama model configured via env vars:
+   *   quick  → OLLAMA_MODEL_QUICK  (fast, low-cost tasks)
+   *   medium → OLLAMA_MODEL_MEDIUM (standard deliberation)
+   *   deep   → OLLAMA_MODEL_DEEP   (complex reasoning)
+   */
+  readonly tier?: LlmTier;
 }
 
 /**

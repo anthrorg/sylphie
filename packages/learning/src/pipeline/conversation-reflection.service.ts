@@ -216,6 +216,7 @@ export class ConversationReflectionService implements IConversationReflectionSer
       systemPrompt: SYSTEM_PROMPT,
       maxTokens: 1536,
       temperature: 0.3,
+      tier: 'medium',
       metadata: {
         callerSubsystem: 'LEARNING',
         purpose: 'CONVERSATION_REFLECTION',

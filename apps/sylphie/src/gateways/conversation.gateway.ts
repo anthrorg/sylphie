@@ -11,7 +11,7 @@
  *   CommunicationService.delivery$ → broadcast to WebSocket clients
  *
  * The gateway manages WebSocket client connections, thinking indicators,
- * and guardian feedback forwarding.
+ * guardian feedback forwarding, and user identity extraction from JWT tokens.
  */
 
 import {
@@ -23,11 +23,19 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
+import * as jwt from 'jsonwebtoken';
 import { TickSamplerService } from '@sylphie/decision-making';
 import { CommunicationService } from '../services/communication.service';
 import { ConversationHistoryService } from '../services/conversation-history.service';
 import { PersonModelService } from '../services/person-model.service';
+
+/** Authenticated user identity extracted from JWT. */
+interface ConnectedUser {
+  userId: string;
+  username: string;
+}
 
 @WebSocketGateway({ path: '/ws/conversation' })
 export class ConversationGateway
@@ -38,11 +46,15 @@ export class ConversationGateway
   /** All connected WebSocket clients. */
   private readonly clients = new Set<WebSocket>();
 
+  /** Map from WebSocket client to authenticated user identity. */
+  private readonly clientUsers = new Map<WebSocket, ConnectedUser>();
+
   constructor(
     private readonly tickSampler: TickSamplerService,
     private readonly communication: CommunicationService,
     private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
+    private readonly configService: ConfigService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -71,14 +83,31 @@ export class ConversationGateway
   // Connection Management
   // ---------------------------------------------------------------------------
 
-  handleConnection(client: WebSocket): void {
+  handleConnection(client: WebSocket, ...args: any[]): void {
     this.clients.add(client);
-    this.logger.log(`Conversation client connected (${this.clients.size} total)`);
+
+    // Extract user identity from JWT token in query params
+    const user = this.extractUserFromConnection(args);
+    if (user) {
+      this.clientUsers.set(client, user);
+      this.logger.log(
+        `Conversation client connected: ${user.username} (${user.userId}) ` +
+        `(${this.clients.size} total)`,
+      );
+
+      // Ensure OKG Person anchor node exists for this user
+      void this.personModel.ensurePersonNode(user.userId, user.username, true);
+      this.personModel.setActivePerson(user.userId);
+    } else {
+      this.logger.log(`Conversation client connected (${this.clients.size} total)`);
+    }
+
     client.send(JSON.stringify({ type: 'system_status', is_thinking: false }));
   }
 
   handleDisconnect(client: WebSocket): void {
     this.clients.delete(client);
+    this.clientUsers.delete(client);
     this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
   }
 
@@ -99,23 +128,37 @@ export class ConversationGateway
     // Show thinking indicator while the executor processes
     this.broadcast({ type: 'thinking_indicator', is_thinking: true });
 
-    // Communication subsystem parses the input (logs INPUT_RECEIVED + INPUT_PARSED)
-    const sessionId = 'session-' + Date.now(); // TODO: proper session management
-    this.communication.parseInput(data.text, sessionId);
+    // Resolve user identity for this client
+    const user = this.clientUsers.get(client);
+    const userId = user?.userId ?? 'guardian';
+    const sessionId = `session-${userId}-${Date.now()}`;
 
-    // Feed text into the sensory pipeline for encoding + executor tick
-    this.tickSampler.updateText(data.text);
+    // Set active person so the person model is included in LLM context
+    this.personModel.setActivePerson(userId);
 
-    // Push conversation history and person model into the sensory pipeline
-    // so the LLM handler can read them from frame.raw
-    this.tickSampler.update(
-      'conversation_history',
-      [...this.conversationHistory.getHistory()],
-    );
-    this.tickSampler.update(
-      'person_model',
-      this.personModel.getActivePersonModel(),
-    );
+    // Check for trigger phrases — these short-circuit the normal pipeline
+    // and produce an immediate response (e.g., "Who am I?" → OKG lookup).
+    void this.communication.handleTriggerPhrase(data.text, sessionId, userId)
+      .then((handled) => {
+        if (handled) {
+          this.logger.log(`Trigger phrase handled: "${data.text}"`);
+          return;
+        }
+
+        // Normal pipeline: parse input, feed into sensory pipeline
+        this.communication.parseInput(data.text, sessionId, userId);
+
+        this.tickSampler.updateText(data.text);
+
+        this.tickSampler.update(
+          'conversation_history',
+          [...this.conversationHistory.getHistory()],
+        );
+        this.tickSampler.update(
+          'person_model',
+          this.personModel.getActivePersonModel(),
+        );
+      });
   }
 
   // ---------------------------------------------------------------------------
@@ -141,6 +184,34 @@ export class ConversationGateway
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // JWT Extraction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Extract user identity from the WebSocket connection's query params.
+   * The frontend includes `?token=<JWT>` when opening the connection.
+   */
+  private extractUserFromConnection(args: any[]): ConnectedUser | null {
+    try {
+      // NestJS ws adapter passes the IncomingMessage as args[0]
+      const request = args[0];
+      if (!request?.url) return null;
+
+      const url = new URL(request.url, 'http://localhost');
+      const token = url.searchParams.get('token');
+      if (!token) return null;
+
+      const secret = this.configService.get<string>('JWT_SECRET');
+      if (!secret) return null;
+
+      const payload = jwt.verify(token, secret) as { sub: string; username: string };
+      return { userId: payload.sub, username: payload.username };
+    } catch {
+      return null; // Invalid or missing token — proceed as anonymous
     }
   }
 }

@@ -129,6 +129,7 @@ export class ProposalService implements IProposalService {
       systemPrompt: 'You are a behavioral planner. Respond with valid JSON only.',
       maxTokens: 1024,
       temperature: 0.3,
+      tier: 'medium',
       metadata: {
         callerSubsystem: 'PLANNING',
         purpose: 'PLAN_PROPOSAL_GENERATION',
@@ -165,6 +166,7 @@ export class ProposalService implements IProposalService {
       systemPrompt: 'You are a behavioral planner. Respond with valid JSON only.',
       maxTokens: 1024,
       temperature: 0.3,
+      tier: 'medium',
       metadata: {
         callerSubsystem: 'PLANNING',
         purpose: 'PLAN_PROPOSAL_REFINEMENT',

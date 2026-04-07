@@ -4,58 +4,276 @@
  * Per sylphie2.png architecture: "Person Jim → Other Evaluation" feeds into
  * Communication so responses are calibrated to the person being spoken to.
  *
- * This service maintains a model of who Sylphie is talking to — their name,
- * known facts, interaction preferences, and conversation patterns. The model
- * is included in the LLM system prompt so Sylphie responds person-aware.
+ * Storage: Grafeo (Other KG) via Neo4j OTHER instance. Anchor nodes are
+ * keyed by User.id from PostgreSQL. Facts are stored as typed relationships
+ * to Attribute value nodes.
  *
- * Storage: Grafeo (Other KG) via Neo4j OTHER instance. Currently in-memory
- * until Grafeo is fully wired.
+ * OKG Schema:
+ *   (p:Person {node_id: <user.id>, username: "jim", is_guardian: true})
+ *   (p)-[:HAS_FACT]->(a:Attribute {key: "name", value: "Jim", ...})
  *
  * CANON §Communication: Person modeling enables personalized, authentic
  * expression. Without it, Sylphie treats every conversation partner the same.
+ *
+ * CANON §KG Separation: Person models are stored in KG(Other) only.
+ * No cross-instance queries between WORLD, SELF, and OTHER.
  */
 
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { Neo4jService, Neo4jInstanceName, type PersonModelSummary } from '@sylphie/shared';
 
-/** In-memory person record before Grafeo integration. */
-interface PersonRecord {
-  personId: string;
-  knownFacts: string[];
-  interactionCount: number;
-  lastInteractionAt: Date;
-  preferredTopics: string[];
-  interactionSummary: string;
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** A fact about a person, stored in the OKG as an Attribute node. */
+export interface PersonFact {
+  readonly key: string;
+  readonly value: string;
+  readonly confidence: number;
+  readonly source: 'self_reported' | 'observed' | 'inferred';
+  readonly learnedAt: Date;
 }
 
+/** Structured fact extracted from text, ready for OKG/SelfKG + WKG write. */
+export interface ExtractedFact {
+  readonly key: string;
+  readonly value: string;
+  readonly source: 'self_reported' | 'observed' | 'inferred';
+  readonly rawText: string;
+  /**
+   * Who this fact is about:
+   * - 'speaker' → about the person talking (→ OKG + WKG)
+   * - 'sylphie' → about Sylphie herself (→ Self KG + WKG CoBeing anchor)
+   */
+  readonly target: 'speaker' | 'sylphie';
+}
+
+// ---------------------------------------------------------------------------
+// PersonModelService
+// ---------------------------------------------------------------------------
+
 @Injectable()
-export class PersonModelService {
+export class PersonModelService implements OnModuleInit {
   private readonly logger = new Logger(PersonModelService.name);
 
-  /** In-memory person store. Keyed by personId. */
-  private readonly persons = new Map<string, PersonRecord>();
+  /** In-memory cache of person facts. Synced from OKG on read, written through on write. */
+  private readonly cache = new Map<string, PersonFact[]>();
 
   /** The current active person (who Sylphie is talking to right now). */
   private activePersonId: string | null = null;
+
+  /** Interaction counts (in-memory, not critical to persist). */
+  private readonly interactionCounts = new Map<string, number>();
 
   constructor(
     @Optional() private readonly neo4j: Neo4jService | null,
   ) {}
 
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  async onModuleInit(): Promise<void> {
+    if (!this.neo4j) {
+      this.logger.warn('Neo4jService unavailable — OKG writes disabled.');
+      return;
+    }
+
+    // Create uniqueness constraint on Person.node_id
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    try {
+      await session.run(
+        `CREATE CONSTRAINT person_node_id_unique IF NOT EXISTS
+         FOR (p:Person) REQUIRE p.node_id IS UNIQUE`,
+      );
+      await session.run(
+        `CREATE CONSTRAINT attribute_id_unique IF NOT EXISTS
+         FOR (a:Attribute) REQUIRE a.attr_id IS UNIQUE`,
+      );
+      this.logger.log('OKG schema initialized (Person + Attribute constraints).');
+    } catch (err) {
+      this.logger.warn(`OKG schema init failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Anchor Node Management
+  // ---------------------------------------------------------------------------
+
   /**
-   * Get the person model for the given person ID.
+   * Ensure a Person anchor node exists in the OKG for the given user.
+   * Uses the PostgreSQL User.id as the graph node_id.
    *
-   * Returns a PersonModelSummary for LLM context assembly, or null if
-   * no model exists for this person.
+   * @param userId   - User.id UUID from PostgreSQL.
+   * @param username - Display name.
+   * @param isGuardian - Whether this user is a guardian.
+   */
+  async ensurePersonNode(
+    userId: string,
+    username: string,
+    isGuardian: boolean,
+  ): Promise<void> {
+    if (!this.neo4j) return;
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    try {
+      await session.run(
+        `MERGE (p:Person {node_id: $userId})
+         ON CREATE SET
+           p.username = $username,
+           p.is_guardian = $isGuardian,
+           p.created_at = datetime()
+         ON MATCH SET
+           p.username = $username,
+           p.is_guardian = $isGuardian,
+           p.updated_at = datetime()`,
+        { userId, username, isGuardian },
+      );
+      this.logger.log(`OKG Person anchor ensured: ${username} (${userId})`);
+    } catch (err) {
+      this.logger.warn(`OKG Person anchor write failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fact Writing (immediate — no 60s delay)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Write a fact about a person to the OKG immediately.
+   * Creates or updates an Attribute node and links it to the Person anchor.
+   *
+   * @param userId - The PostgreSQL User.id this fact is about.
+   * @param fact   - The extracted fact to persist.
+   */
+  async writeFact(userId: string, fact: ExtractedFact): Promise<void> {
+    const personFact: PersonFact = {
+      key: fact.key,
+      value: fact.value,
+      confidence: fact.source === 'self_reported' ? 0.90 : 0.60,
+      source: fact.source,
+      learnedAt: new Date(),
+    };
+
+    // Update in-memory cache
+    const cached = this.cache.get(userId) ?? [];
+    const existingIdx = cached.findIndex((f) => f.key === fact.key);
+    if (existingIdx >= 0) {
+      cached[existingIdx] = personFact;
+    } else {
+      cached.push(personFact);
+    }
+    this.cache.set(userId, cached);
+
+    // Write to OKG
+    if (!this.neo4j) return;
+
+    const attrId = `attr-${userId}-${fact.key}`;
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    try {
+      await session.run(
+        `MATCH (p:Person {node_id: $userId})
+         MERGE (a:Attribute {attr_id: $attrId})
+         ON CREATE SET
+           a.key = $key,
+           a.value = $value,
+           a.confidence = $confidence,
+           a.source = $source,
+           a.learned_at = datetime(),
+           a.raw_text = $rawText
+         ON MATCH SET
+           a.value = $value,
+           a.confidence = CASE WHEN $confidence > a.confidence THEN $confidence ELSE a.confidence END,
+           a.source = $source,
+           a.updated_at = datetime(),
+           a.raw_text = $rawText
+         MERGE (p)-[:HAS_FACT]->(a)`,
+        {
+          userId,
+          attrId,
+          key: fact.key,
+          value: fact.value,
+          confidence: personFact.confidence,
+          source: fact.source,
+          rawText: fact.rawText,
+        },
+      );
+      this.logger.log(`OKG fact written: ${fact.key}="${fact.value}" for user ${userId}`);
+    } catch (err) {
+      this.logger.warn(`OKG fact write failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fact Reading
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Load all facts about a person from the OKG.
+   * Results are cached in memory for fast subsequent reads.
+   */
+  async loadFacts(userId: string): Promise<PersonFact[]> {
+    // Check cache first
+    const cached = this.cache.get(userId);
+    if (cached && cached.length > 0) return cached;
+
+    if (!this.neo4j) return [];
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'READ');
+    try {
+      const result = await session.run(
+        `MATCH (p:Person {node_id: $userId})-[:HAS_FACT]->(a:Attribute)
+         RETURN a.key AS key, a.value AS value, a.confidence AS confidence,
+                a.source AS source, a.learned_at AS learnedAt
+         ORDER BY a.confidence DESC`,
+        { userId },
+      );
+
+      const facts: PersonFact[] = result.records.map((r) => ({
+        key: r.get('key'),
+        value: r.get('value'),
+        confidence: r.get('confidence') ?? 0.5,
+        source: r.get('source') ?? 'inferred',
+        learnedAt: new Date(),
+      }));
+
+      this.cache.set(userId, facts);
+      return facts;
+    } catch (err) {
+      this.logger.warn(`OKG fact load failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (used by CommunicationService and deliberation)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get the person model summary for LLM context assembly.
    */
   getPersonModel(personId: string): PersonModelSummary | null {
-    const record = this.persons.get(personId);
-    if (!record) return null;
+    const facts = this.cache.get(personId) ?? [];
+    const count = this.interactionCounts.get(personId) ?? 0;
+    if (facts.length === 0 && count === 0) return null;
 
     return {
-      personId: record.personId,
-      knownFacts: record.knownFacts,
-      interactionSummary: record.interactionSummary,
+      personId,
+      knownFacts: facts.map((f) => `${f.key}: ${f.value}`),
+      interactionSummary:
+        `${count} interactions. ` +
+        (facts.length > 0
+          ? `Known: ${facts.map((f) => `${f.key}=${f.value}`).join(', ')}.`
+          : 'No facts learned yet.'),
     };
   }
 
@@ -72,119 +290,187 @@ export class PersonModelService {
    */
   setActivePerson(personId: string): void {
     this.activePersonId = personId;
-
-    // Ensure a record exists
-    if (!this.persons.has(personId)) {
-      this.persons.set(personId, {
-        personId,
-        knownFacts: [],
-        interactionCount: 0,
-        lastInteractionAt: new Date(),
-        preferredTopics: [],
-        interactionSummary: '',
-      });
-      this.logger.log(`New person model created: ${personId}`);
-    }
   }
 
   /**
-   * Record an interaction with a person.
-   *
-   * Extracts facts from the conversation text and updates the person model.
-   * Called by CommunicationService on each input/response pair.
-   *
-   * @param personId - The person identifier.
-   * @param text     - The text content of the interaction.
-   * @param role     - Whether this was user input or assistant response.
+   * Get the active person ID.
    */
-  recordInteraction(
-    personId: string,
-    text: string,
-    role: 'user' | 'assistant',
-  ): void {
-    let record = this.persons.get(personId);
-    if (!record) {
-      record = {
-        personId,
-        knownFacts: [],
-        interactionCount: 0,
-        lastInteractionAt: new Date(),
-        preferredTopics: [],
-        interactionSummary: '',
-      };
-      this.persons.set(personId, record);
-    }
+  getActivePersonId(): string | null {
+    return this.activePersonId;
+  }
 
-    record.interactionCount++;
-    record.lastInteractionAt = new Date();
-
-    // Extract simple facts from user input
-    if (role === 'user') {
-      const facts = extractFactsFromText(text, personId);
-      for (const fact of facts) {
-        if (!record.knownFacts.includes(fact)) {
-          record.knownFacts.push(fact);
-          this.logger.debug(`Learned about ${personId}: "${fact}"`);
-        }
-      }
-    }
-
-    // Update interaction summary
-    record.interactionSummary =
-      `${record.interactionCount} interactions. ` +
-      `Last: ${record.lastInteractionAt.toISOString().split('T')[0]}. ` +
-      (record.knownFacts.length > 0
-        ? `Known: ${record.knownFacts.slice(-5).join('; ')}.`
-        : 'No facts learned yet.');
+  /**
+   * Record an interaction with a person (increments counter).
+   * Fact extraction is handled separately by CommunicationService.
+   */
+  recordInteraction(personId: string): void {
+    const count = this.interactionCounts.get(personId) ?? 0;
+    this.interactionCounts.set(personId, count + 1);
   }
 
   /**
    * Get all known person IDs.
    */
   getKnownPersonIds(): string[] {
-    return [...this.persons.keys()];
+    return [...this.cache.keys()];
   }
 }
 
 // ---------------------------------------------------------------------------
-// Fact extraction helper
+// Fact extraction (pure function, used by CommunicationService)
 // ---------------------------------------------------------------------------
 
 /**
- * Extract simple facts from conversation text.
+ * Extract structured facts from conversation text.
  *
- * Pattern matches common self-disclosure patterns:
- * - "My name is X" → "Name is X"
- * - "I am X" / "I'm X" → "Is X"
- * - "I like X" / "I love X" → "Likes X"
- * - "I work at X" / "I work as X" → "Works at/as X"
+ * Handles two directions:
+ *
+ * SPEAKER facts (target: 'speaker' → OKG + WKG):
+ * - "My name is X" → name = X
+ * - "I am X" / "I'm X" → identity = X
+ * - "I like X" → likes = X
+ * - "I work at/as X" → occupation = X
+ * - "I live in X" → location = X
+ * - "I'm N years old" → age = N
+ *
+ * SYLPHIE facts (target: 'sylphie' → Self KG + WKG CoBeing):
+ * - "Your name is X" → name = X
+ * - "You are X" / "You're X" → identity = X
+ * - "You like X" → likes = X
+ * - "You live in X" → location = X
+ *
+ * Returns structured facts ready for routing to the appropriate KG.
  */
-function extractFactsFromText(text: string, personId: string): string[] {
-  const facts: string[] = [];
+export function extractFactsFromText(text: string): ExtractedFact[] {
+  const facts: ExtractedFact[] = [];
   const lower = text.toLowerCase();
+
+  // ── Speaker facts ("I/My" → OKG) ──────────────────────────────────
 
   // "My name is X"
   const nameMatch = lower.match(/my name is (\w+)/);
   if (nameMatch) {
-    facts.push(`Name is ${nameMatch[1]}`);
+    facts.push({
+      key: 'name',
+      value: nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
   }
 
   // "I am X" / "I'm X" (occupation, state, identity)
   const iAmMatch = lower.match(/i(?:'m| am) (?:a |an )?(\w+(?:\s+\w+)?)/);
-  if (iAmMatch && !['not', 'very', 'so', 'just', 'also', 'really'].includes(iAmMatch[1])) {
-    facts.push(`Is ${iAmMatch[1]}`);
+  if (iAmMatch && !['not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'feeling'].includes(iAmMatch[1].split(/\s+/)[0])) {
+    facts.push({
+      key: 'identity',
+      value: iAmMatch[1].trim(),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
   }
 
-  // "I like/love X"
-  const likeMatch = lower.match(/i (?:like|love|enjoy) (.+?)(?:\.|$)/);
+  // "I like/love/enjoy X"
+  const likeMatch = lower.match(/i (?:like|love|enjoy) (.+?)(?:\.|!|$)/);
   if (likeMatch) {
-    facts.push(`Likes ${likeMatch[1].trim().substring(0, 50)}`);
+    facts.push({
+      key: 'likes',
+      value: likeMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
   }
 
-  // "I work at/as X"
-  const workMatch = lower.match(/i work (?:at|as|for) (.+?)(?:\.|$)/);
+  // "I work at/as/for X"
+  const workMatch = lower.match(/i work (?:at|as|for) (.+?)(?:\.|!|$)/);
   if (workMatch) {
-    facts.push(`Works ${workMatch[0].replace(/^i /, '').trim().substring(0, 50)}`);
+    facts.push({
+      key: 'occupation',
+      value: workMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
+  }
+
+  // "I live in X"
+  const liveMatch = lower.match(/i live in (.+?)(?:\.|!|$)/);
+  if (liveMatch) {
+    facts.push({
+      key: 'location',
+      value: liveMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
+  }
+
+  // "I'm N years old" / "I am N years old"
+  const ageMatch = lower.match(/i(?:'m| am) (\d+) years old/);
+  if (ageMatch) {
+    facts.push({
+      key: 'age',
+      value: ageMatch[1],
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
+  }
+
+  // ── Sylphie facts ("You/Your" → Self KG) ──────────────────────────
+
+  // "Your name is X" / "you're called X" / "you are called X"
+  const yourNameMatch = lower.match(/your name is (\w+)|you(?:'re| are) called (\w+)/);
+  if (yourNameMatch) {
+    const val = yourNameMatch[1] ?? yourNameMatch[2];
+    facts.push({
+      key: 'name',
+      value: val.charAt(0).toUpperCase() + val.slice(1),
+      source: 'self_reported',
+      target: 'sylphie',
+      rawText: text,
+    });
+  }
+
+  // "You are X" / "You're X" (identity/description)
+  const youAreMatch = lower.match(/you(?:'re| are) (?:a |an )?(\w+(?:\s+\w+){0,3})/);
+  if (youAreMatch
+    && !['not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'welcome', 'called'].includes(youAreMatch[1].split(/\s+/)[0])
+    && !yourNameMatch // avoid double-matching "you are called X"
+  ) {
+    facts.push({
+      key: 'identity',
+      value: youAreMatch[1].trim(),
+      source: 'self_reported',
+      target: 'sylphie',
+      rawText: text,
+    });
+  }
+
+  // "You like X" / "You love X" / "You enjoy X"
+  const youLikeMatch = lower.match(/you (?:like|love|enjoy) (.+?)(?:\.|!|$)/);
+  if (youLikeMatch) {
+    facts.push({
+      key: 'likes',
+      value: youLikeMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'sylphie',
+      rawText: text,
+    });
+  }
+
+  // "You live in X"
+  const youLiveMatch = lower.match(/you live in (.+?)(?:\.|!|$)/);
+  if (youLiveMatch) {
+    facts.push({
+      key: 'location',
+      value: youLiveMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'sylphie',
+      rawText: text,
+    });
   }
 
   return facts;

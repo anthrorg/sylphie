@@ -229,10 +229,14 @@ export function useConversationWebSocket() {
 
     try {
       const connId = Math.random().toString(36).slice(2, 8)
+      // Include auth token so backend can identify the user for OKG person modeling
+      const token = localStorage.getItem('sylphie_token')
+      const authParam = token ? `&token=${encodeURIComponent(token)}` : ''
+      const wsUrl = `${WS_BASE}/ws/conversation?protocol=cobeing-v1${authParam}`
       console.info(`[Conversation] Creating new WebSocket (connId=${connId})`, {
         url: `${WS_BASE}/ws/conversation?protocol=cobeing-v1`,
       })
-      const ws = new WebSocket(`${WS_BASE}/ws/conversation?protocol=cobeing-v1`)
+      const ws = new WebSocket(wsUrl)
       wsRef.current = ws
       setWsState('conversation', 'reconnecting')
 

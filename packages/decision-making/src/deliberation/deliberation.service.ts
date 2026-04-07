@@ -199,6 +199,7 @@ export class DeliberationService {
       systemPrompt: monologueCtx.systemPrompt,
       maxTokens: STEP_MAX_TOKENS,
       temperature: DELIBERATION_TEMPERATURE,
+      tier: 'medium',
       metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_MONOLOGUE', sessionId: driveSnapshot.sessionId },
     });
 
@@ -257,6 +258,7 @@ export class DeliberationService {
       systemPrompt: candidateCtx.systemPrompt,
       maxTokens: STEP_MAX_TOKENS * 2,
       temperature: CANDIDATE_TEMPERATURE,
+      tier: 'medium' as const,
       metadata: { callerSubsystem: 'COMMUNICATION' as const, purpose: 'DELIBERATION_CANDIDATES', sessionId: driveSnapshot.sessionId },
     };
 
@@ -311,6 +313,7 @@ export class DeliberationService {
       systemPrompt: selectionCtx.systemPrompt,
       maxTokens: 100,
       temperature: DELIBERATION_TEMPERATURE,
+      tier: 'quick',
       metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_SELECTION', sessionId: driveSnapshot.sessionId },
     });
 
@@ -379,6 +382,7 @@ export class DeliberationService {
           systemPrompt: forCtx.systemPrompt,
           maxTokens: STEP_MAX_TOKENS,
           temperature: DELIBERATION_TEMPERATURE,
+          tier: 'deep',
           metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_FOR', sessionId: driveSnapshot.sessionId },
         }),
         this.llm.complete({
@@ -386,6 +390,7 @@ export class DeliberationService {
           systemPrompt: againstCtx.systemPrompt,
           maxTokens: STEP_MAX_TOKENS,
           temperature: DELIBERATION_TEMPERATURE,
+          tier: 'deep',
           metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_AGAINST', sessionId: driveSnapshot.sessionId },
         }),
       ]);
@@ -440,6 +445,7 @@ export class DeliberationService {
         systemPrompt: arbiterCtx.systemPrompt,
         maxTokens: STEP_MAX_TOKENS,
         temperature: DELIBERATION_TEMPERATURE,
+        tier: 'deep',
         metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_ARBITER', sessionId: driveSnapshot.sessionId },
       });
 

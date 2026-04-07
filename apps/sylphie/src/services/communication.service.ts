@@ -31,6 +31,8 @@ import { randomUUID } from 'crypto';
 import {
   TimescaleService,
   DriveName,
+  LLM_SERVICE,
+  type ILlmService,
   type CycleResponse,
   type DeliveryPayload,
   type InputParseResult,
@@ -48,9 +50,10 @@ import {
   type IDriveStateReader,
   type IActionOutcomeReporter,
 } from '@sylphie/drive-engine';
+import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
 import { TtsService } from './tts.service';
 import { ConversationHistoryService } from './conversation-history.service';
-import { PersonModelService } from './person-model.service';
+import { PersonModelService, extractFactsFromText } from './person-model.service';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
 
 // ---------------------------------------------------------------------------
@@ -88,7 +91,12 @@ export class CommunicationService implements OnModuleInit {
     @Inject(ACTION_OUTCOME_REPORTER)
     private readonly outcomeReporter: IActionOutcomeReporter,
 
+    @Inject(LLM_SERVICE)
+    private readonly llm: ILlmService,
+
     private readonly timescale: TimescaleService,
+
+    private readonly neo4j: Neo4jService,
 
     private readonly tts: TtsService,
     private readonly conversationHistory: ConversationHistoryService,
@@ -123,8 +131,16 @@ export class CommunicationService implements OnModuleInit {
    * Per architecture diagram: Text Input → Input Parser → TimescaleDB.
    * Classifies input, extracts entities, detects guardian feedback, and
    * logs INPUT_RECEIVED + INPUT_PARSED events.
+   *
+   * Also performs FAST FACT EXTRACTION: clear factual statements like
+   * "My name is Jim" are written immediately to both the OKG (person model)
+   * and WKG (world knowledge), bypassing the 60s learning cycle.
+   *
+   * @param text      - Raw text from the user.
+   * @param sessionId - Session identifier for event correlation.
+   * @param userId    - PostgreSQL User.id for OKG person attribution.
    */
-  parseInput(text: string, sessionId: string): InputParseResult {
+  parseInput(text: string, sessionId: string, userId: string = 'guardian'): InputParseResult {
     const parsedAt = new Date();
     const entities = extractEntities(text);
     const inputType = classifyInput(text);
@@ -147,11 +163,21 @@ export class CommunicationService implements OnModuleInit {
     // Add to conversation history
     this.conversationHistory.addUserMessage(text);
 
-    // Record interaction with person model (Other Evaluation per architecture)
-    // Default to 'guardian' as the active person — will be refined when
-    // person identification is implemented.
-    this.personModel.setActivePerson('guardian');
-    this.personModel.recordInteraction('guardian', text, 'user');
+    // Record interaction with person model
+    this.personModel.setActivePerson(userId);
+    this.personModel.recordInteraction(userId);
+
+    // ── Fast Fact Extraction ─────────────────────────────────────────────
+    // Detect clear factual statements and write IMMEDIATELY to OKG + WKG.
+    // This bypasses the 60s learning cycle for cold hard facts.
+    const extractedFacts = extractFactsFromText(text);
+    if (extractedFacts.length > 0) {
+      this.logger.log(
+        `Fast facts detected: ${extractedFacts.map((f) => `${f.key}="${f.value}"`).join(', ')}`,
+      );
+      // Fire-and-forget: write to OKG and WKG in parallel
+      void this.writeFastFacts(userId, extractedFacts);
+    }
 
     // Guardian Teaching Detection: check if this is a teaching/planning request.
     // If detected, writes GUARDIAN_TEACHING_DETECTED event to TimescaleDB for
@@ -169,6 +195,156 @@ export class CommunicationService implements OnModuleInit {
       sessionId,
       parsedAt,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trigger Phrases
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check whether the input is a trigger phrase and handle it directly.
+   *
+   * Trigger phrases short-circuit the normal sensory → decision-making pipeline
+   * and produce an immediate response. Returns true if the input was handled
+   * as a trigger (caller should skip the normal pipeline).
+   *
+   * Current triggers:
+   *   - "Who am I?" → Retrieve OKG person model, LLM summarizes all known facts.
+   */
+  async handleTriggerPhrase(
+    text: string,
+    sessionId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const trigger = detectTriggerPhrase(text);
+    if (!trigger) return false;
+
+    const startMs = Date.now();
+
+    // Log the input events (same as parseInput — triggers still get logged)
+    this.logEvent('INPUT_RECEIVED', sessionId, {
+      content: text,
+      inputLength: text.length,
+    });
+    this.logEvent('TRIGGER_PHRASE_DETECTED', sessionId, {
+      trigger,
+      originalText: text,
+    });
+
+    // Add to conversation history
+    this.conversationHistory.addUserMessage(text);
+    this.personModel.setActivePerson(userId);
+    this.personModel.recordInteraction(userId);
+
+    if (trigger === 'WHO_AM_I') {
+      await this.handleWhoAmI(sessionId, userId, startMs);
+    }
+
+    return true;
+  }
+
+  /**
+   * Handle the "Who am I?" trigger.
+   *
+   * Loads all OKG facts for the speaker, sends them to the LLM with a prompt
+   * to present everything Sylphie knows about this person, and emits the
+   * response directly on delivery$.
+   */
+  private async handleWhoAmI(
+    sessionId: string,
+    userId: string,
+    startMs: number,
+  ): Promise<void> {
+    const turnId = `trigger-who-am-i-${randomUUID().substring(0, 8)}`;
+
+    // Load all facts from OKG
+    const facts = await this.personModel.loadFacts(userId);
+    const personModel = this.personModel.getPersonModel(userId);
+
+    // Build fact context for the LLM
+    let factContext: string;
+    if (facts.length === 0) {
+      factContext = 'You have no recorded facts about this person yet.';
+    } else {
+      const factLines = facts.map(
+        (f) =>
+          `- ${f.key}: ${f.value} (confidence: ${(f.confidence * 100).toFixed(0)}%, source: ${f.source})`,
+      );
+      factContext =
+        `Known facts about this person:\n${factLines.join('\n')}` +
+        (personModel
+          ? `\n\nInteraction summary: ${personModel.interactionSummary}`
+          : '');
+    }
+
+    // Call LLM to generate a natural-language response
+    let responseText: string;
+
+    if (!this.llm.isAvailable()) {
+      // Fallback: format facts directly without LLM
+      responseText =
+        facts.length === 0
+          ? "I don't know anything about you yet. Tell me about yourself!"
+          : `Here's what I know about you:\n${facts.map((f) => `${f.key}: ${f.value}`).join('\n')}`;
+    } else {
+      try {
+        const llmResponse = await this.llm.complete({
+          systemPrompt:
+            'You are Sylphie, responding to someone who asked "Who am I?" ' +
+            'Tell them everything you know about them based on the facts below. ' +
+            'Be warm and personal — this is you recalling what you know about someone you talk to. ' +
+            'If you have no facts, say so honestly and invite them to share about themselves. ' +
+            'Keep it concise but thorough — cover every fact you have.',
+          messages: [
+            { role: 'user', content: `Person data:\n${factContext}\n\nRespond to their question: "Who am I?"` },
+          ],
+          maxTokens: 300,
+          temperature: 0.4,
+          tier: 'quick',
+          metadata: {
+            callerSubsystem: 'COMMUNICATION',
+            purpose: 'TRIGGER_WHO_AM_I',
+            sessionId,
+          },
+        });
+        responseText = llmResponse.content;
+      } catch (err) {
+        this.logger.warn(`LLM call for WHO_AM_I trigger failed: ${err}`);
+        responseText =
+          facts.length === 0
+            ? "I don't know anything about you yet. Tell me about yourself!"
+            : `Here's what I know about you:\n${facts.map((f) => `${f.key}: ${f.value}`).join('\n')}`;
+      }
+    }
+
+    const latencyMs = Date.now() - startMs;
+
+    // Emit delivery directly (bypasses decision-making executor)
+    const delivery: DeliveryPayload = {
+      type: 'cb_speech',
+      text: responseText,
+      turnId,
+      isGrounded: true,
+      arbitrationType: 'TYPE_2',
+      latencyMs,
+      llmCalled: true,
+      costUsd: 0,
+      knowledgeGrounding: facts.length > 0 ? 'GROUNDED' : 'UNKNOWN',
+    };
+
+    this.deliverySubject.next(delivery);
+
+    // Log delivery
+    this.logEvent('RESPONSE_DELIVERED', sessionId, {
+      turnId,
+      trigger: 'WHO_AM_I',
+      textLength: responseText.length,
+      factCount: facts.length,
+      latencyMs,
+    });
+
+    // Add to conversation history
+    this.conversationHistory.addAssistantMessage(responseText);
   }
 
   // ---------------------------------------------------------------------------
@@ -280,7 +456,8 @@ export class CommunicationService implements OnModuleInit {
     // Add assistant response to conversation history
     if (response.text) {
       this.conversationHistory.addAssistantMessage(response.text);
-      this.personModel.recordInteraction('guardian', response.text, 'assistant');
+      const activeId = this.personModel.getActivePersonId() ?? 'guardian';
+      this.personModel.recordInteraction(activeId);
     }
 
     // Store pending turn for guardian feedback correlation
@@ -359,6 +536,203 @@ export class CommunicationService implements OnModuleInit {
 
     // Remove from pending
     this.pendingTurns.delete(turnId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fast Fact Writes (OKG + WKG)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Write extracted facts immediately to the appropriate knowledge graph.
+   *
+   * This is the fast path — facts are written within milliseconds of being
+   * spoken, not after a 60-second learning cycle.
+   *
+   * Routing by fact.target:
+   *   'speaker' → OKG (Person anchor → HAS_FACT → Attribute) + WKG
+   *   'sylphie' → Self KG (CoBeing anchor → HAS_FACT → Attribute) + WKG
+   */
+  private async writeFastFacts(
+    userId: string,
+    facts: import('./person-model.service').ExtractedFact[],
+  ): Promise<void> {
+    const writes: Promise<void>[] = [];
+
+    for (const fact of facts) {
+      if (fact.target === 'speaker') {
+        // Speaker facts → OKG + WKG
+        writes.push(
+          this.personModel.writeFact(userId, fact).catch((err) => {
+            this.logger.warn(`OKG fast-fact write failed: ${err}`);
+          }),
+        );
+        writes.push(
+          this.writeFactToWkg(userId, fact).catch((err) => {
+            this.logger.warn(`WKG fast-fact write failed: ${err}`);
+          }),
+        );
+      } else if (fact.target === 'sylphie') {
+        // Sylphie facts → Self KG + WKG (CoBeing anchor)
+        writes.push(
+          this.writeFactToSelfKg(fact).catch((err) => {
+            this.logger.warn(`Self KG fast-fact write failed: ${err}`);
+          }),
+        );
+        writes.push(
+          this.writeFactToWkgCoBeing(fact).catch((err) => {
+            this.logger.warn(`WKG CoBeing fast-fact write failed: ${err}`);
+          }),
+        );
+      }
+    }
+
+    await Promise.all(writes);
+  }
+
+  /**
+   * Write a single fact to the WKG as an entity + relationship.
+   *
+   * Example: "My name is Jim" creates:
+   *   (speaker:Entity {label: <userId>}) -[HAS_NAME]-> (value:Entity {label: "Jim"})
+   */
+  private async writeFactToWkg(
+    userId: string,
+    fact: import('./person-model.service').ExtractedFact,
+  ): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      const relType = factKeyToRelType(fact.key);
+      await session.run(
+        `MERGE (speaker {label: $userId})
+         ON CREATE SET
+           speaker.node_id = $speakerNodeId,
+           speaker.node_type = 'Person',
+           speaker.schema_level = 'instance',
+           speaker.provenance_type = 'GUARDIAN',
+           speaker.confidence = 0.90,
+           speaker.created_at = datetime()
+         MERGE (value {label: $value})
+         ON CREATE SET
+           value.node_id = $valueNodeId,
+           value.node_type = 'Entity',
+           value.schema_level = 'instance',
+           value.provenance_type = 'GUARDIAN',
+           value.confidence = 0.90,
+           value.created_at = datetime()
+         MERGE (speaker)-[r:${relType}]->(value)
+         ON CREATE SET
+           r.confidence = 0.90,
+           r.provenance_type = 'GUARDIAN',
+           r.source = $source,
+           r.raw_text = $rawText,
+           r.created_at = datetime()
+         ON MATCH SET
+           r.confidence = CASE WHEN 0.90 > r.confidence THEN 0.90 ELSE r.confidence END,
+           r.updated_at = datetime()`,
+        {
+          userId,
+          speakerNodeId: `person-${userId.substring(0, 8)}`,
+          value: fact.value,
+          valueNodeId: `entity-${fact.key}-${fact.value.toLowerCase().replace(/\s+/g, '-').substring(0, 20)}`,
+          source: fact.source,
+          rawText: fact.rawText,
+        },
+      );
+      this.logger.log(`WKG fast-fact: (${userId}) -[${relType}]-> "${fact.value}"`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Write a fact about Sylphie to the Self KG (Neo4j SELF).
+   *
+   * Example: "Your name is Sylphie" creates:
+   *   (self:CoBeing)-[:HAS_FACT]->(a:Attribute {key: "name", value: "Sylphie"})
+   */
+  private async writeFactToSelfKg(
+    fact: import('./person-model.service').ExtractedFact,
+  ): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.SELF, 'WRITE');
+    try {
+      const attrId = `self-attr-${fact.key}`;
+      await session.run(
+        `MERGE (self:CoBeing {label: 'Sylphie'})
+         ON CREATE SET
+           self.node_id = 'cobeing-self',
+           self.created_at = datetime()
+         MERGE (a:Attribute {attr_id: $attrId})
+         ON CREATE SET
+           a.key = $key,
+           a.value = $value,
+           a.confidence = 0.95,
+           a.provenance_type = 'GUARDIAN',
+           a.source = $source,
+           a.raw_text = $rawText,
+           a.learned_at = datetime()
+         ON MATCH SET
+           a.value = $value,
+           a.confidence = 0.95,
+           a.updated_at = datetime(),
+           a.raw_text = $rawText
+         MERGE (self)-[:HAS_FACT]->(a)`,
+        {
+          attrId,
+          key: fact.key,
+          value: fact.value,
+          source: fact.source,
+          rawText: fact.rawText,
+        },
+      );
+      this.logger.log(`Self KG fast-fact: Sylphie.${fact.key} = "${fact.value}"`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Write a fact about Sylphie to the WKG's CoBeing anchor node.
+   *
+   * The WKG bootstrap creates a CoBeing node for Sylphie. This method
+   * attaches guardian-taught facts directly to that anchor.
+   */
+  private async writeFactToWkgCoBeing(
+    fact: import('./person-model.service').ExtractedFact,
+  ): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      const relType = factKeyToRelType(fact.key);
+      await session.run(
+        `MATCH (self:CoBeing)
+         MERGE (value {label: $value})
+         ON CREATE SET
+           value.node_id = $valueNodeId,
+           value.node_type = 'Entity',
+           value.schema_level = 'instance',
+           value.provenance_type = 'GUARDIAN',
+           value.confidence = 0.95,
+           value.created_at = datetime()
+         MERGE (self)-[r:${relType}]->(value)
+         ON CREATE SET
+           r.confidence = 0.95,
+           r.provenance_type = 'GUARDIAN',
+           r.source = $source,
+           r.raw_text = $rawText,
+           r.created_at = datetime()
+         ON MATCH SET
+           r.confidence = 0.95,
+           r.updated_at = datetime()`,
+        {
+          value: fact.value,
+          valueNodeId: `self-${fact.key}-${fact.value.toLowerCase().replace(/\s+/g, '-').substring(0, 20)}`,
+          source: fact.source,
+          rawText: fact.rawText,
+        },
+      );
+      this.logger.log(`WKG CoBeing fast-fact: (Sylphie) -[${relType}]-> "${fact.value}"`);
+    } finally {
+      await session.close();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -551,6 +925,23 @@ export class CommunicationService implements OnModuleInit {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Detect whether the input is a trigger phrase that should short-circuit
+ * the normal pipeline.
+ *
+ * Returns the trigger type string if matched, null otherwise.
+ */
+function detectTriggerPhrase(text: string): string | null {
+  const lower = text.toLowerCase().trim().replace(/[?!.]+$/, '');
+
+  if (/^who am i$/.test(lower)) return 'WHO_AM_I';
+  if (/^what do you know about me$/.test(lower)) return 'WHO_AM_I';
+  if (/^tell me what you know about me$/.test(lower)) return 'WHO_AM_I';
+  if (/^what do you remember about me$/.test(lower)) return 'WHO_AM_I';
+
+  return null;
+}
+
 function extractEntities(text: string): string[] {
   const words = text.split(/\s+/).filter((w) => w.length > 2);
   const entities: string[] = [];
@@ -672,4 +1063,19 @@ function detectGuardianFeedback(text: string): 'confirmation' | 'correction' | '
   }
 
   return 'none';
+}
+
+/**
+ * Map a fact key (from extractFactsFromText) to a WKG relationship type.
+ */
+function factKeyToRelType(key: string): string {
+  const map: Record<string, string> = {
+    name: 'HAS_NAME',
+    identity: 'IDENTIFIES_AS',
+    likes: 'LIKES',
+    occupation: 'WORKS_AS',
+    location: 'LIVES_IN',
+    age: 'HAS_AGE',
+  };
+  return map[key] ?? `HAS_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
 }

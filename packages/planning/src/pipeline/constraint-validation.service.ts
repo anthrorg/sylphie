@@ -171,6 +171,7 @@ export class ConstraintValidationService implements IConstraintValidationService
       systemPrompt: VALIDATION_SYSTEM_PROMPT,
       maxTokens: 512,
       temperature: 0.1,
+      tier: 'deep',
       metadata: {
         callerSubsystem: 'PLANNING',
         purpose: 'PLAN_CONSTRAINT_VALIDATION',

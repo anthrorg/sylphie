@@ -100,6 +100,7 @@ export * from './metrics.types';
 // LLM types
 export {
   LLM_SERVICE,
+  type LlmTier,
   type LlmMessage,
   type LlmRequest,
   type LlmCallMetadata,

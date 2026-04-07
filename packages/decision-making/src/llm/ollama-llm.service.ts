@@ -25,6 +25,7 @@ import type {
   ILlmService,
   LlmRequest,
   LlmResponse,
+  LlmTier,
   Type2CostEstimate,
 } from '@sylphie/shared';
 
@@ -66,7 +67,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   private readonly logger = new Logger(OllamaLlmService.name);
 
   private client!: Ollama;
-  private model!: string;
+  private models!: Record<LlmTier, string>;
   private timeoutMs!: number;
 
   /** Set to false for Lesion Test or when Ollama is unreachable. */
@@ -82,11 +83,24 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
 
   onModuleInit(): void {
     const host = this.config.get<string>('ollama.host', 'http://localhost:11434');
-    this.model = this.config.get<string>('ollama.chatModel', 'llama3.2');
+    this.models = {
+      quick: this.config.get<string>('ollama.modelQuick', 'qwen2.5:3b'),
+      medium: this.config.get<string>('ollama.modelMedium', 'qwen2.5:7b'),
+      deep: this.config.get<string>('ollama.modelDeep', 'qwen2.5:14b'),
+    };
     this.timeoutMs = this.config.get<number>('ollama.chatTimeoutMs', 30000);
 
     this.client = new Ollama({ host });
-    this.logger.log(`Ollama LLM configured: ${host} / model=${this.model} / timeout=${this.timeoutMs}ms`);
+    this.logger.log(
+      `Ollama LLM configured: ${host} / ` +
+        `quick=${this.models.quick}, medium=${this.models.medium}, deep=${this.models.deep} / ` +
+        `timeout=${this.timeoutMs}ms`,
+    );
+  }
+
+  /** Resolve the Ollama model name for a given tier. */
+  private resolveModel(tier: LlmTier = 'medium'): string {
+    return this.models[tier];
   }
 
   /**
@@ -103,6 +117,8 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       throw new Error('LLM service unavailable (circuit breaker tripped or lesion test active)');
     }
 
+    const model = this.resolveModel(request.tier);
+
     // Build Ollama message array: system prompt + conversation messages.
     const ollamaMessages: Array<{ role: string; content: string }> = [];
 
@@ -118,7 +134,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
 
     try {
       const response = await this.client.chat({
-        model: this.model,
+        model,
         messages: ollamaMessages,
         options: {
           temperature: request.temperature,
@@ -135,7 +151,8 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       const completionTokens = response.eval_count ?? 0;
 
       this.logger.debug(
-        `LLM complete: ${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
+        `LLM complete [${request.tier ?? 'medium'}/${model}]: ` +
+          `${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
           `purpose=${request.metadata.purpose}`,
       );
 
@@ -146,7 +163,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
           completion: completionTokens,
         },
         latencyMs,
-        model: response.model ?? this.model,
+        model: response.model ?? model,
         cost: 0, // Local Ollama has no API cost.
       };
     } catch (err) {
@@ -162,7 +179,8 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       }
 
       this.logger.error(
-        `LLM call failed (${latencyMs}ms, failures=${this.consecutiveFailures}): ` +
+        `LLM call failed [${request.tier ?? 'medium'}/${model}] ` +
+          `(${latencyMs}ms, failures=${this.consecutiveFailures}): ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
       throw err;
@@ -192,6 +210,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       throw new Error('LLM service unavailable');
     }
 
+    const model = this.resolveModel(request.tier);
     const MAX_TOOL_ROUNDS = 5;
     const startMs = Date.now();
     let totalPromptTokens = 0;
@@ -221,7 +240,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       try {
         const response = await this.client.chat({
-          model: this.model,
+          model,
           messages,
           tools: ollamaTools,
           options: {
@@ -285,7 +304,8 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const latencyMs = Date.now() - startMs;
 
     this.logger.debug(
-      `LLM completeWithTools: ${totalPromptTokens}+${totalCompletionTokens} tokens, ` +
+      `LLM completeWithTools [${request.tier ?? 'medium'}/${model}]: ` +
+        `${totalPromptTokens}+${totalCompletionTokens} tokens, ` +
         `${latencyMs}ms, purpose=${request.metadata.purpose}`,
     );
 
@@ -293,7 +313,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       content: finalContent,
       tokensUsed: { prompt: totalPromptTokens, completion: totalCompletionTokens },
       latencyMs,
-      model: this.model,
+      model,
       cost: 0,
     };
   }
