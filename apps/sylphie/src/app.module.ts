@@ -41,6 +41,7 @@ import { ConversationHistoryService } from './services/conversation-history.serv
 import { PersonModelService } from './services/person-model.service';
 import { FaceSnapshotService } from './services/face-snapshot.service';
 import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
+import { SceneEventDetectorService } from './services/scene-event-detector.service';
 
 @Module({
   imports: [
@@ -131,6 +132,7 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
     PersonModelService,
     FaceSnapshotService,
     VoiceLatentSpaceService,
+    SceneEventDetectorService,
     // Gateways
     GraphGateway,
     ConversationGateway,

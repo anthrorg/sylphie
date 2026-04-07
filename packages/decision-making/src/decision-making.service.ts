@@ -61,6 +61,8 @@ import { LatentSpaceService, type MultiModalLatentMatch } from './latent-space/l
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult } from './deliberation/deliberation.service';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
+import { ScenePredictionService } from './prediction/scene-prediction.service';
+import type { SceneSnapshot } from '@sylphie/shared';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -137,6 +139,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     private readonly wkgContext: WkgContextService,
     private readonly deliberation: DeliberationService,
     private readonly sensoryPrediction: SensoryPredictionService,
+    private readonly scenePrediction: ScenePredictionService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -751,6 +754,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // ── Route sensory prediction errors to drives ─────────────────────────
       this.routeSensoryPredictionErrors(sensoryErrors, driveSnapshot);
 
+      // ── Route scene-level prediction errors (per-object) to drives ──────
+      const sceneSnapshot = frame.raw['scene'] as SceneSnapshot | undefined;
+      if (sceneSnapshot) {
+        this.routeScenePredictionErrors(sceneSnapshot, driveSnapshot);
+      }
+
       this.logger.debug(
         `Decision cycle complete (${cycleLatencyMs}ms). Arbitration: ${arbitrationResult.type}. ` +
           `Action: ${actionId}. Response: ${responseText.length} chars.` +
@@ -923,6 +932,80 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       } catch (err) {
         this.logger.warn(`Sensory prediction error routing failed: ${err}`);
+      }
+    }
+  }
+
+  /**
+   * Route per-object scene prediction errors to drives.
+   *
+   * Novel person → curiosity + social.
+   * Person left → mild anxiety.
+   * Unknown face → curiosity + focus.
+   * Known face identified → social (slight).
+   * General scene instability → curiosity.
+   */
+  private routeScenePredictionErrors(
+    sceneSnapshot: SceneSnapshot,
+    _snapshot: DriveSnapshot,
+  ): void {
+    const result = this.scenePrediction.computeSceneErrors(sceneSnapshot);
+
+    if (result.totalSurprise < 0.05) return;
+
+    const driveEffects: Partial<Record<DriveName, number>> = {};
+
+    for (const error of result.errors) {
+      switch (error.errorType) {
+        case 'novel':
+          if (error.label === 'person') {
+            // New person → curiosity + social drive
+            driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + 0.2;
+            driveEffects[DriveName.Social] = (driveEffects[DriveName.Social] ?? 0) + 0.15;
+            if (!error.personId) {
+              // Unknown person → extra focus ("who is this?")
+              driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + 0.15;
+            }
+          } else {
+            // New object → curiosity
+            driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + 0.1;
+          }
+          break;
+
+        case 'missing':
+          if (error.label === 'person') {
+            // Person left → mild anxiety + social
+            driveEffects[DriveName.Anxiety] = (driveEffects[DriveName.Anxiety] ?? 0) + 0.08;
+            driveEffects[DriveName.Social] = (driveEffects[DriveName.Social] ?? 0) + 0.05;
+          }
+          break;
+
+        case 'moved':
+          // Significant movement → focus
+          driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + error.magnitude * 0.1;
+          break;
+      }
+    }
+
+    if (Object.keys(driveEffects).length === 0) return;
+
+    if (this.actionOutcomeReporter) {
+      try {
+        this.actionOutcomeReporter.reportOutcome({
+          actionId: 'scene-prediction',
+          actionType: 'ScenePrediction',
+          success: result.totalSurprise < 0.2,
+          driveEffects,
+          feedbackSource: 'INFERENCE',
+          theaterCheck: {
+            expressionType: 'none',
+            correspondingDrive: null,
+            driveValue: null,
+            isTheatrical: false,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Scene prediction error routing failed: ${err}`);
       }
     }
   }

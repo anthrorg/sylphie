@@ -83,6 +83,7 @@ import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.serv
 import { WkgContextService } from './wkg/wkg-context.service';
 import { LatentSpaceService } from './latent-space/latent-space.service';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
+import { ScenePredictionService } from './prediction/scene-prediction.service';
 import { DeliberationService } from './deliberation/deliberation.service';
 import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
@@ -97,6 +98,7 @@ import { VideoEncoder } from './inputs/encoders/video.encoder';
 import { FaceEncoder } from './inputs/encoders/face.encoder';
 import { DriveEncoder } from './inputs/encoders/drive.encoder';
 import { AudioEncoder } from './inputs/encoders/audio.encoder';
+import { SceneEncoder } from './inputs/encoders/scene.encoder';
 import { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
@@ -191,6 +193,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // ── Sensory Prediction (per-modality prediction error detection)
     SensoryPredictionService,
 
+    // ── Scene Prediction (per-object prediction for novelty/disappearance detection)
+    ScenePredictionService,
+
     // ── Deliberation Pipeline (multi-step Type 2 reasoning)
     DeliberationService,
     ContextWindowService,
@@ -209,6 +214,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     FaceEncoder,
     DriveEncoder,
     AudioEncoder,
+    SceneEncoder,
     SensoryFusionService,
     TickSamplerService,
   ],
@@ -224,6 +230,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // Sensory prediction: exported for system reset.
     SensoryPredictionService,
 
+    // Scene prediction: exported for scene-level drive routing.
+    ScenePredictionService,
+
     // Sensory pipeline services: exported so that app-level gateways and
     // controllers can inject TickSamplerService, ModalityRegistryService,
     // and the individual encoders without re-providing them.
@@ -233,6 +242,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     FaceEncoder,
     DriveEncoder,
     AudioEncoder,
+    SceneEncoder,
     SensoryFusionService,
     TickSamplerService,
   ],

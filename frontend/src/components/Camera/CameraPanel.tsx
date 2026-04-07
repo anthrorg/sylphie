@@ -10,6 +10,7 @@ import { usePerception, AnnotationLayer } from '../../hooks/usePerception'
 
 const LAYER_CHIPS: { layer: AnnotationLayer; label: string; color: string }[] = [
   { layer: 'objects',       label: 'Objects',  color: '#00ff00' },
+  { layer: 'tracking',      label: 'Tracking', color: '#ff6600' },
   { layer: 'face-mesh',     label: 'Mesh',     color: '#00bfff' },
   { layer: 'face-dots',     label: 'Dots',     color: '#ff4081' },
   { layer: 'face-contour',  label: 'Contour',  color: '#ffa500' },

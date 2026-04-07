@@ -93,7 +93,8 @@ class _AppState:
     model_loaded: bool = False
     face_model_loaded: bool = False
     pipeline_active: bool = False
-    tracker: Any | None = None           # IoUTracker, for tracked_objects count
+    tracker: Any | None = None           # IoUTracker, for per-object tracking
+    frame_sequence: int = 0              # Auto-incrementing frame counter
 
 
 _state = _AppState()
@@ -146,6 +147,17 @@ async def _startup() -> None:
         detector = YoloDetector(config=cfg.detection)
         _state.detector = detector
         _state.model_loaded = True
+
+        # Tracker: IoU-based frame-to-frame object tracker, runs as a singleton
+        # so tracked state persists across HTTP calls to /detect.
+        from cobeing.layer2_perception.tracker import IoUTracker  # noqa: PLC0415
+
+        _state.tracker = IoUTracker(
+            iou_threshold=0.3,
+            min_confirm_frames=3,
+            max_lost_frames=15,
+        )
+        logger.info("perception_service_tracker_ok")
 
         logger.info("perception_service_startup_ok model=%s", cfg.detection.model_path)
 
@@ -281,8 +293,14 @@ async def detect(request: Request) -> JSONResponse:
 
     loop = asyncio.get_event_loop()
 
+    # Increment frame sequence for tracker temporal ordering.
+    _state.frame_sequence += 1
+    current_sequence = _state.frame_sequence
+
     try:
-        frame = await loop.run_in_executor(None, _decode_jpeg_to_frame, body)
+        frame = await loop.run_in_executor(
+            None, _decode_jpeg_to_frame, body, current_sequence,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -330,6 +348,76 @@ async def detect(request: Request) -> JSONResponse:
         except Exception:
             pass
 
+    # --- Per-object tracking ---
+    # Run the IoU tracker to maintain persistent track IDs across frames.
+    # The tracker is a singleton on _state so identity persists across calls.
+    tracked_objects_json: list[dict] = []
+    scene_summary: dict = {
+        "total_tracks": 0,
+        "confirmed_count": 0,
+        "lost_count": 0,
+        "new_count": 0,
+        "frame_sequence": current_sequence,
+    }
+
+    if _state.tracker is not None:
+        from cobeing.layer2_perception.types import TrackState  # noqa: PLC0415
+
+        tracked_objects = _state.tracker.update(detections, frame.frame_id)
+
+        confirmed_count = 0
+        lost_count = 0
+        new_count = 0
+
+        for t in tracked_objects:
+            is_confirmed = t.state == TrackState.CONFIRMED
+            if is_confirmed:
+                confirmed_count += 1
+            if t.state == TrackState.LOST:
+                lost_count += 1
+            if t.frames_seen == 1:
+                new_count += 1
+
+            # Extract embedding for CONFIRMED tracks (lazy-init extractor).
+            embedding: list[float] | None = None
+            if is_confirmed:
+                embedding = await loop.run_in_executor(
+                    None,
+                    _extract_track_embedding,
+                    frame,
+                    t.detection,
+                )
+
+            tracked_objects_json.append({
+                "track_id": int(t.track_id),
+                "state": t.state.value,
+                "label": t.detection.label_raw,
+                "confidence": t.detection.confidence,
+                "bbox": [
+                    t.detection.bbox_x_min,
+                    t.detection.bbox_y_min,
+                    t.detection.bbox_x_max,
+                    t.detection.bbox_y_max,
+                ],
+                "frames_seen": t.frames_seen,
+                "frames_lost": t.frames_lost,
+                "first_seen_at": (
+                    t.first_seen_at.isoformat() if t.first_seen_at else None
+                ),
+                "last_seen_at": (
+                    t.last_seen_at.isoformat() if t.last_seen_at else None
+                ),
+                "embedding": embedding,
+            })
+
+        scene_summary = {
+            "total_tracks": len(tracked_objects),
+            "confirmed_count": confirmed_count,
+            "lost_count": lost_count,
+            "new_count": new_count,
+            "frame_sequence": current_sequence,
+        }
+
     return JSONResponse({
         "detections": [
             {
@@ -347,6 +435,8 @@ async def detect(request: Request) -> JSONResponse:
         "faces": face_detections_json,
         "face_connections": face_connections,
         "face_oval": face_oval,
+        "tracked_objects": tracked_objects_json,
+        "scene_summary": scene_summary,
     })
 
 
@@ -521,6 +611,49 @@ async def crop_face(request: Request) -> JSONResponse:
     })
 
 
+_embedding_init_failed: bool = False
+
+
+def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None:  # noqa: ANN401
+    """Extract a 1280D EfficientNet-B0 embedding for a tracked object's bbox.
+
+    Uses the same lazy-init OnnxEmbeddingExtractor pattern as /crop-face.
+    Returns None if extraction fails or the extractor cannot be initialised.
+    """
+    global _embedding_init_failed  # noqa: PLW0603
+
+    if _embedding_init_failed:
+        return None
+
+    if _state.embedding_extractor is None:
+        try:
+            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                OnnxEmbeddingExtractor,
+            )
+            _state.embedding_extractor = OnnxEmbeddingExtractor()
+            logger.info("OnnxEmbeddingExtractor initialized for tracked objects")
+        except (ImportError, RuntimeError) as exc:
+            logger.warning("OnnxEmbeddingExtractor unavailable (embeddings will be null): %s", exc)
+            _embedding_init_failed = True
+            return None
+
+    try:
+        return _state.embedding_extractor.extract(
+            frame.data,
+            (
+                detection.bbox_x_min,
+                detection.bbox_y_min,
+                detection.bbox_x_max,
+                detection.bbox_y_max,
+            ),
+            frame.width,
+            frame.height,
+        )
+    except Exception as exc:
+        logger.warning("Track embedding extraction failed: %s", exc)
+        return None
+
+
 def _annotate_frame(jpeg_bytes: bytes, detections: list) -> bytes:
     """Draw bounding boxes on JPEG and return annotated JPEG bytes."""
     import cv2  # noqa: PLC0415
@@ -540,7 +673,7 @@ def _annotate_frame(jpeg_bytes: bytes, detections: list) -> bytes:
     return encoded.tobytes()
 
 
-def _decode_jpeg_to_frame(jpeg_bytes: bytes) -> Any:  # noqa: ANN401
+def _decode_jpeg_to_frame(jpeg_bytes: bytes, frame_sequence: int = 0) -> Any:  # noqa: ANN401
     """Decode JPEG bytes to a Frame with raw RGB data.
 
     YoloDetector.detect() calls np.frombuffer(frame.data).reshape(height, width, 3),
@@ -549,6 +682,7 @@ def _decode_jpeg_to_frame(jpeg_bytes: bytes) -> Any:  # noqa: ANN401
 
     Args:
         jpeg_bytes: JPEG-encoded image bytes from the request body.
+        frame_sequence: Monotonically increasing counter for frame ordering.
 
     Returns:
         A Frame suitable for passing to YoloDetector.detect().
@@ -574,7 +708,7 @@ def _decode_jpeg_to_frame(jpeg_bytes: bytes) -> Any:  # noqa: ANN401
 
     return Frame(
         frame_id=str(uuid.uuid4()),
-        frame_sequence=0,
+        frame_sequence=frame_sequence,
         observed_at=datetime.now(UTC),
         width=width,
         height=height,
@@ -605,9 +739,8 @@ async def status() -> JSONResponse:
     tracked_count = 0
     fps = 0.0
 
-    if _state.pipeline_active and _state.tracker is not None:
-        # IoUTracker stores active tracks in _tracks dict (non-DELETED).
-        # Access the internal dict carefully; fall back to 0 on any attribute error.
+    if _state.tracker is not None:
+        # IoUTracker stores active tracks in _tracks list (non-DELETED).
         try:
             tracked_count = len(_state.tracker._tracks)  # noqa: SLF001
         except AttributeError:

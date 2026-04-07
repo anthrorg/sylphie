@@ -98,6 +98,15 @@ export {
 // Metrics types
 export * from './metrics.types';
 
+// Scene types (per-object tracking + scene events)
+export {
+  SceneEventType,
+  type TrackedObjectDTO,
+  type SceneEvent,
+  type SceneSummary,
+  type SceneSnapshot,
+} from './scene.types';
+
 // LLM types
 export {
   LLM_SERVICE,

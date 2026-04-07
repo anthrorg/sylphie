@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Subject } from 'rxjs';
 import { EMBEDDING_DIM, FaceDetection, SensoryFrame, VideoDetection } from '@sylphie/shared';
+import type { SceneSnapshot } from '@sylphie/shared';
 import { SensoryFusionService } from '../fusion/sensory-fusion';
 import { ModalityRegistryService } from '../registry/modality-registry.service';
 import { AudioChunk } from '../encoders/audio.encoder';
@@ -136,6 +137,10 @@ export class TickSamplerService {
 
   updateFaces(faces: FaceDetection[]): void {
     this.update('faces', faces);
+  }
+
+  updateScene(snapshot: SceneSnapshot): void {
+    this.update('scene', snapshot);
   }
 
   // ── Tick sampling ───────────────────────────────────────────────

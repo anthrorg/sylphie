@@ -18,6 +18,9 @@ export type { LatentMatch, MultiModalLatentMatch } from './latent-space/latent-s
 /** Sensory prediction — exported for system reset. */
 export { SensoryPredictionService } from './prediction/sensory-prediction.service';
 
+/** Scene prediction — per-object prediction errors for attention and drive routing. */
+export { ScenePredictionService, type ScenePredictionResult, type SceneObjectError } from './prediction/scene-prediction.service';
+
 // ---------------------------------------------------------------------------
 // Sensory Pipeline (re-exported for backward compatibility)
 // ---------------------------------------------------------------------------
@@ -28,5 +31,6 @@ export { VideoEncoder } from './inputs/encoders/video.encoder';
 export { FaceEncoder } from './inputs/encoders/face.encoder';
 export { DriveEncoder } from './inputs/encoders/drive.encoder';
 export { AudioEncoder, type AudioChunk } from './inputs/encoders/audio.encoder';
+export { SceneEncoder } from './inputs/encoders/scene.encoder';
 export { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 export { TickSamplerService } from './inputs/sampling/tick-sampler';

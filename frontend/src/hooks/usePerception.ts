@@ -28,8 +28,32 @@ interface FaceDetection {
   blendshapes: Record<string, number> | null
 }
 
+interface TrackedObject {
+  track_id: number
+  state: string
+  label: string
+  confidence: number
+  bbox: [number, number, number, number]
+  frames_seen: number
+  frames_lost: number
+  first_seen_at: string | null
+  last_seen_at: string | null
+  embedding: number[] | null
+}
+
+interface SceneEvent {
+  type: string
+  trackId: number
+  label: string
+  confidence: number
+  bbox: [number, number, number, number]
+  timestamp: number
+  personId?: string
+}
+
 export type AnnotationLayer =
   | 'objects'
+  | 'tracking'
   | 'face-mesh'
   | 'face-dots'
   | 'face-contour'
@@ -66,6 +90,9 @@ export function usePerception(): UsePerceptionReturn {
   const faceDetectionsRef = useRef<FaceDetection[]>([])
   const faceConnectionsRef = useRef<number[][]>([])
   const faceOvalRef = useRef<number[][]>([])
+  const trackedObjectsRef = useRef<TrackedObject[]>([])
+  const sceneEventsRef = useRef<SceneEvent[]>([])
+  const recentTrackIdsRef = useRef<Set<number>>(new Set())
   const rafRef = useRef<number | null>(null)
   const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
 
@@ -165,6 +192,18 @@ export function usePerception(): UsePerceptionReturn {
             if (data.face_oval?.length > 0) {
               faceOvalRef.current = data.face_oval
             }
+            // Tracked objects and scene events from SceneEventDetector
+            trackedObjectsRef.current = data.tracked_objects ?? []
+            sceneEventsRef.current = data.scene_events ?? []
+
+            // Build set of novel track IDs from scene events
+            const novelIds = new Set<number>()
+            for (const evt of sceneEventsRef.current) {
+              if (evt.type === 'object_appeared' || evt.type === 'person_arrived') {
+                novelIds.add(evt.trackId)
+              }
+            }
+            recentTrackIdsRef.current = novelIds
           } catch {
             // Not JSON — ignore
           }
@@ -234,6 +273,82 @@ export function usePerception(): UsePerceptionReturn {
             ctx.font = '12px monospace'
             ctx.fillStyle = '#00ff00'
             ctx.fillText(label, d.bbox_x_min, d.bbox_y_min > 14 ? d.bbox_y_min - 4 : d.bbox_y_max + 14)
+          }
+        }
+
+        // --- Tracking layer: per-object tracked bounding boxes ---
+        if (al.includes('tracking')) {
+          const tracked = trackedObjectsRef.current
+          const novelIds = recentTrackIdsRef.current
+          const events = sceneEventsRef.current
+
+          // Draw confirmed tracks with color-coded bounding boxes
+          for (const obj of tracked) {
+            if (obj.state !== 'confirmed') continue
+
+            // Color by prediction status
+            const isNovel = novelIds.has(obj.track_id)
+            const color = isNovel ? '#ff6600' : '#00ff88' // orange = novel, green = expected
+
+            ctx.strokeStyle = color
+            ctx.lineWidth = 2
+            const [x1, y1, x2, y2] = obj.bbox
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+
+            // Label with track ID and class
+            const label = `#${obj.track_id} ${obj.label} ${(obj.confidence * 100).toFixed(0)}%`
+            ctx.font = '11px monospace'
+            ctx.fillStyle = color
+            const labelY = y1 > 16 ? y1 - 4 : y2 + 14
+            ctx.fillText(label, x1, labelY)
+
+            // Show frames_seen as a small indicator
+            if (obj.frames_seen > 1) {
+              const ageLabel = `${obj.frames_seen}f`
+              ctx.font = '9px monospace'
+              ctx.fillStyle = 'rgba(255,255,255,0.5)'
+              ctx.fillText(ageLabel, x2 - ctx.measureText(ageLabel).width - 2, y1 > 16 ? y1 - 4 : y2 + 14)
+            }
+          }
+
+          // Draw FACE_IDENTIFIED events with person label
+          for (const evt of events) {
+            if (evt.type !== 'face_identified' || !evt.personId) continue
+            const [x1, y1] = evt.bbox
+            ctx.font = 'bold 12px monospace'
+            ctx.fillStyle = '#00ddff'
+            ctx.fillText(evt.personId.substring(0, 12), x1, y1 > 30 ? y1 - 18 : y1 + 28)
+          }
+
+          // Draw PERSON_LEFT ghost bboxes (dashed red)
+          for (const evt of events) {
+            if (evt.type !== 'person_left' && evt.type !== 'object_disappeared') continue
+            const [x1, y1, x2, y2] = evt.bbox
+            ctx.setLineDash([5, 5])
+            ctx.strokeStyle = '#ff3333'
+            ctx.lineWidth = 1.5
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+            ctx.setLineDash([])
+
+            const label = `LOST: ${evt.label}`
+            ctx.font = '10px monospace'
+            ctx.fillStyle = '#ff3333'
+            ctx.fillText(label, x1, y1 > 16 ? y1 - 4 : y2 + 14)
+          }
+
+          // Draw FACE_OCCLUDED indicator
+          for (const evt of events) {
+            if (evt.type !== 'face_occluded') continue
+            const [x1, y1, x2, y2] = evt.bbox
+            ctx.setLineDash([3, 3])
+            ctx.strokeStyle = '#ffaa00'
+            ctx.lineWidth = 2
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+            ctx.setLineDash([])
+
+            ctx.font = '10px monospace'
+            ctx.fillStyle = '#ffaa00'
+            ctx.fillText('FACE HIDDEN', x1 + 2, (y1 + y2) / 2)
           }
         }
 

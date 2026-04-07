@@ -7,8 +7,10 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
+import type { TrackedObjectDTO, SceneSummary, FaceDetection } from '@sylphie/shared';
 import { PersonModelService } from '../services/person-model.service';
 import { FaceSnapshotService } from '../services/face-snapshot.service';
+import { SceneEventDetectorService } from '../services/scene-event-detector.service';
 
 const MAX_FPS = 15;
 const MIN_FRAME_INTERVAL_MS = 1000 / MAX_FPS;
@@ -27,6 +29,7 @@ export class PerceptionGateway
     private readonly tickSampler: TickSamplerService,
     private readonly personModel: PersonModelService,
     private readonly faceSnapshot: FaceSnapshotService,
+    private readonly sceneEventDetector: SceneEventDetectorService,
   ) {
     this.perceptionHost = this.config.get<string>(
       'PERCEPTION_HOST',
@@ -64,12 +67,6 @@ export class PerceptionGateway
       if (!response.ok) return;
 
       const result = await response.json();
-      // result = { detections: [...], faces: [...] }
-
-      // Send full multi-layer result to browser (it draws boxes client-side)
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(result));
-      }
 
       // Feed object detections into the sensory pipeline
       const detections = result.detections ?? [];
@@ -85,14 +82,14 @@ export class PerceptionGateway
 
       // Feed face detections into the sensory pipeline
       const faces = result.faces ?? [];
-      if (faces.length > 0) {
-        const mappedFaces = faces.map((f: any) => ({
-          confidence: f.confidence,
-          bbox: [f.bbox_x_min, f.bbox_y_min, f.bbox_x_max, f.bbox_y_max] as [number, number, number, number],
-          landmarks: f.landmarks ?? null,
-          blendshapes: f.blendshapes ?? null,
-        }));
+      const mappedFaces: FaceDetection[] = faces.map((f: any) => ({
+        confidence: f.confidence,
+        bbox: [f.bbox_x_min, f.bbox_y_min, f.bbox_x_max, f.bbox_y_max] as [number, number, number, number],
+        landmarks: f.landmarks ?? null,
+        blendshapes: f.blendshapes ?? null,
+      }));
 
+      if (mappedFaces.length > 0) {
         this.tickSampler.updateFaces(mappedFaces);
 
         // Face snapshot collection (fire-and-forget, best-effort)
@@ -101,6 +98,56 @@ export class PerceptionGateway
           void this.faceSnapshot
             .processFaceFrame(activePersonId, mappedFaces, jpegData)
             .catch(() => {});
+        }
+      }
+
+      // --- Scene event detection ---
+      // Map Python tracked_objects to TrackedObjectDTOs and run event detection.
+      const rawTracked: any[] = result.tracked_objects ?? [];
+      const rawSummary = result.scene_summary;
+
+      if (rawTracked.length > 0 && rawSummary) {
+        const trackedObjects: TrackedObjectDTO[] = rawTracked.map((t: any) => ({
+          trackId: t.track_id,
+          state: t.state,
+          label: t.label,
+          confidence: t.confidence,
+          bbox: t.bbox as [number, number, number, number],
+          framesSeen: t.frames_seen,
+          framesLost: t.frames_lost,
+          firstSeenAt: t.first_seen_at ?? null,
+          lastSeenAt: t.last_seen_at ?? null,
+          embedding: t.embedding ?? null,
+        }));
+
+        const summary: SceneSummary = {
+          totalTracks: rawSummary.total_tracks,
+          confirmedCount: rawSummary.confirmed_count,
+          lostCount: rawSummary.lost_count,
+          newCount: rawSummary.new_count,
+          frameSequence: rawSummary.frame_sequence,
+        };
+
+        const sceneSnapshot = this.sceneEventDetector.detectEvents(
+          trackedObjects,
+          mappedFaces,
+          summary,
+        );
+
+        // Feed scene snapshot into the sensory pipeline
+        this.tickSampler.updateScene(sceneSnapshot);
+
+        // Send enriched result to browser (tracked objects + scene events)
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            ...result,
+            scene_events: sceneSnapshot.events,
+          }));
+        }
+      } else {
+        // No tracked objects — send raw result as before
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(result));
         }
       }
     } catch {
