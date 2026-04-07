@@ -80,6 +80,9 @@ export class TickSamplerService {
   /** Callback invoked when event-driven input arrives. Set by the tick engine. */
   private inputCallback: (() => void) | null = null;
 
+  /** Timestamp of the most recent event-driven input (text, audio, etc.). */
+  private lastInputAt = 0;
+
   /**
    * Register a callback to be invoked immediately when event-driven input arrives.
    * Used by the tick engine to trigger immediate cycles on reactive input.
@@ -100,9 +103,17 @@ export class TickSamplerService {
     this.latestValues.set(modalityName, value);
 
     // Nudge the tick engine immediately for event-driven modalities.
-    if (this.inputCallback && this.registry.getEventDrivenNames().has(modalityName)) {
-      this.inputCallback();
+    if (this.registry.getEventDrivenNames().has(modalityName)) {
+      this.lastInputAt = Date.now();
+      if (this.inputCallback) {
+        this.inputCallback();
+      }
     }
+  }
+
+  /** Timestamp (epoch ms) of the most recent event-driven input. */
+  getLastInputTimestamp(): number {
+    return this.lastInputAt;
   }
 
   // ── Typed convenience methods for known modalities ──────────────

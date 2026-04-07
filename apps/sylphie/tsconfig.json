@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "noEmit": true,
     "outDir": "dist",
     "rootDir": "src",
     "baseUrl": "../..",
@@ -18,12 +19,7 @@
     }
   },
   "include": [
-    "src/**/*",
-    "../../packages/shared/src/**/*",
-    "../../packages/decision-making/src/**/*",
-    "../../packages/drive-engine/src/**/*",
-    "../../packages/learning/src/**/*",
-    "../../packages/planning/src/**/*"
+    "src/**/*"
   ],
   "ts-node": {
     "require": ["tsconfig-paths/register"]

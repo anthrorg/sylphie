@@ -168,8 +168,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
   /**
    * Minimum total drive pressure required to trigger a self-initiated cycle.
-   * Initial drive state has total pressure ~2.4, so this must be above that
-   * to prevent rapid self-initiated ticks at startup before any real input.
+   * Initial drive state has total pressure 0.0 (all drives start at zero).
    * Self-initiated cycles should only fire when pressure has genuinely built
    * up beyond baseline (e.g., boredom accumulating over time).
    */
@@ -266,8 +265,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         if (snapshot.totalPressure < DecisionMakingService.IDLE_PRESSURE_THRESHOLD) {
           return; // Low pressure, no input — nothing to do.
         }
-        // Rate-limit self-initiated ticks to prevent log spam.
+        // Suppress self-initiated ticks within 30s of last user input.
+        // The user may still be thinking; avoid generating unprompted responses.
         const now = Date.now();
+        const msSinceLastInput = now - this.tickSampler.getLastInputTimestamp();
+        if (msSinceLastInput < 30_000) {
+          return;
+        }
+        // Rate-limit self-initiated ticks to prevent log spam.
         if (now - this.lastSelfInitiatedAt < DecisionMakingService.SELF_INITIATE_COOLDOWN_MS) {
           return;
         }

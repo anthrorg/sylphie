@@ -364,7 +364,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       },
     ];
 
-    const BASE_CONFIDENCE = 0.40;
+    const BASE_CONFIDENCE = 0.60;
 
     // Check whether seeds already exist and write new ones in a single session.
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');

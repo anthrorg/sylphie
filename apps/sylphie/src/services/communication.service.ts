@@ -377,6 +377,7 @@ export class CommunicationService implements OnModuleInit {
       turnId: response.turnId,
       arbitrationType: response.arbitrationType,
       actionId: response.actionId,
+      text: response.text,
       textLength: response.text.length,
       model: response.model,
       latencyMs: response.latencyMs,
@@ -451,6 +452,7 @@ export class CommunicationService implements OnModuleInit {
     // Log RESPONSE_DELIVERED
     this.logEvent('RESPONSE_DELIVERED', sessionId, {
       turnId: response.turnId,
+      text: response.text,
       textLength: response.text.length,
       hasAudio: !!audioBase64,
       voiceCacheHit,

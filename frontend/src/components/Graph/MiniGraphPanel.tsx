@@ -189,63 +189,65 @@ export const MiniGraphPanel: React.FC<MiniGraphPanelProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fingerprint])
 
-  // Empty state
-  if (data.nodes.length === 0) {
-    return (
+  const isEmpty = data.nodes.length === 0
+
+  return (
+    <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+      {/* Always render the Cytoscape container so cyRef is available on mount */}
       <Box
+        ref={cyRef}
         sx={{
           width: '100%',
           height: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 1,
-          // Grid pattern background
-          backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)
-          `,
-          backgroundSize: '24px 24px',
+          bgcolor: '#1a1a2e',
+          visibility: isEmpty ? 'hidden' : 'visible',
         }}
-      >
+      />
+      {/* Empty state overlay */}
+      {isEmpty && (
         <Box
           sx={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            bgcolor: `${accentColor}40`,
-            animation: 'pulse 2s ease-in-out infinite',
-            '@keyframes pulse': {
-              '0%': { transform: 'scale(1)', opacity: 0.4 },
-              '50%': { transform: 'scale(1.5)', opacity: 0.8 },
-              '100%': { transform: 'scale(1)', opacity: 0.4 },
-            },
-          }}
-        />
-        <Typography
-          sx={{
-            fontSize: '0.7rem',
-            color: 'rgba(255,255,255,0.3)',
-            textAlign: 'center',
-            maxWidth: 200,
-            lineHeight: 1.4,
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1,
+            backgroundImage: `
+              linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)
+            `,
+            backgroundSize: '24px 24px',
           }}
         >
-          {emptyMessage}
-        </Typography>
-      </Box>
-    )
-  }
-
-  return (
-    <Box
-      ref={cyRef}
-      sx={{
-        width: '100%',
-        height: '100%',
-        bgcolor: '#1a1a2e',
-      }}
-    />
+          <Box
+            sx={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              bgcolor: `${accentColor}40`,
+              animation: 'pulse 2s ease-in-out infinite',
+              '@keyframes pulse': {
+                '0%': { transform: 'scale(1)', opacity: 0.4 },
+                '50%': { transform: 'scale(1.5)', opacity: 0.8 },
+                '100%': { transform: 'scale(1)', opacity: 0.4 },
+              },
+            }}
+          />
+          <Typography
+            sx={{
+              fontSize: '0.7rem',
+              color: 'rgba(255,255,255,0.3)',
+              textAlign: 'center',
+              maxWidth: 200,
+              lineHeight: 1.4,
+            }}
+          >
+            {emptyMessage}
+          </Typography>
+        </Box>
+      )}
+    </Box>
   )
 }

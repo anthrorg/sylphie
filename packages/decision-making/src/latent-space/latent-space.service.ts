@@ -211,14 +211,14 @@ export class LatentSpaceService implements OnModuleInit {
 
     if (matches.length === 0) return null;
 
-    // If text was in the input but didn't match, discard all matches.
-    // Audio/video are stable across a session — their matches alone are
-    // not meaningful when the actual conversational content (text) differs.
-    const textWasSearched = 'text' in modalityEmbeddings;
+    // Text match is required for a meaningful multi-modal hit.
+    // If text was searched but didn't match, or if text was absent entirely
+    // (self-initiated tick with no user input), audio/video/drive similarity
+    // alone is not meaningful — it just replays stale latent space patterns.
     const textMatched = matches.some(m => m.modality === 'text');
-    if (textWasSearched && !textMatched) {
+    if (!textMatched) {
       this.logger.debug(
-        'searchMultiModal: text was present but did not match — discarding audio/video matches.',
+        'searchMultiModal: no text match — discarding audio/video matches.',
       );
       return null;
     }

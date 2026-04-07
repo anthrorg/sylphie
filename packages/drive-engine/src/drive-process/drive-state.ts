@@ -65,6 +65,12 @@ export class DriveStateManager {
     for (const drive of DRIVE_INDEX_ORDER) {
       const rate = rates[drive];
       if (rate !== 0) {
+        // Negative rates (decay) should only apply when the drive is above 0.
+        // Decay represents relief fading from a raised state — it should not
+        // push a resting drive below equilibrium (0.0).
+        if (rate < 0 && this.current[drive] <= 0) {
+          continue;
+        }
         this.current[drive] += rate;
       }
     }

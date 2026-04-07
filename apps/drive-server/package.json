@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "dotenv -e ../../.env -- ts-node -r tsconfig-paths/register --project tsconfig.json src/main.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node -r tsconfig-paths/register dist/main.js"
   },
   "dependencies": {
