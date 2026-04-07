@@ -8,6 +8,7 @@ import { LoginPage } from './pages/LoginPage'
 import { GraphsView } from './pages/dashboard/GraphsView'
 import { AnalyticsView } from './pages/dashboard/AnalyticsView'
 import { ChatView } from './pages/dashboard/ChatView'
+import { CodebaseView } from './pages/dashboard/CodebaseView'
 import { useAppStore } from './store'
 
 function AuthGate() {
@@ -54,9 +55,12 @@ function AuthGate() {
         <Route path="graphs" element={<GraphsView />} />
         <Route path="analytics" element={<AnalyticsView />} />
         <Route path="chat" element={<ChatView />} />
+        <Route path="codebase" element={<CodebaseView />} />
       </Route>
-      {/* Legacy dashboard — original single-page view */}
-      <Route path="/*" element={<Dashboard />} />
+      {/* Legacy dashboard — original single-page view at /legacy */}
+      <Route path="/legacy" element={<Dashboard />} />
+      {/* Default: redirect to new dashboard */}
+      <Route path="/*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   )
 }

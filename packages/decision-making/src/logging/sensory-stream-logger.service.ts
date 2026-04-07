@@ -241,6 +241,20 @@ export class SensoryStreamLoggerService implements OnModuleInit {
         ON events (subsystem, timestamp DESC)
       `);
 
+      // Composite index for session-based event queries (conversation reflection,
+      // person context gathering). Covers WHERE session_id = $1 ORDER BY timestamp.
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS events_session_time_idx
+        ON events (session_id, timestamp ASC)
+      `);
+
+      // GIN index on payload for JSONB field extraction queries. Planning uses
+      // payload->>'has_planned' and payload->>'actionType' filters.
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS events_payload_gin_idx
+        ON events USING gin (payload jsonb_path_ops)
+      `);
+
       // Create voice_patterns table for voice latent space caching.
       await this.timescale.query(`
         CREATE TABLE IF NOT EXISTS voice_patterns (

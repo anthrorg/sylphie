@@ -283,7 +283,7 @@ export class WkgContextService {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
       await session.run(
-        `MERGE (n {label: $label})
+        `MERGE (n:Entity {label: $label})
          ON CREATE SET
            n.node_id = $nodeId,
            n.node_type = $nodeType,
@@ -315,7 +315,7 @@ export class WkgContextService {
       // APOC might not be available — try without dynamic labels
       try {
         await session.run(
-          `MERGE (n {label: $label})
+          `MERGE (n:Entity {label: $label})
            ON CREATE SET
              n.node_id = $nodeId,
              n.node_type = $nodeType,

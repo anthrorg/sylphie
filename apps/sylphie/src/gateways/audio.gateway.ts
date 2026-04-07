@@ -147,6 +147,10 @@ export class AudioGateway
           'conversation_history',
           [...this.conversationHistory.getHistory()],
         );
+        this.tickSampler.update(
+          'speaker_name',
+          'Jim',
+        );
 
         // Send the complete accumulated utterance to the client
         if (state.ws.readyState === WebSocket.OPEN) {

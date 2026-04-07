@@ -112,7 +112,7 @@ export class ExtractEdgesService implements IExtractEdgesService {
 
     try {
       await session.run(
-        `MATCH (a {node_id: $sourceId}), (b {node_id: $targetId})
+        `MATCH (a:Entity {node_id: $sourceId}), (b:Entity {node_id: $targetId})
          MERGE (a)-[r:RELATED_TO]->(b)
          ON CREATE SET
            r.confidence      = $confidence,

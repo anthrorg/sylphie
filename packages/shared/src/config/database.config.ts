@@ -25,6 +25,14 @@ export const neo4jConfig = registerAs('neo4j', () => ({
     maxConnectionPoolSize: parseInt(process.env.NEO4J_OTHER_MAX_CONNECTION_POOL_SIZE || '50', 10),
     connectionTimeoutMs: parseInt(process.env.NEO4J_OTHER_CONNECTION_TIMEOUT_MS || '5000', 10),
   },
+  pkg: {
+    uri: process.env.NEO4J_PKG_URI || 'bolt://localhost:7691',
+    user: process.env.NEO4J_PKG_USER || 'neo4j',
+    password: process.env.NEO4J_PKG_PASSWORD || 'sylphie-pkg-local',
+    database: process.env.NEO4J_PKG_DATABASE || 'neo4j',
+    maxConnectionPoolSize: parseInt(process.env.NEO4J_PKG_MAX_CONNECTION_POOL_SIZE || '10', 10),
+    connectionTimeoutMs: parseInt(process.env.NEO4J_PKG_CONNECTION_TIMEOUT_MS || '5000', 10),
+  },
 }));
 
 export const timescaleConfig = registerAs('timescale', () => ({

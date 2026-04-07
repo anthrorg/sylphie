@@ -1,11 +1,14 @@
-import React from 'react'
-import { Box, Typography } from '@mui/material'
+import React, { useEffect } from 'react'
+import { Box, LinearProgress, Typography } from '@mui/material'
 import {
   AccountTree as AccountTreeIcon,
   Person as PersonIcon,
   Psychology as PsychologyIcon,
 } from '@mui/icons-material'
 import { GraphPanel } from '../../components/Graph/GraphPanel'
+import { MiniGraphPanel } from '../../components/Graph/MiniGraphPanel'
+import { useAppStore } from '../../store'
+import { useProgressiveSnapshot } from '../../hooks/useProgressiveSnapshot'
 
 // ---------------------------------------------------------------------------
 // Shared glass-panel style for the new dashboard views
@@ -30,145 +33,116 @@ const GlassPanel: React.FC<{
 )
 
 // ---------------------------------------------------------------------------
-// KGPlaceholder — shows a styled empty state for graphs not yet wired
-// ---------------------------------------------------------------------------
-const KGPlaceholder: React.FC<{
-  title: string
-  subtitle: string
-  icon: React.ReactNode
-  accentColor: string
-}> = ({ title, subtitle, icon, accentColor }) => (
-  <Box
-    sx={{
-      width: '100%',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 1.5,
-      position: 'relative',
-      // Subtle grid pattern background to suggest graph space
-      backgroundImage: `
-        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px)
-      `,
-      backgroundSize: '24px 24px',
-    }}
-  >
-    {/* Ambient glow behind icon */}
-    <Box
-      sx={{
-        position: 'absolute',
-        width: 120,
-        height: 120,
-        borderRadius: '50%',
-        background: `radial-gradient(circle, ${accentColor}15 0%, transparent 70%)`,
-        filter: 'blur(20px)',
-      }}
-    />
-
-    <Box sx={{ color: accentColor, opacity: 0.5, position: 'relative', zIndex: 1 }}>
-      {React.cloneElement(icon as React.ReactElement, { sx: { fontSize: 40 } })}
-    </Box>
-
-    <Typography
-      sx={{
-        fontSize: '0.85rem',
-        fontWeight: 600,
-        color: 'rgba(255,255,255,0.5)',
-        letterSpacing: 0.5,
-        position: 'relative',
-        zIndex: 1,
-      }}
-    >
-      {title}
-    </Typography>
-
-    <Typography
-      sx={{
-        fontSize: '0.65rem',
-        color: 'rgba(255,255,255,0.25)',
-        textAlign: 'center',
-        maxWidth: 220,
-        lineHeight: 1.4,
-        position: 'relative',
-        zIndex: 1,
-      }}
-    >
-      {subtitle}
-    </Typography>
-
-    {/* Corner nodes decoration — small dots to suggest graph topology */}
-    {[
-      { top: 16, left: 20 },
-      { top: 24, right: 40 },
-      { bottom: 30, left: 50 },
-      { bottom: 20, right: 25 },
-      { top: 50, left: 80 },
-      { top: 60, right: 70 },
-    ].map((pos, i) => (
-      <Box
-        key={i}
-        sx={{
-          position: 'absolute',
-          ...pos,
-          width: 4 + (i % 3) * 2,
-          height: 4 + (i % 3) * 2,
-          borderRadius: '50%',
-          bgcolor: `${accentColor}${20 + (i % 3) * 10}`,
-          opacity: 0.4,
-        }}
-      />
-    ))}
-  </Box>
-)
-
-// ---------------------------------------------------------------------------
-// Panel header — small label with icon
+// Panel header — label with icon and optional count + progress bar
 // ---------------------------------------------------------------------------
 const PanelHeader: React.FC<{
   icon: React.ReactNode
   label: string
   color: string
-}> = ({ icon, label, color }) => (
+  nodeCount?: number
+  edgeCount?: number
+  progress?: number
+  loading?: boolean
+  status?: string
+}> = ({ icon, label, color, nodeCount, edgeCount, progress, loading, status }) => (
   <Box
     sx={{
       position: 'absolute',
-      top: 8,
-      right: 12,
+      top: 0,
+      left: 0,
+      right: 0,
       zIndex: 5,
-      display: 'flex',
-      alignItems: 'center',
-      gap: 0.5,
-      px: 1,
-      py: 0.25,
-      borderRadius: 1,
-      bgcolor: 'rgba(0,0,0,0.5)',
-      backdropFilter: 'blur(4px)',
+      pointerEvents: 'none',
     }}
   >
-    <Box sx={{ color, display: 'flex', '& .MuiSvgIcon-root': { fontSize: '0.75rem' } }}>
-      {icon}
-    </Box>
-    <Typography
+    {/* Loading bar — thin, spans full width */}
+    {loading && progress != null && progress < 1 && (
+      <LinearProgress
+        variant="determinate"
+        value={progress * 100}
+        sx={{
+          height: 2,
+          bgcolor: 'transparent',
+          '& .MuiLinearProgress-bar': {
+            bgcolor: color,
+            transition: 'transform 0.3s ease',
+          },
+        }}
+      />
+    )}
+    <Box
       sx={{
-        fontSize: '0.6rem',
-        fontWeight: 600,
-        color: 'rgba(255,255,255,0.5)',
-        letterSpacing: 0.5,
-        textTransform: 'uppercase',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0.75,
+        px: 1,
+        py: 0.25,
+        position: 'absolute',
+        top: loading ? 4 : 8,
+        right: 12,
+        borderRadius: 1,
+        bgcolor: 'rgba(0,0,0,0.5)',
+        backdropFilter: 'blur(4px)',
+        pointerEvents: 'auto',
       }}
     >
-      {label}
-    </Typography>
+      <Box sx={{ color, display: 'flex', '& .MuiSvgIcon-root': { fontSize: '0.75rem' } }}>
+        {icon}
+      </Box>
+      <Typography
+        sx={{
+          fontSize: '0.6rem',
+          fontWeight: 600,
+          color: 'rgba(255,255,255,0.5)',
+          letterSpacing: 0.5,
+          textTransform: 'uppercase',
+        }}
+      >
+        {label}
+      </Typography>
+      {nodeCount != null && (
+        <Typography sx={{ fontSize: '0.55rem', fontFamily: 'monospace', color: 'rgba(255,255,255,0.3)' }}>
+          {nodeCount}n {edgeCount ?? 0}e
+        </Typography>
+      )}
+      {loading && status && (
+        <Typography sx={{ fontSize: '0.5rem', fontFamily: 'monospace', color: `${color}90` }}>
+          {status}
+        </Typography>
+      )}
+    </Box>
   </Box>
 )
 
 // ---------------------------------------------------------------------------
-// GraphsView
+// GraphsView — uses progressive loading for OKG/SKG
+// WKG continues to use the WebSocket-based GraphPanel.
 // ---------------------------------------------------------------------------
 export const GraphsView: React.FC = () => {
+  // Progressive loading for OKG and SKG (poll every 15s)
+  const okg = useProgressiveSnapshot('okg', 15_000)
+  const skg = useProgressiveSnapshot('skg', 15_000)
+
+  // Push progressive data into the store so other components can access it
+  const setOkgData = useAppStore((s) => s.setOkgData)
+  const setOkgStats = useAppStore((s) => s.setOkgStats)
+  const setSkgData = useAppStore((s) => s.setSkgData)
+  const setSkgStats = useAppStore((s) => s.setSkgStats)
+
+  useEffect(() => {
+    if (okg.data) {
+      setOkgData(okg.data)
+      setOkgStats({ nodes: okg.data.nodes.length, edges: okg.data.edges.length })
+    }
+  }, [okg.data, setOkgData, setOkgStats])
+
+  useEffect(() => {
+    if (skg.data) {
+      setSkgData(skg.data)
+      setSkgStats({ nodes: skg.data.nodes.length, edges: skg.data.edges.length })
+    }
+  }, [skg.data, setSkgData, setSkgStats])
+
   return (
     <Box
       sx={{
@@ -180,7 +154,7 @@ export const GraphsView: React.FC = () => {
         boxSizing: 'border-box',
       }}
     >
-      {/* ── WKG — hero panel, takes ~62% of height ──────────────── */}
+      {/* WKG — hero panel, takes ~62% of height */}
       <GlassPanel sx={{ flex: 5, minHeight: 0 }}>
         <PanelHeader
           icon={<AccountTreeIcon />}
@@ -192,36 +166,48 @@ export const GraphsView: React.FC = () => {
         </Box>
       </GlassPanel>
 
-      {/* ── OKG + SKG — two equal panels below ─────────────────── */}
+      {/* OKG + SKG — two equal panels below */}
       <Box sx={{ flex: 3, display: 'flex', gap: 1, minHeight: 0 }}>
-        {/* Other Knowledge Graph (Grafeo person models) */}
+        {/* Other Knowledge Graph (Neo4j OTHER — person models) */}
         <GlassPanel sx={{ flex: 1 }}>
           <PanelHeader
             icon={<PersonIcon />}
             label="Other KG"
             color="#CE93D8"
+            nodeCount={okg.totalNodes}
+            edgeCount={okg.totalEdges}
+            progress={okg.progress}
+            loading={okg.loading}
+            status={okg.status}
           />
-          <KGPlaceholder
-            title="Other Knowledge Graph"
-            subtitle="Person models via Grafeo — tracks understanding of conversation partners"
-            icon={<PersonIcon />}
-            accentColor="#CE93D8"
-          />
+          <Box sx={{ width: '100%', height: '100%' }}>
+            <MiniGraphPanel
+              data={okg.data ?? { nodes: [], edges: [] }}
+              accentColor="#CE93D8"
+              emptyMessage={okg.loading ? 'Loading...' : 'No person model data yet. Start a conversation to build the Other Knowledge Graph.'}
+            />
+          </Box>
         </GlassPanel>
 
-        {/* Self Knowledge Graph (Grafeo self model) */}
+        {/* Self Knowledge Graph (Neo4j SELF — Sylphie's self-model) */}
         <GlassPanel sx={{ flex: 1 }}>
           <PanelHeader
             icon={<PsychologyIcon />}
             label="Self KG"
             color="#FFB74D"
+            nodeCount={skg.totalNodes}
+            edgeCount={skg.totalEdges}
+            progress={skg.progress}
+            loading={skg.loading}
+            status={skg.status}
           />
-          <KGPlaceholder
-            title="Self Knowledge Graph"
-            subtitle="Grafeo self-model — Sylphie's evolving understanding of her own capabilities and traits"
-            icon={<PsychologyIcon />}
-            accentColor="#FFB74D"
-          />
+          <Box sx={{ width: '100%', height: '100%' }}>
+            <MiniGraphPanel
+              data={skg.data ?? { nodes: [], edges: [] }}
+              accentColor="#FFB74D"
+              emptyMessage={skg.loading ? 'Loading...' : 'No self-model data yet. Teach Sylphie about herself to build the Self Knowledge Graph.'}
+            />
+          </Box>
         </GlassPanel>
       </Box>
     </Box>

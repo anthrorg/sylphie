@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { Neo4jService, Neo4jInstanceName, TimescaleService, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
 import { ACTION_OUTCOME_REPORTER, IActionOutcomeReporter } from '@sylphie/drive-engine';
-import { LatentSpaceService } from '@sylphie/decision-making';
+import { LatentSpaceService, SensoryPredictionService } from '@sylphie/decision-making';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
 import { ConversationHistoryService } from './conversation-history.service';
 
@@ -28,6 +28,7 @@ export class WkgBootstrapService implements OnModuleInit {
     private readonly neo4j: Neo4jService,
     private readonly timescale: TimescaleService,
     private readonly latentSpace: LatentSpaceService,
+    private readonly sensoryPrediction: SensoryPredictionService,
     private readonly voiceLatentSpace: VoiceLatentSpaceService,
     private readonly conversationHistory: ConversationHistoryService,
     private readonly config: ConfigService,
@@ -95,7 +96,71 @@ export class WkgBootstrapService implements OnModuleInit {
       this.logger.log(
         `WKG bootstrap complete: ${cnt} nodes (1 anchor + 12 drives)`,
       );
+
+      // ── 4. Bootstrap Self KG (Grafeo self-model) ──────────────────
+      await this.bootstrapSelfKg(now);
+
       return { nodes: cnt };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Bootstrap Self KG with Sylphie's core identity.
+   *
+   * Creates a CoBeing anchor and foundational Attribute facts so the
+   * Self KG is never empty. These mirror the WKG CoBeing anchor but live
+   * in the SELF graph per CANON §KG Separation.
+   */
+  private async bootstrapSelfKg(now: string): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.SELF, 'WRITE');
+    try {
+      // CoBeing anchor node
+      await session.run(
+        `MERGE (self:CoBeing {node_id: 'cobeing-self'})
+         ON CREATE SET
+           self.label           = 'Sylphie',
+           self.name            = 'Sylphie',
+           self.node_type       = 'CoBeing',
+           self.schema_level    = 'schema',
+           self.description     = 'A young mind learning about the world through direct experience',
+           self.phase           = '1.5',
+           self.provenance_type = 'SYSTEM_BOOTSTRAP',
+           self.confidence      = 1.0,
+           self.created_at      = $now`,
+        { now },
+      );
+
+      // Core identity facts as Attribute nodes
+      const selfFacts = [
+        { key: 'name', value: 'Sylphie' },
+        { key: 'identity', value: 'a developing cognitive being' },
+        { key: 'phase', value: '1.5 — early development' },
+      ];
+
+      for (const fact of selfFacts) {
+        const attrId = `self-attr-${fact.key}`;
+        await session.run(
+          `MERGE (self:CoBeing {node_id: 'cobeing-self'})
+           MERGE (a:Attribute {attr_id: $attrId})
+           ON CREATE SET
+             a.key              = $key,
+             a.value            = $value,
+             a.confidence       = 1.0,
+             a.provenance_type  = 'SYSTEM_BOOTSTRAP',
+             a.source           = 'bootstrap',
+             a.learned_at       = datetime()
+           MERGE (self)-[:HAS_FACT]->(a)`,
+          { attrId, key: fact.key, value: fact.value },
+        );
+      }
+
+      this.logger.log('Self KG bootstrap complete: CoBeing anchor + 3 identity facts');
+    } catch (err) {
+      this.logger.warn(
+        `Self KG bootstrap failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       await session.close();
     }
@@ -183,6 +248,7 @@ export class WkgBootstrapService implements OnModuleInit {
 
     // ── 5. Clear in-memory state ─────────────────────────────────────
     await this.latentSpace.clear();
+    this.sensoryPrediction.reset();
     await this.voiceLatentSpace.clear();
     this.conversationHistory.clear();
 

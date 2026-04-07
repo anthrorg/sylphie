@@ -4,6 +4,7 @@ export enum Neo4jInstanceName {
   WORLD = 'world',
   SELF = 'self',
   OTHER = 'other',
+  PKG = 'pkg',
 }
 
 export interface Neo4jInstanceConfig {

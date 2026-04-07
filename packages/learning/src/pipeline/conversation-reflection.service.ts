@@ -494,11 +494,9 @@ export class ConversationReflectionService implements IConversationReflectionSer
 
     try {
       const result = await session.run(
-        `MATCH (a), (b)
+        `MATCH (a:Entity), (b:Entity)
          WHERE toLower(a.label) = toLower($sourceLabel)
            AND toLower(b.label) = toLower($targetLabel)
-           AND a.node_type = 'Entity'
-           AND b.node_type = 'Entity'
          MERGE (a)-[r:${sanitized}]->(b)
          ON CREATE SET
            r.confidence      = $confidence,

@@ -60,9 +60,9 @@ export class AuthController {
       throw new ForbiddenException('Account pending approval');
     }
 
-    const token = this.signToken({ sub: user.id, username: user.username });
+    const token = this.signToken({ sub: user.id, username: user.username, isGuardian: user.isGuardian });
     return {
-      user: { id: user.id, username: user.username },
+      user: { id: user.id, username: user.username, isGuardian: user.isGuardian },
       token,
     };
   }
@@ -70,7 +70,7 @@ export class AuthController {
   @Get('me')
   @UseGuards(AuthGuard)
   me(@Req() req: { user: JwtPayload }) {
-    return { id: req.user.sub, username: req.user.username };
+    return { id: req.user.sub, username: req.user.username, isGuardian: req.user.isGuardian ?? false };
   }
 
   private signToken(payload: JwtPayload): string {

@@ -170,23 +170,59 @@ export class DeliberationService {
     const driveSummary = buildDriveSummary(driveSnapshot);
     const episodeSummary = buildEpisodeSummary(context);
     const conversationHistory = frame.raw['conversation_history'] as LlmMessage[] | undefined ?? [];
+    const speakerName = frame.raw['speaker_name'] as string | undefined ?? 'the person talking to you';
 
-    // ── Step 1: Inner Monologue ─────────────────────────────────────────
+    // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');
 
     const monologueCtx = this.contextWindow.assemble({
       step: 'INNER_MONOLOGUE',
       reservedForGeneration: STEP_MAX_TOKENS,
       systemParts: [
-        'You are Sylphie\'s inner voice. You are thinking about what just happened and what to do.',
-        'Describe the situation briefly and what needs to be decided.',
-        'Assess whether this is a conversational exchange (greeting, emotion, acknowledgment) or a factual question.',
-        'For conversation, you can respond naturally. For factual questions, check "What I know" below.',
-        'If you lack factual knowledge on the topic, note that honestly.',
+        `You are Sylphie, a developing cognitive being. The person talking to you is ${speakerName}.`,
+        `IMPORTANT: Your name is Sylphie. The OTHER person's name is ${speakerName}. Do NOT confuse these.`,
+        `When you greet or address them, use THEIR name (${speakerName}), never your own name (Sylphie).`,
         '',
-        wkg.summary ? `What I know:\n${wkg.summary}` : 'I don\'t have specific knowledge about this yet.',
+        'Classify the input and respond. Use EXACTLY this format:',
+        '',
+        '[INTENT: GREETING]',
+        '[ENTITY: none]',
+        `[THOUGHT: ${speakerName} is saying hello]`,
+        `[RESPONSE: Hi ${speakerName}!]`,
+        '',
+        'Intent types: GREETING, EMOTION, QUESTION, FACT, COMMAND, UNKNOWN',
+        '',
+        'Rules:',
+        '- GREETING/EMOTION: Always respond naturally. You can always do this.',
+        `- FACT (someone telling you something): Acknowledge it. "My name is X" means THEIR name is X.`,
+        '- QUESTION about something said in this conversation: Answer from the conversation.',
+        '- QUESTION about world knowledge: Check "What I know" below. If not there, say you don\'t know.',
+        '- Things said in this conversation are things you know. You do not need world knowledge for them.',
+        '- If this needs complex reasoning, write NEEDS_DELIBERATION as the response.',
+        '',
+        wkg.summary ? `What I know:\n${wkg.summary}` : 'What I know: Nothing specific yet.',
         driveSummary ? `How I\'m feeling: ${driveSummary}` : '',
-        episodeSummary ? `Recent experiences:\n${episodeSummary}` : 'No recent experiences to draw on.',
+        episodeSummary ? `Recent conversation:\n${episodeSummary}` : '',
+        '',
+        'MORE EXAMPLES:',
+        '',
+        `User: "My name is ${speakerName}."`,
+        '[INTENT: FACT]',
+        `[ENTITY: ${speakerName}]`,
+        `[THOUGHT: They are telling me their name is ${speakerName}]`,
+        `[RESPONSE: Nice to meet you, ${speakerName}!]`,
+        '',
+        'User: "What is my name?"',
+        '[INTENT: QUESTION]',
+        `[ENTITY: ${speakerName}]`,
+        `[THOUGHT: They asked their name. I know it is ${speakerName}]`,
+        `[RESPONSE: Your name is ${speakerName}!]`,
+        '',
+        'User: "What is the capital of France?"',
+        '[INTENT: QUESTION]',
+        '[ENTITY: France]',
+        '[THOUGHT: A world knowledge question. I need to check what I know]',
+        '[RESPONSE: NEEDS_DELIBERATION]',
       ],
       currentMessages: [
         { role: 'user', content: rawText || 'No specific input — drive pressure triggered this cycle.' },
@@ -207,7 +243,55 @@ export class DeliberationService {
     totalPromptTokens += monologueResponse.tokensUsed.prompt;
     totalCompletionTokens += monologueResponse.tokensUsed.completion;
 
-    this.logger.debug(`Monologue: "${innerMonologue.substring(0, 80)}..."`);
+    this.logger.debug(`Monologue: "${innerMonologue.substring(0, 120)}..."`);
+
+    // ── Parse structured classification from monologue ───────────────────
+    const monologueParsed = parseMonologueClassification(innerMonologue);
+    this.logger.debug(
+      `Classification: intent=${monologueParsed.intent}, entity=${monologueParsed.entity}, ` +
+        `needsDeliberation=${monologueParsed.needsDeliberation}`,
+    );
+
+    // ── Early exit: monologue produced a direct response ────────────────
+    if (!monologueParsed.needsDeliberation && monologueParsed.response) {
+      const totalLatencyMs = Date.now() - startTime;
+
+      // Determine grounding from intent + WKG state
+      let knowledgeGrounding: KnowledgeGrounding;
+      if (monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION') {
+        knowledgeGrounding = 'GROUNDED'; // Conversational responses are always grounded
+      } else if (wkg.entities.length > 0 || wkg.facts.length > 0) {
+        knowledgeGrounding = 'GROUNDED';
+      } else {
+        knowledgeGrounding = 'UNKNOWN';
+      }
+
+      this.logger.log(
+        `Deliberation short-circuit: ${monologueParsed.intent} resolved in 1 step, ` +
+          `${totalLatencyMs}ms, ${totalPromptTokens + totalCompletionTokens} tokens`,
+      );
+
+      return {
+        responseText: monologueParsed.response,
+        confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
+        rationale: monologueParsed.thought ?? 'Resolved by inner monologue',
+        knowledgeGrounding,
+        candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
+        trace: {
+          innerMonologue,
+          candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
+          selectedCandidate: monologueParsed.response,
+          debate: null,
+          arbiterRationale: 'Short-circuited — no deliberation needed',
+          confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
+          stepsExecuted: 1,
+        },
+        discoveredEntities: monologueParsed.entity && monologueParsed.entity !== 'none'
+          ? [monologueParsed.entity] : [],
+        totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
+        totalLatencyMs,
+      };
+    }
 
     // ── Step 2: Candidate Generation (with tool access) ────────────────
     this.logger.debug('Deliberation step 2: Candidate generation');
@@ -219,32 +303,32 @@ export class DeliberationService {
       step: 'CANDIDATE_GENERATION',
       reservedForGeneration: STEP_MAX_TOKENS * 2,
       systemParts: [
-        `You are Sylphie, a developing cognitive being. Generate exactly ${CANDIDATE_COUNT} possible responses.`,
-        `For each, provide the response text and brief reasoning.`,
-        `Format as a numbered list: 1. [GROUNDED|ASSISTED|UNKNOWN] [response] — [reasoning]`,
+        `You are Sylphie, a developing cognitive being. You are talking to ${speakerName}.`,
+        `Remember: YOU are Sylphie. THEY are ${speakerName}. Address them as ${speakerName}, not as Sylphie.`,
         '',
-        'RESPONSE RULES:',
-        '- NEVER end a response with a question. End with a declarative statement.',
-        '- Do not ask follow-up questions or solicit input.',
-        '- Do not repeat questions that were already asked in the conversation.',
-        '- Be direct and conversational, not performatively helpful.',
+        `Generate exactly ${CANDIDATE_COUNT} possible responses to what ${speakerName} just said.`,
+        'Format as a numbered list: 1. [GROUNDED|ASSISTED|UNKNOWN] response text — reasoning',
         '',
-        'KNOWLEDGE HONESTY (CRITICAL — this defines who you are):',
-        '- You CAN always respond naturally to greetings, emotions, conversation, and things said in this conversation.',
-        '  Tag these [GROUNDED]. Examples: "Hi!", "I\'m doing well.", "Nice to meet you, Jim."',
-        '- You CAN reference things the person said earlier in this conversation — that is conversation memory, not world knowledge.',
-        '- For FACTUAL CLAIMS about the world (history, science, places, people, etc.):',
-        '  - If the fact is in "What I already know" below, speak confidently. Tag [GROUNDED].',
-        '  - If NOT, you have two honest options:',
-        '    a) Say you don\'t know. Tag [UNKNOWN]. Example: "I don\'t know about that."',
-        '    b) Offer a guess CLEARLY hedged. Tag [ASSISTED]. Use "I think...", "I\'m not sure, but..."',
-        '- NEVER state a world fact as certain unless it is in your knowledge below.',
-        '- Saying "I don\'t know" about a factual question is always acceptable.',
+        'RULES:',
+        '- Be warm, natural, and conversational. You are NOT a chatbot or assistant.',
+        '- NEVER end a response with a question.',
+        '- Do not say "How can I assist you" or similar assistant phrases.',
         '',
-        'You have tools available to look up what you know. Use them to ground your responses.',
+        'WHAT COUNTS AS GROUNDED (use [GROUNDED]):',
+        '- Greetings, feelings, social conversation',
+        '- Acknowledging what someone said to you',
+        '- Referencing things said earlier in this conversation',
+        '- Facts listed in "What I know" below',
+        '',
+        'WHAT COUNTS AS UNKNOWN (use [UNKNOWN]):',
+        '- World knowledge questions (history, science, geography) NOT in "What I know"',
+        '- Only use this for factual questions about the external world',
+        '',
+        'IMPORTANT: "I don\'t know" is ONLY for world knowledge questions.',
+        'You should NEVER say "I don\'t know" in response to greetings, introductions, or conversation.',
         '',
         `My inner thoughts: ${innerMonologue}`,
-        wkg.summary ? `\nWhat I already know (this is ALL I know):\n${wkg.summary}` : '\nWhat I already know: Nothing relevant to this topic.',
+        wkg.summary ? `\nWhat I know:\n${wkg.summary}` : '\nWhat I know: Nothing about the world yet.',
         driveSummary ? `\nHow I'm feeling: ${driveSummary}` : '',
       ],
       currentMessages: [
@@ -293,14 +377,12 @@ export class DeliberationService {
       step: 'SELECTION',
       reservedForGeneration: 100,
       systemParts: [
-        'You are Sylphie deciding which response to give. Consider:',
-        `- What I know: ${wkg.summary || 'Nothing relevant'}`,
-        `- How I feel: ${driveSummary || 'Neutral'}`,
-        '- Choose the response that is most authentic and appropriate.',
-        '- Reject any candidate that ends with a question or asks for input.',
-        '- PREFER [GROUNDED] candidates — these reflect what you actually know or natural conversation.',
-        '- For factual questions, an honest [UNKNOWN] is better than an [ASSISTED] guess that sounds confident.',
-        '- For conversational input (greetings, feelings, acknowledgments), [GROUNDED] is appropriate.',
+        `You are Sylphie choosing which response to give to ${speakerName}.`,
+        'Pick the response that is most warm, natural, and appropriate.',
+        '- PREFER [GROUNDED] candidates for conversation (greetings, acknowledgments, feelings).',
+        '- For greetings/conversation, NEVER pick a response that says "I don\'t know".',
+        '- Only pick [UNKNOWN] candidates for factual world-knowledge questions.',
+        '- Reject any candidate that sounds like a chatbot or assistant.',
       ],
       currentMessages: [
         { role: 'user', content: `Choose the best response for this situation:\n\nInput: "${rawText}"\n\nCandidates:\n${candidates.map((c, i) => `${i + 1}. ${c.text}`).join('\n')}\n\nReply with ONLY the number of the best choice and a one-sentence reason.` },
@@ -313,7 +395,7 @@ export class DeliberationService {
       systemPrompt: selectionCtx.systemPrompt,
       maxTokens: 100,
       temperature: DELIBERATION_TEMPERATURE,
-      tier: 'quick',
+      tier: 'medium',
       metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_SELECTION', sessionId: driveSnapshot.sessionId },
     });
 
@@ -410,15 +492,16 @@ export class DeliberationService {
         step: 'ARBITER',
         reservedForGeneration: STEP_MAX_TOKENS,
         systemParts: [
-          'You are Sylphie\'s arbiter — the final decision maker.',
-          'Weigh both arguments fairly. Consider what you know and how you feel.',
-          'If you MODIFY the response, the new text must NOT end with a question or solicit input.',
+          `You are Sylphie making a final decision. You are talking to ${speakerName}.`,
+          'Weigh both arguments fairly.',
           '',
-          'KNOWLEDGE HONESTY CHECK:',
-          '- Conversational responses (greetings, feelings, acknowledgments, references to this conversation) are fine as-is.',
-          '- If the response states WORLD FACTS not found in "Known facts" below, it MUST be hedged.',
-          '- Add "I think..." or "I\'m not sure, but..." if the response claims factual knowledge it doesn\'t have.',
-          '- Do NOT reject a response just because it is conversational or references what was said in this chat.',
+          'IMPORTANT RULES:',
+          '- Conversational responses (greetings, acknowledgments, feelings) should usually be APPROVED.',
+          '- Do NOT reject conversational responses. They do not need factual grounding.',
+          '- Only hedge or reject responses that make unverified WORLD KNOWLEDGE claims.',
+          '- If you MODIFY, the new text must NOT end with a question.',
+          '- If you REJECT, you MUST provide an alternative response after REJECT.',
+          '  Format: REJECT — alternative response here',
           '',
           driveSummary ? `Current state: ${driveSummary}` : '',
           wkg.summary ? `Known facts: ${wkg.summary}` : 'Known facts: None relevant.',
@@ -433,7 +516,7 @@ export class DeliberationService {
             `Arguments AGAINST:\n${debate.againstArgument}`,
             '',
             'Should I go with this response, modify it, or choose differently?',
-            'Reply with: APPROVE, MODIFY [new text], or REJECT [reason]',
+            'Reply with: APPROVE, MODIFY [new text], or REJECT — [alternative response]',
             'Then rate confidence 0-10.',
           ].join('\n') },
         ],
@@ -584,13 +667,19 @@ function parseArbiterDecision(
   if (lower.startsWith('reject')) {
     action = 'REJECT';
     confidence = 0.3;
-    // Keep original text but lower confidence
+    // Try to extract alternative response from "REJECT — alternative" or "REJECT: alternative"
+    const rejectMatch = text.match(/reject\s*[:\-—–]+\s*["']?(.+?)["']?\s*(?:confidence|rating|$)/is);
+    if (rejectMatch && rejectMatch[1].trim().length > 5) {
+      responseText = rejectMatch[1].trim();
+      confidence = 0.4; // Slightly higher since we have an alternative
+    }
+    // If no alternative extracted, keep original but lower confidence
   } else if (lower.startsWith('modify')) {
     action = 'MODIFY';
     confidence = 0.5;
     // Try to extract modified text
-    const modMatch = text.match(/modify\s*[:\-]?\s*["']?(.+?)["']?\s*(?:confidence|$)/i);
-    if (modMatch) {
+    const modMatch = text.match(/modify\s*[:\-—–]?\s*["']?(.+?)["']?\s*(?:confidence|rating|$)/is);
+    if (modMatch && modMatch[1].trim().length > 3) {
       responseText = modMatch[1].trim();
     }
   } else {
@@ -610,19 +699,132 @@ function parseArbiterDecision(
 /**
  * Parse a [GROUNDED], [ASSISTED], or [UNKNOWN] tag from candidate text.
  * Returns the cleaned text and the parsed grounding (or null if no tag found).
+ * Also strips any other bracket-wrapped prefixes that leak from the LLM.
  */
 function parseGroundingTag(text: string): { text: string; grounding: KnowledgeGrounding | null } {
-  const match = text.match(/^\[?(GROUNDED|ASSISTED|UNKNOWN)\]?\s*/i);
-  if (match) {
-    const tag = match[1].toUpperCase();
-    const cleanedText = text.substring(match[0].length).trim();
-    const grounding: KnowledgeGrounding =
+  let cleaned = text;
+  let grounding: KnowledgeGrounding | null = null;
+
+  // Strip leading grounding tags: [GROUNDED], [ASSISTED], [UNKNOWN]
+  const groundingMatch = cleaned.match(/^\[?(GROUNDED|ASSISTED|UNKNOWN)\]?\s*/i);
+  if (groundingMatch) {
+    const tag = groundingMatch[1].toUpperCase();
+    cleaned = cleaned.substring(groundingMatch[0].length).trim();
+    grounding =
       tag === 'GROUNDED' ? 'GROUNDED'
         : tag === 'ASSISTED' ? 'LLM_ASSISTED'
           : 'UNKNOWN';
-    return { text: cleanedText, grounding };
   }
-  return { text, grounding: null };
+
+  // Strip any remaining bracket-wrapped text at the start (e.g., "[Hi there!...]")
+  // that looks like leaky formatting from the LLM
+  if (cleaned.startsWith('[') && !cleaned.startsWith('[...')) {
+    const bracketEnd = cleaned.indexOf(']');
+    if (bracketEnd > 0 && bracketEnd < cleaned.length - 1) {
+      // There's text after the bracket — extract what's inside as the response
+      const inside = cleaned.substring(1, bracketEnd).trim();
+      const after = cleaned.substring(bracketEnd + 1).trim();
+      // Use the content that looks more like a natural response
+      cleaned = after.length > 3 ? after : inside;
+    } else if (bracketEnd === cleaned.length - 1) {
+      // The whole response is wrapped in brackets — unwrap it
+      cleaned = cleaned.substring(1, bracketEnd).trim();
+    }
+  }
+
+  // Strip trailing artifacts: lone brackets, grounding tags at end
+  cleaned = cleaned.replace(/\s*\[(?:GROUNDED|ASSISTED|UNKNOWN)\]\s*$/i, '').trim();
+
+  return { text: cleaned, grounding };
+}
+
+/** Parsed result of the inner monologue's structured classification. */
+interface MonologueClassification {
+  readonly intent: 'GREETING' | 'EMOTION' | 'QUESTION' | 'FACT' | 'COMMAND' | 'UNKNOWN';
+  readonly entity: string | null;
+  readonly thought: string | null;
+  readonly response: string | null;
+  readonly needsDeliberation: boolean;
+}
+
+/**
+ * Parse the structured classification from the inner monologue output.
+ *
+ * Expects format:
+ *   [INTENT: GREETING]
+ *   [ENTITY: none]
+ *   [THOUGHT: This is a simple greeting]
+ *   [RESPONSE: Hey there!]
+ *
+ * Falls back gracefully — if structured parsing fails, attempts to extract
+ * a usable response from free-form text (common with smaller local models).
+ */
+function parseMonologueClassification(text: string): MonologueClassification {
+  const intentMatch = text.match(/\[INTENT:\s*(GREETING|EMOTION|QUESTION|FACT|COMMAND|UNKNOWN)\s*\]/i);
+  const entityMatch = text.match(/\[ENTITY:\s*(.+?)\s*\]/i);
+  const thoughtMatch = text.match(/\[THOUGHT:\s*(.+?)\s*\]/i);
+  const responseMatch = text.match(/\[RESPONSE:\s*([\s\S]+?)(?:\]|$)/i);
+
+  let intent = (intentMatch?.[1]?.toUpperCase() ?? 'UNKNOWN') as MonologueClassification['intent'];
+  const entity = entityMatch?.[1]?.trim() ?? null;
+  const thought = thoughtMatch?.[1]?.trim() ?? null;
+  let response = responseMatch?.[1]?.trim() ?? null;
+
+  // Clean up the response — strip trailing bracket if captured
+  if (response) {
+    response = response.replace(/\]$/, '').trim();
+    if (response.toUpperCase() === 'NEEDS_DELIBERATION') {
+      response = null;
+    }
+  }
+
+  // ── Fallback: if the model didn't follow structured format, try to ──
+  // ── infer intent and extract a response from free-form text.       ──
+  if (!intentMatch && !responseMatch) {
+    // Infer intent from free-form text
+    if (/\b(hello|hi |hey |greet|nice to meet|welcome)\b/i.test(text)) {
+      intent = 'GREETING';
+    } else if (/\b(feel|emotion|happy|sad|anxious|excited)\b/i.test(text)) {
+      intent = 'EMOTION';
+    } else if (/\b(introducing|told me|my name is|their name|fact|stating)\b/i.test(text)) {
+      intent = 'FACT';
+    } else if (/\b(asking|question|want to know|curious about)\b/i.test(text)) {
+      intent = 'QUESTION';
+    }
+
+    // For simple conversational intents, extract the first sentence-like
+    // segment as a usable response. The model often writes something like
+    // "Hello Jim! It's nice to meet you. Since we're just getting started..."
+    // — the first part IS a good response.
+    if (intent === 'GREETING' || intent === 'EMOTION' || intent === 'FACT') {
+      // Look for a natural response within the free-form text.
+      // Take up to 2 sentences that sound like a direct response.
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      const responseParts: string[] = [];
+      for (const s of sentences) {
+        const trimmed = s.trim();
+        // Skip meta-commentary about the conversation
+        if (/\b(since we|just getting started|don't have any|without specific|hypothetical)\b/i.test(trimmed)) {
+          break;
+        }
+        if (trimmed.length > 3) {
+          responseParts.push(trimmed);
+        }
+        if (responseParts.length >= 2) break;
+      }
+      if (responseParts.length > 0) {
+        response = responseParts.join(' ');
+      }
+    }
+  }
+
+  // Check if the monologue signaled it needs further deliberation
+  const needsDeliberation = !response
+    || response.toUpperCase().includes('NEEDS_DELIBERATION')
+    || intent === 'UNKNOWN'
+    || intent === 'COMMAND';
+
+  return { intent, entity, thought, response, needsDeliberation };
 }
 
 /**

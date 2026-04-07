@@ -82,6 +82,7 @@ import { OllamaLlmService } from './llm/ollama-llm.service';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
 import { WkgContextService } from './wkg/wkg-context.service';
 import { LatentSpaceService } from './latent-space/latent-space.service';
+import { SensoryPredictionService } from './prediction/sensory-prediction.service';
 import { DeliberationService } from './deliberation/deliberation.service';
 import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
@@ -184,8 +185,11 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // ── WKG Context Service (central read/write interface to World Knowledge Graph)
     WkgContextService,
 
-    // ── Latent Space (fast pattern matching for Type 1 reflexes)
+    // ── Latent Space (per-modality pattern matching for Type 1 reflexes)
     LatentSpaceService,
+
+    // ── Sensory Prediction (per-modality prediction error detection)
+    SensoryPredictionService,
 
     // ── Deliberation Pipeline (multi-step Type 2 reasoning)
     DeliberationService,
@@ -216,6 +220,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // Latent space: exported for system reset (clear learned patterns).
     LatentSpaceService,
+
+    // Sensory prediction: exported for system reset.
+    SensoryPredictionService,
 
     // Sensory pipeline services: exported so that app-level gateways and
     // controllers can inject TickSamplerService, ModalityRegistryService,

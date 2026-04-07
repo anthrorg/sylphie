@@ -10,6 +10,7 @@ import * as jwt from 'jsonwebtoken';
 export interface JwtPayload {
   sub: string;
   username: string;
+  isGuardian: boolean;
 }
 
 @Injectable()

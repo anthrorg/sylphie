@@ -45,6 +45,7 @@ export interface SystemLogEntry {
 interface AuthUser {
   id: string
   username: string
+  isGuardian?: boolean
 }
 
 interface AppState {
@@ -66,6 +67,16 @@ interface AppState {
   // Graph data
   graphData: GraphSnapshot
   graphStats: GraphStats
+
+  // OKG / SKG graph data (Other & Self Knowledge Graphs)
+  okgData: GraphSnapshot
+  okgStats: GraphStats
+  skgData: GraphSnapshot
+  skgStats: GraphStats
+
+  // PKG graph data (Package/Codebase Knowledge Graph)
+  pkgData: GraphSnapshot
+  pkgStats: GraphStats
 
   // Conversation
   messages: ConversationMessage[]
@@ -119,6 +130,12 @@ interface AppState {
   setWsState: (channel: 'graph' | 'conversation' | 'telemetry', state: WSState) => void
   setGraphData: (data: GraphSnapshot) => void
   setGraphStats: (stats: GraphStats) => void
+  setOkgData: (data: GraphSnapshot) => void
+  setOkgStats: (stats: GraphStats) => void
+  setSkgData: (data: GraphSnapshot) => void
+  setSkgStats: (stats: GraphStats) => void
+  setPkgData: (data: GraphSnapshot) => void
+  setPkgStats: (stats: GraphStats) => void
   addMessage: (message: ConversationMessage) => void
   setThinking: (thinking: boolean) => void
   setSessionStats: (stats: Partial<SessionStats>) => void
@@ -184,6 +201,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   graphData: { nodes: [], edges: [] },
   graphStats: { nodes: 0, edges: 0 },
+
+  okgData: { nodes: [], edges: [] },
+  okgStats: { nodes: 0, edges: 0 },
+  skgData: { nodes: [], edges: [] },
+  skgStats: { nodes: 0, edges: 0 },
+  pkgData: { nodes: [], edges: [] },
+  pkgStats: { nodes: 0, edges: 0 },
 
   messages: [],
   isThinking: false,
@@ -261,6 +285,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setGraphData: (data) => set({ graphData: data }),
 
   setGraphStats: (stats) => set({ graphStats: stats }),
+
+  setOkgData: (data) => set({ okgData: data }),
+  setOkgStats: (stats) => set({ okgStats: stats }),
+  setSkgData: (data) => set({ skgData: data }),
+  setSkgStats: (stats) => set({ skgStats: stats }),
+  setPkgData: (data) => set({ pkgData: data }),
+  setPkgStats: (stats) => set({ pkgStats: stats }),
 
   addMessage: (message) =>
     set((prev) => ({

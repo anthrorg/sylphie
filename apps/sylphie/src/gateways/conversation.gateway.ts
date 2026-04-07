@@ -158,6 +158,10 @@ export class ConversationGateway
           'person_model',
           this.personModel.getActivePersonModel(),
         );
+        this.tickSampler.update(
+          'speaker_name',
+          user?.username ?? 'someone',
+        );
       });
   }
 

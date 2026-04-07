@@ -13,6 +13,10 @@ export type { IDecisionMakingService } from './interfaces/decision-making.interf
 
 /** Latent space — exported for system reset. */
 export { LatentSpaceService } from './latent-space/latent-space.service';
+export type { LatentMatch, MultiModalLatentMatch } from './latent-space/latent-space.service';
+
+/** Sensory prediction — exported for system reset. */
+export { SensoryPredictionService } from './prediction/sensory-prediction.service';
 
 // ---------------------------------------------------------------------------
 // Sensory Pipeline (re-exported for backward compatibility)

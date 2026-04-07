@@ -367,6 +367,11 @@ export class CommunicationService implements OnModuleInit {
   private async handleCycleResponse(response: CycleResponse): Promise<void> {
     const sessionId = response.driveSnapshot.sessionId;
 
+    // Sanitize response text: strip LLM formatting artifacts before delivery.
+    // Grounding tags like [UNKNOWN], [GROUNDED] and bracket-wrapped text
+    // should never reach the user or TTS.
+    response = { ...response, text: sanitizeResponseText(response.text) };
+
     // Log RESPONSE_GENERATED
     this.logEvent('RESPONSE_GENERATED', sessionId, {
       turnId: response.turnId,
@@ -603,7 +608,7 @@ export class CommunicationService implements OnModuleInit {
     try {
       const relType = factKeyToRelType(fact.key);
       await session.run(
-        `MERGE (speaker {label: $userId})
+        `MERGE (speaker:Entity {label: $userId})
          ON CREATE SET
            speaker.node_id = $speakerNodeId,
            speaker.node_type = 'Person',
@@ -611,7 +616,7 @@ export class CommunicationService implements OnModuleInit {
            speaker.provenance_type = 'GUARDIAN',
            speaker.confidence = 0.90,
            speaker.created_at = datetime()
-         MERGE (value {label: $value})
+         MERGE (value:Entity {label: $value})
          ON CREATE SET
            value.node_id = $valueNodeId,
            value.node_type = 'Entity',
@@ -704,7 +709,7 @@ export class CommunicationService implements OnModuleInit {
       const relType = factKeyToRelType(fact.key);
       await session.run(
         `MATCH (self:CoBeing)
-         MERGE (value {label: $value})
+         MERGE (value:Entity {label: $value})
          ON CREATE SET
            value.node_id = $valueNodeId,
            value.node_type = 'Entity',
@@ -924,6 +929,53 @@ export class CommunicationService implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Sanitize response text before delivery. Strips LLM formatting artifacts
+ * that should never reach the user or TTS:
+ * - Grounding tags: [GROUNDED], [ASSISTED], [UNKNOWN]
+ * - Bracket-wrapped responses: [Hi there! How are you?]
+ * - Tool call text that leaked through: [person_query ...]
+ * - Intent/Entity/Thought tags from monologue leaking into response
+ */
+function sanitizeResponseText(text: string): string {
+  let cleaned = text.trim();
+  if (!cleaned) return cleaned;
+
+  // Strip leading grounding tags
+  cleaned = cleaned.replace(/^\[?(GROUNDED|ASSISTED|UNKNOWN)\]?\s*/i, '');
+
+  // Strip bracket-wrapped responses: "[Hi there!]" → "Hi there!"
+  if (cleaned.startsWith('[') && !cleaned.startsWith('[...')) {
+    const bracketEnd = cleaned.indexOf(']');
+    if (bracketEnd > 0) {
+      const inside = cleaned.substring(1, bracketEnd).trim();
+      const after = cleaned.substring(bracketEnd + 1).trim();
+      if (bracketEnd === cleaned.length - 1) {
+        // Entire response is wrapped
+        cleaned = inside;
+      } else if (after.length > 3) {
+        cleaned = after;
+      } else {
+        cleaned = inside;
+      }
+    }
+  }
+
+  // Strip tool call leakage (e.g., "[person_query {...}]")
+  cleaned = cleaned.replace(/^\[(?:person_query|wkg_query|episodic_search|drive_state|web_search)\s*[{(].*$/im, '').trim();
+
+  // Strip [INTENT: ...], [ENTITY: ...], [THOUGHT: ...] leakage
+  cleaned = cleaned.replace(/\[(?:INTENT|ENTITY|THOUGHT):\s*[^\]]*\]\s*/gi, '').trim();
+
+  // Strip trailing grounding tags
+  cleaned = cleaned.replace(/\s*\[(?:GROUNDED|ASSISTED|UNKNOWN)\]\s*$/i, '').trim();
+
+  // Strip leading dash/em-dash that sometimes prefixes responses
+  cleaned = cleaned.replace(/^[-—–]\s+/, '');
+
+  return cleaned;
+}
 
 /**
  * Detect whether the input is a trigger phrase that should short-circuit

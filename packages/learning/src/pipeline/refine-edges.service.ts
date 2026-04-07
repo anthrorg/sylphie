@@ -241,7 +241,7 @@ export class RefineEdgesService implements IRefineEdgesService {
     try {
       // Create the refined typed relationship.
       await session.run(
-        `MATCH (a {node_id: $sourceId}), (b {node_id: $targetId})
+        `MATCH (a:Entity {node_id: $sourceId}), (b:Entity {node_id: $targetId})
          MERGE (a)-[r:${sanitized}]->(b)
          ON CREATE SET
            r.confidence      = $confidence,
@@ -263,7 +263,7 @@ export class RefineEdgesService implements IRefineEdgesService {
 
       // Remove the original RELATED_TO edge now that it has been refined.
       await session.run(
-        `MATCH (a {node_id: $sourceId})-[r:RELATED_TO]->(b {node_id: $targetId})
+        `MATCH (a:Entity {node_id: $sourceId})-[r:RELATED_TO]->(b:Entity {node_id: $targetId})
          DELETE r`,
         { sourceId: edge.sourceId, targetId: edge.targetId },
       );

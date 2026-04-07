@@ -1,8 +1,15 @@
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Box,
   ButtonBase,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Button,
   Stack,
   Typography,
 } from '@mui/material'
@@ -10,6 +17,8 @@ import {
   Hub as HubIcon,
   Insights as InsightsIcon,
   ChatBubbleOutline as ChatIcon,
+  Code as CodeIcon,
+  RestartAlt as RestartAltIcon,
   Logout as LogoutIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
@@ -162,6 +171,7 @@ const NavItem: React.FC<NavItemProps> = ({ icon, label, to, accentHue = 152 }) =
       sx={{
         width: '100%',
         display: 'flex',
+        justifyContent: 'flex-start',
         alignItems: 'center',
         gap: 1.5,
         px: 1.5,
@@ -232,12 +242,42 @@ export const Sidebar: React.FC = () => {
   const executorState = useAppStore((s) => s.executorState)
   const sessionStart = useAppStore((s) => s.sessionStart)
   const clearAuth = useAppStore((s) => s.clearAuth)
+  const authUser = useAppStore((s) => s.authUser)
+  const setGraphData = useAppStore((s) => s.setGraphData)
+  const setGraphStats = useAppStore((s) => s.setGraphStats)
   const navigate = useNavigate()
   const elapsed = useSessionTimer(sessionStart)
+
+  const isGuardian = authUser?.isGuardian === true
+
+  // Reset WKG state
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   const handleLogout = () => {
     clearAuth()
     navigate('/')
+  }
+
+  const handleReset = async () => {
+    setResetting(true)
+    try {
+      const res = await fetch('/api/skills/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      })
+      if (res.ok) {
+        // Refresh graph state after reset
+        const snapshot = await fetch('/api/graph/snapshot').then((r) => r.json())
+        setGraphData({ nodes: snapshot.nodes || [], edges: snapshot.edges || [] })
+        setGraphStats({ nodes: snapshot.nodes?.length || 0, edges: snapshot.edges?.length || 0 })
+      }
+    } catch {
+      // silently fail
+    }
+    setResetting(false)
+    setResetDialogOpen(false)
   }
 
   return (
@@ -358,6 +398,12 @@ export const Sidebar: React.FC = () => {
             to="/dashboard/chat"
             accentHue={152} // sage green — conversation/organic
           />
+          <NavItem
+            icon={<CodeIcon />}
+            label="Codebase"
+            to="/dashboard/codebase"
+            accentHue={195} // cyan — code/structure
+          />
         </Stack>
       </Box>
 
@@ -405,8 +451,54 @@ export const Sidebar: React.FC = () => {
         </Typography>
       </Box>
 
-      {/* ── Logout ────────────────────────────────────────────────── */}
+      {/* ── Guardian: Reset + Logout ─────────────────────────────── */}
       <Box sx={{ px: 1, pb: 2, position: 'relative', zIndex: 1 }}>
+        {isGuardian && (
+          <ButtonBase
+            onClick={() => setResetDialogOpen(true)}
+            disabled={resetting}
+            sx={{
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'flex-start',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 1.5,
+              py: 0.75,
+              mb: 0.25,
+              borderRadius: 1.5,
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                bgcolor: 'rgba(255,152,0,0.08)',
+                '& .reset-icon': { color: '#FFB74D' },
+                '& .reset-text': { color: 'rgba(255,152,0,0.8)' },
+              },
+            }}
+          >
+            {resetting ? (
+              <CircularProgress size={14} sx={{ color: 'rgba(255,255,255,0.3)' }} />
+            ) : (
+              <RestartAltIcon
+                className="reset-icon"
+                sx={{
+                  fontSize: '1rem',
+                  color: 'rgba(255,255,255,0.25)',
+                  transition: 'color 0.2s ease',
+                }}
+              />
+            )}
+            <Typography
+              className="reset-text"
+              sx={{
+                fontSize: '0.78rem',
+                color: 'rgba(255,255,255,0.3)',
+                transition: 'color 0.2s ease',
+              }}
+            >
+              Reset Sylphie
+            </Typography>
+          </ButtonBase>
+        )}
         <ButtonBase
           onClick={handleLogout}
           sx={{
@@ -445,6 +537,28 @@ export const Sidebar: React.FC = () => {
           </Typography>
         </ButtonBase>
       </Box>
+
+      {/* Reset confirmation dialog */}
+      <Dialog
+        open={resetDialogOpen}
+        onClose={() => setResetDialogOpen(false)}
+        PaperProps={{ sx: { bgcolor: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)' } }}
+      >
+        <DialogTitle sx={{ fontSize: '1rem' }}>Reset Sylphie</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.85rem' }}>
+            This will wipe all knowledge graphs, learned patterns, drive rules, and in-memory state, then re-bootstrap from scratch. This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResetDialogOpen(false)} sx={{ color: 'rgba(255,255,255,0.4)' }}>
+            Cancel
+          </Button>
+          <Button onClick={handleReset} color="warning" variant="contained" disabled={resetting}>
+            {resetting ? 'Resetting...' : 'Reset'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

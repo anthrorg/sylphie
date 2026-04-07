@@ -1,14 +1,14 @@
 /**
- * OllamaLlmService — Concrete ILlmService implementation using Ollama.
+ * OllamaLlmService — Hybrid LLM service using local Ollama + DeepSeek API.
  *
  * CANON §Architecture: The LLM is Sylphie's voice, not her mind. This service
  * provides the chat completion capability that Type 2 deliberation, Learning
  * edge refinement, and Planning constraint validation consume.
  *
- * Uses the local Ollama API for chat completions. Configured via:
- *   OLLAMA_HOST         — Ollama server URL (default: http://localhost:11434)
- *   OLLAMA_CHAT_MODEL   — Chat model name (default: llama3.2)
- *   OLLAMA_CHAT_TIMEOUT_MS — Request timeout (default: 30000)
+ * Tier routing:
+ *   quick/medium → Local Ollama (CPU, num_gpu: 0). Free, ~5-10s.
+ *   deep         → DeepSeek API if DEEPSEEK_API_KEY is set, else local Ollama GPU.
+ *                   DeepSeek V3.2 via OpenAI-compatible API. ~2-4s, <$1/day.
  *
  * CANON §Dual-Process Cognition: Every LLM call carries explicit cost tracking
  * (token counts, latency, cognitive effort pressure). The Drive Engine uses
@@ -62,6 +62,10 @@ const MS_PER_TOKEN = 15;
 /** Cognitive effort cost per 1000 tokens. Maps token usage to drive pressure. */
 const EFFORT_PER_1K_TOKENS = 0.05;
 
+/** DeepSeek API cost per million tokens (for cost tracking). */
+const DEEPSEEK_INPUT_COST_PER_M = 0.28;
+const DEEPSEEK_OUTPUT_COST_PER_M = 0.42;
+
 @Injectable()
 export class OllamaLlmService implements ILlmService, OnModuleInit {
   private readonly logger = new Logger(OllamaLlmService.name);
@@ -69,6 +73,14 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   private client!: Ollama;
   private models!: Record<LlmTier, string>;
   private timeoutMs!: number;
+
+  /** DeepSeek API configuration. */
+  private deepseekApiKey = '';
+  private deepseekBaseUrl = '';
+  private deepseekModel = '';
+
+  /** Whether the deep tier routes to DeepSeek API. */
+  private useDeepSeek = false;
 
   /** Set to false for Lesion Test or when Ollama is unreachable. */
   private available = true;
@@ -90,10 +102,17 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     };
     this.timeoutMs = this.config.get<number>('ollama.chatTimeoutMs', 30000);
 
+    // DeepSeek API for deep tier
+    this.deepseekApiKey = this.config.get<string>('ollama.deepseekApiKey', '');
+    this.deepseekBaseUrl = this.config.get<string>('ollama.deepseekBaseUrl', 'https://api.deepseek.com');
+    this.deepseekModel = this.config.get<string>('ollama.deepseekModel', 'deepseek-chat');
+    this.useDeepSeek = this.deepseekApiKey.length > 0;
+
     this.client = new Ollama({ host });
     this.logger.log(
-      `Ollama LLM configured: ${host} / ` +
-        `quick=${this.models.quick}, medium=${this.models.medium}, deep=${this.models.deep} / ` +
+      `LLM configured: ${host} / ` +
+        `quick=${this.models.quick}, medium=${this.models.medium}, ` +
+        `deep=${this.useDeepSeek ? `DeepSeek(${this.deepseekModel})` : this.models.deep} / ` +
         `timeout=${this.timeoutMs}ms`,
     );
   }
@@ -104,33 +123,130 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   }
 
   /**
-   * Execute an LLM chat completion via Ollama.
-   *
-   * Converts the ILlmService request format to Ollama's chat API, measures
-   * latency, and returns a structured LlmResponse with token counts.
-   *
-   * On success, resets the circuit breaker. On failure, increments the failure
-   * count and trips the breaker after CIRCUIT_BREAKER_THRESHOLD consecutive failures.
+   * Resolve GPU layer count for a given tier.
+   * medium/quick → CPU only (num_gpu: 0), deep → GPU (default).
+   */
+  private resolveNumGpu(tier: LlmTier = 'medium'): number | undefined {
+    return tier === 'deep' ? undefined : 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // DeepSeek API (OpenAI-compatible)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute a chat completion via DeepSeek API.
+   * Uses the OpenAI-compatible /v1/chat/completions endpoint.
+   */
+  private async completeViaDeepSeek(request: LlmRequest): Promise<LlmResponse> {
+    const messages: Array<{ role: string; content: string }> = [];
+
+    if (request.systemPrompt) {
+      messages.push({ role: 'system', content: request.systemPrompt });
+    }
+    for (const msg of request.messages) {
+      messages.push({ role: msg.role, content: msg.content });
+    }
+
+    const startMs = Date.now();
+
+    const response = await fetch(`${this.deepseekBaseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.deepseekApiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.deepseekModel,
+        messages,
+        max_tokens: request.maxTokens,
+        temperature: request.temperature,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`DeepSeek API error ${response.status}: ${body}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string } }>;
+      usage: { prompt_tokens: number; completion_tokens: number };
+      model: string;
+    };
+
+    const latencyMs = Date.now() - startMs;
+    const promptTokens = data.usage?.prompt_tokens ?? 0;
+    const completionTokens = data.usage?.completion_tokens ?? 0;
+
+    // Compute actual API cost
+    const cost = (promptTokens / 1_000_000) * DEEPSEEK_INPUT_COST_PER_M
+      + (completionTokens / 1_000_000) * DEEPSEEK_OUTPUT_COST_PER_M;
+
+    this.logger.debug(
+      `LLM complete [deep/DeepSeek/${this.deepseekModel}]: ` +
+        `${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
+        `$${cost.toFixed(6)}, purpose=${request.metadata.purpose}`,
+    );
+
+    return {
+      content: data.choices[0]?.message?.content ?? '',
+      tokensUsed: { prompt: promptTokens, completion: completionTokens },
+      latencyMs,
+      model: data.model ?? this.deepseekModel,
+      cost,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main complete() — routes by tier
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute an LLM chat completion.
+   * Routes deep tier to DeepSeek API when configured, else Ollama.
    */
   async complete(request: LlmRequest): Promise<LlmResponse> {
     if (!this.available) {
       throw new Error('LLM service unavailable (circuit breaker tripped or lesion test active)');
     }
 
-    const model = this.resolveModel(request.tier);
+    // Route deep tier to DeepSeek if configured
+    if (request.tier === 'deep' && this.useDeepSeek) {
+      try {
+        const result = await this.completeViaDeepSeek(request);
+        this.consecutiveFailures = 0;
+        return result;
+      } catch (err) {
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures >= this.CIRCUIT_BREAKER_THRESHOLD) {
+          this.available = false;
+          this.logger.error(
+            `Circuit breaker tripped after ${this.consecutiveFailures} DeepSeek failures.`,
+          );
+        }
+        this.logger.error(
+          `DeepSeek call failed (failures=${this.consecutiveFailures}): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
+    }
 
-    // Build Ollama message array: system prompt + conversation messages.
+    // Local Ollama path (quick/medium, or deep when DeepSeek not configured)
+    const model = this.resolveModel(request.tier);
     const ollamaMessages: Array<{ role: string; content: string }> = [];
 
     if (request.systemPrompt) {
       ollamaMessages.push({ role: 'system', content: request.systemPrompt });
     }
-
     for (const msg of request.messages) {
       ollamaMessages.push({ role: msg.role, content: msg.content });
     }
 
     const startMs = Date.now();
+    const numGpu = this.resolveNumGpu(request.tier);
 
     try {
       const response = await this.client.chat({
@@ -139,12 +255,11 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
         options: {
           temperature: request.temperature,
           num_predict: request.maxTokens,
+          ...(numGpu !== undefined && { num_gpu: numGpu }),
         },
       });
 
       const latencyMs = Date.now() - startMs;
-
-      // Reset circuit breaker on success.
       this.consecutiveFailures = 0;
 
       const promptTokens = response.prompt_eval_count ?? 0;
@@ -158,13 +273,10 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
 
       return {
         content: response.message.content,
-        tokensUsed: {
-          prompt: promptTokens,
-          completion: completionTokens,
-        },
+        tokensUsed: { prompt: promptTokens, completion: completionTokens },
         latencyMs,
         model: response.model ?? model,
-        cost: 0, // Local Ollama has no API cost.
+        cost: 0,
       };
     } catch (err) {
       const latencyMs = Date.now() - startMs;
@@ -173,8 +285,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       if (this.consecutiveFailures >= this.CIRCUIT_BREAKER_THRESHOLD) {
         this.available = false;
         this.logger.error(
-          `Circuit breaker tripped after ${this.consecutiveFailures} consecutive failures. ` +
-            `LLM service marked unavailable.`,
+          `Circuit breaker tripped after ${this.consecutiveFailures} consecutive failures.`,
         );
       }
 
@@ -187,19 +298,13 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Tool calling (Ollama only — DeepSeek tool calls not needed yet)
+  // ---------------------------------------------------------------------------
+
   /**
    * Execute an LLM chat completion with tool calling support.
-   *
-   * When the model returns tool_calls, this method executes the tools via
-   * the provided executor, feeds results back, and continues the conversation
-   * until the model produces a final text response (no more tool calls).
-   *
-   * Max tool call rounds is capped to prevent infinite loops.
-   *
-   * @param request      - The LLM request (same as complete()).
-   * @param tools        - Array of tool definitions (Ollama function calling format).
-   * @param toolExecutor - Function that executes a tool call and returns the result.
-   * @returns LlmResponse with accumulated token counts across all rounds.
+   * Always uses local Ollama (tool calling is only used in candidate gen, medium tier).
    */
   async completeWithTools(
     request: LlmRequest,
@@ -216,7 +321,6 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
 
-    // Build initial message array
     const messages: Array<{ role: string; content: string; tool_calls?: any[] }> = [];
     if (request.systemPrompt) {
       messages.push({ role: 'system', content: request.systemPrompt });
@@ -225,7 +329,6 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       messages.push({ role: msg.role, content: msg.content });
     }
 
-    // Convert tool definitions to Ollama format
     const ollamaTools = tools.map((t) => ({
       type: 'function' as const,
       function: {
@@ -236,6 +339,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     }));
 
     let finalContent = '';
+    const numGpu = this.resolveNumGpu(request.tier);
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       try {
@@ -246,6 +350,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
           options: {
             temperature: request.temperature,
             num_predict: request.maxTokens,
+            ...(numGpu !== undefined && { num_gpu: numGpu }),
           },
         });
 
@@ -255,23 +360,19 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
 
         const msg = response.message;
 
-        // Check if the model wants to call tools
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          // Add the assistant's message with tool calls to history
           messages.push({
             role: 'assistant',
             content: msg.content || '',
             tool_calls: msg.tool_calls,
           });
 
-          // Execute each tool call
           for (const toolCall of msg.tool_calls) {
             const fn = toolCall.function;
             this.logger.debug(`Tool call: ${fn.name}(${JSON.stringify(fn.arguments)})`);
 
             try {
               const toolResult = await toolExecutor(fn.name, fn.arguments ?? {});
-              // Add tool result as a tool message
               messages.push({
                 role: 'tool',
                 content: typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult),
@@ -284,12 +385,9 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
               });
             }
           }
-
-          // Continue the loop — the model will process tool results
           continue;
         }
 
-        // No tool calls — this is the final response
         finalContent = msg.content || '';
         break;
       } catch (err) {
@@ -318,14 +416,11 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     };
   }
 
-  /**
-   * Estimate the cost of an LLM call before making it.
-   *
-   * Pure estimation from request content — no API call. Used by the arbitrator
-   * to apply pre-emptive cognitive effort pressure to the CognitiveAwareness drive.
-   */
+  // ---------------------------------------------------------------------------
+  // Cost estimation
+  // ---------------------------------------------------------------------------
+
   estimateCost(request: LlmRequest): Type2CostEstimate {
-    // Estimate prompt tokens from message content.
     let totalWords = 0;
     if (request.systemPrompt) {
       totalWords += request.systemPrompt.split(/\s+/).length;
@@ -341,37 +436,23 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const latencyEstimate = tokenEstimate * MS_PER_TOKEN;
     const cognitiveEffortCost = Math.min(1.0, (tokenEstimate / 1000) * EFFORT_PER_1K_TOKENS);
 
-    return {
-      tokenEstimate,
-      latencyEstimate,
-      cognitiveEffortCost,
-    };
+    return { tokenEstimate, latencyEstimate, cognitiveEffortCost };
   }
 
-  /**
-   * Whether the LLM service is currently available.
-   *
-   * Returns false when the circuit breaker has tripped or during Lesion Test.
-   * Call resetCircuitBreaker() to restore after investigation.
-   */
+  // ---------------------------------------------------------------------------
+  // Availability
+  // ---------------------------------------------------------------------------
+
   isAvailable(): boolean {
     return this.available;
   }
 
-  /**
-   * Manually reset the circuit breaker.
-   * Called after Ollama is confirmed healthy again, or to exit Lesion Test mode.
-   */
   resetCircuitBreaker(): void {
     this.consecutiveFailures = 0;
     this.available = true;
     this.logger.log('Circuit breaker reset — LLM service marked available.');
   }
 
-  /**
-   * Disable the LLM for Lesion Test mode.
-   * All callers will fall back to SHRUG or cached responses.
-   */
   enableLesionTest(): void {
     this.available = false;
     this.logger.warn('Lesion Test mode enabled — LLM service marked unavailable.');

@@ -57,9 +57,10 @@ import { ActionHandlerRegistryService, type ActionCycleContext } from './action-
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
-import { LatentSpaceService } from './latent-space/latent-space.service';
+import { LatentSpaceService, type MultiModalLatentMatch } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult } from './deliberation/deliberation.service';
+import { SensoryPredictionService } from './prediction/sensory-prediction.service';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -135,6 +136,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     private readonly latentSpace: LatentSpaceService,
     private readonly wkgContext: WkgContextService,
     private readonly deliberation: DeliberationService,
+    private readonly sensoryPrediction: SensoryPredictionService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -351,50 +353,53 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const { candidates: wkgCandidates, contextFingerprint, inputSummary, dominantDrive } =
         processInputResult;
 
-      // Check the latent space FIRST — if we find a high-similarity match,
-      // inject it as a Type 1 candidate with high confidence. This is how
-      // learned patterns from Type 2 deliberation become instant reflexes.
+      // Check per-modality latent spaces FIRST — if we find a high-similarity
+      // match on any modality, inject it as a Type 1 candidate. Each modality's
+      // embedding is searched independently so text changes aren't drowned out
+      // by stable video/audio.
       let candidates = [...wkgCandidates];
-      const latentMatch = this.latentSpace.search(frame.fused_embedding);
 
-      if (latentMatch) {
+      // Compute sensory prediction errors (per-modality surprise signals).
+      const sensoryErrors = this.sensoryPrediction.computeErrors(frame.modality_embeddings);
+
+      const multiModalMatch = this.latentSpace.searchMultiModal(frame.modality_embeddings);
+      // Extract the best single-modality match for downstream compatibility.
+      const latentMatch = multiModalMatch?.bestMatch ?? null;
+
+      if (multiModalMatch) {
         this.logger.debug(
-          `Latent space HIT: similarity=${latentMatch.similarity.toFixed(3)}, ` +
-            `pattern=${latentMatch.pattern.id.substring(0, 8)}, ` +
-            `uses=${latentMatch.pattern.useCount}`,
+          `Latent space HIT [${multiModalMatch.bestMatch.modality}]: ` +
+            `similarity=${multiModalMatch.bestMatch.similarity.toFixed(3)}, ` +
+            `composite=${multiModalMatch.compositeSimilarity.toFixed(3)}, ` +
+            `pattern=${multiModalMatch.bestMatch.pattern.id.substring(0, 8)}, ` +
+            `modalities=${multiModalMatch.matches.map(m => m.modality).join(',')}`,
         );
 
-        // Construct a Type 1 candidate from the latent space pattern.
-        // It has high confidence because it's a learned, validated pattern.
-        // Always construct procedureData for latent candidates — the latent
-        // space pattern IS the procedure. Use the pattern ID as the proc ID.
+        const bestPattern = multiModalMatch.bestMatch.pattern;
         const latentCandidate: ActionCandidate = {
           procedureData: {
-            id: latentMatch.pattern.procedureId || latentMatch.pattern.id,
-            name: `latent-${latentMatch.pattern.id.substring(0, 8)}`,
+            id: bestPattern.procedureId || bestPattern.id,
+            name: `latent-${bestPattern.id.substring(0, 8)}`,
             category: 'LearnedPattern',
             triggerContext: contextFingerprint,
             actionSequence: [{
               index: 0,
               stepType: 'LLM_GENERATE',
-              params: { instruction: latentMatch.pattern.responseText },
+              params: { instruction: bestPattern.responseText },
             }],
             provenance: 'BEHAVIORAL_INFERENCE' as any,
-            confidence: latentMatch.similarity,
+            confidence: multiModalMatch.compositeSimilarity,
             driveEffects: {},
           },
-          confidence: latentMatch.similarity, // High similarity → high confidence → Type 1 wins arbitration
+          confidence: multiModalMatch.compositeSimilarity,
           motivatingDrive: dominantDrive,
-          contextMatchScore: latentMatch.similarity,
+          contextMatchScore: multiModalMatch.compositeSimilarity,
         };
 
-        // Insert at the front — highest priority
         candidates.unshift(latentCandidate);
-
-        // Record the use for frequency tracking
-        this.latentSpace.recordUse(latentMatch.pattern.id);
+        this.latentSpace.recordUse(bestPattern.id);
       } else {
-        this.logger.debug('Latent space MISS — proceeding to normal arbitration.');
+        this.logger.debug('Latent space MISS (all modalities) — proceeding to normal arbitration.');
       }
 
       // ── Step 4: RETRIEVING -> PREDICTING ──────────────────────────────────
@@ -689,29 +694,31 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       // ── Latent space + WKG write-back ────────────────────────────────────
       // If this cycle produced a response (Type 2 or SHRUG-with-LLM-fallback),
-      // write the pattern to the latent space so Type 1 catches it next time.
-      // Also write entities and procedures to the WKG for knowledge grounding.
-      if (responseText.length > 0 && !latentMatch) {
+      // write per-modality patterns to the latent space so Type 1 catches it
+      // next time on the relevant modality stream. Also write to WKG.
+      if (responseText.length > 0 && !multiModalMatch) {
         // Only write if this was NOT already a latent space hit (avoid duplication)
         try {
-          // Get WKG context for the entities involved
           const wkgCtx = await this.wkgContext.getContextForFrame(frame);
           const entityIds = wkgCtx.entities.map((e) => e.nodeId);
 
-          // Write to latent space (hot + warm layers)
-          const patternId = await this.latentSpace.write({
-            stimulusEmbedding: frame.fused_embedding,
+          // Write per-modality patterns (text, audio, video — not drives/faces)
+          const patternIds = await this.latentSpace.writeMultiModal(
+            frame.modality_embeddings,
             responseText,
-            procedureId: actionId !== 'SHRUG' ? actionId : undefined,
-            confidence: arbitrationResult.type === 'SHRUG' ? 0.4 : 0.6,
-            deliberationSummary: `${arbitrationResult.type} response to: ${inputSummary}`,
-            entityIds,
-            sessionId: driveSnapshot.sessionId,
-          });
+            {
+              procedureId: actionId !== 'SHRUG' ? actionId : undefined,
+              confidence: arbitrationResult.type === 'SHRUG' ? 0.4 : 0.6,
+              deliberationSummary: `${arbitrationResult.type} response to: ${inputSummary}`,
+              entityIds,
+              sessionId: driveSnapshot.sessionId,
+            },
+          );
+          const primaryPatternId = patternIds[0] ?? randomUUID();
 
-          // Write ActionProcedure to WKG (creates a durable learned behavior)
+          // Write ActionProcedure to WKG
           const procedureId = await this.wkgContext.writeActionProcedure({
-            name: `learned-${patternId.substring(0, 8)}`,
+            name: `learned-${primaryPatternId.substring(0, 8)}`,
             category: 'LearnedResponse',
             triggerContext: inputSummary,
             responseText,
@@ -727,7 +734,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           });
 
           this.logger.debug(
-            `Write-back: latent=${patternId.substring(0, 8)}, ` +
+            `Write-back: ${patternIds.length} modality patterns, ` +
               `wkg_proc=${procedureId?.substring(0, 8) ?? 'none'}, ` +
               `entities=${entityIds.length}`,
           );
@@ -735,6 +742,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.warn(`Write-back failed: ${err}`);
         }
       }
+
+      // ── Route sensory prediction errors to drives ─────────────────────────
+      this.routeSensoryPredictionErrors(sensoryErrors, driveSnapshot);
 
       this.logger.debug(
         `Decision cycle complete (${cycleLatencyMs}ms). Arbitration: ${arbitrationResult.type}. ` +
@@ -844,6 +854,70 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sensory prediction error → drive routing
+  // ---------------------------------------------------------------------------
+
+  /** Sensory prediction error thresholds and scaling factors. */
+  private static readonly SENSORY_TEXT_THRESHOLD = 0.1;
+  private static readonly SENSORY_AUDIO_THRESHOLD = 0.1;
+  private static readonly SENSORY_VIDEO_THRESHOLD = 0.2;
+
+  /**
+   * Route per-modality sensory prediction errors to drives.
+   *
+   * Text changes → curiosity (novel information to process).
+   * Audio changes → curiosity + focus (unexpected sound demands attention).
+   * Video changes → anxiety + focus (environment shifted).
+   */
+  private routeSensoryPredictionErrors(
+    errors: Record<string, number>,
+    snapshot: DriveSnapshot,
+  ): void {
+    const totalError = Object.values(errors).reduce((sum, e) => sum + e, 0);
+    if (totalError < 0.05) return; // negligible
+
+    const textError = errors['text'] ?? 0;
+    const audioError = errors['audio'] ?? 0;
+    const videoError = errors['video'] ?? 0;
+
+    const driveEffects: Partial<Record<DriveName, number>> = {};
+
+    if (textError > DecisionMakingService.SENSORY_TEXT_THRESHOLD) {
+      driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + textError * 0.3;
+    }
+    if (audioError > DecisionMakingService.SENSORY_AUDIO_THRESHOLD) {
+      driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + audioError * 0.15;
+      driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + audioError * 0.1;
+    }
+    if (videoError > DecisionMakingService.SENSORY_VIDEO_THRESHOLD) {
+      driveEffects[DriveName.Anxiety] = (driveEffects[DriveName.Anxiety] ?? 0) + videoError * 0.1;
+      driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + videoError * 0.1;
+    }
+
+    if (Object.keys(driveEffects).length === 0) return;
+
+    if (this.actionOutcomeReporter) {
+      try {
+        this.actionOutcomeReporter.reportOutcome({
+          actionId: 'sensory-prediction',
+          actionType: 'SensoryPrediction',
+          success: totalError < 0.3,
+          driveEffects,
+          feedbackSource: 'INFERENCE',
+          theaterCheck: {
+            expressionType: 'none',
+            correspondingDrive: null,
+            driveValue: null,
+            isTheatrical: false,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Sensory prediction error routing failed: ${err}`);
       }
     }
   }

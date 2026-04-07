@@ -17,6 +17,7 @@ import { LearningModule } from '@sylphie/learning';
 import { PlanningModule } from '@sylphie/planning';
 import { DriveEngineModule } from '@sylphie/drive-engine';
 import { GraphController } from './controllers/graph.controller';
+import { PkgController } from './controllers/pkg.controller';
 import { SkillsController } from './controllers/skills.controller';
 import { DrivesController, PressureController } from './controllers/drives.controller';
 import { VoiceController } from './controllers/voice.controller';
@@ -31,6 +32,7 @@ import { AudioGateway } from './gateways/audio.gateway';
 import { SensoryLoggerService } from './services/sensory-logger.service';
 import { DrivePublisherService } from './services/drive-publisher.service';
 import { WkgQueryService } from './services/wkg-query.service';
+import { PkgQueryService } from './services/pkg-query.service';
 import { WkgBootstrapService } from './services/wkg-bootstrap.service';
 import { SttService } from './services/stt.service';
 import { TtsService } from './services/tts.service';
@@ -56,8 +58,8 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        instances: [
+      useFactory: (config: ConfigService) => {
+        const instances = [
           {
             name: Neo4jInstanceName.WORLD,
             uri: config.get('neo4j.world.uri')!,
@@ -85,13 +87,28 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
             maxConnectionPoolSize: config.get('neo4j.other.maxConnectionPoolSize')!,
             connectionTimeoutMs: config.get('neo4j.other.connectionTimeoutMs')!,
           },
-        ],
-      }),
+        ];
+        // PKG is optional — only connect if URI is configured
+        const pkgUri = config.get('neo4j.pkg.uri');
+        if (pkgUri) {
+          instances.push({
+            name: Neo4jInstanceName.PKG,
+            uri: pkgUri,
+            user: config.get('neo4j.pkg.user')!,
+            password: config.get('neo4j.pkg.password')!,
+            database: config.get('neo4j.pkg.database')!,
+            maxConnectionPoolSize: config.get('neo4j.pkg.maxConnectionPoolSize')!,
+            connectionTimeoutMs: config.get('neo4j.pkg.connectionTimeoutMs')!,
+          });
+        }
+        return { instances };
+      },
     }),
   ],
   controllers: [
     AuthController,
     GraphController,
+    PkgController,
     SkillsController,
     DrivesController,
     PressureController,
@@ -104,6 +121,7 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
     SensoryLoggerService,
     DrivePublisherService,
     WkgQueryService,
+    PkgQueryService,
     WkgBootstrapService,
     SttService,
     TtsService,

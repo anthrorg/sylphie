@@ -100,7 +100,7 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
 
     try {
       const result = await session.run(
-        `MERGE (n {label: $label})
+        `MERGE (n:Entity {label: $label})
          ON CREATE SET
            n.node_id       = $nodeId,
            n.node_type     = 'Entity',

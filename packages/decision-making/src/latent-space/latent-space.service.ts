@@ -1,18 +1,21 @@
 /**
- * LatentSpaceService — Fast pattern matching for Type 1 reflexes.
+ * LatentSpaceService — Per-modality pattern matching for Type 1 reflexes.
  *
  * The latent space bridges Type 2 deliberation and Type 1 reflexes. When
- * Type 2 commits a decision, it writes a pattern here. Next time a similar
- * stimulus arrives, Type 1 finds the pattern via cosine similarity and
- * responds immediately — no LLM needed.
+ * Type 2 commits a decision, it writes per-modality patterns here. Next time
+ * a similar stimulus arrives on ANY modality, Type 1 finds the pattern via
+ * cosine similarity and responds immediately — no LLM needed.
+ *
+ * Per-modality architecture:
+ *   Patterns are stored per modality (text, audio, video, etc.). Search
+ *   operates on each modality independently, then combines scores with
+ *   weighted voting. This prevents stable modalities (video/audio) from
+ *   drowning out text changes in the fused embedding.
  *
  * Three-layer architecture:
  *   Hot layer  — In-memory vector index. Microsecond cosine similarity.
  *   Warm layer — pgvector in TimescaleDB. Durable. Hydrated into hot on boot.
  *   Cold layer — Full deliberation traces in WKG (handled by WkgContextService).
- *
- * Patterns link to WKG entity IDs so Type 1 responses aren't just vector
- * matches — they carry grounded knowledge context.
  *
  * On boot: hydrate hot layer from warm layer (frequency-weighted).
  * On shutdown: hot layer is ephemeral — warm layer IS the persistence.
@@ -21,6 +24,7 @@
 import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { TimescaleService, EMBEDDING_DIM } from '@sylphie/shared';
+import { cosineSimilarity, parseEmbedding } from './vector-math';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +33,7 @@ import { TimescaleService, EMBEDDING_DIM } from '@sylphie/shared';
 /** A learned pattern stored in the latent space. */
 export interface LearnedPattern {
   readonly id: string;
+  readonly modality: string;
   readonly stimulusEmbedding: number[];
   readonly responseText: string;
   readonly procedureId: string | null;
@@ -42,14 +47,26 @@ export interface LearnedPattern {
   readonly sessionId: string | null;
 }
 
-/** Result of a latent space search. */
+/** Result of a single-modality latent space search. */
 export interface LatentMatch {
   readonly pattern: LearnedPattern;
   readonly similarity: number;
+  readonly modality: string;
+}
+
+/** Result of a multi-modal latent space search. */
+export interface MultiModalLatentMatch {
+  /** Per-modality matches that passed threshold. */
+  readonly matches: readonly LatentMatch[];
+  /** The single highest-scoring match across all modalities. */
+  readonly bestMatch: LatentMatch;
+  /** Weighted combination of per-modality similarities. */
+  readonly compositeSimilarity: number;
 }
 
 /** Parameters for writing a new pattern. */
 export interface NewPattern {
+  readonly modality: string;
   readonly stimulusEmbedding: number[];
   readonly responseText: string;
   readonly procedureId?: string;
@@ -59,12 +76,16 @@ export interface NewPattern {
   readonly sessionId?: string;
 }
 
+/** Options for writeMultiModal (everything except per-modality fields). */
+export type MultiModalWriteOpts = Omit<NewPattern, 'stimulusEmbedding' | 'responseText' | 'modality'>;
+
 // ---------------------------------------------------------------------------
 // Hot Layer Entry (minimal footprint for in-memory search)
 // ---------------------------------------------------------------------------
 
 interface HotEntry {
   id: string;
+  modality: string;
   embedding: number[];
   responseText: string;
   procedureId: string | null;
@@ -77,11 +98,23 @@ interface HotEntry {
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** Maximum patterns to load into the hot layer on boot. */
-const MAX_HOT_ENTRIES = 2000;
+/** Maximum patterns to load into the hot layer on boot (across all modalities). */
+const MAX_HOT_ENTRIES = 6000;
 
 /** Default similarity threshold for Type 1 matching. */
 const DEFAULT_SIMILARITY_THRESHOLD = 0.80;
+
+/** Modality weights for composite scoring. Text dominates to prevent drowning. */
+const MODALITY_WEIGHTS: Record<string, number> = {
+  text: 0.50,
+  audio: 0.25,
+  video: 0.25,
+  faces: 0.15,
+  drives: 0.10,
+};
+
+/** Default weight for unknown modalities. */
+const DEFAULT_MODALITY_WEIGHT = 0.15;
 
 // ---------------------------------------------------------------------------
 // LatentSpaceService
@@ -118,29 +151,22 @@ export class LatentSpaceService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
-  // Search (Type 1 path)
+  // Search — Single modality (internal)
   // ---------------------------------------------------------------------------
 
   /**
-   * Search the hot layer for a pattern matching the given embedding.
-   *
-   * Returns the best match above the similarity threshold, or null if
-   * no pattern is similar enough. This is the Type 1 "reflex" path —
-   * called before arbitration to check if we already know what to do.
-   *
-   * @param embedding  - The fused sensory embedding from the current frame.
-   * @param threshold  - Minimum cosine similarity. Defaults to 0.80.
-   * @returns The best matching pattern with similarity score, or null.
+   * Search the hot layer for patterns matching a specific modality.
    */
-  search(embedding: number[], threshold = DEFAULT_SIMILARITY_THRESHOLD): LatentMatch | null {
-    if (this.hotLayer.length === 0) {
-      return null;
-    }
-
+  searchByModality(
+    modality: string,
+    embedding: number[],
+    threshold = DEFAULT_SIMILARITY_THRESHOLD,
+  ): LatentMatch | null {
     let bestEntry: HotEntry | null = null;
     let bestSimilarity = -1;
 
     for (const entry of this.hotLayer) {
+      if (entry.modality !== modality) continue;
       const sim = cosineSimilarity(embedding, entry.embedding);
       if (sim > bestSimilarity && sim >= threshold) {
         bestSimilarity = sim;
@@ -148,44 +174,100 @@ export class LatentSpaceService implements OnModuleInit {
       }
     }
 
-    if (!bestEntry) {
-      return null;
-    }
+    if (!bestEntry) return null;
 
     return {
-      pattern: {
-        id: bestEntry.id,
-        stimulusEmbedding: bestEntry.embedding,
-        responseText: bestEntry.responseText,
-        procedureId: bestEntry.procedureId,
-        confidence: bestEntry.confidence,
-        useCount: bestEntry.useCount,
-        recentMae: 0,
-        deliberationSummary: null,
-        entityIds: bestEntry.entityIds,
-        createdAt: new Date(),
-        lastUsedAt: null,
-        sessionId: null,
-      },
+      pattern: this.hotEntryToPattern(bestEntry),
       similarity: bestSimilarity,
+      modality,
     };
   }
 
   // ---------------------------------------------------------------------------
-  // Write (Type 2 write-back)
+  // Search — Multi-modal (primary API)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Search per-modality latent spaces and combine results.
+   *
+   * For each modality present in modalityEmbeddings, searches the hot layer
+   * for that modality's patterns. Returns the best match weighted by modality
+   * importance (text dominates). Returns null if no modality exceeds threshold.
+   */
+  searchMultiModal(
+    modalityEmbeddings: Record<string, number[]>,
+    threshold = DEFAULT_SIMILARITY_THRESHOLD,
+  ): MultiModalLatentMatch | null {
+    if (this.hotLayer.length === 0) return null;
+
+    const matches: LatentMatch[] = [];
+
+    for (const [modality, embedding] of Object.entries(modalityEmbeddings)) {
+      const match = this.searchByModality(modality, embedding, threshold);
+      if (match) {
+        matches.push(match);
+      }
+    }
+
+    if (matches.length === 0) return null;
+
+    // If text was in the input but didn't match, discard all matches.
+    // Audio/video are stable across a session — their matches alone are
+    // not meaningful when the actual conversational content (text) differs.
+    const textWasSearched = 'text' in modalityEmbeddings;
+    const textMatched = matches.some(m => m.modality === 'text');
+    if (textWasSearched && !textMatched) {
+      this.logger.debug(
+        'searchMultiModal: text was present but did not match — discarding audio/video matches.',
+      );
+      return null;
+    }
+
+    // Find best individual match
+    const bestMatch = matches.reduce((best, m) =>
+      m.similarity > best.similarity ? m : best,
+    );
+
+    // Compute weighted composite similarity
+    let weightedSum = 0;
+    let totalWeight = 0;
+    for (const match of matches) {
+      const weight = MODALITY_WEIGHTS[match.modality] ?? DEFAULT_MODALITY_WEIGHT;
+      weightedSum += match.similarity * weight;
+      totalWeight += weight;
+    }
+    const compositeSimilarity = totalWeight > 0 ? weightedSum / totalWeight : 0;
+
+    this.logger.debug(
+      `searchMultiModal: ${matches.length} modality matches, ` +
+        `best=${bestMatch.modality}(${bestMatch.similarity.toFixed(3)}), ` +
+        `composite=${compositeSimilarity.toFixed(3)}`,
+    );
+
+    return { matches, bestMatch, compositeSimilarity };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Legacy search (fused embedding — backward compat)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Search using a fused embedding. Matches against 'fused' modality entries.
+   * @deprecated Use searchMultiModal for per-modality matching.
+   */
+  search(embedding: number[], threshold = DEFAULT_SIMILARITY_THRESHOLD): LatentMatch | null {
+    return this.searchByModality('fused', embedding, threshold);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Write — Single pattern
   // ---------------------------------------------------------------------------
 
   /**
    * Write a new learned pattern to both warm and hot layers.
-   *
-   * Called after Type 2 deliberation commits a decision. The pattern
-   * becomes available for Type 1 matching immediately (hot layer) and
-   * persists across restarts (warm layer).
-   *
-   * @returns The ID of the created pattern.
+   * @returns The ID of the created pattern, or '' if rejected.
    */
   async write(pattern: NewPattern): Promise<string> {
-    // Guard: never persist a pattern with empty responseText.
     if (!pattern.responseText || pattern.responseText.trim().length === 0) {
       this.logger.warn('Rejecting latent space write: responseText is empty.');
       return '';
@@ -194,9 +276,9 @@ export class LatentSpaceService implements OnModuleInit {
     const id = randomUUID();
     const now = new Date();
 
-    // Add to hot layer immediately
     this.hotLayer.push({
       id,
+      modality: pattern.modality,
       embedding: pattern.stimulusEmbedding,
       responseText: pattern.responseText,
       procedureId: pattern.procedureId ?? null,
@@ -206,22 +288,22 @@ export class LatentSpaceService implements OnModuleInit {
     });
 
     this.logger.debug(
-      `Latent space write: pattern ${id.substring(0, 8)} ` +
+      `Latent space write [${pattern.modality}]: pattern ${id.substring(0, 8)} ` +
         `(confidence: ${pattern.confidence.toFixed(2)}, entities: ${pattern.entityIds.length}). ` +
         `Hot layer: ${this.hotLayer.length} patterns.`,
     );
 
-    // Persist to warm layer (fire-and-forget)
     if (this.timescale && this.schemaReady) {
       const embeddingLiteral = `[${pattern.stimulusEmbedding.join(',')}]`;
       this.timescale.query(
         `INSERT INTO learned_patterns
-           (id, stimulus_embedding, response_text, procedure_id, confidence,
+           (id, modality, stimulus_embedding, response_text, procedure_id, confidence,
             use_count, recent_mae, deliberation_summary, entity_ids,
             created_at, last_used_at, session_id)
-         VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           id,
+          pattern.modality,
           embeddingLiteral,
           pattern.responseText,
           pattern.procedureId ?? null,
@@ -243,21 +325,50 @@ export class LatentSpaceService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
-  // Use tracking
+  // Write — Multi-modal (writes one entry per active modality)
   // ---------------------------------------------------------------------------
 
   /**
-   * Record that a pattern was used by Type 1.
-   * Updates use_count and last_used_at in both layers.
+   * Write per-modality patterns for a single response.
+   * Creates one entry per modality in modalityEmbeddings, all sharing
+   * the same responseText and metadata.
+   *
+   * @returns Array of pattern IDs (one per modality written).
    */
+  async writeMultiModal(
+    modalityEmbeddings: Record<string, number[]>,
+    responseText: string,
+    opts: MultiModalWriteOpts,
+  ): Promise<string[]> {
+    const ids: string[] = [];
+
+    for (const [modality, embedding] of Object.entries(modalityEmbeddings)) {
+      // Skip drive/face modalities for now — they don't carry conversational signal
+      if (modality === 'drives' || modality === 'faces') continue;
+
+      const id = await this.write({
+        modality,
+        stimulusEmbedding: embedding,
+        responseText,
+        ...opts,
+      });
+      if (id) ids.push(id);
+    }
+
+    return ids;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Use tracking
+  // ---------------------------------------------------------------------------
+
+  /** Record that a pattern was used by Type 1. */
   recordUse(patternId: string): void {
-    // Update hot layer
     const entry = this.hotLayer.find((e) => e.id === patternId);
     if (entry) {
       entry.useCount++;
     }
 
-    // Update warm layer (fire-and-forget)
     if (this.timescale && this.schemaReady) {
       this.timescale.query(
         `UPDATE learned_patterns
@@ -270,9 +381,7 @@ export class LatentSpaceService implements OnModuleInit {
     }
   }
 
-  /**
-   * Update the confidence of a pattern (after outcome evaluation).
-   */
+  /** Update the confidence of a pattern (after outcome evaluation). */
   updateConfidence(patternId: string, newConfidence: number): void {
     const entry = this.hotLayer.find((e) => e.id === patternId);
     if (entry) {
@@ -293,10 +402,7 @@ export class LatentSpaceService implements OnModuleInit {
   // Reset
   // ---------------------------------------------------------------------------
 
-  /**
-   * Clear all learned patterns from both hot and warm layers.
-   * Called during full system reset.
-   */
+  /** Clear all learned patterns from both hot and warm layers. */
   async clear(): Promise<number> {
     const count = this.hotLayer.length;
     this.hotLayer = [];
@@ -332,6 +438,7 @@ export class LatentSpaceService implements OnModuleInit {
       await this.timescale.query(`
         CREATE TABLE IF NOT EXISTS learned_patterns (
           id                  UUID PRIMARY KEY,
+          modality            TEXT DEFAULT 'fused',
           stimulus_embedding  vector(${EMBEDDING_DIM}),
           response_text       TEXT NOT NULL,
           procedure_id        TEXT,
@@ -346,6 +453,12 @@ export class LatentSpaceService implements OnModuleInit {
         )
       `);
 
+      // Add modality column if upgrading from old schema
+      await this.timescale.query(`
+        ALTER TABLE learned_patterns
+        ADD COLUMN IF NOT EXISTS modality TEXT DEFAULT 'fused'
+      `);
+
       await this.timescale.query(`
         CREATE INDEX IF NOT EXISTS learned_patterns_embedding_idx
         ON learned_patterns
@@ -358,8 +471,13 @@ export class LatentSpaceService implements OnModuleInit {
         ON learned_patterns (use_count DESC, last_used_at DESC NULLS LAST)
       `);
 
+      await this.timescale.query(`
+        CREATE INDEX IF NOT EXISTS learned_patterns_modality_idx
+        ON learned_patterns (modality)
+      `);
+
       this.schemaReady = true;
-      this.logger.log('learned_patterns schema verified (pgvector index ready)');
+      this.logger.log('learned_patterns schema verified (pgvector + modality index ready)');
     } catch (err) {
       this.logger.error(
         `Latent space schema creation failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -368,16 +486,14 @@ export class LatentSpaceService implements OnModuleInit {
     }
   }
 
-  /**
-   * Hydrate the hot layer from the warm layer on boot.
-   * Loads the most frequently used patterns first.
-   */
+  /** Hydrate the hot layer from the warm layer on boot. */
   private async hydrate(): Promise<void> {
     if (!this.timescale || !this.schemaReady) return;
 
     try {
       const result = await this.timescale.query<{
         id: string;
+        modality: string | null;
         stimulus_embedding: string;
         response_text: string;
         procedure_id: string | null;
@@ -385,7 +501,8 @@ export class LatentSpaceService implements OnModuleInit {
         use_count: number;
         entity_ids: string[] | null;
       }>(
-        `SELECT id, stimulus_embedding::text, response_text, procedure_id,
+        `SELECT id, COALESCE(modality, 'fused') AS modality,
+                stimulus_embedding::text, response_text, procedure_id,
                 confidence, use_count, entity_ids
          FROM learned_patterns
          ORDER BY use_count DESC, last_used_at DESC NULLS LAST
@@ -398,6 +515,7 @@ export class LatentSpaceService implements OnModuleInit {
         if (embedding.length === EMBEDDING_DIM) {
           this.hotLayer.push({
             id: row.id,
+            modality: row.modality ?? 'fused',
             embedding,
             responseText: row.response_text,
             procedureId: row.procedure_id,
@@ -419,32 +537,26 @@ export class LatentSpaceService implements OnModuleInit {
       );
     }
   }
-}
 
-// ---------------------------------------------------------------------------
-// Pure math helpers
-// ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
 
-/** Cosine similarity between two vectors. Returns value in [-1, 1]. */
-function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length);
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < len; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  private hotEntryToPattern(entry: HotEntry): LearnedPattern {
+    return {
+      id: entry.id,
+      modality: entry.modality,
+      stimulusEmbedding: entry.embedding,
+      responseText: entry.responseText,
+      procedureId: entry.procedureId,
+      confidence: entry.confidence,
+      useCount: entry.useCount,
+      recentMae: 0,
+      deliberationSummary: null,
+      entityIds: entry.entityIds,
+      createdAt: new Date(),
+      lastUsedAt: null,
+      sessionId: null,
+    };
   }
-
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
-
-/** Parse a pgvector text representation "[0.1,0.2,...]" into a number array. */
-function parseEmbedding(text: string): number[] {
-  if (!text || text.length < 3) return [];
-  const inner = text.startsWith('[') ? text.slice(1, -1) : text;
-  return inner.split(',').map(Number);
 }

@@ -91,6 +91,19 @@ export class PersonModelService implements OnModuleInit {
         `CREATE CONSTRAINT attribute_id_unique IF NOT EXISTS
          FOR (a:Attribute) REQUIRE a.attr_id IS UNIQUE`,
       );
+      // Backfill: set label = username for any Person nodes missing a label.
+      const migrated = await session.run(
+        `MATCH (p:Person) WHERE p.label IS NULL AND p.username IS NOT NULL
+         SET p.label = p.username
+         RETURN count(p) AS cnt`,
+      );
+      const cnt = migrated.records[0]?.get('cnt');
+      const migratedCount = typeof cnt === 'number' ? cnt
+        : (cnt && typeof cnt.toNumber === 'function') ? cnt.toNumber() : 0;
+      if (migratedCount > 0) {
+        this.logger.log(`OKG: backfilled label on ${migratedCount} Person node(s)`);
+      }
+
       this.logger.log('OKG schema initialized (Person + Attribute constraints).');
     } catch (err) {
       this.logger.warn(`OKG schema init failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -124,10 +137,12 @@ export class PersonModelService implements OnModuleInit {
         `MERGE (p:Person {node_id: $userId})
          ON CREATE SET
            p.username = $username,
+           p.label = $username,
            p.is_guardian = $isGuardian,
            p.created_at = datetime()
          ON MATCH SET
            p.username = $username,
+           p.label = COALESCE(p.label, $username),
            p.is_guardian = $isGuardian,
            p.updated_at = datetime()`,
         { userId, username, isGuardian },
