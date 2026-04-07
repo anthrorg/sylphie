@@ -68,7 +68,7 @@ export const MAX_QUEUE_SIZE = 50;
  * The queue emits top opportunities every EMISSION_INTERVAL_TICKS.
  * At most EMISSION_MAX_PER_CYCLE opportunities are emitted per cycle.
  */
-export const EMISSION_INTERVAL_TICKS = 100; // ~1 second at 100Hz
+export const EMISSION_INTERVAL_TICKS = 1; // 1 tick = 1 second at 1Hz
 export const EMISSION_MAX_PER_CYCLE = 5;
 
 /**
@@ -76,7 +76,7 @@ export const EMISSION_MAX_PER_CYCLE = 5;
  * The decay circuit runs every DECAY_CHECK_INTERVAL_TICKS to update
  * opportunity priorities based on prediction improvement.
  */
-export const DECAY_CHECK_INTERVAL_TICKS = 100; // ~1 second at 100Hz
+export const DECAY_CHECK_INTERVAL_TICKS = 1; // 1 tick = 1 second at 1Hz
 
 /**
  * De-duplication: When an opportunity for the same predictionType

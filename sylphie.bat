@@ -47,19 +47,22 @@ echo [3/4] Building shared package...
 call yarn prisma:generate
 call yarn build:shared
 
-:: Launch frontend and backend
-echo [4/4] Launching services...
-start "Sylphie Frontend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev"
+:: Launch drive server, frontend, and backend
+echo [4/5] Launching Drive Engine server...
+start "Drive Server" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev:drive-server"
+timeout /t 2 /nobreak >nul
 
-:: Launch backend in its own terminal
+echo [5/5] Launching Frontend and Backend...
+start "Sylphie Frontend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev"
 start "Sylphie Backend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev:backend"
 
 echo.
 echo ========================================
-echo  Frontend:   http://localhost:5173
-echo  Backend:    http://localhost:3000
-echo  Perception: http://localhost:8430
-echo  SearXNG:    http://localhost:8888
+echo  Frontend:     http://localhost:5173
+echo  Backend:      http://localhost:3000
+echo  Drive Server: ws://localhost:3001
+echo  Perception:   http://localhost:8430
+echo  SearXNG:      http://localhost:8888
 echo ========================================
 echo.
 echo Close this window anytime. Services run

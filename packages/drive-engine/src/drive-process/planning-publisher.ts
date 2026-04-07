@@ -10,26 +10,22 @@
 import type { DriveIPCMessage } from '@sylphie/shared';
 import { DriveIPCMessageType, type OpportunityCreatedPayload } from '@sylphie/shared';
 import type { Opportunity } from './opportunity';
+import type { IMessageTransport } from './message-transport';
 
 /**
- * PlanningPublisher: Emits opportunity signals via IPC.
+ * PlanningPublisher: Emits opportunity signals via transport.
  */
 export class PlanningPublisher {
-  constructor() {}
+  constructor(private readonly transport: IMessageTransport) {}
 
   /**
-   * Publish top opportunities to Planning subsystem via IPC.
+   * Publish top opportunities to Planning subsystem.
    *
    * Emits OPPORTUNITY_CREATED messages for each opportunity in the list.
-   * Uses process.send() to communicate with parent process (main NestJS).
    *
    * @param opportunities - Array of top opportunities to emit (pre-sorted by priority)
    */
   public publishOpportunities(opportunities: Opportunity[]): void {
-    if (typeof process === 'undefined' || !process.send) {
-      return; // Not in Node.js child process context
-    }
-
     for (const opp of opportunities) {
       try {
         const message: DriveIPCMessage<OpportunityCreatedPayload> = {
@@ -41,26 +37,22 @@ export class PlanningPublisher {
               ? 'PREDICTION_FAILURE_PATTERN'
               : opp.classification === 'HIGH_IMPACT'
                 ? 'HIGH_IMPACT_ONE_OFF'
-                : 'PREDICTION_FAILURE_PATTERN', // Fallback for LOW_PRIORITY
+                : 'PREDICTION_FAILURE_PATTERN',
             priority:
               opp.classification === 'RECURRING'
                 ? 'HIGH'
                 : opp.classification === 'HIGH_IMPACT'
                   ? 'MEDIUM'
                   : 'LOW',
-            sourceEventId: '', // Will be filled in by Planning if needed
+            sourceEventId: '',
             affectedDrive: 'cognitiveAwareness' as any,
           },
           timestamp: new Date(),
         };
 
-        process.send(message);
+        this.transport.send(message);
       } catch (err) {
-        if (process.stderr) {
-          process.stderr.write(
-            `[PlanningPublisher] Error publishing opportunity ${opp.id}: ${err}\n`,
-          );
-        }
+        console.error(`[PlanningPublisher] Error publishing opportunity ${opp.id}: ${err}`);
       }
     }
   }
@@ -74,9 +66,9 @@ let publisher: PlanningPublisher | null = null;
 /**
  * Get or create the global publisher instance.
  */
-export function getOrCreatePlanningPublisher(): PlanningPublisher {
+export function getOrCreatePlanningPublisher(transport: IMessageTransport): PlanningPublisher {
   if (!publisher) {
-    publisher = new PlanningPublisher();
+    publisher = new PlanningPublisher(transport);
   }
   return publisher;
 }

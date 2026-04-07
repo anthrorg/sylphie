@@ -23,6 +23,9 @@
     "prisma:migrate": "yarn workspace @sylphie/shared prisma:migrate",
     "dev:backend": "yarn workspace @sylphie/app dev",
     "build:backend": "yarn workspace @sylphie/app build",
-    "start:backend": "yarn workspace @sylphie/app start"
+    "start:backend": "yarn workspace @sylphie/app start",
+    "dev:drive-server": "yarn workspace @sylphie/drive-server dev",
+    "build:drive-server": "yarn workspace @sylphie/drive-server build",
+    "start:drive-server": "yarn workspace @sylphie/drive-server start"
   }
 }

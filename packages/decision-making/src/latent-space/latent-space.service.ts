@@ -185,6 +185,12 @@ export class LatentSpaceService implements OnModuleInit {
    * @returns The ID of the created pattern.
    */
   async write(pattern: NewPattern): Promise<string> {
+    // Guard: never persist a pattern with empty responseText.
+    if (!pattern.responseText || pattern.responseText.trim().length === 0) {
+      this.logger.warn('Rejecting latent space write: responseText is empty.');
+      return '';
+    }
+
     const id = randomUUID();
     const now = new Date();
 
@@ -281,6 +287,26 @@ export class LatentSpaceService implements OnModuleInit {
         this.logger.warn(`Confidence update failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reset
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Clear all learned patterns from both hot and warm layers.
+   * Called during full system reset.
+   */
+  async clear(): Promise<number> {
+    const count = this.hotLayer.length;
+    this.hotLayer = [];
+
+    if (this.timescale && this.schemaReady) {
+      await this.timescale.query('TRUNCATE learned_patterns');
+    }
+
+    this.logger.warn(`Latent space cleared: ${count} hot layer patterns removed, warm layer truncated.`);
+    return count;
   }
 
   // ---------------------------------------------------------------------------

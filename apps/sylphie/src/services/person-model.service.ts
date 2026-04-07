@@ -19,7 +19,7 @@
  * No cross-instance queries between WORLD, SELF, and OTHER.
  */
 
-import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject, OnModuleInit } from '@nestjs/common';
 import { Neo4jService, Neo4jInstanceName, type PersonModelSummary } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ export class PersonModelService implements OnModuleInit {
   private readonly interactionCounts = new Map<string, number>();
 
   constructor(
-    @Optional() private readonly neo4j: Neo4jService | null,
+    @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
   ) {}
 
   // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import { DriveName } from '@sylphie/shared';
 
 /**
  * Interval at which self-evaluation executes.
- * Runs every N ticks (10 ticks = ~100ms at 100Hz).
+ * Runs every N ticks. At 1Hz, 10 ticks = 10 seconds.
  *
  * Slower timescale prevents constant re-assessment and allows drive
  * state to stabilize between evaluations.

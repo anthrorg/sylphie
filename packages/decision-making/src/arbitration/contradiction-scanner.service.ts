@@ -24,7 +24,7 @@
  * Injection token: CONTRADICTION_SCANNER (decision-making.tokens.ts)
  */
 
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { Neo4jService, Neo4jInstanceName, type ContradictionScanResult } from '@sylphie/shared';
 import type { ActionCandidate, DriveSnapshot } from '@sylphie/shared';
 import type { IContradictionScannerService } from '../interfaces/decision-making.interfaces';
@@ -62,7 +62,7 @@ export class ContradictionScannerService implements IContradictionScannerService
   private readonly logger = new Logger(ContradictionScannerService.name);
 
   constructor(
-    @Optional() private readonly neo4j: Neo4jService | null,
+    @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
   ) {}
 
   /**

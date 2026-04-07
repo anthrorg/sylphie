@@ -77,6 +77,7 @@ import {
   EMISSION_MAX_PER_CYCLE,
   DECAY_CHECK_INTERVAL_TICKS,
 } from '../constants/opportunity-detection';
+import type { IMessageTransport } from './message-transport';
 
 /**
  * Outcome queue entry: holds IPC messages pending processing.
@@ -93,6 +94,7 @@ interface QueuedOutcome {
  * spawns this and communicates via IPC only.
  */
 export class DriveEngine {
+  private readonly transport: IMessageTransport;
   private stateManager: DriveStateManager;
   private ruleEngine: RuleEngine;
   private selfEvaluator: SelfEvaluator;
@@ -122,7 +124,9 @@ export class DriveEngine {
   private nextEmissionAt: number = EMISSION_INTERVAL_TICKS;
   private nextDecayCheckAt: number = DECAY_CHECK_INTERVAL_TICKS;
 
-  constructor() {
+  constructor(transport: IMessageTransport) {
+    this.transport = transport;
+
     // Validate rates at startup
     const validation = validateRates();
     if (!validation.valid) {
@@ -136,8 +140,8 @@ export class DriveEngine {
     this.predictionEvaluator = getOrCreatePredictionEvaluator();
     this.opportunityDetector = getOrCreateOpportunityDetector();
     this.opportunityQueue = new OpportunityQueue();
-    this.planningPublisher = getOrCreatePlanningPublisher();
-    this.setupIPCHandlers();
+    this.planningPublisher = getOrCreatePlanningPublisher(transport);
+    this.setupTransportHandlers();
   }
 
   /**
@@ -182,24 +186,15 @@ export class DriveEngine {
   }
 
   /**
-   * Setup IPC message handlers.
-   * Messages arrive from the main NestJS process.
+   * Setup transport message handlers.
+   * Messages arrive from the main NestJS process via the configured transport.
    */
-  private setupIPCHandlers(): void {
-    if (typeof process === 'undefined' || !process.on) {
-      return; // Not in Node.js child process context
-    }
-
-    process.on('message', (msg: DriveIPCMessage<unknown>) => {
+  private setupTransportHandlers(): void {
+    this.transport.onMessage((msg: DriveIPCMessage<unknown>) => {
       try {
         this.handleIPCMessage(msg);
       } catch (err) {
-        // Log and skip malformed messages
-        if (process.stderr) {
-          process.stderr.write(
-            `[DriveEngine] Error processing IPC message: ${err}\n`,
-          );
-        }
+        console.error(`[DriveEngine] Error processing message: ${err}`);
       }
     });
   }
@@ -244,11 +239,9 @@ export class DriveEngine {
 
     // Warn if queue gets too long (performance issue)
     if (this.outcomeQueue.length > MAX_OUTCOME_QUEUE_LENGTH) {
-      if (process.stderr) {
-        process.stderr.write(
-          `[DriveEngine] Outcome queue exceeded ${MAX_OUTCOME_QUEUE_LENGTH} items: ${this.outcomeQueue.length}\n`,
-        );
-      }
+      console.warn(
+        `[DriveEngine] Outcome queue exceeded ${MAX_OUTCOME_QUEUE_LENGTH} items: ${this.outcomeQueue.length}`,
+      );
     }
   }
 
@@ -320,9 +313,7 @@ export class DriveEngine {
       if (this.selfEvaluator.shouldEvaluate(this.tickNumber)) {
         // Fire the evaluation asynchronously (does not block tick loop)
         this.selfEvaluator.evaluate(this.tickNumber).catch((err) => {
-          if (process.stderr) {
-            process.stderr.write(`[DriveEngine] Self-evaluation error: ${err}\n`);
-          }
+          console.error(`[DriveEngine] Self-evaluation error: ${err}`);
         });
       }
 
@@ -336,10 +327,10 @@ export class DriveEngine {
       }
 
       // 5. Apply cross-modulation (drive-to-drive effects)
-      const currentState = this.stateManager.getCurrent() as Record<DriveName, number>;
+      const currentState = this.stateManager.getCurrentMutable() as Record<DriveName, number>;
       applyCrossModulation(currentState);
 
-      // 6. Clamp all drives
+      // 6. Clamp all drives (on the actual state, not a copy)
       clampAllDrives(currentState);
 
       // 7. Compute totalPressure
@@ -400,9 +391,7 @@ export class DriveEngine {
       this.tickNumber++;
       this.lastTickCompletedAt = Date.now();
     } catch (err) {
-      if (process.stderr) {
-        process.stderr.write(`[DriveEngine] Tick error: ${err}\n`);
-      }
+      console.error(`[DriveEngine] Tick error: ${err}`);
     }
   }
 
@@ -480,12 +469,8 @@ export class DriveEngine {
         this.stateManager.applyOutcomeEffects(contingencyDeltas);
       } else {
         // Expression is theatrical: zero reinforcement
-        // Log the prohibition event for debugging
         const logMsg = logTheaterProhibition(actionPayload, verdict, filterResult.blockedEffects);
-        if (process.stderr) {
-          process.stderr.write(`[DriveEngine] ${logMsg}\n`);
-        }
-        // Emit THEATER_PROHIBITED event via event emitter if available
+        console.error(`[DriveEngine] ${logMsg}`);
         this.emitTheaterProhibitedEvent(actionPayload, verdict);
       }
     } else if ('cognitiveEffortPressure' in payload) {
@@ -531,24 +516,20 @@ export class DriveEngine {
   }
 
   /**
-   * Publish a drive snapshot via IPC to the main process.
+   * Publish a drive snapshot to the main process via transport.
    */
   private publishSnapshot(snapshot: DriveSnapshot): void {
-    if (typeof process === 'undefined' || !process.send) {
-      return; // Not in child process context
-    }
-
     const message: DriveIPCMessage<DriveSnapshotPayload> = {
       type: DriveIPCMessageType.DRIVE_SNAPSHOT,
       payload: { snapshot },
       timestamp: new Date(),
     };
 
-    process.send(message);
+    this.transport.send(message);
   }
 
   /**
-   * Publish a drive event via IPC (for specific events like relief).
+   * Publish a drive event (for specific events like relief).
    */
   private publishDriveEvent(
     eventType: 'DRIVE_RELIEF' | 'DRIVE_RULE_APPLIED',
@@ -557,10 +538,6 @@ export class DriveEngine {
     ruleId: string | null = null,
   ): void {
     if (!this.lastPublishedSnapshot) {
-      return;
-    }
-
-    if (typeof process === 'undefined' || !process.send) {
       return;
     }
 
@@ -576,7 +553,7 @@ export class DriveEngine {
       timestamp: new Date(),
     };
 
-    process.send(message);
+    this.transport.send(message);
   }
 
   /**
@@ -609,10 +586,6 @@ export class DriveEngine {
     severity: 'low' | 'medium' | 'high';
     contextFingerprint: string;
   }): void {
-    if (typeof process === 'undefined' || !process.send) {
-      return; // Not in child process context
-    }
-
     // Map severity to opportunity priority
     let priority: 'HIGH' | 'MEDIUM' | 'LOW';
     if (signal.severity === 'high') {
@@ -628,13 +601,13 @@ export class DriveEngine {
         contextFingerprint: signal.contextFingerprint,
         classification: 'PREDICTION_FAILURE_PATTERN',
         priority,
-        sourceEventId: '', // Will be populated by the event emitter
-        affectedDrive: 'cognitiveAwareness' as any, // Prediction failures affect cognitive awareness
+        sourceEventId: '',
+        affectedDrive: 'cognitiveAwareness' as any,
       },
       timestamp: new Date(),
     };
 
-    process.send(message);
+    this.transport.send(message);
   }
 
   /**
@@ -654,10 +627,10 @@ export class DriveEngine {
     let healthy = true;
     let diagnosticMessage: string | null = null;
 
-    // Check if ticks are stalled (haven't completed in >1 second)
-    if (msSinceLastTick > 1000) {
+    // Check if ticks are stalled (haven't completed in >5 seconds at 1Hz tick rate)
+    if (msSinceLastTick > 5000) {
       healthy = false;
-      diagnosticMessage = `Last tick was ${msSinceLastTick}ms ago (timeout: 1000ms)`;
+      diagnosticMessage = `Last tick was ${msSinceLastTick}ms ago (timeout: 5000ms)`;
     }
 
     // Check memory footprint
@@ -682,34 +655,19 @@ export class DriveEngine {
 }
 
 /**
- * Global singleton instance (when running as a spawned process).
- * The parent process will import and call start() on this instance.
+ * Global singleton instance (when running as a spawned process or standalone server).
  */
 let engine: DriveEngine | null = null;
 
 /**
  * Get or create the global engine instance.
+ *
+ * @param transport - Message transport for communication with the main app.
+ *                    Required on first call; ignored on subsequent calls.
  */
-export function getOrCreateEngine(): DriveEngine {
+export function getOrCreateEngine(transport: IMessageTransport): DriveEngine {
   if (!engine) {
-    engine = new DriveEngine();
+    engine = new DriveEngine(transport);
   }
   return engine;
-}
-
-/**
- * Entry point for the spawned child process.
- * This runs automatically when the file is executed directly.
- */
-if (require.main === module || (typeof process !== 'undefined' && process.argv[1]?.includes('drive-engine'))) {
-  const engine = getOrCreateEngine();
-  engine.start();
-
-  // Health check responder
-  if (typeof process !== 'undefined' && process.on) {
-    process.on('message', (msg: DriveIPCMessage<unknown>) => {
-      // Handle health check via a signal (parent will use process signals for health checks)
-      // This is a fallback; primary health checking is done via HEALTH_STATUS periodic publication
-    });
-  }
 }

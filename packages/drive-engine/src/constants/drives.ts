@@ -16,19 +16,22 @@ import { DriveName } from '@sylphie/shared';
 
 /**
  * Drive Engine tick interval in milliseconds.
- * Target: 100Hz (10ms per tick).
- * Used for drift-compensated setTimeout scheduling.
+ * Target: 1Hz (1000ms per tick).
+ *
+ * 1Hz is appropriate for a motivational system where drives change over
+ * minutes, not milliseconds. Produces readable logs, intuitive rate
+ * values (per-second), and minimal CPU overhead.
  *
  * CANON §A.1: "Compute base drive updates (accumulation, decay)"
  */
-export const DRIVE_ENGINE_TICK_INTERVAL_MS = 10;
+export const DRIVE_ENGINE_TICK_INTERVAL_MS = 1000;
 
 /**
  * Maximum allowed drift for tick timing compensation.
  * If a tick runs late, the next tick adjusts to compensate.
  * Prevents long-term clock skew from accumulating.
  */
-export const MAX_TICK_DRIFT_MS = 5;
+export const MAX_TICK_DRIFT_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Per-Drive Accumulation Rates (pressure buildup)
@@ -45,20 +48,23 @@ export const MAX_TICK_DRIFT_MS = 5;
  */
 export const DRIVE_ACCUMULATION_RATES: Readonly<Record<DriveName, number>> = {
   // Core drives: always accumulating (fundamental needs)
-  [DriveName.SystemHealth]: 0.003,
-  [DriveName.MoralValence]: 0.002,
-  [DriveName.Integrity]: 0.002,
-  [DriveName.CognitiveAwareness]: 0.002,
+  // Rates are per-tick at 1Hz (1 tick = 1 second).
+  // Tuned for Phase 1.5: no relief actions yet, so rates are slow enough
+  // that drives don't all max out within a single session (~30-60 min).
+  [DriveName.SystemHealth]: 0.0009,    // ~15 min to fill from 0.2
+  [DriveName.MoralValence]: 0.0006,    // ~22 min to fill from 0.2
+  [DriveName.Integrity]: 0.0006,       // ~22 min to fill from 0.2
+  [DriveName.CognitiveAwareness]: 0.0006, // ~22 min to fill from 0.2
 
   // Complement drives: mixed accumulation and decay
   [DriveName.Guilt]: 0.0, // Event-only, no base accumulation
-  [DriveName.Curiosity]: 0.004,
-  [DriveName.Boredom]: 0.005,
-  [DriveName.Anxiety]: 0.001,
+  [DriveName.Curiosity]: 0.0012,       // ~10 min to fill from 0.3
+  [DriveName.Boredom]: 0.0015,         // ~7 min to fill from 0.4
+  [DriveName.Anxiety]: 0.0003,         // ~44 min to fill from 0.2
   [DriveName.Satisfaction]: 0.0, // Decays, see decay rates
   [DriveName.Sadness]: 0.0, // Decays, see decay rates
   [DriveName.Focus]: 0.0, // Event-only, no base accumulation — pressure comes from prediction failures
-  [DriveName.Social]: 0.003,
+  [DriveName.Social]: 0.0009,          // ~9 min to fill from 0.5
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -85,9 +91,9 @@ export const DRIVE_DECAY_RATES: Readonly<Record<DriveName, number>> = {
   [DriveName.Curiosity]: 0.0,
   [DriveName.Boredom]: 0.0,
   [DriveName.Anxiety]: 0.0,
-  [DriveName.Satisfaction]: -0.003, // Decays toward 0.0 (relief fades)
-  [DriveName.Sadness]: -0.002, // Decays toward 0.0 (sadness fades)
-  [DriveName.Focus]: -0.002, // Focus decays naturally — prediction confidence recovers over time
+  [DriveName.Satisfaction]: -0.0009, // relief fades over ~18 min
+  [DriveName.Sadness]: -0.0006,     // sadness fades over ~28 min
+  [DriveName.Focus]: -0.0006,       // focus recovers over ~28 min
   [DriveName.Social]: 0.0,
 } as const;
 
@@ -105,11 +111,12 @@ export const ANXIETY_CURIOSITY_SUPPRESSION_THRESHOLD = 0.7;
 
 /**
  * Multiplier applied when high anxiety suppresses curiosity.
- * curiosity *= (1 - ANXIETY_CURIOSITY_SUPPRESSION_COEFFICIENT * anxiety)
+ * curiosity *= (1 - coefficient * anxiety)
  *
- * At anxiety = 1.0, curiosity gets multiplied by (1 - 0.4) = 0.6.
+ * At anxiety = 1.0: curiosity *= 0.99 per tick → ~37% reduction over 60s.
+ * Mild suppression — anxiety makes exploration less appealing, not impossible.
  */
-export const ANXIETY_CURIOSITY_SUPPRESSION_COEFFICIENT = 0.4;
+export const ANXIETY_CURIOSITY_SUPPRESSION_COEFFICIENT = 0.03;
 
 /**
  * Threshold above which satisfaction reduces boredom.
@@ -120,9 +127,11 @@ export const SATISFACTION_BOREDOM_SUPPRESSION_THRESHOLD = 0.6;
 
 /**
  * Multiplier applied when high satisfaction reduces boredom.
- * boredom *= (1 - SATISFACTION_BOREDOM_SUPPRESSION_COEFFICIENT * satisfaction)
+ * boredom *= (1 - coefficient * satisfaction)
+ *
+ * At satisfaction = 1.0: boredom *= 0.99 per tick → ~37% reduction over 60s.
  */
-export const SATISFACTION_BOREDOM_SUPPRESSION_COEFFICIENT = 0.3;
+export const SATISFACTION_BOREDOM_SUPPRESSION_COEFFICIENT = 0.03;
 
 /**
  * Threshold above which high anxiety increases integrity pressure.
@@ -132,23 +141,27 @@ export const SATISFACTION_BOREDOM_SUPPRESSION_COEFFICIENT = 0.3;
 export const ANXIETY_INTEGRITY_AMPLIFICATION_THRESHOLD = 0.7;
 
 /**
- * Multiplier applied when high anxiety amplifies integrity.
- * integrity += ANXIETY_INTEGRITY_AMPLIFICATION_COEFFICIENT * anxiety
- */
-export const ANXIETY_INTEGRITY_AMPLIFICATION_COEFFICIENT = 0.2;
-
-/**
- * Threshold below which low systemHealth amplifies anxiety.
+ * Additive effect when high anxiety amplifies integrity.
+ * integrity += coefficient * anxiety
  *
- * CANON §A.15: "Low systemHealth amplifies anxiety"
+ * At anxiety = 1.0: +0.0004/s (2x base integrity rate).
+ * Anxiety doubles integrity pressure, not dominates it.
  */
-export const SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD = 0.3;
+export const ANXIETY_INTEGRITY_AMPLIFICATION_COEFFICIENT = 0.0012;
 
 /**
- * Multiplier applied when low systemHealth amplifies anxiety.
- * anxiety += SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_COEFFICIENT * (threshold - systemHealth)
+ * Threshold above which high systemHealth pressure amplifies anxiety.
+ * High pressure = something is wrong with the system = anxiety rises.
  */
-export const SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_COEFFICIENT = 0.5;
+export const SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD = 0.7;
+
+/**
+ * Additive effect when high systemHealth pressure amplifies anxiety.
+ * anxiety += coefficient * (systemHealth - threshold)
+ *
+ * At systemHealth = 1.0 (gap = 0.3): +0.0009/s (~3x base anxiety rate).
+ */
+export const SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_COEFFICIENT = 0.003;
 
 /**
  * Threshold above which high boredom increases curiosity.
@@ -158,10 +171,13 @@ export const SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_COEFFICIENT = 0.5;
 export const BOREDOM_CURIOSITY_AMPLIFICATION_THRESHOLD = 0.6;
 
 /**
- * Multiplier applied when high boredom increases curiosity.
- * curiosity += BOREDOM_CURIOSITY_AMPLIFICATION_COEFFICIENT * (boredom - threshold)
+ * Additive effect when high boredom increases curiosity.
+ * curiosity += coefficient * (boredom - threshold)
+ *
+ * At boredom = 1.0 (gap = 0.4): +0.0004/s (1x base curiosity rate).
+ * Being bored doubles curiosity buildup.
  */
-export const BOREDOM_CURIOSITY_AMPLIFICATION_COEFFICIENT = 0.3;
+export const BOREDOM_CURIOSITY_AMPLIFICATION_COEFFICIENT = 0.003;
 
 /**
  * Threshold above which high guilt reduces satisfaction.
@@ -172,9 +188,11 @@ export const GUILT_SATISFACTION_SUPPRESSION_THRESHOLD = 0.4;
 
 /**
  * Multiplier applied when high guilt reduces satisfaction.
- * satisfaction *= (1 - GUILT_SATISFACTION_SUPPRESSION_COEFFICIENT * guilt)
+ * satisfaction *= (1 - coefficient * guilt)
+ *
+ * At guilt = 1.0: satisfaction *= 0.99 per tick → ~37% reduction over 60s.
  */
-export const GUILT_SATISFACTION_SUPPRESSION_COEFFICIENT = 0.5;
+export const GUILT_SATISFACTION_SUPPRESSION_COEFFICIENT = 0.03;
 
 // ---------------------------------------------------------------------------
 // Process Health

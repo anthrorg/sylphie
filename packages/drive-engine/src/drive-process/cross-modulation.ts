@@ -45,11 +45,8 @@ import {
 export function applyCrossModulation(state: Record<DriveName, number>): void {
   const s = state; // alias for brevity
 
-  // 1. High anxiety (>0.7) reduces curiosity
-  if (s[DriveName.Anxiety] > ANXIETY_CURIOSITY_SUPPRESSION_THRESHOLD) {
-    s[DriveName.Curiosity] *=
-      1 - ANXIETY_CURIOSITY_SUPPRESSION_COEFFICIENT * s[DriveName.Anxiety];
-  }
+  // 1. (Removed) Anxiety→Curiosity suppression was semantically wrong.
+  //    Boredom→Curiosity amplification (rule 5) is the correct driver.
 
   // 2. High satisfaction reduces boredom
   if (s[DriveName.Satisfaction] > SATISFACTION_BOREDOM_SUPPRESSION_THRESHOLD) {
@@ -63,11 +60,11 @@ export function applyCrossModulation(state: Record<DriveName, number>): void {
       ANXIETY_INTEGRITY_AMPLIFICATION_COEFFICIENT * s[DriveName.Anxiety];
   }
 
-  // 4. Low systemHealth (<0.3) amplifies anxiety
-  if (s[DriveName.SystemHealth] < SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD) {
+  // 4. High systemHealth pressure (>0.7) amplifies anxiety
+  if (s[DriveName.SystemHealth] > SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD) {
     s[DriveName.Anxiety] +=
       SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_COEFFICIENT *
-      (SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD - s[DriveName.SystemHealth]);
+      (s[DriveName.SystemHealth] - SYSTEM_HEALTH_ANXIETY_AMPLIFICATION_THRESHOLD);
   }
 
   // 5. High boredom (>0.6) increases curiosity

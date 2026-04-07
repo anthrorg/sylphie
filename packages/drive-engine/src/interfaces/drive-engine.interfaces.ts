@@ -326,6 +326,17 @@ export interface IActionOutcomeReporter {
    * @param metrics - LLM usage data. cognitiveEffortPressure is load-bearing.
    */
   reportMetrics(metrics: SoftwareMetrics): void;
+
+  /**
+   * Reset the Drive Engine's in-memory state to INITIAL_DRIVE_STATE.
+   *
+   * Sends a SESSION_START message with a fresh session ID and
+   * INITIAL_DRIVE_STATE. The Drive Engine creates a new DriveStateManager,
+   * resetting all 12 drives to their cold-start values.
+   *
+   * Called by the system reset flow (WkgBootstrapService.resetAndBootstrap).
+   */
+  resetDriveState(): void;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@
  * Uses Neo4j WORLD instance via Neo4jService.getSession(WORLD, mode).
  */
 
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import {
   Neo4jService,
@@ -122,7 +122,7 @@ export class WkgContextService {
   private readonly logger = new Logger(WkgContextService.name);
 
   constructor(
-    @Optional() private readonly neo4j: Neo4jService | null,
+    @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
   ) {}
 
   // ---------------------------------------------------------------------------

@@ -232,18 +232,18 @@ export interface DriveSnapshot {
  * failure; no prediction errors have occurred yet.
  */
 export const INITIAL_DRIVE_STATE: Readonly<PressureVector> = {
-  [DriveName.SystemHealth]: 0.2,
-  [DriveName.MoralValence]: 0.2,
-  [DriveName.Integrity]: 0.2,
-  [DriveName.CognitiveAwareness]: 0.2,
+  [DriveName.SystemHealth]: 0.0,
+  [DriveName.MoralValence]: 0.0,
+  [DriveName.Integrity]: 0.0,
+  [DriveName.CognitiveAwareness]: 0.0,
   [DriveName.Guilt]: 0.0,
-  [DriveName.Curiosity]: 0.3,
-  [DriveName.Boredom]: 0.4,
-  [DriveName.Anxiety]: 0.2,
+  [DriveName.Curiosity]: 0.0,
+  [DriveName.Boredom]: 0.0,
+  [DriveName.Anxiety]: 0.0,
   [DriveName.Satisfaction]: 0.0,
   [DriveName.Sadness]: 0.0,
   [DriveName.Focus]: 0.0,
-  [DriveName.Social]: 0.5,
+  [DriveName.Social]: 0.0,
 } as const;
 
 // ---------------------------------------------------------------------------

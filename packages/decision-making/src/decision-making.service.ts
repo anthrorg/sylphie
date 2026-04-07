@@ -381,6 +381,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             }],
             provenance: 'BEHAVIORAL_INFERENCE' as any,
             confidence: latentMatch.similarity,
+            driveEffects: {},
           },
           confidence: latentMatch.similarity, // High similarity → high confidence → Type 1 wins arbitration
           motivatingDrive: dominantDrive,
@@ -460,7 +461,8 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
         // Fast path: if this candidate came from the latent space, use the
         // cached response directly. No LLM call needed — this is Type 1.
-        if (latentMatch && procedureData?.name?.startsWith('latent-')) {
+        // Guard: only use latent match if responseText is non-empty.
+        if (latentMatch && procedureData?.name?.startsWith('latent-') && latentMatch.pattern.responseText.trim().length > 0) {
           this.logger.debug(
             `Type 1 reflex from latent space — returning cached response (no LLM).`,
           );
@@ -468,6 +470,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             content: latentMatch.pattern.responseText,
             model: 'latent-space-type1',
             latencyMs: 0,
+          });
+        } else if (latentMatch && procedureData?.name?.startsWith('latent-')) {
+          // Latent match found but responseText is empty — fall through to deliberation.
+          this.logger.warn(
+            `Latent match ${latentMatch.pattern.id.substring(0, 8)} has empty responseText — falling through to Type 2.`,
+          );
+          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
+          executionResults.push({
+            content: deliberationResult.responseText,
+            tokensUsed: deliberationResult.totalTokens,
+            latencyMs: deliberationResult.totalLatencyMs,
+            model: 'deliberation-pipeline',
+            deliberationTrace: deliberationResult.trace,
+            confidence: deliberationResult.confidence,
+            knowledgeGrounding: deliberationResult.knowledgeGrounding,
           });
         } else if (procedureData !== null) {
           for (const step of procedureData.actionSequence) {
@@ -649,18 +666,26 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       const cycleLatencyMs = Date.now() - cycleStartTime;
 
-      this.responseSubject.next({
-        turnId: randomUUID(),
-        text: responseText,
-        arbitrationType: arbitrationResult.type,
-        actionId,
-        driveSnapshot,
-        arbitrationResult,
-        latencyMs: cycleLatencyMs,
-        model: responseModel,
-        tokensUsed: responseTokens,
-        knowledgeGrounding: responseGrounding,
-      });
+      // Only emit a CycleResponse if there is actual text to deliver.
+      // Empty responses cause the frontend to show "Sylphie speaks" with no content.
+      if (responseText.trim().length > 0) {
+        this.responseSubject.next({
+          turnId: randomUUID(),
+          text: responseText,
+          arbitrationType: arbitrationResult.type,
+          actionId,
+          driveSnapshot,
+          arbitrationResult,
+          latencyMs: cycleLatencyMs,
+          model: responseModel,
+          tokensUsed: responseTokens,
+          knowledgeGrounding: responseGrounding,
+        });
+      } else {
+        this.logger.debug(
+          `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
+        );
+      }
 
       // ── Latent space + WKG write-back ────────────────────────────────────
       // If this cycle produced a response (Type 2 or SHRUG-with-LLM-fallback),

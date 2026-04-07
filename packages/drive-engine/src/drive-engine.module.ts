@@ -1,28 +1,18 @@
 /**
- * DriveEngineModule — NestJS module for Sylphie's motivational subsystem.
+ * DriveEngineModule — NestJS client module for Sylphie's motivational subsystem.
  *
- * CANON §Subsystem 4 (Drive Engine): Computes motivational state (12 drives),
- * evaluates actions, detects opportunities, and runs in an isolated process.
+ * CANON §Subsystem 4 (Drive Engine): The drive computation runs in a
+ * standalone server (apps/drive-server). This module is the client that
+ * connects via WebSocket and exposes drive state to the rest of the app.
  *
  * EXPORTED tokens (public API for other modules):
  *   DRIVE_STATE_READER       — Read-only drive state facade (IDriveStateReader)
- *   ACTION_OUTCOME_REPORTER  — Fire-and-forget IPC write channel (IActionOutcomeReporter)
+ *   ACTION_OUTCOME_REPORTER  — Fire-and-forget write channel (IActionOutcomeReporter)
  *   RULE_PROPOSER            — Guardian-gated rule proposals (IRuleProposer)
  *
- * NOT EXPORTED (internal only):
- *   DRIVE_PROCESS_MANAGER    — Child process lifecycle (IDriveProcessManager)
- *   This is intentionally hidden: no other module should depend on process
- *   management. Exposing it would create coupling to infrastructure internals
- *   and risk boundary violations that could compromise drive isolation.
- *
- * CANON §Drive Isolation: Other subsystems may read drive state and report
- * outcomes, but they cannot modify the evaluation function. The isolation
- * boundary is structural — only DriveProcessManagerService can communicate
- * with the child process, and only inbound IPC data (snapshots) is forwarded
- * to the public IDriveStateReader facade.
- *
- * Import dependencies: None in E0 (ConfigModule will be added when the real
- * implementation needs database credentials for RuleProposerService).
+ * CANON §Drive Isolation: The main app communicates with the drive engine
+ * exclusively through the WebSocket wire protocol. It has no access to drive
+ * rules, accumulation rates, or internal state — only the resulting snapshots.
  */
 
 import { Module, OnModuleInit, OnModuleDestroy, Inject, Logger } from '@nestjs/common';
@@ -39,13 +29,12 @@ import { DriveReaderService } from './drive-reader.service';
 import { ActionOutcomeReporterService } from './action-outcome-reporter.service';
 import { RuleProposerService } from './rule-proposer.service';
 import { DriveProcessManagerService } from './drive-process/drive-process-manager.service';
-import { RlsVerificationService } from './postgres-verification/verify-rls';
 import { PostgresRulesClient } from './rule-proposer/postgres-rules-client';
-import { IpcChannelService } from './ipc-channel/ipc-channel.service';
+import { WsChannelService } from './ipc-channel/ws-channel.service';
 
 @Module({
   providers: [
-    // PostgreSQL runtime pool for rule lookups (RLS-enforced read-only)
+    // PostgreSQL runtime pool for rule proposals (RLS-enforced)
     {
       provide: POSTGRES_RUNTIME_POOL,
       useFactory: (config: ConfigService): Pool => {
@@ -62,12 +51,10 @@ import { IpcChannelService } from './ipc-channel/ipc-channel.service';
       },
       inject: [ConfigService],
     },
-    // RLS verification happens on module init
-    RlsVerificationService,
-    // PostgreSQL client for rule operations
+    // PostgreSQL client for rule proposals (runs in main app, writes to shared DB)
     PostgresRulesClient,
-    // IPC channel is shared by DriveProcessManagerService and ActionOutcomeReporterService
-    IpcChannelService,
+    // WebSocket channel for Drive Engine server communication
+    WsChannelService,
     // DriveReaderService must be registered under its class token so that
     // DriveProcessManagerService can inject it directly by class reference.
     // The DRIVE_STATE_READER symbol token aliases the same singleton instance
@@ -91,11 +78,9 @@ import { IpcChannelService } from './ipc-channel/ipc-channel.service';
     },
   ],
   exports: [
-    // Public API: read-side tokens only
     DRIVE_STATE_READER,
     ACTION_OUTCOME_REPORTER,
     RULE_PROPOSER,
-    // DRIVE_PROCESS_MANAGER is intentionally NOT exported — internal only
   ],
 })
 export class DriveEngineModule implements OnModuleInit, OnModuleDestroy {
@@ -107,12 +92,12 @@ export class DriveEngineModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    this.logger.log('Starting Drive Engine...');
+    this.logger.log('Connecting to Drive Engine server...');
     await this.processManager.start();
   }
 
   async onModuleDestroy(): Promise<void> {
-    this.logger.log('Stopping Drive Engine...');
+    this.logger.log('Disconnecting from Drive Engine server...');
     await this.processManager.stop();
   }
 }

@@ -15,7 +15,7 @@
  */
 
 import { Logger } from '@nestjs/common';
-import { IpcChannelService } from './ipc-channel.service';
+import { WsChannelService } from './ws-channel.service';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,7 +54,7 @@ export class HealthMonitor {
   private lastSnapshotTime: number;
 
   constructor(
-    private ipcChannel: IpcChannelService,
+    private wsChannel: WsChannelService,
     options?: {
       checkIntervalMs?: number;
       heartbeatTimeoutMs?: number;
@@ -116,21 +116,8 @@ export class HealthMonitor {
     const msSinceLastSnapshot = now - this.lastSnapshotTime;
     const healthy = msSinceLastSnapshot < this.heartbeatTimeoutMs;
 
-    const processInfo = this.ipcChannel.getProcessInfo();
-    let childMemoryBytes: number | null = null;
-
-    // Attempt to get memory usage of the child process
-    // In a real implementation, this would use process.memoryUsage() on the child
-    // For now, we return null to indicate it's not available in the main process
-    if (processInfo.pid) {
-      try {
-        // Get memory usage of the child process
-        // Note: This requires platform-specific code; for now we just report null
-        childMemoryBytes = null;
-      } catch {
-        // Cannot get child memory usage from main process
-      }
-    }
+    const connectionInfo = this.wsChannel.getConnectionInfo();
+    const childMemoryBytes: number | null = null;
 
     let diagnosticMessage: string | null = null;
     if (!healthy) {

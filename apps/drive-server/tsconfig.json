@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": "../..",
+    "paths": {
+      "@sylphie/shared": ["packages/shared/src"],
+      "@sylphie/shared/*": ["packages/shared/src/*"],
+      "@sylphie/drive-engine": ["packages/drive-engine/src"],
+      "@sylphie/drive-engine/*": ["packages/drive-engine/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "../../packages/shared/src/**/*",
+    "../../packages/drive-engine/src/**/*"
+  ],
+  "ts-node": {
+    "require": ["tsconfig-paths/register"]
+  }
+}

@@ -1,5 +1,11 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Neo4jService, Neo4jInstanceName, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
+import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Pool } from 'pg';
+import { Neo4jService, Neo4jInstanceName, TimescaleService, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
+import { ACTION_OUTCOME_REPORTER, IActionOutcomeReporter } from '@sylphie/drive-engine';
+import { LatentSpaceService } from '@sylphie/decision-making';
+import { VoiceLatentSpaceService } from './voice-latent-space.service';
+import { ConversationHistoryService } from './conversation-history.service';
 
 /**
  * Seeds the World Knowledge Graph with bootstrap nodes on startup.
@@ -8,13 +14,26 @@ import { Neo4jService, Neo4jInstanceName, DriveName, DRIVE_INDEX_ORDER, CORE_DRI
  *   1. CoBeing anchor — Sylphie's self-reference node
  *   2. Drive nodes — the 12 drives (not pre-connected to actions)
  *
+ * Also handles full system reset — clears all persistent stores
+ * (Neo4j graphs, TimescaleDB tables, latent spaces, conversation history)
+ * and re-bootstraps the WKG from scratch.
+ *
  * Idempotent — uses MERGE so re-runs are safe.
  */
 @Injectable()
 export class WkgBootstrapService implements OnModuleInit {
   private readonly logger = new Logger(WkgBootstrapService.name);
 
-  constructor(private readonly neo4j: Neo4jService) {}
+  constructor(
+    private readonly neo4j: Neo4jService,
+    private readonly timescale: TimescaleService,
+    private readonly latentSpace: LatentSpaceService,
+    private readonly voiceLatentSpace: VoiceLatentSpaceService,
+    private readonly conversationHistory: ConversationHistoryService,
+    private readonly config: ConfigService,
+    @Inject(ACTION_OUTCOME_REPORTER)
+    private readonly outcomeReporter: IActionOutcomeReporter,
+  ) {}
 
   async onModuleInit() {
     await this.bootstrap();
@@ -83,34 +102,96 @@ export class WkgBootstrapService implements OnModuleInit {
   }
 
   /**
-   * Delete everything in the WKG and re-bootstrap from scratch.
-   * Returns counts of what was deleted and what was re-created.
+   * Full system reset: clear ALL persistent stores, then re-bootstrap WKG.
+   *
+   * Clears:
+   *   - Neo4j: World KG, Self KG, Other KG
+   *   - TimescaleDB: learned_patterns, voice_patterns, sensory_ticks, events, reflected_sessions
+   *   - PostgreSQL: proposed_drive_rules
+   *   - Drive Engine: in-memory state reset to INITIAL_DRIVE_STATE via SESSION_START
+   *   - In-memory: latent space hot layer, voice cache hot layer, conversation history
    */
   async resetAndBootstrap(): Promise<{
     nodesDeleted: number;
     edgesDeleted: number;
     nodesCreated: number;
   }> {
+    // ── 1. Clear all three Neo4j graphs ──────────────────────────────
     let nodesDeleted = 0;
     let edgesDeleted = 0;
 
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
-    try {
-      // Count existing state before deletion
-      const countResult = await session.run(
-        `MATCH (n) OPTIONAL MATCH (n)-[r]-() RETURN count(DISTINCT n) AS nodes, count(DISTINCT r) AS edges`,
-      );
-      nodesDeleted = countResult.records[0].get('nodes').toNumber();
-      edgesDeleted = countResult.records[0].get('edges').toNumber();
+    for (const instance of [Neo4jInstanceName.WORLD, Neo4jInstanceName.SELF, Neo4jInstanceName.OTHER]) {
+      const session = this.neo4j.getSession(instance, 'WRITE');
+      try {
+        const countResult = await session.run(
+          `MATCH (n) OPTIONAL MATCH (n)-[r]-() RETURN count(DISTINCT n) AS nodes, count(DISTINCT r) AS edges`,
+        );
+        nodesDeleted += countResult.records[0].get('nodes').toNumber();
+        edgesDeleted += countResult.records[0].get('edges').toNumber();
 
-      // Wipe everything
-      await session.run(`MATCH (n) DETACH DELETE n`);
-      this.logger.warn(`WKG reset: deleted ${nodesDeleted} nodes, ${edgesDeleted} edges`);
-    } finally {
-      await session.close();
+        await session.run(`MATCH (n) DETACH DELETE n`);
+        this.logger.warn(`Neo4j [${instance}] reset: cleared`);
+      } finally {
+        await session.close();
+      }
     }
 
-    // Re-bootstrap
+    // ── 2. Clear TimescaleDB tables ──────────────────────────────────
+    const tables = [
+      'learned_patterns',
+      'voice_patterns',
+      'sensory_ticks',
+      'events',
+      'reflected_sessions',
+    ];
+
+    for (const table of tables) {
+      try {
+        await this.timescale.query(`TRUNCATE ${table} CASCADE`);
+        this.logger.warn(`TimescaleDB: truncated ${table}`);
+      } catch (err) {
+        // Table may not exist yet on first run — that's fine
+        this.logger.debug(`TimescaleDB: ${table} truncate skipped (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
+
+    // ── 3. Clear PostgreSQL drive tables ────────────────────────────────
+    const pgPool = new Pool({
+      host: this.config.get('postgres.host', 'localhost'),
+      port: this.config.get('postgres.port', 5434),
+      database: this.config.get('postgres.database', 'sylphie_system'),
+      user: this.config.get('postgres.adminUser', 'postgres'),
+      password: this.config.get('postgres.adminPassword', 'postgres'),
+      max: 1,
+      connectionTimeoutMillis: 5000,
+    });
+
+    try {
+      await pgPool.query('TRUNCATE proposed_drive_rules CASCADE');
+      this.logger.warn('PostgreSQL: truncated proposed_drive_rules');
+    } catch (err) {
+      this.logger.debug(
+        `PostgreSQL: proposed_drive_rules truncate skipped (${err instanceof Error ? err.message : String(err)})`,
+      );
+    } finally {
+      await pgPool.end();
+    }
+
+    // ── 4. Reset Drive Engine in-memory state ───────────────────────────
+    this.outcomeReporter.resetDriveState();
+    this.logger.warn('Drive Engine: in-memory state reset to INITIAL_DRIVE_STATE');
+
+    // ── 5. Clear in-memory state ─────────────────────────────────────
+    await this.latentSpace.clear();
+    await this.voiceLatentSpace.clear();
+    this.conversationHistory.clear();
+
+    this.logger.warn(
+      `Full system reset complete: ${nodesDeleted} Neo4j nodes, ${edgesDeleted} edges deleted. ` +
+        `TimescaleDB tables truncated. PostgreSQL proposed rules cleared. Drive state reset. In-memory caches cleared.`,
+    );
+
+    // ── 6. Re-bootstrap WKG ──────────────────────────────────────────
     const { nodes: nodesCreated } = await this.bootstrap();
     return { nodesDeleted, edgesDeleted, nodesCreated };
   }

@@ -1,9 +1,13 @@
 import React, { useEffect } from 'react'
 import { CssBaseline, ThemeProvider, CircularProgress, Box } from '@mui/material'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import theme from './theme'
 import Dashboard from './Dashboard'
+import DashboardLayout from './layouts/DashboardLayout'
 import { LoginPage } from './pages/LoginPage'
+import { GraphsView } from './pages/dashboard/GraphsView'
+import { AnalyticsView } from './pages/dashboard/AnalyticsView'
+import { ChatView } from './pages/dashboard/ChatView'
 import { useAppStore } from './store'
 
 function AuthGate() {
@@ -44,6 +48,14 @@ function AuthGate() {
 
   return (
     <Routes>
+      {/* New dashboard with left sidebar navigation */}
+      <Route path="/dashboard" element={<DashboardLayout />}>
+        <Route index element={<Navigate to="graphs" replace />} />
+        <Route path="graphs" element={<GraphsView />} />
+        <Route path="analytics" element={<AnalyticsView />} />
+        <Route path="chat" element={<ChatView />} />
+      </Route>
+      {/* Legacy dashboard — original single-page view */}
       <Route path="/*" element={<Dashboard />} />
     </Routes>
   )

@@ -94,8 +94,14 @@ export class IpcChannelService {
       throw new Error('IPC channel already open (process already forked)');
     }
 
-    // Resolve the child process entry point
-    const childEntryPoint = join(__dirname, '../drive-process/main.js');
+    // Detect dev vs compiled mode from our own file extension.
+    // ts-node keeps __filename as .ts; compiled output is .js. No filesystem probing needed.
+    const isDev = __filename.endsWith('.ts');
+    const ext = isDev ? '.ts' : '.js';
+    const childEntryPoint = join(__dirname, `../drive-process/main${ext}`);
+    const execArgv = isDev
+      ? ['-r', 'ts-node/register', '-r', 'tsconfig-paths/register']
+      : [];
 
     try {
       this.logger.log(`Forking Drive Engine child process: ${childEntryPoint}`);
@@ -103,6 +109,7 @@ export class IpcChannelService {
       this.childProcess = fork(childEntryPoint, [], {
         stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
         cwd: process.cwd(),
+        execArgv,
       });
 
       this.spawnTime = Date.now();

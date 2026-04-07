@@ -237,6 +237,26 @@ export class VoiceLatentSpaceService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
+  // Reset
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Clear all voice patterns from both hot and warm layers.
+   * Called during full system reset.
+   */
+  async clear(): Promise<number> {
+    const count = this.hotLayer.size;
+    this.hotLayer.clear();
+
+    if (this.timescale && this.schemaReady) {
+      await this.timescale.query('TRUNCATE voice_patterns');
+    }
+
+    this.logger.warn(`Voice latent space cleared: ${count} hot layer patterns removed, warm layer truncated.`);
+    return count;
+  }
+
+  // ---------------------------------------------------------------------------
   // Stats
   // ---------------------------------------------------------------------------
 

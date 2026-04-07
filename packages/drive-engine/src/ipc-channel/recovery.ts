@@ -11,7 +11,7 @@
  */
 
 import { Logger } from '@nestjs/common';
-import { IpcChannelService } from './ipc-channel.service';
+import { WsChannelService } from './ws-channel.service';
 import { HealthMonitor, HealthReport } from './health-monitor';
 
 // ---------------------------------------------------------------------------
@@ -75,8 +75,9 @@ export class RecoveryMechanism {
   private lastRestartAt: Date | null = null;
 
   constructor(
-    private ipcChannel: IpcChannelService,
+    private wsChannel: WsChannelService,
     private healthMonitor: HealthMonitor,
+    private wsUrl: string,
     options?: RecoveryOptions,
   ) {
     this.initialDelayMs = options?.initialDelayMs ?? 1000;
@@ -127,10 +128,10 @@ export class RecoveryMechanism {
     await this.delay(this.currentDelayMs);
 
     try {
-      // Close the old process and reopen the channel
-      await this.ipcChannel.close(2000);
-      this.ipcChannel.fork();
-      this.ipcChannel.incrementRestartCount();
+      // Close the old connection and reconnect
+      await this.wsChannel.close(2000);
+      this.wsChannel.connect(this.wsUrl);
+      this.wsChannel.incrementReconnectCount();
 
       this.lastRestartAt = new Date();
       this.currentDelayMs = Math.min(

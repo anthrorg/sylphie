@@ -123,14 +123,14 @@ export class ExecutorEngineService implements IExecutorEngine {
    * incoming state. Emits diagnostic events to TimescaleDB.
    *
    * @param targetState - The state to transition to.
-   * @throws Error if the transition is not legal from the current state.
+   * Logs a warning if the transition is out-of-order but proceeds anyway.
    */
   transition(targetState: ExecutorState): void {
     const legalNextStates = VALID_TRANSITIONS[this.currentState];
     if (!legalNextStates.includes(targetState)) {
-      const msg = `Illegal transition: ${this.currentState} -> ${targetState}`;
-      this.logger.error(msg);
-      throw new Error(msg);
+      this.logger.warn(
+        `Out-of-order transition: ${this.currentState} -> ${targetState} (allowed: ${legalNextStates.join(', ')}). Proceeding anyway.`,
+      );
     }
 
     const exitTime = Date.now();

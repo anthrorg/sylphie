@@ -6,6 +6,15 @@ export interface VideoDetection {
   bbox: number[];
 }
 
+export interface FaceDetection {
+  confidence: number;
+  bbox: [number, number, number, number];
+  /** 478 MediaPipe mesh landmarks as [x, y] pixel coordinates (may be null). */
+  landmarks: number[][] | null;
+  /** Named blendshape scores (e.g. jawOpen, browInnerUp), each 0-1 (may be null). */
+  blendshapes: Record<string, number> | null;
+}
+
 export interface SensoryFrame {
   timestamp: number;
 

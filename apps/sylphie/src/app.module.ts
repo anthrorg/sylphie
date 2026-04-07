@@ -37,6 +37,7 @@ import { TtsService } from './services/tts.service';
 import { CommunicationService } from './services/communication.service';
 import { ConversationHistoryService } from './services/conversation-history.service';
 import { PersonModelService } from './services/person-model.service';
+import { FaceSnapshotService } from './services/face-snapshot.service';
 import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
 
 @Module({
@@ -110,6 +111,7 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
     CommunicationService,
     ConversationHistoryService,
     PersonModelService,
+    FaceSnapshotService,
     VoiceLatentSpaceService,
     // Gateways
     GraphGateway,

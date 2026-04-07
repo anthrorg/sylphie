@@ -71,20 +71,24 @@ export const RULE_CACHE_MAX_SIZE = 500;
  *   guardian_correction — Guardian explicitly corrected behavior or state
  */
 export const DEFAULT_AFFECTS: Record<string, Partial<Record<DriveName, number>>> = {
-  // Action succeeded: satisfaction increases, pressure decreases slightly
+  // Action succeeded: broad mild relief across multiple drives
   action_success: {
-    [DriveName.Satisfaction]: 0.1, // Relief from achieving goal
+    [DriveName.Satisfaction]: 0.1,     // Relief from achieving goal
+    [DriveName.SystemHealth]: -0.02,   // System is functioning properly
+    [DriveName.Anxiety]: -0.03,        // Success reduces anxiety
+    [DriveName.Boredom]: -0.02,        // Did something, less bored
   },
 
-  // Action failed: anxiety and loss, satisfaction decreases
+  // Action failed: anxiety increase, mild satisfaction loss
   action_failure: {
-    [DriveName.Anxiety]: 0.05, // Increased vigilance
-    [DriveName.Satisfaction]: -0.05, // Loss from failure
+    [DriveName.Anxiety]: 0.05,         // Increased vigilance
+    [DriveName.Satisfaction]: -0.05,   // Loss from failure
   },
 
   // Prediction was correct: cognitive relief
   prediction_hit: {
     [DriveName.CognitiveAwareness]: -0.05, // Relief: world is predictable
+    [DriveName.Integrity]: -0.02,          // Predictions align with reality
   },
 
   // Prediction was incorrect: increased cognitive pressure
@@ -92,16 +96,26 @@ export const DEFAULT_AFFECTS: Record<string, Partial<Record<DriveName, number>>>
     [DriveName.CognitiveAwareness]: 0.1, // Pressure: need to revise model
   },
 
-  // Guardian confirmed behavior: strong satisfaction + social boost
+  // Guardian confirmed behavior: strong multi-drive relief
   guardian_confirmation: {
-    [DriveName.Satisfaction]: 0.15, // Strong positive feedback
-    [DriveName.Social]: 0.05, // Connection with guardian
+    [DriveName.Satisfaction]: 0.15,    // Strong positive feedback
+    [DriveName.Social]: -0.15,         // Social need met (RELIEF, not pressure)
+    [DriveName.MoralValence]: -0.1,    // Acting in alignment with guardian values
+    [DriveName.Integrity]: -0.05,      // Guardian validates consistency
+    [DriveName.Anxiety]: -0.05,        // Confirmation reduces anxiety
   },
 
-  // Guardian corrected behavior: guilt + loss of satisfaction
+  // Guardian corrected behavior: guilt + loss, but also some relief
   guardian_correction: {
-    [DriveName.Guilt]: 0.15, // Negative feedback
-    [DriveName.Satisfaction]: -0.1, // Loss from being corrected
+    [DriveName.Guilt]: 0.15,           // Negative feedback
+    [DriveName.Satisfaction]: -0.1,    // Loss from being corrected
+    [DriveName.Social]: -0.05,         // Still a social interaction (mild relief)
+  },
+
+  // Guardian is present / speaking (any interaction)
+  guardian_interaction: {
+    [DriveName.Social]: -0.1,          // Social need met by interaction
+    [DriveName.Boredom]: -0.05,        // Not bored when engaged
   },
 };
 

@@ -90,19 +90,15 @@ export const RETRY_BASE_DELAY_MS = 50;
 /**
  * Sampling rate for DRIVE_TICK events.
  *
- * DRIVE_TICK events are high-frequency (100Hz target = 1 every 10ms).
- * To avoid flooding TimescaleDB, we sample every Nth tick.
- *
- * Value of 100 means: emit every 100th tick = ~1 per second
- * (since 100 ticks * 10ms = 1000ms = 1 second)
+ * At 1Hz, every tick is already 1 second. Sample every tick to persist
+ * per-second drive state to TimescaleDB.
  */
-export const DRIVE_TICK_SAMPLE_INTERVAL = 100;
+export const DRIVE_TICK_SAMPLE_INTERVAL = 1;
 
 /**
  * Interval for HEALTH_STATUS events in ticks.
  *
  * Health status is emitted periodically for heartbeat and monitoring.
- * At 100Hz and interval = 6000, this fires every 60 seconds.
- * (6000 ticks * 10ms = 60000ms = 60 seconds)
+ * At 1Hz, interval = 60 fires every 60 seconds.
  */
-export const HEALTH_STATUS_INTERVAL_TICKS = 6000;
+export const HEALTH_STATUS_INTERVAL_TICKS = 60;

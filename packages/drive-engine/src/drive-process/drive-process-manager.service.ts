@@ -18,7 +18,8 @@
  * IpcChannelService without mutation.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import {
   DriveIPCMessage,
@@ -29,7 +30,7 @@ import {
 } from '@sylphie/shared';
 import { IDriveProcessManager } from '../interfaces/drive-engine.interfaces';
 import { DriveReaderService } from '../drive-reader.service';
-import { IpcChannelService } from '../ipc-channel/ipc-channel.service';
+import { WsChannelService } from '../ipc-channel/ws-channel.service';
 import { HealthMonitor } from '../ipc-channel/health-monitor';
 import { RecoveryMechanism } from '../ipc-channel/recovery';
 
@@ -40,16 +41,20 @@ export class DriveProcessManagerService implements IDriveProcessManager {
   private healthMonitor: HealthMonitor;
   private recovery: RecoveryMechanism;
   private started = false;
+  private wsUrl: string;
 
   constructor(
     private driveReaderService: DriveReaderService,
-    private ipcChannel: IpcChannelService,
+    private wsChannel: WsChannelService,
     private timescale: TimescaleService,
+    private config: ConfigService,
   ) {
-    this.healthMonitor = new HealthMonitor(this.ipcChannel);
+    this.wsUrl = this.config.get<string>('DRIVE_ENGINE_WS_URL', 'ws://localhost:3001');
+    this.healthMonitor = new HealthMonitor(this.wsChannel);
     this.recovery = new RecoveryMechanism(
-      this.ipcChannel,
+      this.wsChannel,
       this.healthMonitor,
+      this.wsUrl,
     );
   }
 
@@ -69,10 +74,10 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     }
 
     try {
-      this.logger.log('Starting Drive Engine child process');
+      this.logger.log(`Connecting to Drive Engine at ${this.wsUrl}`);
 
-      // Fork the child process
-      this.ipcChannel.fork();
+      // Connect to the Drive Engine WebSocket server
+      this.wsChannel.connect(this.wsUrl);
 
       // Attach handlers for inbound messages
       this.attachMessageHandlers();
@@ -80,14 +85,21 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       // Start health monitoring
       this.healthMonitor.start();
 
-      // Wait for initial health check response (2000ms timeout)
-      await this.waitForInitialHealthCheck(2000);
+      // Wait for initial health check (2000ms timeout)
+      // Non-blocking: if the server isn't up yet, recovery will handle reconnection
+      try {
+        await this.waitForInitialHealthCheck(2000);
+        this.logger.log('Drive Engine connected and healthy');
+      } catch {
+        this.logger.warn(
+          'Drive Engine not available on startup — recovery will reconnect',
+        );
+      }
 
       this.started = true;
-      this.logger.log('Drive Engine process started and healthy');
     } catch (error) {
       this.logger.error(
-        `Failed to start Drive Engine: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to connect to Drive Engine: ${error instanceof Error ? error.message : String(error)}`,
       );
       throw error;
     }
@@ -107,33 +119,31 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     }
 
     try {
-      this.logger.log('Stopping Drive Engine child process');
+      this.logger.log('Disconnecting from Drive Engine');
 
       // Stop the health monitor
       this.healthMonitor.stop();
 
-      // Close the IPC channel gracefully
-      await this.ipcChannel.close(5000);
+      // Close the WebSocket connection gracefully
+      await this.wsChannel.close(5000);
 
       this.started = false;
-      this.logger.log('Drive Engine process stopped');
+      this.logger.log('Drive Engine connection closed');
     } catch (error) {
       this.logger.error(
-        `Error stopping Drive Engine: ${error instanceof Error ? error.message : String(error)}`,
+        `Error disconnecting from Drive Engine: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
 
   /**
-   * Check whether the child process is healthy and responsive.
+   * Check whether the Drive Engine connection is healthy.
    *
-   * Returns true if the process has responded within the heartbeat window
-   * (default 5 seconds) and the IPC channel is open.
-   *
-   * @returns true if the process is running and responsive.
+   * Returns true if the WebSocket is open and we've received a snapshot
+   * within the heartbeat window (default 5 seconds).
    */
   isHealthy(): boolean {
-    return this.ipcChannel.isHealthy();
+    return this.wsChannel.isHealthy();
   }
 
   // ---------------------------------------------------------------------------
@@ -152,7 +162,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
   private attachMessageHandlers(): void {
     // DRIVE_SNAPSHOT: Forward to DriveReaderService to update subscribers
     // Also record arrival in the health monitor for liveness tracking.
-    this.ipcChannel.onMessage(
+    this.wsChannel.onMessage(
       DriveIPCMessageType.DRIVE_SNAPSHOT,
       (message: DriveIPCMessage<DriveSnapshotPayload>) => {
         try {
@@ -170,7 +180,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     // CANON §No Circular Module Dependencies: Cross-subsystem communication
     // flows through TimescaleDB, not direct service injection. Planning polls
     // for OPPORTUNITY_DETECTED events with has_planned = false.
-    this.ipcChannel.onMessage(
+    this.wsChannel.onMessage(
       DriveIPCMessageType.OPPORTUNITY_CREATED,
       (message: DriveIPCMessage<OpportunityCreatedPayload>) => {
         this.logger.debug(
@@ -182,7 +192,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
 
     // DRIVE_EVENT: Reserved for event logging
     // For now, log and ignore
-    this.ipcChannel.onMessage(
+    this.wsChannel.onMessage(
       DriveIPCMessageType.DRIVE_EVENT,
       (message: DriveIPCMessage<any>) => {
         this.logger.debug(
@@ -193,7 +203,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     );
 
     // HEALTH_STATUS: Internal response from health check pings
-    this.ipcChannel.onMessage(
+    this.wsChannel.onMessage(
       DriveIPCMessageType.HEALTH_STATUS,
       (message: DriveIPCMessage<any>) => {
         this.logger.debug(
@@ -219,7 +229,7 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     const pollIntervalMs = 100;
 
     while (Date.now() - startTime < timeoutMs) {
-      if (this.ipcChannel.isHealthy()) {
+      if (this.wsChannel.isHealthy()) {
         this.logger.debug('Initial health check successful');
         return;
       }

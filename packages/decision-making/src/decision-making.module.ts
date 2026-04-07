@@ -93,6 +93,7 @@ import { ToolRegistryService } from './deliberation/tools/tool-registry';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { TextEncoder } from './inputs/encoders/text.encoder';
 import { VideoEncoder } from './inputs/encoders/video.encoder';
+import { FaceEncoder } from './inputs/encoders/face.encoder';
 import { DriveEncoder } from './inputs/encoders/drive.encoder';
 import { AudioEncoder } from './inputs/encoders/audio.encoder';
 import { SensoryFusionService } from './inputs/fusion/sensory-fusion';
@@ -201,6 +202,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     ModalityRegistryService,
     TextEncoder,
     VideoEncoder,
+    FaceEncoder,
     DriveEncoder,
     AudioEncoder,
     SensoryFusionService,
@@ -212,12 +214,16 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     LLM_SERVICE,
     WkgContextService,
 
+    // Latent space: exported for system reset (clear learned patterns).
+    LatentSpaceService,
+
     // Sensory pipeline services: exported so that app-level gateways and
     // controllers can inject TickSamplerService, ModalityRegistryService,
     // and the individual encoders without re-providing them.
     ModalityRegistryService,
     TextEncoder,
     VideoEncoder,
+    FaceEncoder,
     DriveEncoder,
     AudioEncoder,
     SensoryFusionService,

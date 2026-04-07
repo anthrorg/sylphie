@@ -2,6 +2,7 @@
 export {
   EMBEDDING_DIM,
   type VideoDetection,
+  type FaceDetection,
   type SensoryFrame,
   type ModalityType,
 } from './sensory-frame';

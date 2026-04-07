@@ -21,10 +21,12 @@ import {
 import {
   ActionOutcomePayload,
   SoftwareMetricsPayload,
+  DriveIPCMessageType,
+  INITIAL_DRIVE_STATE,
 } from '@sylphie/shared';
 import { DriveName } from '@sylphie/shared';
 import { ProvenanceSource } from '@sylphie/shared';
-import { IpcChannelService } from './ipc-channel/ipc-channel.service';
+import { WsChannelService } from './ipc-channel/ws-channel.service';
 import { OutcomeQueue } from './action-outcome-reporter/outcome-queue';
 
 @Injectable()
@@ -32,16 +34,16 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
   private readonly logger = new Logger(ActionOutcomeReporterService.name);
   private outcomeQueue: OutcomeQueue;
 
-  constructor(private ipcChannel: IpcChannelService) {
-    // Initialize the queue with a send function that dispatches via IPC
+  constructor(private wsChannel: WsChannelService) {
+    // Initialize the queue with a send function that dispatches via WebSocket
     this.outcomeQueue = new OutcomeQueue(
       (message) => {
         try {
-          this.ipcChannel.send(message);
+          this.wsChannel.send(message);
           return true;
         } catch (error) {
           this.logger.warn(
-            `IPC send failed (will retry): ${error instanceof Error ? error.message : String(error)}`,
+            `Send failed (will retry): ${error instanceof Error ? error.message : String(error)}`,
           );
           return false;
         }
@@ -141,6 +143,39 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
 
     // Enqueue for async delivery
     this.outcomeQueue.enqueueMetrics(payload);
+  }
+
+  /**
+   * Reset the Drive Engine's in-memory state to INITIAL_DRIVE_STATE.
+   *
+   * Sends a SESSION_START message with a fresh session and cold-start drive
+   * values. The Drive Engine creates a new DriveStateManager, zeroing all
+   * accumulated pressure and relief.
+   */
+  resetDriveState(): void {
+    const now = new Date();
+    const sessionId = `reset-${now.toISOString()}`;
+
+    this.wsChannel.send({
+      type: DriveIPCMessageType.SESSION_START,
+      payload: {
+        sessionId,
+        initialDriveState: {
+          pressureVector: { ...INITIAL_DRIVE_STATE },
+          timestamp: now,
+          tickNumber: 0,
+          driveDeltas: Object.fromEntries(
+            Object.keys(INITIAL_DRIVE_STATE).map((k) => [k, 0]),
+          ) as any,
+          ruleMatchResult: { ruleId: null, eventType: 'SESSION_START', matched: false },
+          totalPressure: 0,
+          sessionId,
+        },
+      },
+      timestamp: now,
+    });
+
+    this.logger.warn(`Drive state reset to INITIAL_DRIVE_STATE (session: ${sessionId})`);
   }
 
   // ---------------------------------------------------------------------------

@@ -94,6 +94,17 @@ export interface ActionProcedureData {
    * Snapshot — does not update after retrieval (use IConfidenceService.recordUse).
    */
   readonly confidence: number;
+
+  /**
+   * Expected drive effects when this action executes successfully.
+   * Negative values = relief (drive pressure decreases).
+   * Positive values = pressure increase.
+   *
+   * These are stored on the ActionProcedure node in the WKG and reported
+   * to the Drive Engine as driveEffects in the ActionOutcomePayload when
+   * the action completes. This is the primary mechanism for drive relief.
+   */
+  readonly driveEffects: Partial<Record<DriveName, number>>;
 }
 
 /**

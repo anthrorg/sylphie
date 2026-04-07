@@ -9,17 +9,17 @@ export class SkillsController {
 
   @Post('reset')
   @HttpCode(200)
-  async resetWkg(@Body() body: { confirm: boolean }) {
+  async resetAll(@Body() body: { confirm: boolean }) {
     if (!body.confirm) {
       return { success: false, message: 'Confirmation required' };
     }
 
-    this.logger.warn('WKG reset requested by guardian');
+    this.logger.warn('Full system reset requested by guardian');
     const result = await this.wkgBootstrap.resetAndBootstrap();
 
     return {
       success: true,
-      operation: 'wkg-reset',
+      operation: 'full-reset',
       nodes_deleted: result.nodesDeleted,
       edges_deleted: result.edgesDeleted,
       nodes_created: result.nodesCreated,

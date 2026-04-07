@@ -82,7 +82,7 @@ export class RlsVerificationService implements OnModuleInit {
 
     // Check 1: sylphie_app should NOT be able to UPDATE drive_rules
     await this.expectPermissionDenied(
-      'UPDATE drive_rules SET is_active = false WHERE id IS NOT NULL;',
+      'UPDATE drive_rules SET enabled = false WHERE id IS NOT NULL;',
       'UPDATE drive_rules',
     );
     this.logger.debug('Verified: sylphie_app cannot UPDATE drive_rules');
@@ -110,9 +110,9 @@ export class RlsVerificationService implements OnModuleInit {
     try {
       await insertClient.query('BEGIN;');
       await insertClient.query(
-        `INSERT INTO proposed_drive_rules (name, event_pattern, drive_effects, proposed_by)
+        `INSERT INTO proposed_drive_rules (trigger_pattern, effect, confidence, proposed_by)
          VALUES ($1, $2, $3, $4)`,
-        ['RLS_TEST', 'TEST_PATTERN', '{}', 'SYSTEM'],
+        ['RLS_TEST', 'anxiety += 0.0', 0.5, 'SYSTEM'],
       );
       await insertClient.query('ROLLBACK;');
       this.logger.debug('Verified: sylphie_app CAN INSERT into proposed_drive_rules');

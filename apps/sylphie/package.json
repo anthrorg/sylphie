@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nest build",
-    "dev": "ts-node -r tsconfig-paths/register --project tsconfig.json src/main.ts",
+    "dev": "dotenv -e ../../.env -- ts-node -r tsconfig-paths/register --project tsconfig.json src/main.ts",
     "dev:watch": "nest start --watch",
     "start": "node -r tsconfig-paths/register dist/main.js",
     "start:prod": "node dist/main.js",
@@ -31,6 +31,8 @@
     "@types/jsonwebtoken": "^9.0.0",
     "@types/ws": "^8.0.0",
     "dotenv-cli": "^7.0.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.3.3"
   }
 }

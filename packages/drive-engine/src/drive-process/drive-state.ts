@@ -140,10 +140,18 @@ export class DriveStateManager {
   }
 
   /**
-   * Get the current state as a snapshot (for testing/debugging).
+   * Get a copy of the current state (for testing/debugging).
    */
   getCurrent(): Readonly<MutableDriveState> {
     return { ...this.current };
+  }
+
+  /**
+   * Get a mutable reference to the current state.
+   * Used by cross-modulation and clamping which modify state in-place.
+   */
+  getCurrentMutable(): MutableDriveState {
+    return this.current;
   }
 
   /**

@@ -88,6 +88,7 @@ class _AppState:
     debug_frame_store: Any | None = None  # DebugFrameStore
     detector: Any | None = None          # YoloDetector, for the /detect endpoint
     face_detector: Any | None = None     # MediaPipeFaceDetector, for face detection
+    embedding_extractor: Any | None = None  # OnnxEmbeddingExtractor, lazy-init
     config: Any | None = None            # PerceptionConfig
     model_loaded: bool = False
     face_model_loaded: bool = False
@@ -407,6 +408,116 @@ async def detect_annotated(request: Request) -> JSONResponse:
             for d in detections
         ],
         "annotated_frame": base64.b64encode(annotated_jpeg).decode("ascii"),
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /perception/crop-face
+# ---------------------------------------------------------------------------
+
+
+@app.post("/perception/crop-face")
+async def crop_face(request: Request) -> JSONResponse:
+    """Crop a face region from a JPEG frame and return as base64 + embedding.
+
+    Request body: raw JPEG bytes (same as /detect).
+    Query params:
+        x_min, y_min, x_max, y_max  -- bounding box in pixel coordinates
+        target_size                  -- crop resize target (default 160)
+
+    Returns:
+        {
+          "face_crop_b64": "<base64 JPEG>",
+          "embedding": [float x 1280]   -- EfficientNet-B0 visual embedding
+        }
+    """
+    import base64  # noqa: PLC0415
+    import cv2  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Request body is empty")
+
+    # Parse bbox from query params
+    try:
+        x_min = float(request.query_params["x_min"])
+        y_min = float(request.query_params["y_min"])
+        x_max = float(request.query_params["x_max"])
+        y_max = float(request.query_params["y_max"])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid bbox query params (x_min, y_min, x_max, y_max)",
+        ) from exc
+
+    target_size = int(request.query_params.get("target_size", "160"))
+
+    # Decode JPEG
+    buf = np.frombuffer(body, dtype=np.uint8)
+    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode JPEG")
+
+    h, w = img.shape[:2]
+
+    # Pad bbox by 15% on each side for context (forehead, chin)
+    bw = x_max - x_min
+    bh = y_max - y_min
+    pad_x = bw * 0.15
+    pad_y = bh * 0.15
+    cx_min = max(0, int(x_min - pad_x))
+    cy_min = max(0, int(y_min - pad_y))
+    cx_max = min(w, int(x_max + pad_x))
+    cy_max = min(h, int(y_max + pad_y))
+
+    if cx_min >= cx_max or cy_min >= cy_max:
+        raise HTTPException(status_code=400, detail="Degenerate bounding box")
+
+    # Crop and resize
+    crop = img[cy_min:cy_max, cx_min:cx_max]
+    resized = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+    # Encode to JPEG base64
+    _, jpeg_buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    crop_b64 = base64.b64encode(jpeg_buf.tobytes()).decode("ascii")
+
+    # Generate visual embedding via OnnxEmbeddingExtractor (lazy-init)
+    embedding: list[float] = []
+    loop = asyncio.get_event_loop()
+
+    def _compute_embedding() -> list[float] | None:
+        if _state.embedding_extractor is None:
+            try:
+                from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                    OnnxEmbeddingExtractor,
+                )
+                _state.embedding_extractor = OnnxEmbeddingExtractor()
+                logger.info("OnnxEmbeddingExtractor initialized for face crops")
+            except (ImportError, RuntimeError) as exc:
+                logger.warning("Could not initialize OnnxEmbeddingExtractor: %s", exc)
+                return None
+
+        # Convert crop to raw RGB bytes for the extractor
+        crop_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        raw_bytes = crop_rgb.tobytes()
+        return _state.embedding_extractor.extract(
+            raw_bytes,
+            (0, 0, target_size, target_size),
+            target_size,
+            target_size,
+        )
+
+    try:
+        result = await loop.run_in_executor(None, _compute_embedding)
+        if result is not None:
+            embedding = result
+    except Exception as exc:
+        logger.warning("Face embedding extraction failed: %s", exc)
+
+    return JSONResponse({
+        "face_crop_b64": crop_b64,
+        "embedding": embedding,
     })
 
 

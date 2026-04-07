@@ -32,7 +32,7 @@
  * Injection token: ACTION_RETRIEVER_SERVICE (decision-making.tokens.ts)
  */
 
-import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject, OnModuleInit } from '@nestjs/common';
 import {
   Neo4jService,
   Neo4jInstanceName,
@@ -114,6 +114,7 @@ interface ProcedureRow {
   readonly triggerContext: string;
   readonly provenance: string;
   readonly confidence: number;
+  readonly driveEffects?: string | null;
 }
 
 function isProcedureRow(value: unknown): value is ProcedureRow {
@@ -139,7 +140,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
   constructor(
     // Neo4jService used as structural WKG placeholder. Injected @Optional for
     // graceful degradation when the WKG connection is not yet established.
-    @Optional() private readonly neo4j: Neo4jService | null,
+    @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
   ) {}
 
   /**
@@ -216,7 +217,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
          WHERE p.confidence >= $threshold
          RETURN p.id AS id, p.name AS name, p.category AS category,
                 p.triggerContext AS triggerContext, p.provenance AS provenance,
-                p.confidence AS confidence`,
+                p.confidence AS confidence, p.driveEffects AS driveEffects`,
         { threshold: CONFIDENCE_THRESHOLDS.retrieval },
       );
 
@@ -228,6 +229,16 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             contextFingerprint,
             row.triggerContext,
           );
+
+          // Parse driveEffects from the Neo4j node (stored as JSON string)
+          let driveEffects: Partial<Record<DriveName, number>> = {};
+          try {
+            if (row.driveEffects) {
+              driveEffects = JSON.parse(row.driveEffects as string);
+            }
+          } catch {
+            // Malformed JSON — use empty effects
+          }
 
           const procedureData: ActionProcedureData = {
             id: row.id,
@@ -243,6 +254,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             ],
             provenance: row.provenance as ActionProcedureData['provenance'],
             confidence: row.confidence,
+            driveEffects,
           };
 
           return {
@@ -296,36 +308,59 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       name: string;
       category: string;
       triggerContext: string;
+      driveEffects: Record<string, number>;
     }> = [
       {
         id: 'seed-greet',
         name: 'greet',
         category: 'SocialComment',
         triggerContext: 'hello hi greet greeting welcome',
+        driveEffects: {
+          Social: -0.15,       // Primary relief: social need met
+          Boredom: -0.05,      // Mild: interaction reduces boredom
+        },
       },
       {
         id: 'seed-acknowledge',
         name: 'acknowledge',
         category: 'ConversationalResponse',
         triggerContext: 'acknowledged understood received got it okay',
+        driveEffects: {
+          Integrity: -0.05,    // Responding honestly maintains integrity
+          Social: -0.05,       // Mild social relief from engagement
+        },
       },
       {
         id: 'seed-ask-clarification',
         name: 'ask_clarification',
         category: 'KnowledgeQuery',
         triggerContext: 'unclear ambiguous unknown what do you mean clarify',
+        driveEffects: {
+          'Cognitive Awareness': -0.1, // Primary: seeking clarity reduces cognitive pressure
+          Curiosity: -0.1,     // Asking satisfies curiosity
+          Anxiety: -0.05,      // Reducing ambiguity reduces anxiety
+        },
       },
       {
         id: 'seed-express-curiosity',
         name: 'express_curiosity',
         category: 'GuardianEngagement',
         triggerContext: 'interesting curious tell me more want to know learn',
+        driveEffects: {
+          Curiosity: -0.15,    // Primary relief: curiosity satisfied
+          Boredom: -0.1,       // Exploring is not boring
+          Social: -0.1,        // Engaging with guardian
+        },
       },
       {
         id: 'seed-shrug',
         name: 'shrug',
         category: 'SelfCorrection',
         triggerContext: 'unknown uncertain incomprehensible cannot respond',
+        driveEffects: {
+          Integrity: -0.1,     // Honest about not knowing (CANON Standard 4)
+          'Moral Valence': -0.05, // Acting with honesty
+        },
       },
     ];
 
@@ -361,6 +396,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
              p.triggerContext = $triggerContext,
              p.provenance = $provenance,
              p.confidence = $confidence,
+             p.driveEffects = $driveEffects,
              p.createdAt = datetime()`,
           {
             id: seed.id,
@@ -369,6 +405,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             triggerContext: seed.triggerContext,
             provenance: 'SYSTEM_BOOTSTRAP',
             confidence: BASE_CONFIDENCE,
+            driveEffects: JSON.stringify(seed.driveEffects),
           },
         );
 

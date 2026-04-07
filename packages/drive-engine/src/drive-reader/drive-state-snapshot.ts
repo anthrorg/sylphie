@@ -92,15 +92,16 @@ export function validateDriveSnapshotCoherence(
     };
   }
 
-  // Check 4: Snapshot not stale (not hanging for >1s without update)
+  // Check 4: Snapshot not stale (not hanging for >5s without update)
+  // At 1Hz tick rate, snapshots arrive every ~1000ms. Allow 5x headroom
+  // for scheduling jitter and network latency.
   // Skip staleness check when lastValidTimestamp is the cold-start epoch sentinel (new Date(0)).
-  // The first real snapshot from the child process will always have a huge gap from epoch.
   if (lastValidTimestamp) {
     const lastValidMs = lastValidTimestamp instanceof Date ? lastValidTimestamp.getTime() : Number(lastValidTimestamp);
     if (lastValidMs > 0) {
       const snapshotMs = snapshot.timestamp instanceof Date ? snapshot.timestamp.getTime() : Number(snapshot.timestamp);
       const timeSinceLastValid = snapshotMs - lastValidMs;
-      if (timeSinceLastValid > 1000) {
+      if (timeSinceLastValid > 5000) {
         return {
           valid: false,
           error: new DriveCoherenceError(
