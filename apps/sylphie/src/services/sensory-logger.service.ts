@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { TickSamplerService } from '@sylphie/decision-making';
-import { TelemetryGateway } from '../gateways/telemetry.gateway';
+import { TelemetryBroadcastService } from './telemetry-broadcast.service';
 
 const SAMPLE_INTERVAL_MS = 2000;
 
@@ -19,7 +19,7 @@ export class SensoryLoggerService implements OnModuleInit {
 
   constructor(
     private readonly tickSampler: TickSamplerService,
-    private readonly telemetry: TelemetryGateway,
+    private readonly telemetry: TelemetryBroadcastService,
   ) {}
 
   onModuleInit() {

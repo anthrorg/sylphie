@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConsoleLogger, Injectable } from '@nestjs/common';
-import { TelemetryGateway } from '../gateways/telemetry.gateway';
+import { TelemetryBroadcastService } from './telemetry-broadcast.service';
 
 /**
  * Custom NestJS logger that:
@@ -11,7 +11,7 @@ import { TelemetryGateway } from '../gateways/telemetry.gateway';
  */
 @Injectable()
 export class WebSocketLoggerService extends ConsoleLogger {
-  private telemetry?: TelemetryGateway;
+  private telemetry?: TelemetryBroadcastService;
   private readonly logStream: fs.WriteStream;
 
   constructor() {
@@ -24,9 +24,9 @@ export class WebSocketLoggerService extends ConsoleLogger {
     );
   }
 
-  /** Called after DI container is ready to inject the gateway */
-  setTelemetryGateway(gateway: TelemetryGateway) {
-    this.telemetry = gateway;
+  /** Called after DI container is ready to inject the broadcast service */
+  setTelemetryBroadcast(broadcast: TelemetryBroadcastService) {
+    this.telemetry = broadcast;
   }
 
   log(message: string, context?: string) {

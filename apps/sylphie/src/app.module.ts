@@ -43,6 +43,7 @@ import { FaceSnapshotService } from './services/face-snapshot.service';
 import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
 import { SceneEventDetectorService } from './services/scene-event-detector.service';
 import { VisualWorkingMemoryService } from './services/visual-working-memory.service';
+import { TelemetryBroadcastService } from './services/telemetry-broadcast.service';
 
 @Module({
   imports: [
@@ -135,6 +136,7 @@ import { VisualWorkingMemoryService } from './services/visual-working-memory.ser
     VoiceLatentSpaceService,
     SceneEventDetectorService,
     VisualWorkingMemoryService,
+    TelemetryBroadcastService,
     // Gateways
     GraphGateway,
     ConversationGateway,

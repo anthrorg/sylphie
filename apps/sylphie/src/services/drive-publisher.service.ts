@@ -13,7 +13,7 @@ import { Subscription } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import { DriveSnapshot } from '@sylphie/shared';
-import { TelemetryGateway } from '../gateways/telemetry.gateway';
+import { TelemetryBroadcastService } from './telemetry-broadcast.service';
 
 /** camelCase DriveName enum values → frontend snake_case keys */
 const DRIVE_KEY_MAP: Record<string, string> = {
@@ -39,7 +39,7 @@ export class DrivePublisherService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(DRIVE_STATE_READER)
     private readonly driveReader: IDriveStateReader,
-    private readonly telemetry: TelemetryGateway,
+    private readonly telemetry: TelemetryBroadcastService,
   ) {}
 
   onModuleInit(): void {
