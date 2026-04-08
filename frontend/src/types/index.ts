@@ -294,6 +294,23 @@ export interface CameraState {
   feedMode: 'webrtc' | 'local' | 'mjpeg' | 'unavailable'
 }
 
+export interface RecognizedItem {
+  id: string
+  label: string
+  type: 'object' | 'face'
+  confidence: number
+  /** Whether Sylphie knows what this is (WKG-resolved). */
+  discovered?: boolean
+  /** WKG node ID, if matched. */
+  nodeId?: string | null
+  /** Person ID for identified faces. */
+  personId?: string | null
+  /** How long present in the scene (ms). */
+  duration?: number
+  /** VWM lifecycle state. */
+  state?: 'entering' | 'present' | 'leaving' | 'gone'
+}
+
 // ---------------------------------------------------------------------------
 // Graph filters
 // ---------------------------------------------------------------------------

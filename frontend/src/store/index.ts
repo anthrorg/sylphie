@@ -9,6 +9,7 @@ import {
   SessionStats,
   VoiceState,
   CameraState,
+  RecognizedItem,
   GraphFilters,
   TelemetryPressure,
   TelemetryCycle,
@@ -100,6 +101,7 @@ interface AppState {
 
   // Camera
   cameraState: CameraState
+  recognizedItems: RecognizedItem[]
 
   // WebRTC
   webrtcState: WebRTCState
@@ -147,6 +149,7 @@ interface AppState {
   setVoiceState: (state: Partial<VoiceState>) => void
   toggleMute: () => void
   setCameraState: (state: Partial<CameraState>) => void
+  setRecognizedItems: (items: RecognizedItem[]) => void
   setWebRTCState: (state: Partial<WebRTCState>) => void
   toggleSessionInfo: () => void
   setNodeInspector: (open: boolean, nodeId?: string | null) => void
@@ -240,6 +243,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     mode: 'main',
     feedMode: 'unavailable',
   },
+
+  recognizedItems: [],
 
   webrtcState: {
     connectionState: 'new',
@@ -343,6 +348,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => ({
       cameraState: { ...prev.cameraState, ...state },
     })),
+
+  setRecognizedItems: (items) => set({ recognizedItems: items }),
 
   setWebRTCState: (state) =>
     set((prev) => ({

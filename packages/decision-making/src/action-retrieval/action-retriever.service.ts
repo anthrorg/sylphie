@@ -362,6 +362,28 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
           'Moral Valence': -0.05, // Acting with honesty
         },
       },
+      {
+        id: 'seed-ask-about-object',
+        name: 'ask_about_object',
+        category: 'VisualInquiry',
+        triggerContext: 'unknown object unrecognized what is that thing see something new visual',
+        driveEffects: {
+          Curiosity: -0.20,    // Primary relief: learning about the unknown
+          'Cognitive Awareness': -0.10, // Understanding environment
+          Focus: -0.05,        // Directing attention
+        },
+      },
+      {
+        id: 'seed-ask-about-person',
+        name: 'ask_about_person',
+        category: 'SocialInquiry',
+        triggerContext: 'unknown person unrecognized face who are you new person stranger introduce',
+        driveEffects: {
+          Social: -0.25,       // Primary relief: social need to connect
+          Curiosity: -0.10,    // Secondary: learning who they are
+          Focus: -0.05,        // Directing attention to the person
+        },
+      },
     ];
 
     const BASE_CONFIDENCE = 0.60;

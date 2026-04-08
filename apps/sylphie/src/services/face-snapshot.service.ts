@@ -227,10 +227,14 @@ export class FaceSnapshotService implements OnModuleInit {
     this.lastCropTime = now;
 
     // Request crop + embedding from Python service
+    // Pass landmarks so the embedding can be masked to face-only pixels
     const [x1, y1, x2, y2] = primary.bbox;
-    const url =
+    let url =
       `${this.perceptionHost}/perception/crop-face` +
       `?x_min=${x1}&y_min=${y1}&x_max=${x2}&y_max=${y2}`;
+    if (primary.landmarks && primary.landmarks.length > 10) {
+      url += `&landmarks=${encodeURIComponent(JSON.stringify(primary.landmarks))}`;
+    }
 
     let cropResult: CropResult;
     try {
@@ -478,7 +482,7 @@ export class FaceSnapshotService implements OnModuleInit {
    * Update the running centroid for a person by averaging in a new embedding.
    * Simple incremental mean: centroid = (centroid * n + new) / (n + 1)
    */
-  private updateCentroid(personId: string, embedding: number[]): void {
+  updateCentroid(personId: string, embedding: number[]): void {
     const existing = this.centroids.get(personId);
 
     if (!existing || existing.embedding.length === 0) {

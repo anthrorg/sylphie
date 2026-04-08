@@ -18,6 +18,10 @@ export type { LatentMatch, MultiModalLatentMatch } from './latent-space/latent-s
 /** Sensory prediction — exported for system reset. */
 export { SensoryPredictionService } from './prediction/sensory-prediction.service';
 
+/** Episodic memory — exported for system reset. */
+export { EPISODIC_MEMORY_SERVICE } from './decision-making.tokens';
+export type { IEpisodicMemoryService } from './interfaces/decision-making.interfaces';
+
 /** Scene prediction — per-object prediction errors for attention and drive routing. */
 export { ScenePredictionService, type ScenePredictionResult, type SceneObjectError } from './prediction/scene-prediction.service';
 

@@ -564,15 +564,44 @@ async def crop_face(request: Request) -> JSONResponse:
     if cx_min >= cx_max or cy_min >= cy_max:
         raise HTTPException(status_code=400, detail="Degenerate bounding box")
 
-    # Crop and resize
-    crop = img[cy_min:cy_max, cx_min:cx_max]
-    resized = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+    # Parse optional face landmarks for mask-based embedding (JSON array of [x,y] pairs)
+    landmarks_json = request.query_params.get("landmarks")
+    face_landmarks: list[list[float]] | None = None
+    if landmarks_json:
+        try:
+            import json  # noqa: PLC0415
+            face_landmarks = json.loads(landmarks_json)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
-    # Encode to JPEG base64
+    # Crop region
+    crop = img[cy_min:cy_max, cx_min:cx_max]
+
+    # For the embedding: apply face landmark mask to isolate the face from
+    # background (hair, walls, clothing). This produces embeddings that
+    # represent the face itself, not the surroundings.
+    masked_crop = crop.copy()
+    if face_landmarks and len(face_landmarks) > 10:
+        # Shift landmarks relative to the crop origin
+        shifted = np.array(
+            [[pt[0] - cx_min, pt[1] - cy_min] for pt in face_landmarks],
+            dtype=np.int32,
+        )
+        # Build convex hull mask from all face landmarks
+        hull = cv2.convexHull(shifted)
+        mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+        cv2.fillConvexPoly(mask, hull, 255)
+        masked_crop[mask == 0] = 0
+
+    # Resize both: unmasked for the visual crop, masked for the embedding
+    resized = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+    resized_masked = cv2.resize(masked_crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+    # Encode to JPEG base64 (unmasked — the visual crop should look natural)
     _, jpeg_buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
     crop_b64 = base64.b64encode(jpeg_buf.tobytes()).decode("ascii")
 
-    # Generate visual embedding via OnnxEmbeddingExtractor (lazy-init)
+    # Generate visual embedding from the MASKED crop (face-only pixels)
     embedding: list[float] = []
     loop = asyncio.get_event_loop()
 
@@ -588,8 +617,8 @@ async def crop_face(request: Request) -> JSONResponse:
                 logger.warning("Could not initialize OnnxEmbeddingExtractor: %s", exc)
                 return None
 
-        # Convert crop to raw RGB bytes for the extractor
-        crop_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        # Use the masked crop for embedding (face-only, no background)
+        crop_rgb = cv2.cvtColor(resized_masked, cv2.COLOR_BGR2RGB)
         raw_bytes = crop_rgb.tobytes()
         return _state.embedding_extractor.extract(
             raw_bytes,
@@ -617,6 +646,11 @@ _embedding_init_failed: bool = False
 def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None:  # noqa: ANN401
     """Extract a 1280D EfficientNet-B0 embedding for a tracked object's bbox.
 
+    If the detection carries a segmentation mask (from YOLO-seg), background
+    pixels within the bounding box are zeroed out before embedding extraction.
+    This produces embeddings that represent the object itself, not the object
+    plus whatever table/wall/floor surrounds it.
+
     Uses the same lazy-init OnnxEmbeddingExtractor pattern as /crop-face.
     Returns None if extraction fails or the extractor cannot be initialised.
     """
@@ -638,8 +672,30 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
             return None
 
     try:
+        frame_data = frame.data
+        mask_polygon = getattr(detection, "mask_polygon", None)
+
+        # Apply segmentation mask: zero out background pixels so the
+        # embedding captures only the object, not the surrounding scene.
+        if mask_polygon and len(mask_polygon) > 2:
+            import cv2  # noqa: PLC0415
+            import numpy as np  # noqa: PLC0415
+
+            arr = np.frombuffer(frame_data, dtype=np.uint8).reshape(
+                (frame.height, frame.width, 3),
+            ).copy()  # copy because frombuffer returns read-only
+
+            # Build binary mask from the segmentation polygon
+            pts = np.array(mask_polygon, dtype=np.int32)
+            mask = np.zeros(arr.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [pts], 255)
+
+            # Zero out everything outside the mask
+            arr[mask == 0] = 0
+            frame_data = arr.tobytes()
+
         return _state.embedding_extractor.extract(
-            frame.data,
+            frame_data,
             (
                 detection.bbox_x_min,
                 detection.bbox_y_min,

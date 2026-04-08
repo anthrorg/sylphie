@@ -78,6 +78,15 @@ export class TickSamplerService {
     return this.window.length;
   }
 
+  /** Clear all in-memory state (e.g., on system reset). */
+  clear(): void {
+    this.latestValues.clear();
+    this.window.length = 0;
+    this.blendedEmbedding = null;
+    this.lastInputAt = 0;
+    this.logger.debug('TickSampler cleared: latestValues, window, blendedEmbedding reset.');
+  }
+
   /** Callback invoked when event-driven input arrives. Set by the tick engine. */
   private inputCallback: (() => void) | null = null;
 
@@ -141,6 +150,18 @@ export class TickSamplerService {
 
   updateScene(snapshot: SceneSnapshot): void {
     this.update('scene', snapshot);
+  }
+
+  updateSceneDescription(description: string): void {
+    this.latestValues.set('scene_description', description);
+  }
+
+  updateUndiscoveredCount(count: number): void {
+    this.latestValues.set('undiscovered_count', count);
+  }
+
+  updateUnknownPersonCount(count: number): void {
+    this.latestValues.set('unknown_person_count', count);
   }
 
   // ── Tick sampling ───────────────────────────────────────────────

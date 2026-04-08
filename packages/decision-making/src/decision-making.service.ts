@@ -760,6 +760,57 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.routeScenePredictionErrors(sceneSnapshot, driveSnapshot);
       }
 
+      // ── Sustained curiosity for undiscovered visual objects ──────────────
+      const undiscoveredCount = frame.raw['undiscovered_count'] as number | undefined;
+      if (undiscoveredCount && undiscoveredCount > 0 && this.actionOutcomeReporter) {
+        try {
+          this.actionOutcomeReporter.reportOutcome({
+            actionId: 'undiscovered-objects',
+            actionType: 'UndiscoveredObjectPressure',
+            success: false,
+            driveEffects: {
+              [DriveName.Curiosity]: undiscoveredCount * 0.15,
+              [DriveName.Focus]: 0.1,
+            },
+            feedbackSource: 'INFERENCE',
+            theaterCheck: {
+              expressionType: 'none',
+              correspondingDrive: null,
+              driveValue: null,
+              isTheatrical: false,
+            },
+          });
+        } catch (err) {
+          this.logger.warn(`Undiscovered object pressure routing failed: ${err}`);
+        }
+      }
+
+      // ── Social pressure for unknown persons in view ─────────────────────
+      const unknownPersonCount = frame.raw['unknown_person_count'] as number | undefined;
+      if (unknownPersonCount && unknownPersonCount > 0 && this.actionOutcomeReporter) {
+        try {
+          this.actionOutcomeReporter.reportOutcome({
+            actionId: 'unknown-persons',
+            actionType: 'UnknownPersonPressure',
+            success: false,
+            driveEffects: {
+              [DriveName.Social]: unknownPersonCount * 0.20,
+              [DriveName.Curiosity]: unknownPersonCount * 0.10,
+              [DriveName.Focus]: 0.1,
+            },
+            feedbackSource: 'INFERENCE',
+            theaterCheck: {
+              expressionType: 'none',
+              correspondingDrive: null,
+              driveValue: null,
+              isTheatrical: false,
+            },
+          });
+        } catch (err) {
+          this.logger.warn(`Unknown person pressure routing failed: ${err}`);
+        }
+      }
+
       this.logger.debug(
         `Decision cycle complete (${cycleLatencyMs}ms). Arbitration: ${arbitrationResult.type}. ` +
           `Action: ${actionId}. Response: ${responseText.length} chars.` +

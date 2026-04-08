@@ -230,6 +230,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // Sensory prediction: exported for system reset.
     SensoryPredictionService,
 
+    // Episodic memory: exported for system reset (clear ring buffer).
+    EPISODIC_MEMORY_SERVICE,
+
     // Scene prediction: exported for scene-level drive routing.
     ScenePredictionService,
 

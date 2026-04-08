@@ -171,6 +171,7 @@ export class DeliberationService {
     const episodeSummary = buildEpisodeSummary(context);
     const conversationHistory = frame.raw['conversation_history'] as LlmMessage[] | undefined ?? [];
     const speakerName = frame.raw['speaker_name'] as string | undefined ?? 'the person talking to you';
+    const sceneDescription = frame.raw['scene_description'] as string | undefined ?? '';
 
     // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');
@@ -201,6 +202,7 @@ export class DeliberationService {
         '- If this needs complex reasoning, write NEEDS_DELIBERATION as the response.',
         '',
         wkg.summary ? `What I know:\n${wkg.summary}` : 'What I know: Nothing specific yet.',
+        sceneDescription ? `What I see:\n${sceneDescription}` : '',
         driveSummary ? `How I\'m feeling: ${driveSummary}` : '',
         episodeSummary ? `Recent conversation:\n${episodeSummary}` : '',
         '',
@@ -329,6 +331,7 @@ export class DeliberationService {
         '',
         `My inner thoughts: ${innerMonologue}`,
         wkg.summary ? `\nWhat I know:\n${wkg.summary}` : '\nWhat I know: Nothing about the world yet.',
+        sceneDescription ? `\nWhat I see:\n${sceneDescription}` : '',
         driveSummary ? `\nHow I'm feeling: ${driveSummary}` : '',
       ],
       currentMessages: [

@@ -24,6 +24,7 @@ import type {
   ActionCandidate,
   DriveSnapshot,
   DriveName,
+  SceneSnapshot,
 } from '@sylphie/shared';
 import { DRIVE_INDEX_ORDER } from '@sylphie/shared';
 import type { IEpisodicMemoryService, IActionRetrieverService } from '../interfaces/decision-making.interfaces';
@@ -223,6 +224,28 @@ export class ProcessInputService {
           entities.push(det.class);
         }
       }
+    }
+
+    // Extract from scene modality (tracked + identified objects from VWM)
+    const rawScene = frame.raw['scene'] as SceneSnapshot | undefined;
+    if (rawScene) {
+      for (const obj of rawScene.objects) {
+        if (obj.state !== 'confirmed') continue;
+        entities.push(obj.label);
+        if (obj.personId) entities.push(obj.personId);
+      }
+    }
+
+    // Flag undiscovered objects for context fingerprint matching
+    const undiscoveredCount = frame.raw['undiscovered_count'] as number | undefined;
+    if (undiscoveredCount && undiscoveredCount > 0) {
+      entities.push('unknown', 'unrecognized', 'object');
+    }
+
+    // Flag unknown persons for social context fingerprint matching
+    const unknownPersonCount = frame.raw['unknown_person_count'] as number | undefined;
+    if (unknownPersonCount && unknownPersonCount > 0) {
+      entities.push('unknown', 'person', 'stranger', 'face', 'who');
     }
 
     // Deduplicate

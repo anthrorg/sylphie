@@ -15,9 +15,10 @@ export const ollamaConfig = registerAs('ollama', () => ({
   chatTimeoutMs: parseInt(process.env.OLLAMA_CHAT_TIMEOUT_MS || '30000', 10),
   searxngUrl: process.env.SEARXNG_URL || 'http://localhost:8888',
 
-  // DeepSeek API for deep tier. When DEEPSEEK_API_KEY is set, deep tier
-  // calls route to DeepSeek instead of local Ollama.
+  // DeepSeek API. When DEEPSEEK_API_KEY is set, deep and medium tiers
+  // route to DeepSeek instead of local Ollama.
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
   deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-  deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+  deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-reasoner',
+  deepseekMediumModel: process.env.DEEPSEEK_MEDIUM_MODEL || '',
 }));

@@ -42,6 +42,7 @@ import { PersonModelService } from './services/person-model.service';
 import { FaceSnapshotService } from './services/face-snapshot.service';
 import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
 import { SceneEventDetectorService } from './services/scene-event-detector.service';
+import { VisualWorkingMemoryService } from './services/visual-working-memory.service';
 
 @Module({
   imports: [
@@ -133,6 +134,7 @@ import { SceneEventDetectorService } from './services/scene-event-detector.servi
     FaceSnapshotService,
     VoiceLatentSpaceService,
     SceneEventDetectorService,
+    VisualWorkingMemoryService,
     // Gateways
     GraphGateway,
     ConversationGateway,

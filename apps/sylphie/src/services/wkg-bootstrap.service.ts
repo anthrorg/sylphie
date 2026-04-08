@@ -3,9 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { Neo4jService, Neo4jInstanceName, TimescaleService, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
 import { ACTION_OUTCOME_REPORTER, IActionOutcomeReporter } from '@sylphie/drive-engine';
-import { LatentSpaceService, SensoryPredictionService } from '@sylphie/decision-making';
+import {
+  LatentSpaceService,
+  SensoryPredictionService,
+  TickSamplerService,
+  EPISODIC_MEMORY_SERVICE,
+  type IEpisodicMemoryService,
+} from '@sylphie/decision-making';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
 import { ConversationHistoryService } from './conversation-history.service';
+import { PersonModelService } from './person-model.service';
 
 /**
  * Seeds the World Knowledge Graph with bootstrap nodes on startup.
@@ -15,8 +22,9 @@ import { ConversationHistoryService } from './conversation-history.service';
  *   2. Drive nodes — the 12 drives (not pre-connected to actions)
  *
  * Also handles full system reset — clears all persistent stores
- * (Neo4j graphs, TimescaleDB tables, latent spaces, conversation history)
- * and re-bootstraps the WKG from scratch.
+ * (Neo4j graphs, TimescaleDB tables, latent spaces, conversation history,
+ * person model cache, tick sampler state, episodic memory) and re-bootstraps
+ * the WKG from scratch.
  *
  * Idempotent — uses MERGE so re-runs are safe.
  */
@@ -31,6 +39,10 @@ export class WkgBootstrapService implements OnModuleInit {
     private readonly sensoryPrediction: SensoryPredictionService,
     private readonly voiceLatentSpace: VoiceLatentSpaceService,
     private readonly conversationHistory: ConversationHistoryService,
+    private readonly personModel: PersonModelService,
+    private readonly tickSampler: TickSamplerService,
+    @Inject(EPISODIC_MEMORY_SERVICE)
+    private readonly episodicMemory: IEpisodicMemoryService,
     private readonly config: ConfigService,
     @Inject(ACTION_OUTCOME_REPORTER)
     private readonly outcomeReporter: IActionOutcomeReporter,
@@ -174,7 +186,9 @@ export class WkgBootstrapService implements OnModuleInit {
    *   - TimescaleDB: learned_patterns, voice_patterns, sensory_ticks, events, reflected_sessions
    *   - PostgreSQL: proposed_drive_rules
    *   - Drive Engine: in-memory state reset to INITIAL_DRIVE_STATE via SESSION_START
-   *   - In-memory: latent space hot layer, voice cache hot layer, conversation history
+   *   - In-memory: latent space hot layer, voice cache hot layer, conversation history,
+   *                person model cache, tick sampler (latestValues + window + EWMA),
+   *                episodic memory ring buffer
    */
   async resetAndBootstrap(): Promise<{
     nodesDeleted: number;
@@ -251,6 +265,9 @@ export class WkgBootstrapService implements OnModuleInit {
     this.sensoryPrediction.reset();
     await this.voiceLatentSpace.clear();
     this.conversationHistory.clear();
+    this.personModel.clear();
+    this.tickSampler.clear();
+    this.episodicMemory.clear();
 
     this.logger.warn(
       `Full system reset complete: ${nodesDeleted} Neo4j nodes, ${edgesDeleted} edges deleted. ` +

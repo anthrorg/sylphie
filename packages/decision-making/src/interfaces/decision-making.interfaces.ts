@@ -212,6 +212,9 @@ export interface IEpisodicMemoryService {
    * @returns Non-negative integer count.
    */
   getEpisodeCount(): number;
+
+  /** Clear all episodes from memory (e.g., on system reset). */
+  clear(): void;
 }
 
 // ---------------------------------------------------------------------------

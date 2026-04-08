@@ -19,7 +19,6 @@ import {
 } from '../../components/Metrics/MetricsPanel'
 import { DriveRadarChart } from '../../components/Drives/DriveRadarChart'
 import { DrivesPanel } from '../../components/Drives/DrivesPanel'
-import { CoreDrivesChart, ComplementDrivesChart } from '../../components/Drives/DriveBarChart'
 import { InnerMonologuePanel } from '../../components/InnerMonologue/InnerMonologuePanel'
 import { SystemLogsPanel } from '../../components/SystemLogs/SystemLogsPanel'
 import { MaintenanceLogsPanel } from '../../components/MaintenanceLogs/MaintenanceLogsPanel'
@@ -96,17 +95,12 @@ export const AnalyticsView: React.FC = () => {
           boxSizing: 'border-box',
         }}
       >
-        {/* ── Top row: Executor + Drives + Radar ──────────────────── */}
+        {/* ── Top row: System Logs + Drives + Radar ────────────── */}
         <Box sx={{ flex: 4, display: 'flex', gap: 1, minHeight: 0 }}>
-          {/* Left column: Executor state + Drive engine metrics */}
-          <Box sx={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0 }}>
-            <GlassPanel title="Executor State" sx={{ flex: 1 }}>
-              <ExecutorStatePanel />
-            </GlassPanel>
-            <GlassPanel title="Drive Engine" sx={{ flex: 1 }}>
-              <DriveEnginePanel />
-            </GlassPanel>
-          </Box>
+          {/* Left: tall system logs */}
+          <GlassPanel sx={{ flex: 2 }}>
+            <SystemLogsPanel />
+          </GlassPanel>
 
           {/* Center: Full drive panel with controls */}
           <GlassPanel sx={{ flex: 4 }}>
@@ -137,35 +131,30 @@ export const AnalyticsView: React.FC = () => {
           </GlassPanel>
         </Box>
 
-        {/* ── Middle row: Bar charts ──────────────────────────────── */}
+        {/* ── Middle row: Executor + Drive Engine + Maintenance + Predictions ── */}
         <Box sx={{ flex: 2, display: 'flex', gap: 1, minHeight: 0 }}>
-          <GlassPanel sx={{ flex: 1, p: 1.5 }}>
-            <CoreDrivesChart />
+          <GlassPanel sx={{ flex: 1 }}>
+            <ExecutorStatePanel />
           </GlassPanel>
-          <GlassPanel sx={{ flex: 2, p: 1.5 }}>
-            <ComplementDrivesChart />
+          <GlassPanel sx={{ flex: 1 }}>
+            <DriveEnginePanel />
+          </GlassPanel>
+          <GlassPanel sx={{ flex: 1 }}>
+            <MaintenanceLogsPanel />
+          </GlassPanel>
+          <GlassPanel sx={{ flex: 1 }}>
+            <PredictionAccuracyPanel />
           </GlassPanel>
         </Box>
 
-        {/* ── Bottom row: Actions + Predictions + Monologue + Logs ── */}
+        {/* ── Bottom row: Actions + Monologue ──────────────────── */}
         <Box sx={{ flex: 3, display: 'flex', gap: 1, minHeight: 0 }}>
-          <GlassPanel title="Recent Actions" sx={{ flex: 1 }}>
+          <GlassPanel sx={{ flex: 1 }}>
             <RecentActionsPanel />
           </GlassPanel>
-          <GlassPanel title="Prediction Accuracy" sx={{ flex: 1 }}>
-            <PredictionAccuracyPanel />
-          </GlassPanel>
-          <GlassPanel title="Inner Monologue" sx={{ flex: 1.5 }}>
+          <GlassPanel sx={{ flex: 1 }}>
             <InnerMonologuePanel />
           </GlassPanel>
-          <Box sx={{ flex: 1.5, display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0 }}>
-            <GlassPanel title="System Logs" sx={{ flex: 1 }}>
-              <SystemLogsPanel />
-            </GlassPanel>
-            <GlassPanel title="Maintenance" sx={{ flex: 1 }}>
-              <MaintenanceLogsPanel />
-            </GlassPanel>
-          </Box>
         </Box>
       </Box>
 

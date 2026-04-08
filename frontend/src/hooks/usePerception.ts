@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useAppStore } from '../store'
+import type { RecognizedItem } from '../types'
 
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_BASE = `${WS_PROTOCOL}//${window.location.host}`
@@ -51,6 +52,21 @@ interface SceneEvent {
   personId?: string
 }
 
+interface VwmEntity {
+  id: string
+  label: string
+  displayName: string | null
+  type: 'object' | 'face'
+  discovered: boolean
+  personId: string | null
+  trackIds: number[]
+}
+
+/** Capitalize and clean up raw YOLO/model label for display. */
+function friendlyLabel(raw: string): string {
+  return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 export type AnnotationLayer =
   | 'objects'
   | 'tracking'
@@ -92,6 +108,7 @@ export function usePerception(): UsePerceptionReturn {
   const faceOvalRef = useRef<number[][]>([])
   const trackedObjectsRef = useRef<TrackedObject[]>([])
   const sceneEventsRef = useRef<SceneEvent[]>([])
+  const vwmEntitiesRef = useRef<VwmEntity[]>([])
   const recentTrackIdsRef = useRef<Set<number>>(new Set())
   const rafRef = useRef<number | null>(null)
   const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
@@ -100,7 +117,7 @@ export function usePerception(): UsePerceptionReturn {
   const [error, setError] = useState<string | null>(null)
   const [layers, setLayersState] = useState<AnnotationLayer[]>(['objects', 'face-mesh'])
 
-  const { setCameraState } = useAppStore()
+  const { setCameraState, setRecognizedItems } = useAppStore()
 
   const setLayers = useCallback((newLayers: AnnotationLayer[]) => {
     setLayersState(newLayers)
@@ -204,6 +221,61 @@ export function usePerception(): UsePerceptionReturn {
               }
             }
             recentTrackIdsRef.current = novelIds
+
+            // Store VWM entities for overlay rendering
+            vwmEntitiesRef.current = (data.vwm_entities ?? []) as VwmEntity[]
+
+            // Build recognized items from VWM entities (stabilized, WKG-resolved)
+            const vwmEntities = data.vwm_entities as Array<{
+              id: string
+              label: string
+              displayName: string | null
+              type: 'object' | 'face'
+              confidence: number
+              discovered: boolean
+              nodeId: string | null
+              personId: string | null
+              state: string
+              duration: number
+            }> | undefined
+
+            const items: RecognizedItem[] = []
+
+            if (vwmEntities && vwmEntities.length > 0) {
+              // Use VWM entities — stabilized, deduplicated, with KG-resolved names
+              for (const entity of vwmEntities) {
+                const label = entity.displayName
+                  ? friendlyLabel(entity.displayName)
+                  : friendlyLabel(entity.label)
+
+                items.push({
+                  id: entity.id,
+                  label,
+                  type: entity.type,
+                  confidence: entity.confidence,
+                  discovered: entity.discovered,
+                  nodeId: entity.nodeId,
+                  personId: entity.personId,
+                  duration: entity.duration,
+                  state: entity.state as RecognizedItem['state'],
+                })
+              }
+            } else {
+              // Fallback to raw detections when VWM isn't active yet.
+              // Everything is undiscovered — YOLO labels are sensory hints,
+              // not knowledge. Sylphie doesn't "know" anything she hasn't learned.
+              const seen = new Set<string>()
+              for (const d of detectionsRef.current) {
+                const label = friendlyLabel(d.label_raw)
+                const key = `obj:${label}`
+                if (!seen.has(key)) {
+                  seen.add(key)
+                  items.push({ id: key, label, type: 'object', confidence: d.confidence, discovered: false })
+                }
+              }
+            }
+
+            setRecognizedItems(items)
           } catch {
             // Not JSON — ignore
           }
@@ -213,6 +285,7 @@ export function usePerception(): UsePerceptionReturn {
           if (intervalRef.current !== null) { clearInterval(intervalRef.current); intervalRef.current = null }
           detectionsRef.current = []
           faceDetectionsRef.current = []
+          setRecognizedItems([])
           setCameraState({ feedMode: 'local' })
         }
 
@@ -247,12 +320,12 @@ export function usePerception(): UsePerceptionReturn {
 
         const al = layersRef.current
 
-        // --- Object layer: polygon contours or bounding boxes ---
+        // --- Object layer: polygon contours or bounding boxes (no labels — raw perception) ---
         if (al.includes('objects')) {
           const dets = detectionsRef.current
           for (const d of dets) {
-            ctx.strokeStyle = '#00ff00'
-            ctx.lineWidth = 2
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.4)'
+            ctx.lineWidth = 1
 
             if (d.mask_polygon && d.mask_polygon.length > 2) {
               ctx.beginPath()
@@ -262,78 +335,79 @@ export function usePerception(): UsePerceptionReturn {
               }
               ctx.closePath()
               ctx.stroke()
-              ctx.fillStyle = 'rgba(0, 255, 0, 0.08)'
+              ctx.fillStyle = 'rgba(0, 255, 0, 0.05)'
               ctx.fill()
             } else {
               ctx.strokeRect(d.bbox_x_min, d.bbox_y_min,
                 d.bbox_x_max - d.bbox_x_min, d.bbox_y_max - d.bbox_y_min)
             }
-
-            const label = `${d.label_raw} ${(d.confidence * 100).toFixed(0)}%`
-            ctx.font = '12px monospace'
-            ctx.fillStyle = '#00ff00'
-            ctx.fillText(label, d.bbox_x_min, d.bbox_y_min > 14 ? d.bbox_y_min - 4 : d.bbox_y_max + 14)
+            // No labels — YOLO hints are not Sylphie's knowledge
           }
         }
 
-        // --- Tracking layer: per-object tracked bounding boxes ---
+        // --- Tracking layer: Sylphie's knowledge overlay ---
+        // Shows what Sylphie actually knows, not YOLO hints.
+        // VWM entities = stabilized + WKG-resolved. Unknown items show "?".
         if (al.includes('tracking')) {
           const tracked = trackedObjectsRef.current
-          const novelIds = recentTrackIdsRef.current
+          const vwm = vwmEntitiesRef.current
           const events = sceneEventsRef.current
 
-          // Draw confirmed tracks with color-coded bounding boxes
-          for (const obj of tracked) {
-            if (obj.state !== 'confirmed') continue
-
-            // Color by prediction status
-            const isNovel = novelIds.has(obj.track_id)
-            const color = isNovel ? '#ff6600' : '#00ff88' // orange = novel, green = expected
-
-            ctx.strokeStyle = color
-            ctx.lineWidth = 2
-            const [x1, y1, x2, y2] = obj.bbox
-            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
-
-            // Label with track ID and class
-            const label = `#${obj.track_id} ${obj.label} ${(obj.confidence * 100).toFixed(0)}%`
-            ctx.font = '11px monospace'
-            ctx.fillStyle = color
-            const labelY = y1 > 16 ? y1 - 4 : y2 + 14
-            ctx.fillText(label, x1, labelY)
-
-            // Show frames_seen as a small indicator
-            if (obj.frames_seen > 1) {
-              const ageLabel = `${obj.frames_seen}f`
-              ctx.font = '9px monospace'
-              ctx.fillStyle = 'rgba(255,255,255,0.5)'
-              ctx.fillText(ageLabel, x2 - ctx.measureText(ageLabel).width - 2, y1 > 16 ? y1 - 4 : y2 + 14)
+          // Build track ID → VWM entity lookup
+          const trackToVwm = new Map<number, VwmEntity>()
+          for (const entity of vwm) {
+            for (const tid of entity.trackIds) {
+              trackToVwm.set(tid, entity)
             }
           }
 
-          // Draw FACE_IDENTIFIED events with person label
-          for (const evt of events) {
-            if (evt.type !== 'face_identified' || !evt.personId) continue
-            const [x1, y1] = evt.bbox
-            ctx.font = 'bold 12px monospace'
-            ctx.fillStyle = '#00ddff'
-            ctx.fillText(evt.personId.substring(0, 12), x1, y1 > 30 ? y1 - 18 : y1 + 28)
+          // Draw confirmed tracks — labeled only if Sylphie knows what they are
+          for (const obj of tracked) {
+            if (obj.state !== 'confirmed') continue
+
+            const entity = trackToVwm.get(obj.track_id)
+
+            // Color: known = green, unknown = orange, no VWM match = dim
+            let color: string
+            let label: string
+
+            if (entity) {
+              if (entity.discovered) {
+                color = entity.type === 'face' ? '#00ddff' : '#00ff88'
+                label = friendlyLabel(entity.displayName ?? entity.label)
+              } else {
+                color = '#ff9800'
+                label = '?'
+              }
+            } else {
+              // Not yet stabilized in VWM — show faint box, no label
+              color = 'rgba(255, 255, 255, 0.15)'
+              label = ''
+            }
+
+            ctx.strokeStyle = color
+            ctx.lineWidth = entity ? 2 : 1
+            const [x1, y1, x2, y2] = obj.bbox
+            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+
+            if (label) {
+              ctx.font = entity?.discovered ? 'bold 12px monospace' : '11px monospace'
+              ctx.fillStyle = color
+              const labelY = y1 > 16 ? y1 - 4 : y2 + 14
+              ctx.fillText(label, x1, labelY)
+            }
           }
 
-          // Draw PERSON_LEFT ghost bboxes (dashed red)
-          for (const evt of events) {
-            if (evt.type !== 'person_left' && evt.type !== 'object_disappeared') continue
-            const [x1, y1, x2, y2] = evt.bbox
-            ctx.setLineDash([5, 5])
-            ctx.strokeStyle = '#ff3333'
-            ctx.lineWidth = 1.5
-            ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
-            ctx.setLineDash([])
-
-            const label = `LOST: ${evt.label}`
-            ctx.font = '10px monospace'
-            ctx.fillStyle = '#ff3333'
-            ctx.fillText(label, x1, y1 > 16 ? y1 - 4 : y2 + 14)
+          // Draw person names from face identification
+          for (const entity of vwm) {
+            if (entity.type !== 'face' || !entity.personId || !entity.discovered) continue
+            // Find the matching tracked object for position
+            const matchingTrack = tracked.find(t => entity.trackIds.includes(t.track_id) && t.state === 'confirmed')
+            if (!matchingTrack) continue
+            const [x1, y1] = matchingTrack.bbox
+            ctx.font = 'bold 13px monospace'
+            ctx.fillStyle = '#00ddff'
+            ctx.fillText(friendlyLabel(entity.personId), x1, y1 > 30 ? y1 - 18 : y1 + 28)
           }
 
           // Draw FACE_OCCLUDED indicator
@@ -348,7 +422,7 @@ export function usePerception(): UsePerceptionReturn {
 
             ctx.font = '10px monospace'
             ctx.fillStyle = '#ffaa00'
-            ctx.fillText('FACE HIDDEN', x1 + 2, (y1 + y2) / 2)
+            ctx.fillText('?', x1 + (x2 - x1) / 2 - 4, (y1 + y2) / 2 + 4)
           }
         }
 
@@ -416,11 +490,8 @@ export function usePerception(): UsePerceptionReturn {
                 f.bbox_x_max - f.bbox_x_min, f.bbox_y_max - f.bbox_y_min)
             }
 
-            // Confidence label (show if any face layer is active)
-            const label = `face ${(f.confidence * 100).toFixed(0)}%`
-            ctx.font = '12px monospace'
-            ctx.fillStyle = '#00bfff'
-            ctx.fillText(label, f.bbox_x_min, f.bbox_y_min > 14 ? f.bbox_y_min - 4 : f.bbox_y_max + 14)
+            // No labels on face layers — just visual overlays (mesh, dots, contour, bbox).
+            // Identity labels belong in the tracking layer, driven by VWM knowledge.
           }
         }
 

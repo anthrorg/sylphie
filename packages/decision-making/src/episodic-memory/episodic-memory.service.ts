@@ -237,6 +237,16 @@ export class EpisodicMemoryService implements IEpisodicMemoryService {
     return this.count;
   }
 
+  /**
+   * Clear all episodes from the ring buffer (e.g., on system reset).
+   */
+  clear(): void {
+    this.buffer.fill(undefined);
+    this.head = 0;
+    this.count = 0;
+    this.logger.debug('Episodic memory cleared.');
+  }
+
   // ---------------------------------------------------------------------------
   // Private — event emission
   // ---------------------------------------------------------------------------

@@ -329,6 +329,18 @@ export class PersonModelService implements OnModuleInit {
   getKnownPersonIds(): string[] {
     return [...this.cache.keys()];
   }
+
+  /**
+   * Clear all in-memory state (e.g., on system reset).
+   * Wipes the fact cache and interaction counts so the LLM doesn't see
+   * stale person attributes after a reset clears the OKG graph.
+   */
+  clear(): void {
+    this.cache.clear();
+    this.interactionCounts.clear();
+    this.activePersonId = null;
+    this.logger.debug('PersonModelService cleared: cache, interaction counts, active person.');
+  }
 }
 
 // ---------------------------------------------------------------------------

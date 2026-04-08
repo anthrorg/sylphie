@@ -77,10 +77,14 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   /** DeepSeek API configuration. */
   private deepseekApiKey = '';
   private deepseekBaseUrl = '';
-  private deepseekModel = '';
+  private deepseekModel = '';       // deep tier (reasoning)
+  private deepseekMediumModel = ''; // medium tier (chat)
 
-  /** Whether the deep tier routes to DeepSeek API. */
+  /** Whether DeepSeek API is configured. */
   private useDeepSeek = false;
+
+  /** Whether the medium tier also routes to DeepSeek. */
+  private useDeepSeekMedium = false;
 
   /** Set to false for Lesion Test or when Ollama is unreachable. */
   private available = true;
@@ -102,16 +106,19 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     };
     this.timeoutMs = this.config.get<number>('ollama.chatTimeoutMs', 30000);
 
-    // DeepSeek API for deep tier
+    // DeepSeek API for deep + medium tiers
     this.deepseekApiKey = this.config.get<string>('ollama.deepseekApiKey', '');
     this.deepseekBaseUrl = this.config.get<string>('ollama.deepseekBaseUrl', 'https://api.deepseek.com');
-    this.deepseekModel = this.config.get<string>('ollama.deepseekModel', 'deepseek-chat');
+    this.deepseekModel = this.config.get<string>('ollama.deepseekModel', 'deepseek-reasoner');
+    this.deepseekMediumModel = this.config.get<string>('ollama.deepseekMediumModel', '');
     this.useDeepSeek = this.deepseekApiKey.length > 0;
+    this.useDeepSeekMedium = this.useDeepSeek && this.deepseekMediumModel.length > 0;
 
     this.client = new Ollama({ host });
     this.logger.log(
       `LLM configured: ${host} / ` +
-        `quick=${this.models.quick}, medium=${this.models.medium}, ` +
+        `quick=${this.models.quick}, ` +
+        `medium=${this.useDeepSeekMedium ? `DeepSeek(${this.deepseekMediumModel})` : this.models.medium}, ` +
         `deep=${this.useDeepSeek ? `DeepSeek(${this.deepseekModel})` : this.models.deep} / ` +
         `timeout=${this.timeoutMs}ms`,
     );
@@ -137,8 +144,15 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   /**
    * Execute a chat completion via DeepSeek API.
    * Uses the OpenAI-compatible /v1/chat/completions endpoint.
+   *
+   * @param request - LLM request
+   * @param modelOverride - Override the model (e.g., deepseek-chat for medium tier)
    */
-  private async completeViaDeepSeek(request: LlmRequest): Promise<LlmResponse> {
+  private async completeViaDeepSeek(
+    request: LlmRequest,
+    modelOverride?: string,
+  ): Promise<LlmResponse> {
+    const model = modelOverride ?? this.deepseekModel;
     const messages: Array<{ role: string; content: string }> = [];
 
     if (request.systemPrompt) {
@@ -157,7 +171,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
         'Authorization': `Bearer ${this.deepseekApiKey}`,
       },
       body: JSON.stringify({
-        model: this.deepseekModel,
+        model,
         messages,
         max_tokens: request.maxTokens,
         temperature: request.temperature,
@@ -171,7 +185,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     }
 
     const data = await response.json() as {
-      choices: Array<{ message: { content: string } }>;
+      choices: Array<{ message: { content: string; reasoning_content?: string } }>;
       usage: { prompt_tokens: number; completion_tokens: number };
       model: string;
     };
@@ -184,17 +198,22 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const cost = (promptTokens / 1_000_000) * DEEPSEEK_INPUT_COST_PER_M
       + (completionTokens / 1_000_000) * DEEPSEEK_OUTPUT_COST_PER_M;
 
+    // For reasoning models, content may be in reasoning_content
+    const choice = data.choices[0]?.message;
+    const content = choice?.content || choice?.reasoning_content || '';
+
+    const tier = request.tier ?? 'deep';
     this.logger.debug(
-      `LLM complete [deep/DeepSeek/${this.deepseekModel}]: ` +
+      `LLM complete [${tier}/DeepSeek/${model}]: ` +
         `${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
         `$${cost.toFixed(6)}, purpose=${request.metadata.purpose}`,
     );
 
     return {
-      content: data.choices[0]?.message?.content ?? '',
+      content,
       tokensUsed: { prompt: promptTokens, completion: completionTokens },
       latencyMs,
-      model: data.model ?? this.deepseekModel,
+      model: data.model ?? model,
       cost,
     };
   }
@@ -212,7 +231,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       throw new Error('LLM service unavailable (circuit breaker tripped or lesion test active)');
     }
 
-    // Route deep tier to DeepSeek if configured
+    // Route deep tier to DeepSeek (reasoning model)
     if (request.tier === 'deep' && this.useDeepSeek) {
       try {
         const result = await this.completeViaDeepSeek(request);
@@ -228,6 +247,28 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
         }
         this.logger.error(
           `DeepSeek call failed (failures=${this.consecutiveFailures}): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
+      }
+    }
+
+    // Route medium tier to DeepSeek (chat model) if configured
+    if (request.tier === 'medium' && this.useDeepSeekMedium) {
+      try {
+        const result = await this.completeViaDeepSeek(request, this.deepseekMediumModel);
+        this.consecutiveFailures = 0;
+        return result;
+      } catch (err) {
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures >= this.CIRCUIT_BREAKER_THRESHOLD) {
+          this.available = false;
+          this.logger.error(
+            `Circuit breaker tripped after ${this.consecutiveFailures} DeepSeek medium failures.`,
+          );
+        }
+        this.logger.error(
+          `DeepSeek medium call failed (failures=${this.consecutiveFailures}): ` +
             `${err instanceof Error ? err.message : String(err)}`,
         );
         throw err;

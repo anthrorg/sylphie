@@ -11,6 +11,7 @@ import type { TrackedObjectDTO, SceneSummary, FaceDetection } from '@sylphie/sha
 import { PersonModelService } from '../services/person-model.service';
 import { FaceSnapshotService } from '../services/face-snapshot.service';
 import { SceneEventDetectorService } from '../services/scene-event-detector.service';
+import { VisualWorkingMemoryService } from '../services/visual-working-memory.service';
 
 const MAX_FPS = 15;
 const MIN_FRAME_INTERVAL_MS = 1000 / MAX_FPS;
@@ -30,6 +31,7 @@ export class PerceptionGateway
     private readonly personModel: PersonModelService,
     private readonly faceSnapshot: FaceSnapshotService,
     private readonly sceneEventDetector: SceneEventDetectorService,
+    private readonly vwm: VisualWorkingMemoryService,
   ) {
     this.perceptionHost = this.config.get<string>(
       'PERCEPTION_HOST',
@@ -137,11 +139,25 @@ export class PerceptionGateway
         // Feed scene snapshot into the sensory pipeline
         this.tickSampler.updateScene(sceneSnapshot);
 
-        // Send enriched result to browser (tracked objects + scene events)
+        // Update Visual Working Memory (stabilization + WKG resolution)
+        this.vwm.updateScene(sceneSnapshot);
+
+        // Inject VWM scene description and undiscovered count for deliberation
+        const sceneDesc = this.vwm.getSceneDescription();
+        if (sceneDesc) {
+          this.tickSampler.updateSceneDescription(sceneDesc);
+        }
+        const undiscovered = this.vwm.getUndiscoveredEntities();
+        const unknownPersons = this.vwm.getUnknownPersons();
+        this.tickSampler.updateUndiscoveredCount(undiscovered.length);
+        this.tickSampler.updateUnknownPersonCount(unknownPersons.length);
+
+        // Send enriched result to browser (tracked objects + scene events + VWM entities)
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({
             ...result,
             scene_events: sceneSnapshot.events,
+            vwm_entities: this.vwm.getVisibleEntities(),
           }));
         }
       } else {
