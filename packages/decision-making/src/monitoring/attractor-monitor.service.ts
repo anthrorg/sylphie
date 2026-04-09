@@ -49,6 +49,7 @@
 
 import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { verboseFor } from '@sylphie/shared';
+import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 
 const vlog = verboseFor('Cortex');
@@ -130,6 +131,9 @@ export class AttractorMonitorService {
   constructor(
     @Optional() @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+
+    @Inject(DRIVE_STATE_READER)
+    private readonly driveStateReader: IDriveStateReader,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -377,18 +381,13 @@ export class AttractorMonitorService {
    * If DECISION_EVENT_LOGGER is not available (e.g., tests, early startup),
    * this is a no-op. The logger.warn() call in runDetectors() already surfaces
    * the alert to the NestJS application log.
-   *
-   * NOTE: IDecisionEventLogger.log() requires a DriveSnapshot parameter.
-   * The drive snapshot is passed as null here because this service does not
-   * inject the Drive Engine reader. This is a known gap: when the Drive
-   * Engine reader is wired into DecisionMakingModule, replace the null with
-   * a real IDriveStateReader.getCurrentState() call.
    */
   private emitAttractorAlert(result: DetectorResult): void {
     if (!this.eventLogger) {
       return;
     }
 
+    const snapshot = this.driveStateReader.getCurrentState();
     this.eventLogger.log(
       'ATTRACTOR_STATE_ALERT',
       {
@@ -397,10 +396,8 @@ export class AttractorMonitorService {
         threshold: result.threshold,
         detectedAt: new Date().toISOString(),
       },
-      // TODO: Replace null with real DriveSnapshot from IDriveStateReader.getCurrentState()
-      // once the Drive Engine reader is wired into this module.
-      null as never,
-      'system',
+      snapshot,
+      snapshot.sessionId,
     );
   }
 }

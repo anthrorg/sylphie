@@ -8,16 +8,24 @@
  *
  * The queue is sorted by currentPriority (descending). Decay is applied externally
  * by PlanningService on a timer. Items that fall below DROP_THRESHOLD are removed.
+ *
+ * Hard-cap eviction: When the queue is at MAX_QUEUE_SIZE, a newcomer is compared
+ * against the lowest-priority item in the queue (the tail, since the queue is sorted
+ * descending). If the newcomer outranks it, the tail is evicted and the newcomer is
+ * inserted. If not, the newcomer is rejected. GUARDIAN_TEACHING items (priority 1.5)
+ * always outrank every normal item and will never be the eviction loser.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { verboseFor } from '@sylphie/shared';
 import type { OpportunityPriority } from '@sylphie/shared';
 import type {
   IOpportunityQueue,
   QueuedOpportunity,
   OpportunityQueueStatus,
+  IPlanningEventLogger,
 } from '../interfaces/planning.interfaces';
+import { PLANNING_EVENT_LOGGER } from '../planning.tokens';
 
 const vlog = verboseFor('Planning');
 
@@ -64,6 +72,11 @@ export class OpportunityQueueService implements IOpportunityQueue {
   /** Timestamps of plans created (for rate limiting). */
   private planCreationTimestamps: number[] = [];
 
+  constructor(
+    @Inject(PLANNING_EVENT_LOGGER)
+    private readonly eventLogger: IPlanningEventLogger,
+  ) {}
+
   enqueue(opportunity: QueuedOpportunity): boolean {
     // Duplicate check: same contextFingerprint already in queue.
     const isDuplicate = this.queue.some(
@@ -93,15 +106,50 @@ export class OpportunityQueueService implements IOpportunityQueue {
       return false;
     }
 
-    // Hard cap.
+    // Hard-cap eviction: when queue is full, compare newcomer against the
+    // lowest-priority item (queue tail -- queue is sorted descending). If
+    // newcomer outranks the tail, evict the tail and insert the newcomer.
+    // GUARDIAN_TEACHING items (priority 1.5) always win this comparison.
     if (this.queue.length >= MAX_QUEUE_SIZE) {
-      vlog('opportunity enqueue rejected — queue at hard cap', {
-        opportunityId: opportunity.payload.id,
-        queueSize: this.queue.length,
-        cap: MAX_QUEUE_SIZE,
+      const tail = this.queue[this.queue.length - 1];
+
+      if (opportunity.currentPriority <= tail.currentPriority) {
+        // Newcomer loses -- reject it outright.
+        vlog('opportunity enqueue rejected — outranked by queue tail', {
+          opportunityId: opportunity.payload.id,
+          newcomerPriority: opportunity.currentPriority,
+          tailPriority: tail.currentPriority,
+          queueSize: this.queue.length,
+        });
+        this.logger.debug(
+          `Opportunity ${opportunity.payload.id} rejected: priority ` +
+            `${opportunity.currentPriority.toFixed(2)} <= tail ${tail.currentPriority.toFixed(2)}`,
+        );
+        return false;
+      }
+
+      // Newcomer wins -- evict the tail and insert.
+      const evicted = this.queue.pop()!;
+      vlog('opportunity evicted by higher-priority newcomer', {
+        evictedId: evicted.payload.id,
+        evictedPriority: evicted.currentPriority,
+        evictedClassification: evicted.payload.classification,
+        replacedById: opportunity.payload.id,
+        replacedByPriority: opportunity.currentPriority,
       });
-      this.logger.warn(`Queue at hard cap (${MAX_QUEUE_SIZE}) -- opportunity rejected`);
-      return false;
+      this.logger.debug(
+        `Opportunity ${evicted.payload.id} evicted (priority=${evicted.currentPriority.toFixed(2)}) ` +
+          `by newcomer ${opportunity.payload.id} (priority=${opportunity.currentPriority.toFixed(2)})`,
+      );
+      this.eventLogger.log('OPPORTUNITY_DROPPED', {
+        opportunityId: evicted.payload.id,
+        reason: 'evicted_by_higher_priority',
+        evictedPriority: evicted.currentPriority,
+        evictedClassification: evicted.payload.classification,
+        replacedById: opportunity.payload.id,
+        replacedByPriority: opportunity.currentPriority,
+        queueSize: this.queue.length,
+      });
     }
 
     this.queue.push(opportunity);

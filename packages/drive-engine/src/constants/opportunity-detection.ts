@@ -84,3 +84,13 @@ export const DECAY_CHECK_INTERVAL_TICKS = 1; // 1 tick = 1 second at 1Hz
  * This prevents queue spam from the same pattern.
  */
 export const DEDUPLICATION_ENABLED = true;
+
+/**
+ * Maximum number of entries in the OpportunityDetector registry.
+ *
+ * The registry is keyed by predictionType (action category), so it is
+ * naturally bounded by the distinct action-type vocabulary. This cap is
+ * a safety net: if the registry ever exceeds this size, the oldest entry
+ * (first key in Map insertion order) is evicted.
+ */
+export const MAX_REGISTRY_SIZE = 200;

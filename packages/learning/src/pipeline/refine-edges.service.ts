@@ -68,6 +68,70 @@ const VALID_REFINED_TYPES = new Set([
   'RELATED_TO',
 ]);
 
+// ---------------------------------------------------------------------------
+// Heuristic rule table
+// ---------------------------------------------------------------------------
+
+/**
+ * A single heuristic rule: if `pattern` matches a window of text containing
+ * both entity labels, classify the edge as `edgeType`.
+ *
+ * Rules are evaluated in declaration order; first match wins.
+ * Patterns are verb-derived only — entity-label-based rules are deferred
+ * until entity semantic typing is available in the WKG.
+ */
+interface HeuristicRule {
+  readonly edgeType: string;
+  readonly pattern: RegExp;
+}
+
+/**
+ * Ordered heuristic rules for edge classification.
+ *
+ * Design constraints (from research doc):
+ * - Verb-derived patterns only for now. No entity-label-only rules.
+ * - Be conservative: only classify when the pattern is unambiguous.
+ * - USES is intentionally omitted: "uses" fires on too many irrelevant
+ *   constructs ("Jim uses the bathroom", "using Google to search").
+ *   Left to the LLM where disambiguation is possible.
+ *
+ * Confidence note: heuristic-classified edges carry the edge's existing
+ * confidence (no boost). The LLM classification path also uses the same
+ * existing edge confidence. Both are tagged LLM_GENERATED or SENSOR/GUARDIAN
+ * at the extraction stage; refinement does not change provenance.
+ */
+const HEURISTIC_RULES: readonly HeuristicRule[] = [
+  // DISLIKES must come before LIKES to avoid "dislike" partially matching "like"
+  {
+    edgeType: 'DISLIKES',
+    pattern: /\b(?:dislikes?|hates?|can'?t\s+stand|detest)\b/i,
+  },
+  {
+    edgeType: 'LIKES',
+    pattern: /\blikes?\b/i,
+  },
+  {
+    edgeType: 'KNOWS',
+    pattern: /\b(?:knows?|met|friend\s+of|acquainted\s+with)\b/i,
+  },
+  {
+    edgeType: 'WORKS_AT',
+    pattern: /\b(?:works?\s+(?:at|for)|employed\s+(?:at|by)|works?\s+with)\b/i,
+  },
+  {
+    edgeType: 'LIVES_AT',
+    pattern: /\b(?:lives?\s+(?:at|in|near)|resides?\s+(?:at|in)|home\s+(?:is|at))\b/i,
+  },
+  {
+    edgeType: 'CREATED',
+    pattern: /\b(?:created?|made|built|wrote|authored|invented|founded)\b/i,
+  },
+  {
+    edgeType: 'OWNS',
+    pattern: /\b(?:owns?|possesses?|belongs?\s+to)\b/i,
+  },
+];
+
 /** How many recent events to pull for person-context enrichment. */
 const PERSON_CONTEXT_LIMIT = 5;
 
@@ -96,27 +160,89 @@ export class RefineEdgesService implements IRefineEdgesService {
     edges: ExtractedEdge[],
     event: UnlearnedEvent,
   ): Promise<number> {
-    // Lesion Test: if LLM is not available, skip refinement gracefully.
-    if (!this.llm || !this.llm.isAvailable()) {
-      vlog('refineEdges: LLM unavailable — skipping refinement', { eventId: event.id });
-      this.logger.debug('RefineEdges: LLM unavailable, skipping');
-      return 0;
-    }
-
     if (edges.length === 0) return 0;
 
-    // Gather person context for edges that mention person-like entities.
+    // ── Phase 1: Heuristic classification ────────────────────────────────────
+    // Run deterministic verb-derived patterns over conversation context.
+    // Edges confidently classified here do NOT proceed to Phase 2.
+    // This path works even when the LLM is unavailable (Lesion Test support).
     const personContext = await this.gatherPersonContext(edges, event.session_id);
+    const conversationContext = (event.payload['content'] as string | undefined) ?? '';
+    const fullContext = [conversationContext, personContext].filter(Boolean).join('\n');
 
-    vlog('refineEdges: calling LLM', {
+    const heuristicRefinements: Refinement[] = [];
+    const llmCandidates: ExtractedEdge[] = [];
+
+    for (const edge of edges) {
+      if (edge.relType !== 'RELATED_TO') {
+        // Already typed (e.g. from a prior cycle) — skip both phases.
+        continue;
+      }
+      const heuristic = classifyByHeuristic(edge.sourceLabel, edge.targetLabel, fullContext);
+      if (heuristic.confident) {
+        heuristicRefinements.push({ edge, newType: heuristic.newType, source: 'HEURISTIC' });
+      } else {
+        llmCandidates.push(edge);
+      }
+    }
+
+    vlog('refineEdges: heuristic phase', {
       eventId: event.id,
-      edgeCount: edges.length,
-      edges: edges.map((e) => `${e.sourceLabel} -> ${e.targetLabel}`),
+      heuristicCount: heuristicRefinements.length,
+      llmCandidateCount: llmCandidates.length,
+      heuristics: heuristicRefinements.map((r) => ({
+        source: r.edge.sourceLabel,
+        target: r.edge.targetLabel,
+        newType: r.newType,
+      })),
+    });
+
+    let refined = 0;
+
+    for (const { edge, newType } of heuristicRefinements) {
+      const ok = await this.updateEdgeType(edge, newType, 'HEURISTIC');
+      if (ok) {
+        edge.relType = newType;
+        refined++;
+        vlog('edge type refined by heuristic', {
+          eventId: event.id,
+          source: edge.sourceLabel,
+          target: edge.targetLabel,
+          newType,
+          confidence: edge.confidence,
+        });
+      }
+    }
+
+    // ── Phase 2: LLM classification for remaining ambiguous edges ─────────────
+    // Only edges that the heuristic could not confidently classify reach here.
+    // If the LLM is unavailable, they remain as RELATED_TO (Lesion Test).
+    if (llmCandidates.length === 0) {
+      vlog('refineEdges: no LLM candidates, skipping LLM phase', { eventId: event.id });
+      this.logger.debug(
+        `RefineEdges: event ${event.id} → ${refined}/${edges.length} edges refined (heuristic only)`,
+      );
+      return refined;
+    }
+
+    if (!this.llm || !this.llm.isAvailable()) {
+      vlog('refineEdges: LLM unavailable — leaving ambiguous edges as RELATED_TO', {
+        eventId: event.id,
+        remaining: llmCandidates.length,
+      });
+      this.logger.debug('RefineEdges: LLM unavailable, skipping LLM phase');
+      return refined;
+    }
+
+    vlog('refineEdges: calling LLM for ambiguous edges', {
+      eventId: event.id,
+      edgeCount: llmCandidates.length,
+      edges: llmCandidates.map((e) => `${e.sourceLabel} -> ${e.targetLabel}`),
       hasPersonContext: personContext.length > 0,
       model: 'quick',
     });
 
-    const prompt = buildRefinementPrompt(edges, personContext);
+    const prompt = buildRefinementPrompt(llmCandidates, personContext);
     const correlationId = event.id;
     const sessionId = event.session_id;
 
@@ -145,15 +271,15 @@ export class RefineEdgesService implements IRefineEdgesService {
       const message = err instanceof Error ? err.message : String(err);
       vlog('refineEdges: LLM call failed', { eventId: event.id, error: message });
       this.logger.warn(`RefineEdges: LLM call failed: ${message}`);
-      return 0;
+      return refined;
     }
 
-    const refinements = parseRefinements(response.content, edges);
+    const llmRefinements = parseRefinements(response.content, llmCandidates);
 
     vlog('refineEdges: LLM response parsed', {
       eventId: event.id,
-      refinementsFound: refinements.length,
-      refinements: refinements.map((r) => ({
+      refinementsFound: llmRefinements.length,
+      refinements: llmRefinements.map((r) => ({
         source: r.edge.sourceLabel,
         target: r.edge.targetLabel,
         newType: r.newType,
@@ -161,14 +287,12 @@ export class RefineEdgesService implements IRefineEdgesService {
       })),
     });
 
-    let refined = 0;
-
-    for (const { edge, newType } of refinements) {
-      const ok = await this.updateEdgeType(edge, newType);
+    for (const { edge, newType } of llmRefinements) {
+      const ok = await this.updateEdgeType(edge, newType, 'LLM');
       if (ok) {
-        edge.relType = newType; // Mutate for downstream observability.
+        edge.relType = newType;
         refined++;
-        vlog('edge type refined', {
+        vlog('edge type refined by LLM', {
           eventId: event.id,
           source: edge.sourceLabel,
           target: edge.targetLabel,
@@ -178,7 +302,13 @@ export class RefineEdgesService implements IRefineEdgesService {
       }
     }
 
-    vlog('refineEdges complete', { eventId: event.id, refined, total: edges.length });
+    vlog('refineEdges complete', {
+      eventId: event.id,
+      refined,
+      total: edges.length,
+      heuristicRefined: heuristicRefinements.length,
+      llmRefined: llmRefinements.length,
+    });
     this.logger.debug(
       `RefineEdges: event ${event.id} → ${refined}/${edges.length} edges refined`,
     );
@@ -257,15 +387,22 @@ export class RefineEdgesService implements IRefineEdgesService {
    * 1. CREATE the new typed relationship.
    * 2. DELETE the old RELATED_TO relationship (if different).
    *
+   * @param refinedFrom - 'HEURISTIC' when classified deterministically,
+   *                      'LLM' when classified by the language model.
+   *                      Stored in the `refined_from` edge property for
+   *                      provenance tracking and Lesion Test analysis.
+   *
    * Returns true on success.
    */
   private async updateEdgeType(
     edge: ExtractedEdge,
     newType: string,
+    refinedFrom: 'HEURISTIC' | 'LLM' = 'LLM',
   ): Promise<boolean> {
     if (newType === edge.relType) return false; // No change needed.
 
     const sanitized = sanitizeRelType(newType);
+    const refinedFromValue = refinedFrom === 'HEURISTIC' ? 'HEURISTIC' : 'LLM';
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
 
     try {
@@ -277,7 +414,7 @@ export class RefineEdgesService implements IRefineEdgesService {
            r.confidence      = $confidence,
            r.provenance_type = $provenance,
            r.created_at      = datetime(),
-           r.refined_from    = 'RELATED_TO'
+           r.refined_from    = $refinedFrom
          ON MATCH SET
            r.confidence = CASE WHEN $confidence > r.confidence
                                THEN $confidence
@@ -288,6 +425,7 @@ export class RefineEdgesService implements IRefineEdgesService {
           targetId: edge.targetId,
           confidence: edge.confidence,
           provenance: edge.provenance,
+          refinedFrom: refinedFromValue,
         },
       );
 
@@ -344,6 +482,7 @@ function buildRefinementPrompt(
 interface Refinement {
   edge: ExtractedEdge;
   newType: string;
+  source: 'HEURISTIC' | 'LLM';
 }
 
 function parseRefinements(
@@ -370,7 +509,7 @@ function parseRefinements(
     if (!VALID_REFINED_TYPES.has(rawType)) continue;
     if (rawType === edge.relType) continue; // Already this type.
 
-    result.push({ edge, newType: rawType });
+    result.push({ edge, newType: rawType, source: 'LLM' });
   }
 
   return result;
@@ -384,4 +523,121 @@ function isPersonLike(label: string): boolean {
 /** Sanitize a relationship type string for Cypher (only alphanumeric + underscore). */
 function sanitizeRelType(type: string): string {
   return type.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+}
+
+// ---------------------------------------------------------------------------
+// classifyByHeuristic (pure, exported for tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a heuristic edge classification attempt.
+ *
+ * - `confident: true`  — a rule matched; `newType` is the classification.
+ * - `confident: false` — no rule matched; the edge should go to the LLM.
+ *                        `newType` is 'RELATED_TO' (the safe default).
+ */
+export interface HeuristicClassification {
+  readonly newType: string;
+  readonly confident: boolean;
+}
+
+/**
+ * Attempt to classify a RELATED_TO edge using deterministic verb-derived
+ * heuristics over the conversation context.
+ *
+ * Strategy:
+ *   1. Build a context window that contains both entity labels (±100 chars
+ *      around each label occurrence). This prevents false positives from
+ *      patterns that appear in unrelated parts of the conversation.
+ *   2. Run each rule in HEURISTIC_RULES order against that window.
+ *   3. Return confident=true on the first match.
+ *   4. If no rule matches, return confident=false (LLM fallback).
+ *
+ * Pure function — no I/O, no DI. Exported for unit tests.
+ *
+ * @param sourceLabel - The source entity label from the ExtractedEdge.
+ * @param targetLabel - The target entity label from the ExtractedEdge.
+ * @param context     - Full conversation text + person context string.
+ */
+export function classifyByHeuristic(
+  sourceLabel: string,
+  targetLabel: string,
+  context: string,
+): HeuristicClassification {
+  if (!context || context.trim().length === 0) {
+    return { newType: 'RELATED_TO', confident: false };
+  }
+
+  // Build a set of context windows: regions of text that contain both labels.
+  // We look for sentences (split on . ! ?) that mention both labels.
+  // If no sentence contains both, we build a wider window (±100 chars around
+  // each label occurrence) and check if both labels appear within 200 chars.
+  const lowerContext = context.toLowerCase();
+  const lowerSource = sourceLabel.toLowerCase();
+  const lowerTarget = targetLabel.toLowerCase();
+
+  const windows = extractContextWindows(lowerContext, lowerSource, lowerTarget);
+
+  if (windows.length === 0) {
+    // Both labels don't co-occur in the context — cannot classify confidently.
+    return { newType: 'RELATED_TO', confident: false };
+  }
+
+  for (const window of windows) {
+    for (const rule of HEURISTIC_RULES) {
+      if (rule.pattern.test(window)) {
+        return { newType: rule.edgeType, confident: true };
+      }
+    }
+  }
+
+  return { newType: 'RELATED_TO', confident: false };
+}
+
+/**
+ * Extract text windows from `context` where both `labelA` and `labelB`
+ * appear within a reasonable proximity.
+ *
+ * Two strategies (in order):
+ *   1. Sentence-level: sentences containing both labels.
+ *   2. Proximity-window: ±WINDOW_RADIUS chars around labelA occurrences
+ *      where labelB also falls within that window.
+ */
+const WINDOW_RADIUS = 120;
+
+function extractContextWindows(
+  context: string,
+  labelA: string,
+  labelB: string,
+): string[] {
+  const windows: string[] = [];
+
+  // Strategy 1: sentences containing both labels.
+  const sentences = context.split(/[.!?]+/);
+  for (const sentence of sentences) {
+    if (sentence.includes(labelA) && sentence.includes(labelB)) {
+      windows.push(sentence);
+    }
+  }
+
+  if (windows.length > 0) return windows;
+
+  // Strategy 2: proximity windows around labelA occurrences.
+  let searchFrom = 0;
+  while (true) {
+    const idxA = context.indexOf(labelA, searchFrom);
+    if (idxA === -1) break;
+
+    const start = Math.max(0, idxA - WINDOW_RADIUS);
+    const end = Math.min(context.length, idxA + labelA.length + WINDOW_RADIUS);
+    const window = context.substring(start, end);
+
+    if (window.includes(labelB)) {
+      windows.push(window);
+    }
+
+    searchFrom = idxA + 1;
+  }
+
+  return windows;
 }

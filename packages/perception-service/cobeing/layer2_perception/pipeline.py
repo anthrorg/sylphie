@@ -87,6 +87,7 @@ from cobeing.layer2_perception.feature_extraction import (
 )
 from cobeing.layer2_perception.frame_buffer import FrameBuffer, ObservationSessionManager
 from cobeing.layer2_perception.observation_builder import ObservationBuilder
+from cobeing.layer2_perception.observation_validator import ObservationValidator
 from cobeing.layer2_perception.protocols import (
     FrameSource,
     ObjectDetector,
@@ -180,6 +181,15 @@ class PerceptionPipeline:
         self._config = config
         self._debug_annotator = debug_annotator
         self._debug_frame_store = debug_frame_store
+
+        # Build the observation validator from the config's validation subsection.
+        # When no config is provided (test scenarios), ValidationConfig defaults
+        # are used (enabled=True with conservative thresholds).
+        if config is not None:
+            self._validator = ObservationValidator(config.validation)
+        else:
+            from cobeing.layer2_perception.config import ValidationConfig  # noqa: PLC0415
+            self._validator = ObservationValidator(ValidationConfig())
 
         if processing_fps <= 0.0:
             raise ValueError(f"processing_fps must be > 0, got {processing_fps}")
@@ -280,6 +290,20 @@ class PerceptionPipeline:
             Immutable snapshot of produced spatial relations.
         """
         return list(self._spatial_relations)
+
+    def get_validation_metrics(self) -> dict[str, int]:
+        """Return cumulative observation validation counters.
+
+        Exposes the validator's diagnostic counters for telemetry endpoints
+        and periodic log summaries. Counts are cumulative from pipeline start.
+
+        Returns:
+            Dictionary with keys ``observations_validated``,
+            ``observations_rejected``, ``rejected_by_area``,
+            ``rejected_by_confidence``, ``rejected_by_embedding_norm``,
+            ``rejected_by_aspect_ratio``.
+        """
+        return self._validator.get_metrics()
 
     # ------------------------------------------------------------------
     # Capture loop
@@ -489,7 +513,11 @@ class PerceptionPipeline:
                 frame_width=frame.width,
                 frame_height=frame.height,
             )
-            self._observations.extend(new_observations)
+
+            # Validation gate: filter out noise, degenerate embeddings, and
+            # low-quality detections before they reach the knowledge graph.
+            validated_observations = self._validator.filter(new_observations)
+            self._observations.extend(validated_observations)
 
             # Extract spatial relationships from ALL tracked objects (including
             # TENTATIVE and LOST -- the spatial extractor filters to CONFIRMED).

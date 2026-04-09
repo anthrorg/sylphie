@@ -37,6 +37,7 @@ import {
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
+  CROSS_SESSION_SYNTHESIS_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 
@@ -48,6 +49,7 @@ import { ConversationEntryService } from './pipeline/conversation-entry.service'
 import { CanProduceEdgesService } from './pipeline/can-produce-edges.service';
 import { RefineEdgesService } from './pipeline/refine-edges.service';
 import { ConversationReflectionService } from './pipeline/conversation-reflection.service';
+import { CrossSessionSynthesisService } from './pipeline/cross-session-synthesis.service';
 import { LearningEventLoggerService } from './logging/learning-event-logger.service';
 
 @Module({
@@ -106,6 +108,12 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
     {
       provide: CONVERSATION_REFLECTION_SERVICE,
       useClass: ConversationReflectionService,
+    },
+
+    // ── Pipeline step 9: Cross-session insight synthesis ─────────────────────
+    {
+      provide: CROSS_SESSION_SYNTHESIS_SERVICE,
+      useClass: CrossSessionSynthesisService,
     },
 
     // ── Event logger ─────────────────────────────────────────────────────────

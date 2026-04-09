@@ -30,5 +30,8 @@
     "test:e2e": "npx tsx test/e2e/full-system.e2e.ts",
     "test:arch": "npx tsx test/e2e/architecture-verification.e2e.ts",
     "test:agi": "npx tsx test/e2e/agi-verification.e2e.ts"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0"
   }
 }

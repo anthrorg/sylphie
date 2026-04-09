@@ -393,11 +393,17 @@ export class DeliberationService {
     const ollamaService = this.llm as OllamaLlmService;
 
     if (ollamaService?.completeWithTools) {
-      candidateResponse = await ollamaService.completeWithTools(
-        candidateRequest,
-        this.toolRegistry.getToolDefinitions(),
-        this.toolRegistry.createExecutor(),
-      );
+      try {
+        candidateResponse = await ollamaService.completeWithTools(
+          candidateRequest,
+          this.toolRegistry.getToolDefinitions(),
+          this.toolRegistry.createExecutor(),
+        );
+      } catch (toolErr) {
+        // completeWithTools may fail if local Ollama is down — fall back to plain complete
+        vlog('completeWithTools failed, falling back to complete()', { error: String(toolErr) });
+        candidateResponse = await this.llm!.complete(candidateRequest);
+      }
     } else {
       candidateResponse = await this.llm!.complete(candidateRequest);
     }

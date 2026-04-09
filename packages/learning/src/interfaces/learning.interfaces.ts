@@ -43,6 +43,18 @@ export interface ILearningService {
    * @returns Summary of what the reflection cycle did.
    */
   runReflectionCycle(): Promise<ReflectionResult>;
+
+  /**
+   * Run a single cross-session synthesis cycle.
+   *
+   * Finds pairs of INSIGHT nodes from different sessions that share entity
+   * references, sends each pair to the LLM (deep tier) to detect cross-session
+   * patterns, and persists any found patterns as new Insight nodes with
+   * SYNTHESIZES edges back to the source insights.
+   *
+   * @returns Summary of what the synthesis cycle did.
+   */
+  runSynthesisCycle(): Promise<SynthesisCycleResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,4 +331,88 @@ export interface IConversationReflectionService {
    * Analyze a completed session holistically and persist insights to WKG.
    */
   reflectOnSession(sessionId: string): Promise<ReflectionResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Session Insight Synthesis
+// ---------------------------------------------------------------------------
+
+/**
+ * A pair of Insight nodes from different sessions that share entity references
+ * and are candidates for synthesis.
+ */
+export interface InsightPair {
+  readonly insight1Id: string;
+  readonly insight1Description: string;
+  readonly insight1Type: InsightType;
+  readonly insight1SessionId: string;
+  readonly insight1Confidence: number;
+  readonly insight2Id: string;
+  readonly insight2Description: string;
+  readonly insight2Type: InsightType;
+  readonly insight2SessionId: string;
+  readonly insight2Confidence: number;
+  /** Entity labels shared across both insights (via REVEALS edges). */
+  readonly sharedEntities: readonly string[];
+}
+
+/**
+ * A synthesized meta-insight produced by cross-session synthesis.
+ */
+export interface SynthesisResult {
+  /** node_id of the new synthesis Insight node, or null if no node was created. */
+  readonly nodeId: string | null;
+  /** The source insight node_ids that were synthesized. */
+  readonly sourceInsightIds: readonly string[];
+  /** Confidence assigned to the synthesis node. */
+  readonly confidence: number;
+  /** Whether the LLM found a meaningful pattern (false → noop). */
+  readonly patternFound: boolean;
+}
+
+/**
+ * Summary of a completed synthesis cycle.
+ */
+export interface SynthesisCycleResult {
+  /** Number of insight pairs examined. */
+  readonly pairsExamined: number;
+  /** Number of synthesis nodes created. */
+  readonly synthesesCreated: number;
+  /** Whether this cycle was a no-op (no eligible pairs found). */
+  readonly wasNoop: boolean;
+}
+
+/**
+ * Cross-session synthesis service interface.
+ *
+ * Compares INSIGHT nodes across different sessions to detect recurring themes,
+ * evolving patterns, and contradictions that no single-session reflection can
+ * surface. Produces higher-confidence "meta-insight" nodes with SYNTHESIZES
+ * edges back to source insights.
+ *
+ * LLM-assisted (deep tier); skips gracefully when unavailable (Lesion Test).
+ * Provenance: INFERENCE. Confidence cap: 0.45 (1.5× base, below 0.60 ceiling).
+ */
+export interface ICrossSessionSynthesisService {
+  /**
+   * Ensure the synthesized_insight_pairs tracking table exists (idempotent DDL).
+   */
+  ensureSchema(): Promise<void>;
+
+  /**
+   * Find insight pairs eligible for synthesis: from different sessions, sharing
+   * entity references via REVEALS edges, not yet synthesized together.
+   */
+  findSynthesizablePairs(limit: number): Promise<InsightPair[]>;
+
+  /**
+   * Synthesize a single insight pair and persist the result to WKG.
+   * Returns a SynthesisResult regardless of whether a node was created.
+   */
+  synthesizePair(pair: InsightPair): Promise<SynthesisResult>;
+
+  /**
+   * Run a full synthesis cycle: find pairs, synthesize each, log results.
+   */
+  runSynthesisCycle(): Promise<SynthesisCycleResult>;
 }

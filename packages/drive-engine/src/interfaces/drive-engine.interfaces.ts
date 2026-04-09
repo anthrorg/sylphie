@@ -308,11 +308,16 @@ export interface IActionOutcomeReporter {
     };
 
     /**
-     * Optional prediction ID to associate with this outcome.
-     * When provided, the Drive Engine links this outcome to the prediction
-     * for MAE accumulation and Type 1/2 graduation tracking.
+     * Optional prediction data for Drive Engine MAE tracking.
+     * When provided, the Drive Engine's PredictionEvaluator records the
+     * prediction outcome for opportunity severity classification and
+     * Type 1/2 graduation tracking.
      */
-    readonly predictionId?: string;
+    readonly predictionData?: {
+      readonly predictionId: string;
+      readonly predictedValue: number;
+      readonly actualValue: number;
+    };
   }): void;
 
   /**

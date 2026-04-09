@@ -44,6 +44,7 @@ import type {
   ILearningService,
   MaintenanceCycleResult,
   ReflectionResult,
+  SynthesisCycleResult,
   IUpdateWkgService,
   IUpsertEntitiesService,
   IExtractEdgesService,
@@ -51,6 +52,7 @@ import type {
   ICanProduceEdgesService,
   IRefineEdgesService,
   IConversationReflectionService,
+  ICrossSessionSynthesisService,
   ILearningEventLogger,
   UnlearnedEvent,
 } from './interfaces/learning.interfaces';
@@ -62,6 +64,7 @@ import {
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
+  CROSS_SESSION_SYNTHESIS_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 import { verboseFor } from '@sylphie/shared';
@@ -81,6 +84,9 @@ const CYCLE_INTERVAL_MS = 60_000;
 /** Interval between reflection cycles in milliseconds. */
 const REFLECTION_INTERVAL_MS = 300_000; // 5 minutes
 
+/** Interval between cross-session synthesis cycles in milliseconds. */
+const SYNTHESIS_INTERVAL_MS = 1_800_000; // 30 minutes
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -95,11 +101,17 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   /** Guard against overlapping reflection cycles. */
   private reflectionInFlight = false;
 
+  /** Guard against overlapping synthesis cycles. */
+  private synthesisInFlight = false;
+
   /** Timer handle for the automatic maintenance cycle. */
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Timer handle for the automatic reflection cycle. */
   private reflectionTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Timer handle for the automatic cross-session synthesis cycle. */
+  private synthesisTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     @Inject(UPDATE_WKG_SERVICE)
@@ -123,6 +135,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     @Inject(CONVERSATION_REFLECTION_SERVICE)
     private readonly conversationReflection: IConversationReflectionService,
 
+    @Inject(CROSS_SESSION_SYNTHESIS_SERVICE)
+    private readonly crossSessionSynthesis: ICrossSessionSynthesisService,
+
     @Inject(LEARNING_EVENT_LOGGER)
     private readonly eventLogger: ILearningEventLogger,
   ) {}
@@ -132,8 +147,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   // ---------------------------------------------------------------------------
 
   async onModuleInit(): Promise<void> {
-    // Ensure the reflected_sessions table exists before starting timers.
+    // Ensure tracking tables exist before starting timers.
     await this.conversationReflection.ensureSchema();
+    await this.crossSessionSynthesis.ensureSchema();
 
     this.cycleTimer = setInterval(() => {
       this.runMaintenanceCycle().catch((err: unknown) => {
@@ -155,9 +171,20 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       });
     }, REFLECTION_INTERVAL_MS);
 
+    this.synthesisTimer = setInterval(() => {
+      this.runSynthesisCycle().catch((err: unknown) => {
+        this.logger.error(
+          `Synthesis cycle threw an unhandled error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }, SYNTHESIS_INTERVAL_MS);
+
     this.logger.log(
       `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s, ` +
-        `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s`,
+        `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s, ` +
+        `synthesis cycle every ${SYNTHESIS_INTERVAL_MS / 1000}s`,
     );
   }
 
@@ -169,6 +196,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     if (this.reflectionTimer !== null) {
       clearInterval(this.reflectionTimer);
       this.reflectionTimer = null;
+    }
+    if (this.synthesisTimer !== null) {
+      clearInterval(this.synthesisTimer);
+      this.synthesisTimer = null;
     }
     this.logger.log('Learning subsystem stopped');
   }
@@ -217,6 +248,20 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       return await this.conversationReflection.reflectOnSession(candidate.sessionId);
     } finally {
       this.reflectionInFlight = false;
+    }
+  }
+
+  async runSynthesisCycle(): Promise<SynthesisCycleResult> {
+    if (this.synthesisInFlight) {
+      this.logger.debug('Synthesis cycle already in flight — skipping');
+      return synthesisNoop();
+    }
+
+    this.synthesisInFlight = true;
+    try {
+      return await this.crossSessionSynthesis.runSynthesisCycle();
+    } finally {
+      this.synthesisInFlight = false;
     }
   }
 
@@ -388,6 +433,14 @@ function reflectionNoop(): ReflectionResult {
     sessionId: '',
     insightsCreated: 0,
     edgesCreated: 0,
+    wasNoop: true,
+  };
+}
+
+function synthesisNoop(): SynthesisCycleResult {
+  return {
+    pairsExamined: 0,
+    synthesesCreated: 0,
     wasNoop: true,
   };
 }

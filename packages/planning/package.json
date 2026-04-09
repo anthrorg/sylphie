@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch"
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "npx tsx src/pipeline/constraint-checks.spec.ts && npx tsx src/queue/opportunity-queue.service.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

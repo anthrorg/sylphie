@@ -14,7 +14,7 @@
  *   PLAN_EVALUATION_SERVICE, PLANNING_EVENT_LOGGER
  *
  * Dependencies:
- *   - DecisionMakingModule: provides LLM_SERVICE (OllamaLlmService).
+ *   - DecisionMakingModule: provides LLM_SERVICE (OllamaLlmService) used by ProposalService.
  *   - TimescaleModule: @Global() but explicitly imported for DI clarity.
  *
  * CANON SS No Circular Module Dependencies: PlanningModule only imports
@@ -51,9 +51,9 @@ import { PlanningEventLoggerService } from './logging/planning-event-logger.serv
 
 @Module({
   imports: [
-    // DecisionMakingModule exports LLM_SERVICE. Importing this module gives
-    // Planning access to the LLM without creating a direct dependency on the
-    // concrete OllamaLlmService.
+    // DecisionMakingModule exports LLM_SERVICE used by ProposalService for
+    // proposal generation and LLM-assisted refinement. ConstraintValidationService
+    // no longer uses LLM -- it runs 5 deterministic rule checks.
     DecisionMakingModule,
     // Explicit import even though TimescaleModule is @Global() -- ensures DI
     // resolution order is correct.

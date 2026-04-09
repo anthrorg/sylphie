@@ -326,6 +326,34 @@ export interface IPredictionService {
    *         active predictions store.
    */
   evaluatePrediction(predictionId: string, actualOutcome: ActionOutcome): PredictionEvaluation;
+
+  /**
+   * Find the active (unevaluated) prediction for a given action ID.
+   *
+   * Returns the prediction UUID if an active prediction exists whose
+   * actionCandidate.procedureData.id matches the given actionId. Returns
+   * null if no match is found (e.g., the action was not among the top 3
+   * candidates that received predictions, or the prediction was already
+   * evaluated).
+   *
+   * Used by reportOutcome() to locate the prediction for the selected
+   * action so it can be evaluated against the real observed outcome.
+   *
+   * @param actionId - WKG procedure node ID to search for.
+   * @returns The prediction UUID, or null if not found.
+   */
+  getActivePredictionIdForAction(actionId: string): string | null;
+
+  /**
+   * Remove predictions older than maxAgeMs from the active store.
+   *
+   * Prevents unbounded growth of the active predictions map when
+   * predictions for non-selected candidates are never evaluated via
+   * reportOutcome(). Called at the start of each decision cycle.
+   *
+   * @param maxAgeMs - Maximum age in milliseconds before pruning.
+   */
+  pruneStale(maxAgeMs: number): void;
 }
 
 // ---------------------------------------------------------------------------

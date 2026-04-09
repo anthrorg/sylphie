@@ -19,7 +19,7 @@ Public API::
         Frame, Detection, FeatureProfile, TrackedObject, PersistenceResult,
         # Configuration
         PerceptionConfig, CameraConfig, DetectionConfig,
-        TrackingConfig, PersistenceCheckConfig,
+        TrackingConfig, PersistenceCheckConfig, ValidationConfig,
         # Exceptions
         PerceptionError, CaptureError, DetectionError,
         TrackingError, PersistenceCheckError,
@@ -43,6 +43,9 @@ Public API::
         compute_match_score,
         # Observation builder
         ObservationBuilder,
+        # Observation validator
+        ObservationValidator,
+        ValidationResult,
         # Spatial relationship extractor
         SpatialRelationshipExtractor,
         SpatialRelation,
@@ -63,6 +66,7 @@ from .config import (
     PerceptionConfig,
     PersistenceCheckConfig,
     TrackingConfig,
+    ValidationConfig,
 )
 from .detector import MockDetector, YoloDetector
 from .exceptions import (
@@ -84,6 +88,7 @@ from .frame_buffer import (
 )
 from .frame_sources import CameraFrameSource, VideoFileSource
 from .observation_builder import ObservationBuilder
+from .observation_validator import ObservationValidator, ValidationResult
 from .persistence_check_service import (
     PersistenceCheckService,
     compute_match_score,
@@ -123,6 +128,7 @@ __all__ = [
     "PerceptionConfig",
     "PersistenceCheckConfig",
     "TrackingConfig",
+    "ValidationConfig",
     # Exceptions
     "CaptureError",
     "DetectionError",
@@ -152,6 +158,9 @@ __all__ = [
     "compute_match_score",
     # Observation builder
     "ObservationBuilder",
+    # Observation validator
+    "ObservationValidator",
+    "ValidationResult",
     # Spatial relationship extractor
     "SpatialRelationshipExtractor",
     "SpatialRelation",

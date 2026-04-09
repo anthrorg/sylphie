@@ -31,13 +31,17 @@ import { DriveName } from '@sylphie/shared';
 import { ProvenanceSource } from '@sylphie/shared';
 import { WsChannelService } from './ipc-channel/ws-channel.service';
 import { OutcomeQueue } from './action-outcome-reporter/outcome-queue';
+import { DriveReaderService } from './drive-reader.service';
 
 @Injectable()
 export class ActionOutcomeReporterService implements IActionOutcomeReporter {
   private readonly logger = new Logger(ActionOutcomeReporterService.name);
   private outcomeQueue: OutcomeQueue;
 
-  constructor(private wsChannel: WsChannelService) {
+  constructor(
+    private wsChannel: WsChannelService,
+    private driveReader: DriveReaderService,
+  ) {
     // Initialize the queue with a send function that dispatches via WebSocket
     this.outcomeQueue = new OutcomeQueue(
       (message) => {
@@ -81,7 +85,11 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       readonly driveValue: number | null;
       readonly isTheatrical: boolean;
     };
-    readonly predictionId?: string;
+    readonly predictionData?: {
+      readonly predictionId: string;
+      readonly predictedValue: number;
+      readonly actualValue: number;
+    };
   }): void {
     // Map success boolean to outcome enum
     const outcomeValue = outcome.success ? 'positive' : 'negative';
@@ -92,11 +100,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
     );
 
     // Build the theater check payload
-    // Note: If no expression was produced, set driveValueAtExpression to the correspondingDrive value
-    const driveValueAtExpression =
-      outcome.theaterCheck.expressionType === 'none'
-        ? outcome.theaterCheck.driveValue ?? 0
-        : outcome.theaterCheck.driveValue ?? 0;
+    const driveValueAtExpression = outcome.theaterCheck.driveValue ?? 0;
 
     const driveForTheater =
       outcome.theaterCheck.correspondingDrive ?? ('System Health' as DriveName);
@@ -114,7 +118,8 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
         drive: driveForTheater,
         isTheatrical: outcome.theaterCheck.isTheatrical,
       },
-      anxietyAtExecution: 0, // TODO: This should come from current drive state at time of execution
+      anxietyAtExecution: this.driveReader.getCurrentState().pressureVector[DriveName.Anxiety] ?? 0,
+      predictionData: outcome.predictionData,
     };
 
     vlog('outcome reported', {
@@ -124,6 +129,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       feedbackSource: feedbackSource,
       effectCount: Object.keys(outcome.driveEffects).length,
       driveEffects: outcome.driveEffects,
+      hasPredictionData: !!outcome.predictionData,
     });
 
     // Enqueue for async delivery

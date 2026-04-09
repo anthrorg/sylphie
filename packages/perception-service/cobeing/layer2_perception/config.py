@@ -252,6 +252,83 @@ class PersistenceCheckConfig(BaseModel):
     )
 
 
+class ValidationConfig(BaseModel):
+    """Configuration for the observation validation gate.
+
+    Controls the quality checks applied to each observation produced by
+    :class:`~cobeing.layer2_perception.observation_builder.ObservationBuilder`
+    before it is forwarded to Layer 3 ingestion. Observations that fail any
+    enabled check are rejected and logged at DEBUG level -- they are never
+    written to the knowledge graph.
+
+    Set ``enabled = False`` to bypass all validation (useful for diagnostics
+    or when tuning thresholds against a live feed).
+
+    Environment variable overrides (nested under ``COBEING_PERCEPTION_``)::
+
+        COBEING_PERCEPTION_VALIDATION__ENABLED=false
+        COBEING_PERCEPTION_VALIDATION__MIN_AREA_FRACTION=0.002
+        COBEING_PERCEPTION_VALIDATION__MIN_CONFIDENCE=0.40
+
+    Attributes:
+        enabled: Master switch. When False, all observations pass through
+            unfiltered. Default True.
+        min_area_fraction: Minimum bounding box area as a fraction of the
+            total frame area. Rejects sub-pixel noise and sensor artefacts.
+            E.g., 0.001 = 0.1% of the frame. Default 0.001.
+        min_confidence: Minimum observation confidence. Rejects low-quality
+            detections that survived tracking confirmation. Range [0.0, 1.0].
+            Default 0.30.
+        embedding_norm_min: Minimum L2 norm of the embedding vector. Rejects
+            all-zero embeddings produced by failed ONNX runs. Only applied
+            when an embedding is present. Default 0.1.
+        embedding_norm_max: Maximum L2 norm of the embedding vector. Rejects
+            degenerate or exploded embedding vectors. Only applied when an
+            embedding is present. Default 100.0.
+        min_aspect_ratio: Minimum bounding box aspect ratio (width / height).
+            Rejects pathologically thin vertical boxes (sensor noise lines).
+            Default 0.1.
+        max_aspect_ratio: Maximum bounding box aspect ratio (width / height).
+            Rejects pathologically wide horizontal boxes. Default 10.0.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Master validation switch. False disables all checks.",
+    )
+    min_area_fraction: float = Field(
+        default=0.001,
+        ge=0.0,
+        description="Minimum bbox area as fraction of frame area",
+    )
+    min_confidence: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="Minimum observation confidence to pass validation",
+    )
+    embedding_norm_min: float = Field(
+        default=0.1,
+        ge=0.0,
+        description="Minimum L2 norm for embedding vectors (0-vector detection)",
+    )
+    embedding_norm_max: float = Field(
+        default=100.0,
+        gt=0.0,
+        description="Maximum L2 norm for embedding vectors (degenerate vector detection)",
+    )
+    min_aspect_ratio: float = Field(
+        default=0.1,
+        gt=0.0,
+        description="Minimum bbox aspect ratio (width/height)",
+    )
+    max_aspect_ratio: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="Maximum bbox aspect ratio (width/height)",
+    )
+
+
 class PerceptionConfig(BaseSettings):
     """Top-level configuration for the perception pipeline.
 
@@ -270,6 +347,7 @@ class PerceptionConfig(BaseSettings):
         detection: YOLO model and inference thresholds.
         tracking: Multi-object tracker state machine thresholds.
         persistence: Layer 3 persistence-check interface thresholds.
+        validation: Observation quality gate thresholds.
     """
 
     model_config = SettingsConfigDict(
@@ -286,6 +364,7 @@ class PerceptionConfig(BaseSettings):
     face_detection: FaceDetectionConfig = Field(default_factory=FaceDetectionConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     persistence: PersistenceCheckConfig = Field(default_factory=PersistenceCheckConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
 
 
 __all__ = [
@@ -295,4 +374,5 @@ __all__ = [
     "PerceptionConfig",
     "PersistenceCheckConfig",
     "TrackingConfig",
+    "ValidationConfig",
 ]

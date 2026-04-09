@@ -261,6 +261,57 @@ export class PredictionService implements IPredictionService {
   }
 
   // ---------------------------------------------------------------------------
+  // IPredictionService — getActivePredictionIdForAction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Find the active (unevaluated) prediction for a given action ID.
+   *
+   * Iterates the activePredictions map and returns the first prediction whose
+   * actionCandidate.procedureData.id matches the given actionId. At most 3
+   * predictions are active per cycle, so iteration is negligible.
+   *
+   * @param actionId - WKG procedure node ID to search for.
+   * @returns The prediction UUID, or null if not found.
+   */
+  getActivePredictionIdForAction(actionId: string): string | null {
+    for (const [predictionId, stored] of this.activePredictions) {
+      const candidateActionId = stored.prediction.actionCandidate.procedureData?.id;
+      if (candidateActionId === actionId) {
+        return predictionId;
+      }
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // IPredictionService — pruneStale
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Remove predictions older than maxAgeMs from the active store.
+   *
+   * Predictions for non-selected candidates are never evaluated via
+   * reportOutcome(). Without pruning, they accumulate indefinitely.
+   * Call this at the start of each decision cycle.
+   *
+   * @param maxAgeMs - Maximum age in milliseconds before pruning.
+   */
+  pruneStale(maxAgeMs: number): void {
+    const cutoff = Date.now() - maxAgeMs;
+    let pruned = 0;
+    for (const [id, stored] of this.activePredictions) {
+      if (stored.prediction.timestamp.getTime() < cutoff) {
+        this.activePredictions.delete(id);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      this.logger.debug(`Pruned ${pruned} stale prediction(s) from active store`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Public accessor — getMaeHistory
   // ---------------------------------------------------------------------------
 

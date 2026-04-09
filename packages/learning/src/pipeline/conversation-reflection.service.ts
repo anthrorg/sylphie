@@ -291,7 +291,8 @@ export class ConversationReflectionService implements IConversationReflectionSer
 
     for (const insight of insights) {
       try {
-        const { nodeId, edgesCreated } = await this.persistInsight(insight, sessionId);
+        const { nodeId, edgesCreated, groundingRatio, adjustedConfidence, grounded } =
+          await this.persistInsight(insight, sessionId);
         if (nodeId) {
           totalInsights++;
           totalEdges += edgesCreated;
@@ -301,9 +302,11 @@ export class ConversationReflectionService implements IConversationReflectionSer
             {
               insightNodeId: nodeId,
               insightType: insight.insightType,
-              confidence: insight.confidence,
+              confidence: adjustedConfidence,
               entitiesReferenced: insight.referencedEntities.length,
               edgesCreated,
+              groundingRatio,
+              grounded,
             },
             sessionId,
           );
@@ -431,10 +434,17 @@ export class ConversationReflectionService implements IConversationReflectionSer
   private async persistInsight(
     insight: ReflectionInsight,
     sessionId: string,
-  ): Promise<{ nodeId: string; edgesCreated: number }> {
+  ): Promise<{ nodeId: string; edgesCreated: number; groundingRatio: number; adjustedConfidence: number; grounded: boolean }> {
     const nodeId = `insight-${randomUUID().substring(0, 8)}`;
     const label = `${insight.insightType.toLowerCase()}: ${insight.description.substring(0, 60)}`;
     let edgesCreated = 0;
+    // Separate counter: only REVEALS hits count toward the grounding ratio.
+    // writeDiscoveredEdge success is a bonus edge, not a grounding signal.
+    let revealsCreated = 0;
+    // Hoisted so the return statement after finally can reference them.
+    let adjustedConfidence = REFLECTION_CONFIDENCE;
+    let grounded = true;
+    let groundingRatio = 1;
 
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
@@ -500,6 +510,7 @@ export class ConversationReflectionService implements IConversationReflectionSer
           const cnt = revealResult.records[0]?.get('cnt');
           if (cnt && (typeof cnt === 'number' ? cnt : cnt.toNumber()) > 0) {
             edgesCreated++;
+            revealsCreated++;
           }
         } catch {
           // Non-critical — continue with remaining entities.
@@ -514,11 +525,45 @@ export class ConversationReflectionService implements IConversationReflectionSer
         );
         if (created) edgesCreated++;
       }
+
+      // Grounded confidence: scale REFLECTION_CONFIDENCE by the ratio of
+      // REVEALS edges successfully created vs. attempted.
+      //
+      // If the LLM referenced no entities (referencedEntities is empty),
+      // the insight may be purely observational — keep base confidence.
+      // Otherwise, penalise proportionally: an insight that references 4
+      // entities but only 1 actually exists in the WKG gets 1/4 of base.
+      // Floor at 0.05 so ungrounded insights survive for later confirmation
+      // rather than being written at exactly 0.
+      //
+      // grounded = false signals the insight references entities that are
+      // not (yet) in the WKG and marks it for potential garbage collection.
+      const attemptedReveals = insight.referencedEntities.length;
+      ({ adjustedConfidence, grounded, groundingRatio } =
+        computeGroundedConfidence(attemptedReveals, revealsCreated));
+
+      await session.run(
+        `MATCH (i:Insight {node_id: $nodeId})
+         SET i.confidence     = $adjustedConfidence,
+             i.grounded       = $grounded,
+             i.grounding_ratio = $groundingRatio`,
+        { nodeId, adjustedConfidence, grounded, groundingRatio },
+      );
+
+      vlog('persistInsight: grounding applied', {
+        nodeId,
+        attemptedReveals,
+        revealsCreated,
+        edgesCreated,
+        groundingRatio,
+        adjustedConfidence,
+        grounded,
+      });
     } finally {
       await session.close();
     }
 
-    return { nodeId, edgesCreated };
+    return { nodeId, edgesCreated, groundingRatio, adjustedConfidence, grounded };
   }
 
   /**
@@ -799,6 +844,46 @@ function resolveRole(eventType: string, subsystem: string): string {
     default:
       return subsystem;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Grounded confidence (pure, exported for tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the grounded confidence for an Insight node after REVEALS edge
+ * creation has been attempted.
+ *
+ * Rules:
+ *  - If the insight referenced no entities (`attemptedReveals === 0`), it may
+ *    be purely observational. Keep REFLECTION_CONFIDENCE unchanged; mark as
+ *    grounded=true (there is nothing to fail grounding against).
+ *  - Otherwise, scale linearly by the fraction of referenced entities that
+ *    actually exist in the WKG (edgesCreated / attemptedReveals).
+ *  - Floor at 0.05: ungrounded insights survive for potential later
+ *    confirmation rather than being written at confidence 0.
+ *  - grounded=false when ratio === 0 (no entity in the WKG matched).
+ *
+ * Exported so unit tests can exercise it without a Neo4j connection.
+ */
+export function computeGroundedConfidence(
+  attemptedReveals: number,
+  edgesCreated: number,
+): { adjustedConfidence: number; grounded: boolean; groundingRatio: number } {
+  if (attemptedReveals === 0) {
+    // No entity references — purely observational, keep base confidence.
+    return {
+      adjustedConfidence: REFLECTION_CONFIDENCE,
+      grounded: true,
+      groundingRatio: 1,
+    };
+  }
+
+  const groundingRatio = edgesCreated / attemptedReveals;
+  const adjustedConfidence = Math.max(REFLECTION_CONFIDENCE * groundingRatio, 0.05);
+  const grounded = groundingRatio > 0;
+
+  return { adjustedConfidence, grounded, groundingRatio };
 }
 
 /**

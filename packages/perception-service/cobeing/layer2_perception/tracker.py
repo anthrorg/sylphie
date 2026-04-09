@@ -287,6 +287,20 @@ class IoUTracker:
         self._tracks = updated
         return list(self._tracks)
 
+    def get_active_track_count(self) -> int:
+        """Return the number of currently active (non-DELETED) tracks.
+
+        Provides a safe, public alternative to reading ``_tracks`` directly
+        from outside the class. Because ``_tracks`` is reassigned atomically
+        by :meth:`update`, this method is safe to call from the async event
+        loop without a lock -- CPython's GIL makes list-attribute reads
+        atomic at the bytecode level and ``update()`` has no await points.
+
+        Returns:
+            The count of active tracks (TENTATIVE, CONFIRMED, or LOST).
+        """
+        return len(self._tracks)
+
     # ------------------------------------------------------------------
     # State transition helpers
     # ------------------------------------------------------------------

@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -95,9 +96,30 @@ class _AppState:
     pipeline_active: bool = False
     tracker: Any | None = None           # IoUTracker, for per-object tracking
     frame_sequence: int = 0              # Auto-incrementing frame counter
+    # asyncio.Lock protecting the frame_sequence increment-and-read in the
+    # /detect endpoint. Two concurrent async requests can both execute the
+    # two-line block before either reads the result; this lock makes the
+    # read-modify-write atomic within the event loop.
+    frame_sequence_lock: asyncio.Lock = None  # type: ignore[assignment]
 
 
 _state = _AppState()
+# Initialise the asyncio.Lock lazily (must be created inside an event loop
+# on some Python versions, but in practice FastAPI's lifespan ensures there
+# is always an active loop when the first request arrives).
+# We assign it here so the type checker knows the attribute exists; the lock
+# is replaced with a real instance in _startup().
+_state.frame_sequence_lock = asyncio.Lock()
+
+# threading.Lock protecting the lazy-init of _state.embedding_extractor.
+# The embedding functions (_compute_embedding and _extract_track_embedding)
+# run inside loop.run_in_executor(), meaning they execute on OS threads from
+# the default ThreadPoolExecutor.  Two concurrent /detect requests can both
+# see embedding_extractor is None simultaneously and both attempt to
+# construct OnnxEmbeddingExtractor -- a genuine TOCTOU race.
+# threading.Lock (not asyncio.Lock) is required because the code runs on
+# executor threads, not on the event loop thread.
+_embedding_init_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Lifespan: build the pipeline on startup, stop on shutdown
@@ -293,9 +315,16 @@ async def detect(request: Request) -> JSONResponse:
 
     loop = asyncio.get_event_loop()
 
-    # Increment frame sequence for tracker temporal ordering.
-    _state.frame_sequence += 1
-    current_sequence = _state.frame_sequence
+    # Atomically increment and capture the frame sequence number.
+    # Without the lock, two concurrent async requests could interleave:
+    #   Request A:  _state.frame_sequence += 1   (seq becomes 5)
+    #   Request B:  _state.frame_sequence += 1   (seq becomes 6)
+    #   Request A:  current_sequence = _state.frame_sequence  -> reads 6, wrong!
+    # asyncio.Lock is correct here because both requests run on the event loop
+    # thread -- no OS threads are involved in the mutation itself.
+    async with _state.frame_sequence_lock:
+        _state.frame_sequence += 1
+        current_sequence = _state.frame_sequence
 
     try:
         frame = await loop.run_in_executor(
@@ -606,16 +635,22 @@ async def crop_face(request: Request) -> JSONResponse:
     loop = asyncio.get_event_loop()
 
     def _compute_embedding() -> list[float] | None:
+        # Double-checked locking pattern for thread-safe lazy init.
+        # This function runs in run_in_executor (OS thread), so we need
+        # threading.Lock, not asyncio.Lock. The outer check avoids lock
+        # acquisition after the first successful init.
         if _state.embedding_extractor is None:
-            try:
-                from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
-                    OnnxEmbeddingExtractor,
-                )
-                _state.embedding_extractor = OnnxEmbeddingExtractor()
-                logger.info("OnnxEmbeddingExtractor initialized for face crops")
-            except (ImportError, RuntimeError) as exc:
-                logger.warning("Could not initialize OnnxEmbeddingExtractor: %s", exc)
-                return None
+            with _embedding_init_lock:
+                if _state.embedding_extractor is None:
+                    try:
+                        from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                            OnnxEmbeddingExtractor,
+                        )
+                        _state.embedding_extractor = OnnxEmbeddingExtractor()
+                        logger.info("OnnxEmbeddingExtractor initialized for face crops")
+                    except (ImportError, RuntimeError) as exc:
+                        logger.warning("Could not initialize OnnxEmbeddingExtractor: %s", exc)
+                        return None
 
         # Use the masked crop for embedding (face-only, no background)
         crop_rgb = cv2.cvtColor(resized_masked, cv2.COLOR_BGR2RGB)
@@ -659,17 +694,23 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
     if _embedding_init_failed:
         return None
 
+    # Double-checked locking pattern for thread-safe lazy init.
+    # _extract_track_embedding runs in run_in_executor (OS thread), so
+    # threading.Lock is required. The outer check avoids acquiring the lock
+    # after the first successful init (hot path: no lock contention).
     if _state.embedding_extractor is None:
-        try:
-            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
-                OnnxEmbeddingExtractor,
-            )
-            _state.embedding_extractor = OnnxEmbeddingExtractor()
-            logger.info("OnnxEmbeddingExtractor initialized for tracked objects")
-        except (ImportError, RuntimeError) as exc:
-            logger.warning("OnnxEmbeddingExtractor unavailable (embeddings will be null): %s", exc)
-            _embedding_init_failed = True
-            return None
+        with _embedding_init_lock:
+            if _state.embedding_extractor is None:
+                try:
+                    from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                        OnnxEmbeddingExtractor,
+                    )
+                    _state.embedding_extractor = OnnxEmbeddingExtractor()
+                    logger.info("OnnxEmbeddingExtractor initialized for tracked objects")
+                except (ImportError, RuntimeError) as exc:
+                    logger.warning("OnnxEmbeddingExtractor unavailable (embeddings will be null): %s", exc)
+                    _embedding_init_failed = True
+                    return None
 
     try:
         frame_data = frame.data
@@ -796,9 +837,13 @@ async def status() -> JSONResponse:
     fps = 0.0
 
     if _state.tracker is not None:
-        # IoUTracker stores active tracks in _tracks list (non-DELETED).
+        # Use the public API instead of accessing the private _tracks attribute
+        # directly. get_active_track_count() is a one-liner on IoUTracker that
+        # returns len(self._tracks), but coupling to a public method means the
+        # /status endpoint is not broken if the tracker's internal representation
+        # changes.
         try:
-            tracked_count = len(_state.tracker._tracks)  # noqa: SLF001
+            tracked_count = _state.tracker.get_active_track_count()
         except AttributeError:
             tracked_count = 0
 

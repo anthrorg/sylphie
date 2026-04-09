@@ -18,6 +18,7 @@ import {
   HIGH_IMPACT_MAE_THRESHOLD,
   HIGH_IMPACT_PRESSURE_THRESHOLD,
   DEDUPLICATION_ENABLED,
+  MAX_REGISTRY_SIZE,
 } from '../constants/opportunity-detection';
 import { createOpportunity, type Opportunity, type OpportunityClassification } from './opportunity';
 import { computePriority } from './opportunity-priority';
@@ -135,6 +136,17 @@ export class OpportunityDetector {
 
     // Store in registry
     this.registry.set(signal.predictionType, opportunity);
+
+    // Evict oldest entry if registry exceeds MAX_REGISTRY_SIZE.
+    // Map iteration order is insertion order, so the first key is the oldest.
+    if (this.registry.size > MAX_REGISTRY_SIZE) {
+      const oldestKey = this.registry.keys().next().value as string;
+      this.registry.delete(oldestKey);
+      vlog('registry eviction', {
+        evictedPredictionType: oldestKey,
+        registrySize: this.registry.size,
+      });
+    }
 
     vlog('opportunity created', {
       id: opportunity.id,

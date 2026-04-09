@@ -56,8 +56,9 @@ interface MAECache {
  * PredictionEvaluator: Tracks prediction accuracy and computes MAE per type.
  */
 export class PredictionEvaluator {
-  // Storage: prediction ID -> record
-  private predictions: Map<string, PredictionRecord> = new Map();
+  // Counter: total predictions recorded (replaces write-only Map<string, PredictionRecord>
+  // that was never read back — only .size was used in getDebugInfo())
+  private predictionCount: number = 0;
 
   // Storage: action type -> rolling window of most recent predictions
   private predictionsByType: Map<string, PredictionRecord[]> = new Map();
@@ -106,8 +107,9 @@ export class PredictionEvaluator {
       absoluteError: +absoluteError.toFixed(4),
     });
 
-    // Store globally
-    this.predictions.set(predictionId, record);
+    // Increment counter (no need to store full record — it is never read back;
+    // the actual MAE computation uses predictionsByType windows exclusively)
+    this.predictionCount++;
 
     // Get or create rolling window for this type
     if (!this.predictionsByType.has(actionType)) {
@@ -288,7 +290,7 @@ export class PredictionEvaluator {
    * Used for testing and session resets.
    */
   public clear(): void {
-    this.predictions.clear();
+    this.predictionCount = 0;
     this.predictionsByType.clear();
     this.maeCache.clear();
   }
@@ -327,7 +329,7 @@ export class PredictionEvaluator {
     }
 
     return {
-      totalPredictions: this.predictions.size,
+      totalPredictions: this.predictionCount,
       typesCounted: this.predictionsByType.size,
       typeDetails,
     };

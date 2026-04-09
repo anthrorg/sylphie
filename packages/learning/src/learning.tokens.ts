@@ -89,3 +89,14 @@ export const LEARNING_EVENT_LOGGER = Symbol('LEARNING_EVENT_LOGGER');
  * LLM-assisted, skipped if unavailable (Lesion Test support).
  */
 export const CONVERSATION_REFLECTION_SERVICE = Symbol('CONVERSATION_REFLECTION_SERVICE');
+
+/**
+ * Injection token for CrossSessionSynthesisService.
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Cross-session insight synthesis: compares INSIGHT nodes across sessions to
+ * detect recurring themes and evolving patterns. Produces higher-confidence
+ * "meta-insight" nodes with SYNTHESIZES edges to source insights.
+ * LLM-assisted (deep tier), skipped if unavailable (Lesion Test support).
+ */
+export const CROSS_SESSION_SYNTHESIS_SERVICE = Symbol('CROSS_SESSION_SYNTHESIS_SERVICE');

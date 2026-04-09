@@ -56,8 +56,10 @@ export const PROPOSAL_SERVICE = Symbol('PROPOSAL_SERVICE');
  * Injection token for ConstraintValidationService.
  * INTERNAL TO PlanningModule ONLY. Not exported from index.ts.
  *
- * Validates plan proposals against safety and coherence constraints using
- * the LLM constraint engine. Retries up to 3 times on failure.
+ * Validates plan proposals against 5 deterministic structural constraints.
+ * No LLM call -- validation is instant and always available. On failure the
+ * violation strings are passed to ProposalService.refine (LLM-assisted) for
+ * up to MAX_RETRIES revision attempts.
  */
 export const CONSTRAINT_VALIDATION_SERVICE = Symbol('CONSTRAINT_VALIDATION_SERVICE');
 

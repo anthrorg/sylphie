@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('Cortex');
 import { DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, type IDriveStateReader, type IActionOutcomeReporter } from '@sylphie/drive-engine';
@@ -352,6 +352,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     }
 
     try {
+      // Prune stale predictions from prior cycles whose non-selected candidates
+      // were never evaluated via reportOutcome(). 60s is generous — cycles
+      // typically complete in <5s.
+      this.predictionService.pruneStale(60_000);
+
       // ── Step 1: Capture drive state for this cycle ─────────────────────────
       const driveSnapshot: DriveSnapshot = this.driveStateReader.getCurrentState();
       this.executorEngine.captureSnapshot(driveSnapshot);
@@ -616,35 +621,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // ── Step 7: EXECUTING -> OBSERVING ────────────────────────────────────
       this.executorEngine.transition(ExecutorState.OBSERVING);
 
-      // Evaluate any generated predictions against the (minimal) observed outcome.
-      // In this initial orchestration the outcome is synthesized from execution
-      // results rather than from a real guardian response; reportOutcome() below
-      // handles the real post-response evaluation.
-      for (const prediction of predictions) {
-        try {
-          const actionId =
-            prediction.actionCandidate.procedureData?.id ?? 'unknown';
-          // Construct a minimal ActionOutcome for prediction evaluation.
-          // Drive effects will be updated via reportOutcome() once the real
-          // outcome is observed (e.g., guardian response received).
-          const minimalOutcome: ActionOutcome = {
-            selectedAction: {
-              actionId,
-              arbitrationResult,
-              selectedAt: new Date(),
-              theaterValidated: true,
-            },
-            predictionAccurate: false,
-            predictionError: 1.0,
-            driveEffectsObserved: {},
-            anxietyAtExecution: driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
-            observedAt: new Date(),
-          };
-          this.predictionService.evaluatePrediction(prediction.id, minimalOutcome);
-        } catch (err) {
-          this.logger.warn(`Failed to evaluate prediction ${prediction.id}: ${err}`);
-        }
-      }
+      // Prediction evaluation is deferred to reportOutcome(), which is called
+      // by Communication after the response is delivered and real drive effects
+      // are observed. Evaluating here with empty driveEffectsObserved would
+      // produce meaningless MAE values.
+      //
+      // Stale predictions for non-selected candidates are cleaned up by
+      // pruneStale() at the start of each cycle.
+
+      // Record the arbitration result in the attractor monitor so the
+      // TYPE_2_ADDICT detector has data to work with.
+      const arbitrationLabel: 'type1' | 'type2' | 'shrug' =
+        arbitrationResult.type === 'TYPE_1' ? 'type1'
+        : arbitrationResult.type === 'TYPE_2' ? 'type2'
+        : 'shrug';
+      this.attractorMonitor.recordArbitration(arbitrationLabel);
 
       // ── Step 8: OBSERVING -> LEARNING ─────────────────────────────────────
       this.executorEngine.transition(ExecutorState.LEARNING);
@@ -964,8 +955,37 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       return;
     }
 
+    // ── Evaluate prediction with real observed outcome ─────────────────────
+    // Find the prediction generated during PREDICTING state for this action.
+    // If found, evaluate it against the real driveEffectsObserved (not empty).
+    let predictionEvaluation: PredictionEvaluation | null = null;
+    const predictionId = this.predictionService.getActivePredictionIdForAction(actionId);
+    if (predictionId) {
+      try {
+        predictionEvaluation = this.predictionService.evaluatePrediction(predictionId, outcome);
+
+        // Feed evaluation to the attractor monitor so PLANNING_RUNAWAY and
+        // PREDICTION_PESSIMIST detectors have real data.
+        this.attractorMonitor.recordPrediction(
+          predictionEvaluation.mae,
+          predictionEvaluation.accurate,
+        );
+
+        vlog('prediction evaluated via reportOutcome', {
+          predictionId: predictionId.substring(0, 8),
+          actionId,
+          mae: +predictionEvaluation.mae.toFixed(4),
+          accurate: predictionEvaluation.accurate,
+        });
+      } catch (err) {
+        this.logger.warn(`reportOutcome prediction evaluation failed for ${predictionId}: ${err}`);
+      }
+    }
+
     // Determine outcome type for confidence updater.
-    const confidenceOutcome: 'reinforced' | 'counter_indicated' = outcome.predictionAccurate
+    // Use the real prediction evaluation result if available.
+    const isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate;
+    const confidenceOutcome: 'reinforced' | 'counter_indicated' = isAccurate
       ? 'reinforced'
       : 'counter_indicated';
 
@@ -976,12 +996,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     }
 
     // Forward outcome to Drive Engine for drive evaluation (fire-and-forget).
+    // Include prediction data so the Drive Engine's PredictionEvaluator can
+    // track MAE, classify opportunity severity, and emit planning signals.
     if (this.actionOutcomeReporter) {
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId,
           actionType: outcome.selectedAction.arbitrationResult.type,
-          success: outcome.predictionAccurate,
+          success: isAccurate,
           driveEffects: outcome.driveEffectsObserved,
           feedbackSource: 'INFERENCE',
           theaterCheck: {
@@ -990,6 +1012,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             driveValue: null,
             isTheatrical: !outcome.selectedAction.theaterValidated,
           },
+          predictionData: predictionEvaluation
+            ? {
+                predictionId: predictionEvaluation.predictionId,
+                predictedValue: 0, // ideal MAE target
+                actualValue: predictionEvaluation.mae, // real MAE
+              }
+            : undefined,
         });
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
