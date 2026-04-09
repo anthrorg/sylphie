@@ -35,8 +35,36 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     for (const [name, driver] of this.drivers) {
-      await driver.verifyConnectivity();
-      this.logger.log(`Connected to Neo4j [${name}]`);
+      try {
+        await this.connectWithRetry(name, driver);
+      } catch (err) {
+        this.logger.error(
+          `Failed to connect to Neo4j [${name}] after retries: ${
+            err instanceof Error ? err.message : String(err)
+          }. Service will attempt lazy reconnection.`,
+        );
+      }
+    }
+  }
+
+  private async connectWithRetry(
+    name: Neo4jInstanceName,
+    driver: Driver,
+    retries = 5,
+    delayMs = 3000,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await driver.verifyConnectivity();
+        this.logger.log(`Connected to Neo4j [${name}]`);
+        return;
+      } catch (err) {
+        if (attempt === retries) throw err;
+        this.logger.warn(
+          `Neo4j [${name}] not ready (attempt ${attempt}/${retries}), retrying in ${delayMs / 1000}s...`,
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
     }
   }
 

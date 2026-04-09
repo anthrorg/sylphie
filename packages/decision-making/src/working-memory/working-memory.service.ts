@@ -48,6 +48,7 @@ import {
   jaccardSimilarity,
   DEFAULT_WEIGHTS,
   DEFAULT_SPREADING_PARAMS,
+  MIN_ACTIVATION_THRESHOLD,
   MAX_SLOT_COUNT,
   DEFAULT_TOKEN_BUDGET,
 } from './activation';
@@ -69,6 +70,20 @@ const MIN_SOURCE_SLOTS: Partial<Record<WorkingMemorySourceType, number>> = {
 // Source type priority for deterministic tiebreaking
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Hot layer constants
+// ---------------------------------------------------------------------------
+
+/** Per-cycle decay factor for residual activation (20% loss per cycle). */
+const RESIDUAL_DECAY = 0.80;
+
+/** Hard TTL for residual entries in milliseconds (30 seconds). */
+const RESIDUAL_TTL_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Source type priority for deterministic tiebreaking
+// ---------------------------------------------------------------------------
+
 const SOURCE_PRIORITY: Record<WorkingMemorySourceType, number> = {
   WKG_FACT: 6,
   WKG_ENTITY: 5,
@@ -82,10 +97,30 @@ const SOURCE_PRIORITY: Record<WorkingMemorySourceType, number> = {
 // Service
 // ---------------------------------------------------------------------------
 
+/** Residual activation entry for the hot layer. */
+interface ResidualEntry {
+  boost: number;
+  updatedAt: number; // epoch ms
+}
+
 @Injectable()
 export class WorkingMemoryService implements IWorkingMemoryService {
   private readonly logger = new Logger(WorkingMemoryService.name);
   private lastSnapshot: WorkingMemorySnapshot | null = null;
+
+  /**
+   * Hot layer: residual activation that persists across decision cycles.
+   *
+   * Entities activated in the previous cycle carry forward as decayed priors
+   * into the next cycle's spreading activation. This prevents mid-conversation
+   * context dropout — if you were talking about Alice 3 cycles ago, Alice
+   * retains residual activation even if the current input doesn't mention her.
+   *
+   * Entries decay by RESIDUAL_DECAY (0.80) per cycle and expire after
+   * RESIDUAL_TTL_MS (30s). No external persistence — ephemeral to the
+   * process lifetime.
+   */
+  private readonly residualActivation = new Map<string, ResidualEntry>();
 
   /**
    * Assemble a working memory snapshot for the current decision cycle.
@@ -116,8 +151,30 @@ export class WorkingMemoryService implements IWorkingMemoryService {
     // Build adjacency map from WKG relationships
     const adjacencyMap = buildAdjacencyMap(wkgContext.relationships, entityIdToLabel);
 
-    // Run spreading activation from input entities
-    const activationMap = spreadActivation(frameEntityNames, adjacencyMap, DEFAULT_SPREADING_PARAMS);
+    // Decay and prune residual activation from previous cycles
+    this.decayResiduals(now.getTime());
+
+    // Merge residual priors with current frame entities as seeds.
+    // Frame entities get full initial boost; residuals carry their decayed value.
+    const seedLabels = [...frameEntityNames];
+    for (const [label, entry] of this.residualActivation) {
+      if (!frameEntitySet.has(label) && entry.boost >= MIN_ACTIVATION_THRESHOLD) {
+        seedLabels.push(label);
+      }
+    }
+
+    // Run spreading activation from combined seeds (current + residual)
+    const activationMap = spreadActivation(seedLabels, adjacencyMap, DEFAULT_SPREADING_PARAMS);
+
+    // Layer residual boosts onto the activation map for entities not reached
+    // by the current spreading activation (they linger from prior cycles).
+    for (const [label, entry] of this.residualActivation) {
+      const current = activationMap.get(label) ?? 0;
+      // MAX accumulation: residual only contributes if it's higher than current
+      if (entry.boost > current) {
+        activationMap.set(label, entry.boost);
+      }
+    }
 
     // Collect all candidate items from all sources
     const candidates: WorkingMemoryItem[] = [];
@@ -333,6 +390,9 @@ export class WorkingMemoryService implements IWorkingMemoryService {
 
     this.lastSnapshot = snapshot;
 
+    // Update hot layer: store current activations as residuals for next cycle
+    this.updateResiduals(activationMap, now.getTime());
+
     vlog('working memory assembled', {
       totalCandidates: candidates.length,
       selectedItems: selected.length,
@@ -340,6 +400,7 @@ export class WorkingMemoryService implements IWorkingMemoryService {
       totalTokens: snapshot.totalEstimatedTokens,
       tokenBudget,
       activatedEntities: snapshot.activatedEntities.length,
+      residualEntries: this.residualActivation.size,
       sourceCounts: snapshot.sourceCounts,
     });
 
@@ -348,6 +409,49 @@ export class WorkingMemoryService implements IWorkingMemoryService {
 
   getLastSnapshot(): WorkingMemorySnapshot | null {
     return this.lastSnapshot;
+  }
+
+  // -------------------------------------------------------------------------
+  // Hot layer — residual activation management
+  // -------------------------------------------------------------------------
+
+  /**
+   * Decay all residual entries and prune expired/below-threshold ones.
+   * Called at the start of each assemble() cycle.
+   */
+  private decayResiduals(nowMs: number): void {
+    for (const [label, entry] of this.residualActivation) {
+      // Hard TTL expiry
+      if (nowMs - entry.updatedAt > RESIDUAL_TTL_MS) {
+        this.residualActivation.delete(label);
+        continue;
+      }
+
+      // Per-cycle decay
+      entry.boost *= RESIDUAL_DECAY;
+
+      // Prune below threshold
+      if (entry.boost < MIN_ACTIVATION_THRESHOLD) {
+        this.residualActivation.delete(label);
+      }
+    }
+  }
+
+  /**
+   * Update residual activation from the current cycle's activation map.
+   * Uses MAX accumulation: new activation replaces residual only if higher.
+   */
+  private updateResiduals(activationMap: Map<string, number>, nowMs: number): void {
+    for (const [label, boost] of activationMap) {
+      if (boost < MIN_ACTIVATION_THRESHOLD) continue;
+
+      const existing = this.residualActivation.get(label);
+      if (!existing || boost >= existing.boost) {
+        this.residualActivation.set(label, { boost, updatedAt: nowMs });
+      }
+      // If existing residual is higher (from a previous strong activation),
+      // keep it — it will decay naturally via decayResiduals().
+    }
   }
 
   // -------------------------------------------------------------------------

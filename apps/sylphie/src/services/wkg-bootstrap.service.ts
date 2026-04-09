@@ -51,7 +51,15 @@ export class WkgBootstrapService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.bootstrap();
+    try {
+      await this.bootstrap();
+    } catch (err) {
+      this.logger.error(
+        `WKG bootstrap failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }. Bootstrap will run on first successful connection.`,
+      );
+    }
   }
 
   /**

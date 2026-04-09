@@ -23,8 +23,26 @@ export class PrismaService
   }
 
   async onModuleInit() {
-    await this.$connect();
-    this.logger.log('Connected to PostgreSQL');
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        await this.$connect();
+        this.logger.log('Connected to PostgreSQL');
+        return;
+      } catch (err) {
+        if (attempt === 5) {
+          this.logger.error(
+            `Failed to connect to PostgreSQL after 5 attempts: ${
+              err instanceof Error ? err.message : String(err)
+            }. Queries will fail until the database becomes available.`,
+          );
+          return;
+        }
+        this.logger.warn(
+          `PostgreSQL not ready (attempt ${attempt}/5), retrying in 3s...`,
+        );
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
   }
 
   async onModuleDestroy() {

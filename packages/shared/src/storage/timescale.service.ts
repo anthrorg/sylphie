@@ -27,12 +27,30 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    const client = await this.pool.connect();
-    try {
-      await client.query('SELECT 1');
-      this.logger.log('Connected to TimescaleDB');
-    } finally {
-      client.release();
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        const client = await this.pool.connect();
+        try {
+          await client.query('SELECT 1');
+          this.logger.log('Connected to TimescaleDB');
+          return;
+        } finally {
+          client.release();
+        }
+      } catch (err) {
+        if (attempt === 5) {
+          this.logger.error(
+            `Failed to connect to TimescaleDB after 5 attempts: ${
+              err instanceof Error ? err.message : String(err)
+            }. Queries will fail until the database becomes available.`,
+          );
+          return;
+        }
+        this.logger.warn(
+          `TimescaleDB not ready (attempt ${attempt}/5), retrying in 3s...`,
+        );
+        await new Promise((r) => setTimeout(r, 3000));
+      }
     }
   }
 
