@@ -72,23 +72,25 @@ export class CuriosityInformationGain {
   }
 
   /**
-   * Compute curiosity relief from ActionOutcomePayload context.
+   * Compute curiosity relief from an ActionOutcomePayload's informationGainMetrics.
    *
-   * Extracts information gain metrics from the outcome context.
-   * For now, placeholder implementation that returns 0.
+   * Extracts newNodes, confidenceDeltas, and resolvedErrors from the
+   * structured metrics object. Degrades gracefully: if the metrics object
+   * is absent or any field is missing, those fields default to 0.
    *
-   * @param context - Optional context object from ACTION_OUTCOME
-   * @returns Relief amount (negative value = curiosity satisfied)
+   * @param metrics - Optional informationGainMetrics from ActionOutcomePayload
+   * @returns Relief amount (negative value = curiosity satisfied, 0 if no metrics)
    */
-  public computeReliefFromContext(context?: Record<string, unknown>): number {
-    if (!context) {
+  public computeReliefFromMetrics(
+    metrics?: { newNodes?: number; confidenceDeltas?: number; resolvedErrors?: number },
+  ): number {
+    if (!metrics) {
       return 0;
     }
 
-    // Extract metrics from context (if available)
-    const newNodes = (context.newNodes as number) || 0;
-    const confidenceDeltas = (context.confidenceDeltas as number) || 0;
-    const resolvedErrors = (context.resolvedErrors as number) || 0;
+    const newNodes = metrics.newNodes ?? 0;
+    const confidenceDeltas = metrics.confidenceDeltas ?? 0;
+    const resolvedErrors = metrics.resolvedErrors ?? 0;
 
     return this.computeRelief(newNodes, confidenceDeltas, resolvedErrors);
   }

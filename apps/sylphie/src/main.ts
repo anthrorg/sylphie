@@ -14,11 +14,18 @@ async function bootstrap() {
   app.useWebSocketAdapter(new WsAdapter(app));
   app.enableShutdownHooks();
 
+  // CORS — allow the Vite dev server and any configured origins
+  app.enableCors({
+    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    credentials: true,
+  });
+
   // Wire the logger to the broadcast service so logs stream to the frontend
   const broadcast = app.get(TelemetryBroadcastService);
   logger.setTelemetryBroadcast(broadcast);
 
-  const port = process.env.APP_PORT || 3000;
+  // Railway injects PORT; fall back to APP_PORT for local dev
+  const port = process.env.PORT || process.env.APP_PORT || 3000;
   await app.listen(port);
   Logger.log(`Sylphie backend listening on port ${port}`, 'Bootstrap');
 }

@@ -56,20 +56,43 @@ export class ContingencyCoordinator {
   ): Partial<Record<DriveName, number>> {
     const deltas: Partial<Record<DriveName, number>> = {};
 
+    // Helper to accumulate a delta onto the map
+    const addDelta = (drive: DriveName, value: number): void => {
+      if (value !== 0) {
+        deltas[drive] = (deltas[drive] || 0) + value;
+      }
+    };
+
+    const firedContingencies: string[] = [];
+
     // 1. Satisfaction Habituation
     const satisfactionRelief = this.satisfactionHabituation.computeRelief(
       outcome.actionType,
       outcome.outcome,
     );
     if (satisfactionRelief !== 0) {
-      deltas[DriveName.Satisfaction] =
-        (deltas[DriveName.Satisfaction] || 0) + satisfactionRelief;
+      addDelta(DriveName.Satisfaction, satisfactionRelief);
+      firedContingencies.push('satisfaction-habituation');
     }
 
-    // 2. Anxiety Amplification
-    // This is applied to confidence reductions in the WKG, not directly to drives.
-    // For now, we note it but don't apply directly to drive deltas.
-    // (WKG procedure confidence updates happen elsewhere in the pipeline)
+    // 2. Anxiety Amplification — drive-level effects
+    // When anxiety is high at execution:
+    //   - Negative outcome: amplify all positive (pressure-increasing) drive effects by 1.5x
+    //   - Positive outcome: provide anxiety relief (-0.10)
+    // The separate amplifyReduction() method is still available for WKG confidence reductions.
+    const anxietyEffects = this.anxietyAmplification.computeDriveEffects(
+      outcome.anxietyAtExecution,
+      outcome.outcome,
+      outcome.driveEffects,
+    );
+    for (const [drive, value] of Object.entries(anxietyEffects)) {
+      if (value !== undefined) {
+        addDelta(drive as DriveName, value);
+      }
+    }
+    if (Object.keys(anxietyEffects).length > 0) {
+      firedContingencies.push('anxiety-amplification');
+    }
 
     // 3. Guilt Repair
     const guiltRelief = this.guiltyRepair.computeGuiltRelief(
@@ -81,25 +104,42 @@ export class ContingencyCoordinator {
       },
     );
     if (guiltRelief !== 0) {
-      deltas[DriveName.Guilt] = (deltas[DriveName.Guilt] || 0) + guiltRelief;
+      addDelta(DriveName.Guilt, guiltRelief);
+      firedContingencies.push('guilt-repair');
     }
 
-    // 4. Social Comment Quality
-    // This is triggered by guardian responses, not outcomes.
-    // Will be called separately via processGuardianResponse().
+    // 4. Social Comment Quality — fire on social comment action types
+    // When the outcome carries a socialCommentTimestamp, this was a
+    // Sylphie-initiated social comment. Evaluate whether the guardian
+    // responded promptly.
+    // The standalone processGuardianResponse() path remains available
+    // as an additional trigger for explicit guardian feedback on comments.
+    if (outcome.socialCommentTimestamp != null) {
+      const socialResult = this.socialCommentQuality.evaluateFromOutcome(
+        outcome.socialCommentTimestamp,
+        outcome.actionId,
+        outcome.outcome,
+      );
+      if (socialResult.socialRelief !== 0) {
+        addDelta(DriveName.Social, socialResult.socialRelief);
+      }
+      if (socialResult.satisfactionBonus !== 0) {
+        addDelta(DriveName.Satisfaction, socialResult.satisfactionBonus);
+      }
+      if (socialResult.socialRelief !== 0 || socialResult.satisfactionBonus !== 0) {
+        firedContingencies.push('social-comment-quality');
+      }
+    }
 
-    // 5. Curiosity Information Gain
-    const curiosityRelief = this.curiosityInformationGain.computeReliefFromContext(
-      outcome as unknown as Record<string, unknown>,
+    // 5. Curiosity Information Gain — consume informationGainMetrics
+    // Degrades gracefully: if informationGainMetrics is absent, returns 0.
+    const curiosityRelief = this.curiosityInformationGain.computeReliefFromMetrics(
+      outcome.informationGainMetrics,
     );
     if (curiosityRelief !== 0) {
-      deltas[DriveName.Curiosity] = (deltas[DriveName.Curiosity] || 0) + curiosityRelief;
+      addDelta(DriveName.Curiosity, curiosityRelief);
+      firedContingencies.push('curiosity-information-gain');
     }
-
-    const firedContingencies: string[] = [];
-    if (satisfactionRelief !== 0) firedContingencies.push('satisfaction-habituation');
-    if (guiltRelief !== 0) firedContingencies.push('guilt-repair');
-    if (curiosityRelief !== 0) firedContingencies.push('curiosity-information-gain');
 
     if (firedContingencies.length > 0) {
       vlog('contingencies fired', {

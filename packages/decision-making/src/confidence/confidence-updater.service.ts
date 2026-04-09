@@ -99,6 +99,13 @@ interface ActionConfidenceRecord {
 /** Base confidence reduction applied on counter-indication. */
 const COUNTER_INDICATION_REDUCTION = 0.15;
 
+/**
+ * Maximum number of MAE observations in the rolling window per action.
+ * Matches the graduation requirement of 10 observations and the window
+ * size used by Type1TrackerService.
+ */
+const MAX_MAE_WINDOW = 10;
+
 // ---------------------------------------------------------------------------
 // ConfidenceUpdaterService
 // ---------------------------------------------------------------------------
@@ -109,6 +116,13 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
 
   /** In-memory store of confidence records, keyed by WKG procedure node ID. */
   private readonly records = new Map<string, ActionConfidenceRecord>();
+
+  /**
+   * Rolling window of recent prediction MAE values per action, keyed by
+   * action ID. Each array holds at most MAX_MAE_WINDOW entries (FIFO).
+   * Ephemeral — not persisted across restarts.
+   */
+  private readonly maeHistory = new Map<string, number[]>();
 
   constructor(
     @Optional()
@@ -185,6 +199,40 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
     );
 
     this.emitConfidenceUpdated(actionId, record, outcome, oldConfidence, guardianFeedback);
+  }
+
+  // ---------------------------------------------------------------------------
+  // IConfidenceUpdaterService — recordPredictionMAE
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Record a prediction MAE observation for an action procedure.
+   *
+   * Appends the MAE value to the rolling window for the given action ID,
+   * evicting the oldest entry if the window is at capacity (FIFO, capped
+   * at MAX_MAE_WINDOW = 10). The stored values are consumed by
+   * getRecentMAEForRecord() during graduation and demotion checks.
+   *
+   * @param actionId - WKG procedure node ID.
+   * @param mae      - Mean absolute error from PredictionEvaluation (0.0–1.0).
+   */
+  recordPredictionMAE(actionId: string, mae: number): void {
+    let history = this.maeHistory.get(actionId);
+    if (!history) {
+      history = [];
+      this.maeHistory.set(actionId, history);
+    }
+
+    if (history.length >= MAX_MAE_WINDOW) {
+      history.shift();
+    }
+    history.push(mae);
+
+    vlog('MAE recorded for confidence updater', {
+      actionId,
+      mae: +mae.toFixed(4),
+      windowSize: history.length,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -313,23 +361,23 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   }
 
   /**
-   * Retrieve the most recent mean MAE for an action from the MAE history.
+   * Retrieve the mean of recent MAE observations for an action.
    *
-   * The PredictionService holds the MAE history. Since we do not inject
-   * PredictionService here (to avoid a circular or awkward coupling), we
-   * return a sentinel value of 0.0 when no external MAE data is provided.
-   * The graduation check is therefore conservative: it fires only when
-   * confidence alone crosses the threshold, which is the correct safety posture.
+   * Returns the arithmetic mean of all values in the rolling MAE window
+   * for the given action. If no MAE data has been recorded yet (window is
+   * empty), returns 0.0 as a conservative sentinel — this ensures graduation
+   * checks that rely on MAE < 0.10 will pass only when real data is available
+   * AND meets the threshold.
    *
-   * In the full decision loop, the executor service is responsible for
-   * coordinating the MAE from PredictionService.evaluatePrediction() into
-   * the ConfidenceUpdaterService.update() call — or into a separate
-   * Type1TrackerService.recordObservation() call — after each cycle.
+   * MAE data is fed in via recordPredictionMAE(), called from the decision
+   * loop after each prediction evaluation.
    */
-  private getRecentMAEForRecord(_actionId: string): number {
-    // Conservative sentinel: no external MAE data available at this layer.
-    // The executor loop wires MAE data through the Type1TrackerService.
-    return 0.0;
+  private getRecentMAEForRecord(actionId: string): number {
+    const history = this.maeHistory.get(actionId);
+    if (!history || history.length === 0) {
+      return 0.0;
+    }
+    return history.reduce((sum, v) => sum + v, 0) / history.length;
   }
 
   // ---------------------------------------------------------------------------

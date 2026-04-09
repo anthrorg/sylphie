@@ -31,6 +31,7 @@ import { randomUUID } from 'crypto';
 import {
   TimescaleService,
   DriveName,
+  DRIVE_INDEX_ORDER,
   LLM_SERVICE,
   verboseFor,
   type ILlmService,
@@ -38,6 +39,7 @@ import {
   type DeliveryPayload,
   type InputParseResult,
   type DriveSnapshot,
+  type PressureVector,
   type ActionOutcome,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
@@ -540,10 +542,15 @@ export class CommunicationService implements OnModuleInit {
       !pendingResponse.actionId.startsWith('type2-novel-')
     ) {
       try {
-        const outcome = feedbackType === 'confirmation' ? 'reinforced' : 'counter_indicated';
-        // reportOutcome on IDecisionMakingService takes (actionId, ActionOutcome)
-        // For guardian feedback, we construct a minimal outcome
-        const driveSnapshot = this.driveStateReader.getCurrentState();
+        const postSnapshot = this.driveStateReader.getCurrentState();
+
+        // Compute real drive delta from the pre-execution snapshot stored
+        // on the CycleResponse to the current post-feedback state.
+        const driveEffectsObserved = computeDriveDelta(
+          pendingResponse.preExecutionDriveSnapshot,
+          postSnapshot.pressureVector,
+        );
+
         await this.decisionMaking.reportOutcome(pendingResponse.actionId, {
           selectedAction: {
             actionId: pendingResponse.actionId,
@@ -553,8 +560,8 @@ export class CommunicationService implements OnModuleInit {
           },
           predictionAccurate: feedbackType === 'confirmation',
           predictionError: feedbackType === 'confirmation' ? 0.1 : 0.8,
-          driveEffectsObserved: {},
-          anxietyAtExecution: driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
+          driveEffectsObserved,
+          anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
           observedAt: new Date(),
         });
       } catch (err) {
@@ -818,7 +825,16 @@ export class CommunicationService implements OnModuleInit {
     }
 
     try {
-      const driveSnapshot = this.driveStateReader.getCurrentState();
+      const postSnapshot = this.driveStateReader.getCurrentState();
+
+      // Compute real drive delta if we have a pre-execution snapshot.
+      // Without the pre-snapshot, driveEffectsObserved stays empty and
+      // the prediction evaluator in reportOutcome() produces meaningless MAE.
+      const driveEffectsObserved = computeDriveDelta(
+        response.preExecutionDriveSnapshot,
+        postSnapshot.pressureVector,
+      );
+
       await this.decisionMaking.reportOutcome(response.actionId, {
         selectedAction: {
           actionId: response.actionId,
@@ -828,8 +844,8 @@ export class CommunicationService implements OnModuleInit {
         },
         predictionAccurate: false, // Unknown until guardian feedback
         predictionError: 0.5,      // Neutral — will be updated by feedback
-        driveEffectsObserved: {},
-        anxietyAtExecution: driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
+        driveEffectsObserved,
+        anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
         observedAt: new Date(),
       });
     } catch (err) {
@@ -952,6 +968,33 @@ export class CommunicationService implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Compute the per-drive delta between a pre-execution snapshot and the current
+ * post-execution pressure vector.
+ *
+ * Only drives that actually changed (delta !== 0) are included in the result.
+ * Returns an empty object if the pre-execution snapshot is unavailable (graceful
+ * degradation for cycles that pre-date the preExecutionDriveSnapshot field).
+ */
+function computeDriveDelta(
+  prePressure: PressureVector | undefined,
+  postPressure: PressureVector,
+): Partial<Record<DriveName, number>> {
+  if (!prePressure) return {};
+
+  const delta: Partial<Record<DriveName, number>> = {};
+  for (const drive of DRIVE_INDEX_ORDER) {
+    const pre = prePressure[drive] ?? 0;
+    const post = postPressure[drive] ?? 0;
+    const diff = post - pre;
+    // Only include drives that actually changed (threshold avoids float noise)
+    if (Math.abs(diff) > 1e-6) {
+      delta[drive] = diff;
+    }
+  }
+  return delta;
+}
 
 /**
  * Sanitize response text before delivery. Strips LLM formatting artifacts

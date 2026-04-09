@@ -71,6 +71,13 @@ const DECAY_INTERVAL_MS = 60_000;
 /** Maximum unprocessed opportunities to ingest per polling cycle. */
 const MAX_INGEST_PER_CYCLE = 10;
 
+/**
+ * Maximum PREDICTION_EVALUATED outcomes to process per outcome-polling cycle.
+ * Each evaluation involves a TimescaleDB UPDATE, so we cap the batch to prevent
+ * the evaluation loop from dominating the I/O budget.
+ */
+const MAX_OUTCOMES_PER_CYCLE = 20;
+
 // ---------------------------------------------------------------------------
 // PlanningService
 // ---------------------------------------------------------------------------
@@ -193,10 +200,13 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
 
   /**
    * Poll TimescaleDB for unprocessed OPPORTUNITY_DETECTED events, enqueue them,
-   * then run the pipeline on the highest-priority opportunity.
+   * then run the pipeline on the highest-priority opportunity. Also polls for
+   * post-execution outcomes of Planning-created procedures so evaluatePlanOutcome()
+   * is called with real feedback data.
    */
   private async ingestAndProcess(): Promise<void> {
     await this.ingestOpportunities();
+    await this.pollAndEvaluateOutcomes();
     await this.processNextOpportunity();
   }
 
@@ -304,6 +314,149 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
           err instanceof Error ? err.message : String(err)
         }`,
       );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: Outcome polling
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Poll TimescaleDB for PREDICTION_EVALUATED outcomes that belong to
+   * Planning-created procedures, then call evaluatePlanOutcome() for each.
+   *
+   * How it works:
+   *   1. Join PREDICTION_EVALUATED (owns mae + accurate + actualEffects) with
+   *      PREDICTION_CREATED (owns actionId = the WKG procedure node ID) on
+   *      predictionId.
+   *   2. Filter to rows where the actionId from PREDICTION_CREATED matches the
+   *      procedureNodeId stored in a PLAN_CREATED event payload -- meaning the
+   *      action was one Planning originally created.
+   *   3. Skip rows already processed by Planning (has_plan_evaluated = true).
+   *   4. Mark each processed row so it is not re-evaluated on the next cycle.
+   *
+   * This is deliberately fire-and-forget per row: a single bad row does not
+   * abort the loop. Each failure is logged at warn level.
+   *
+   * CANON §No Circular Module Dependencies: Planning never calls Decision Making
+   * services directly. Communication is through the TimescaleDB event backbone.
+   */
+  private async pollAndEvaluateOutcomes(): Promise<void> {
+    let rows: Array<{
+      eval_id: string;
+      eval_payload: string;
+      create_payload: string;
+    }> = [];
+
+    try {
+      const result = await this.timescale.query<{
+        eval_id: string;
+        eval_payload: string;
+        create_payload: string;
+      }>(
+        // Find PREDICTION_EVALUATED events for procedures that Planning created.
+        //
+        // pe = PREDICTION_EVALUATED (contains mae, accurate, actualEffects)
+        // pc = PREDICTION_CREATED   (contains predictionId + actionId)
+        // pla = PLAN_CREATED        (contains procedureNodeId -- Planning's ID)
+        //
+        // We join pe <-> pc on predictionId, then filter to only those whose
+        // actionId appears in a PLAN_CREATED payload.
+        `SELECT pe.id AS eval_id,
+                pe.payload AS eval_payload,
+                pc.payload AS create_payload
+         FROM events pe
+         JOIN events pc
+           ON pc.type = 'PREDICTION_CREATED'
+          AND (pc.payload->>'predictionId') = (pe.payload->>'predictionId')
+         WHERE pe.type = 'PREDICTION_EVALUATED'
+           AND (pe.payload->>'has_plan_evaluated')::boolean IS NOT TRUE
+           AND EXISTS (
+                 SELECT 1 FROM events pla
+                 WHERE pla.type = 'PLAN_CREATED'
+                   AND (pla.payload->>'procedureNodeId') = (pc.payload->>'actionId')
+               )
+         ORDER BY pe.timestamp ASC
+         LIMIT $1`,
+        [MAX_OUTCOMES_PER_CYCLE],
+      );
+
+      rows = result.rows;
+    } catch (err) {
+      this.logger.warn(
+        `pollAndEvaluateOutcomes: query failed -- ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    vlog('outcome poll', { count: rows.length });
+
+    for (const row of rows) {
+      try {
+        const evalPayload: Record<string, unknown> = JSON.parse(
+          typeof row.eval_payload === 'string'
+            ? row.eval_payload
+            : JSON.stringify(row.eval_payload),
+        );
+        const createPayload: Record<string, unknown> = JSON.parse(
+          typeof row.create_payload === 'string'
+            ? row.create_payload
+            : JSON.stringify(row.create_payload),
+        );
+
+        const procedureId = createPayload['actionId'] as string | undefined;
+        if (!procedureId) {
+          this.logger.warn(
+            `pollAndEvaluateOutcomes: PREDICTION_CREATED row missing actionId, skipping`,
+          );
+          continue;
+        }
+
+        const mae = typeof evalPayload['mae'] === 'number' ? evalPayload['mae'] : 1.0;
+        const accurate = evalPayload['accurate'] === true;
+        const actualEffects = (evalPayload['actualEffects'] ?? {}) as Partial<Record<string, number>>;
+
+        const outcome: PlanOutcomeData = {
+          procedureId,
+          executionSuccessful: accurate,
+          driveEffectsObserved: actualEffects as PlanOutcomeData['driveEffectsObserved'],
+          predictionAccurate: accurate,
+          mae,
+        };
+
+        vlog('evaluating plan outcome', {
+          procedureId,
+          mae: +mae.toFixed(4),
+          accurate,
+          evalEventId: row.eval_id,
+        });
+
+        await this.evaluatePlanOutcome(procedureId, outcome);
+
+        // Mark as processed so we do not re-evaluate on the next cycle.
+        await this.timescale.query(
+          `UPDATE events
+           SET payload = jsonb_set(
+             COALESCE(payload::jsonb, '{}'::jsonb),
+             '{has_plan_evaluated}',
+             'true'::jsonb
+           )
+           WHERE id = $1`,
+          [row.eval_id],
+        );
+      } catch (err) {
+        this.logger.warn(
+          `pollAndEvaluateOutcomes: failed to evaluate outcome for eval_id=${row.eval_id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
   }
 

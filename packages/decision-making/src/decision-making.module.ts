@@ -233,6 +233,14 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     LLM_SERVICE,
     WkgContextService,
 
+    // Arbitration metrics: exported so the MetricsController can read
+    // Type 1/2/shrug counts without going through the full DecisionMaking facade.
+    ARBITRATION_SERVICE,
+
+    // Attractor monitor: exported so the MetricsController can read rolling
+    // prediction MAE from the in-process window without a separate query.
+    ATTRACTOR_MONITOR_SERVICE,
+
     // Latent space: exported for system reset (clear learned patterns).
     LatentSpaceService,
 

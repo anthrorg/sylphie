@@ -65,6 +65,49 @@ export class SocialCommentQuality {
   }
 
   /**
+   * Evaluate a social comment action outcome for drive effects.
+   *
+   * Called from the ContingencyCoordinator during applyContingencies() when
+   * the outcome involves a social comment action type. This handles the
+   * case where the outcome itself carries the comment initiation timestamp.
+   *
+   * The flow:
+   * 1. If the outcome is a social comment initiation, record it in the buffer
+   *    so future guardian responses can match against it.
+   * 2. If the outcome is positive (guardian responded), evaluate comment quality
+   *    based on the comment timestamp and the current time as the response time.
+   *
+   * @param commentTimestamp - Wall-clock time the comment was initiated (ms)
+   * @param actionId - Unique identifier for the action (used as commentId)
+   * @param outcome - 'positive' or 'negative'
+   * @returns { socialRelief, satisfactionBonus } if the comment was well-received
+   */
+  public evaluateFromOutcome(
+    commentTimestamp: number,
+    actionId: string,
+    outcome: 'positive' | 'negative',
+  ): SocialCommentReliefResult {
+    // Always record the comment so processGuardianResponse() can find it later
+    // (if it hasn't been recorded yet)
+    const alreadyRecorded = this.commentBuffer.some(
+      (c) => c.commentId === actionId,
+    );
+    if (!alreadyRecorded) {
+      this.recordComment(commentTimestamp, actionId);
+    }
+
+    if (outcome === 'positive') {
+      // The outcome reports a positive response. Treat the current time as
+      // the response timestamp to evaluate timing. This covers the case where
+      // the main backend wraps the guardian's response into the action outcome.
+      return this.processGuardianResponse(Date.now());
+    }
+
+    // Negative outcome or no response — no relief
+    return { socialRelief: 0, satisfactionBonus: 0 };
+  }
+
+  /**
    * Process a guardian response.
    * Called when the guardian provides input after Sylphie's comment.
    *

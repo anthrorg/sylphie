@@ -13,7 +13,7 @@
  * Dependencies: drive.types.ts, action.types.ts
  */
 
-import type { DriveSnapshot } from './drive.types';
+import type { DriveSnapshot, PressureVector } from './drive.types';
 import type { ArbitrationResult } from './action.types';
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,24 @@ export interface CycleResponse {
    * Defaults to GROUNDED for Type 1 (latent space patterns are already validated knowledge).
    */
   readonly knowledgeGrounding: KnowledgeGrounding;
+
+  /**
+   * Drive pressure vector captured just before action execution (EXECUTING phase).
+   *
+   * Communication uses this to compute the real driveEffectsObserved delta by
+   * comparing it to the post-delivery drive state. Without this snapshot, the
+   * drive delta is unmeasurable and driveEffectsObserved would always be empty.
+   */
+  readonly preExecutionDriveSnapshot?: PressureVector;
+
+  /**
+   * Latent space pattern IDs written during this cycle's write-back phase.
+   *
+   * Populated when a new response is written to the latent space. Used by
+   * reportOutcome() to update latent pattern confidence based on real outcome
+   * data rather than the initial speculative confidence (0.3).
+   */
+  readonly latentPatternIds?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

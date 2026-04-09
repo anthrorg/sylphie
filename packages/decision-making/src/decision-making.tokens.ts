@@ -142,7 +142,7 @@ export const TYPE_1_TRACKER_SERVICE = Symbol('TYPE_1_TRACKER_SERVICE');
  * Monitors for attractor states (CANON §Known Attractor States):
  *   1. TYPE_2_ADDICT — LLM always wins, Type 1 never develops
  *   2. HALLUCINATED_KNOWLEDGE — >20% nodes without SENSOR/GUARDIAN provenance
- *   3. DEPRESSIVE_ATTRACTOR — >80% negative self-evaluations
+ *   3. DEPRESSIVE_ATTRACTOR — Learned helplessness (high shrug rate + MAE + negative drives)
  *   4. PLANNING_RUNAWAY — >70% prediction failures with plan proliferation
  *   5. PREDICTION_PESSIMIST — Early learning phase with MAE > 0.30
  *

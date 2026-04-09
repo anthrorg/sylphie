@@ -16,13 +16,18 @@
  *
  * 2. HALLUCINATED_KNOWLEDGE
  *    More than 20% of WKG nodes lack SENSOR or GUARDIAN provenance.
- *    Placeholder: requires a WKG stats query. Currently returns false.
- *    TODO: Wire to IWkgService.getProvenanceStats() when available.
+ *    Queries the WORLD Neo4j instance for Entity node provenance distribution.
+ *    Trusted sources: SENSOR, GUARDIAN, GUARDIAN_APPROVED_INFERENCE,
+ *    TAUGHT_PROCEDURE, SYSTEM_BOOTSTRAP. Everything else is untrusted.
+ *    Result is cached with a 30-second TTL.
  *
  * 3. DEPRESSIVE_ATTRACTOR
- *    More than 80% of self-evaluations in KG(Self) are negative.
- *    Placeholder: requires a KG(Self) query. Currently returns false.
- *    TODO: Wire to ISelfKgService.getSelfEvaluationStats() when available.
+ *    Learned helplessness — the system believes it cannot succeed. Measured
+ *    via a composite of three signals: (a) SHRUG rate from the arbitration
+ *    window (>50% = giving up on acting), (b) mean prediction MAE from the
+ *    prediction window (>0.25 = consistently wrong), (c) chronically elevated
+ *    Sadness or Anxiety drives (>0.60 = motivational signature of helplessness).
+ *    Alert when the normalized composite exceeds 0.60.
  *
  * 4. PLANNING_RUNAWAY
  *    More than 70% of predictions fail over the last 50 predictions, with
@@ -44,11 +49,18 @@
  *   - Alerts are surfaced via IDecisionEventLogger; external corrective action
  *     is taken by a guardian or by the Decision Making facade.
  *
- * Dependencies: NestJS Logger, DECISION_EVENT_LOGGER (@Optional).
+ * Dependencies: NestJS Logger, DECISION_EVENT_LOGGER (@Optional),
+ *               DRIVE_STATE_READER (for depressive attractor + alert snapshots),
+ *               Neo4jService (@Optional, for hallucinated knowledge detection).
  */
 
 import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
-import { verboseFor } from '@sylphie/shared';
+import {
+  verboseFor,
+  Neo4jService,
+  Neo4jInstanceName,
+  DriveName,
+} from '@sylphie/shared';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 
@@ -89,8 +101,8 @@ export interface DetectorResult {
    * The measured metric value for this detector.
    * Units depend on the detector:
    *   - TYPE_2_ADDICT:          ratio in [0, 1]
-   *   - HALLUCINATED_KNOWLEDGE: ratio in [0, 1] (placeholder: 0)
-   *   - DEPRESSIVE_ATTRACTOR:   ratio in [0, 1] (placeholder: 0)
+   *   - HALLUCINATED_KNOWLEDGE: ratio in [0, 1] (untrusted / total entities)
+   *   - DEPRESSIVE_ATTRACTOR:   composite in [0, 1] (shrug + MAE + drive signals)
    *   - PLANNING_RUNAWAY:       ratio in [0, 1]
    *   - PREDICTION_PESSIMIST:   mean MAE in [0, 1]
    */
@@ -115,6 +127,11 @@ export class AttractorMonitorService {
 
   // Detector thresholds (CANON §Known Attractor States)
   private readonly TYPE_2_ADDICT_RATIO_THRESHOLD = 0.90;
+  private readonly HALLUCINATED_KNOWLEDGE_RATIO_THRESHOLD = 0.20;
+  private readonly DEPRESSIVE_SHRUG_RATIO_THRESHOLD = 0.50;
+  private readonly DEPRESSIVE_MAE_THRESHOLD = 0.25;
+  private readonly DEPRESSIVE_DRIVE_THRESHOLD = 0.60;
+  private readonly DEPRESSIVE_COMPOSITE_THRESHOLD = 0.60;
   private readonly PLANNING_RUNAWAY_FAILURE_RATIO_THRESHOLD = 0.70;
   private readonly PREDICTION_PESSIMIST_MAE_THRESHOLD = 0.30;
   private readonly PREDICTION_PESSIMIST_MIN_TOTAL = 100;
@@ -128,12 +145,22 @@ export class AttractorMonitorService {
   /** Total predictions ever recorded (not capped; used for pessimist guard). */
   private totalPredictions = 0;
 
+  /** Cached provenance ratio from the last WKG query. -1 means uncached. */
+  private cachedProvenanceRatio = -1;
+  private cachedProvenanceTimestamp = 0;
+
+  /** Cache TTL for WKG provenance queries (30 seconds). */
+  private readonly PROVENANCE_CACHE_TTL_MS = 30_000;
+
   constructor(
     @Optional() @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
 
     @Inject(DRIVE_STATE_READER)
     private readonly driveStateReader: IDriveStateReader,
+
+    @Optional() @Inject(Neo4jService)
+    private readonly neo4j: Neo4jService | null,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -174,6 +201,26 @@ export class AttractorMonitorService {
   }
 
   // ---------------------------------------------------------------------------
+  // Read API (for MetricsController)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Return a point-in-time summary of the rolling prediction MAE window.
+   *
+   * This is a pure read — it does not trigger detector evaluation or emit
+   * any events. Callers must check sampleCount to assess reliability
+   * (CANON §Development Metrics: metric unreliable if sampleCount < 10).
+   */
+  getPredictionMAESummary(): { mae: number; sampleCount: number; windowSize: number } {
+    const sampleCount = this.predictionWindow.length;
+    if (sampleCount === 0) {
+      return { mae: 0, sampleCount: 0, windowSize: this.PREDICTION_WINDOW_SIZE };
+    }
+    const mae = this.predictionWindow.reduce((sum, e) => sum + e.mae, 0) / sampleCount;
+    return { mae, sampleCount, windowSize: this.PREDICTION_WINDOW_SIZE };
+  }
+
+  // ---------------------------------------------------------------------------
   // Detection
   // ---------------------------------------------------------------------------
 
@@ -189,10 +236,10 @@ export class AttractorMonitorService {
    *
    * @returns Array of DetectorResult, one per detector, in definition order.
    */
-  runDetectors(): DetectorResult[] {
+  async runDetectors(): Promise<DetectorResult[]> {
     const results: DetectorResult[] = [
       this.detectType2Addict(),
-      this.detectHallucinatedKnowledge(),
+      await this.detectHallucinatedKnowledge(),
       this.detectDepressiveAttractor(),
       this.detectPlanningRunaway(),
       this.detectPredictionPessimist(),
@@ -233,8 +280,9 @@ export class AttractorMonitorService {
    *
    * @returns Array of DetectorResult with triggered === true.
    */
-  getActiveAlerts(): DetectorResult[] {
-    return this.runDetectors().filter((r) => r.triggered);
+  async getActiveAlerts(): Promise<DetectorResult[]> {
+    const results = await this.runDetectors();
+    return results.filter((r) => r.triggered);
   }
 
   // ---------------------------------------------------------------------------
@@ -268,37 +316,199 @@ export class AttractorMonitorService {
   }
 
   /**
-   * Detect HALLUCINATED_KNOWLEDGE: >20% of WKG nodes lack trusted provenance.
+   * Detect HALLUCINATED_KNOWLEDGE: >20% of WKG Entity nodes lack trusted
+   * provenance (SENSOR or GUARDIAN).
    *
-   * Placeholder. Requires a WKG stats query that returns the fraction of nodes
-   * without SENSOR or GUARDIAN provenance. Until wired, returns false with metric 0.
+   * Queries the WORLD Neo4j instance for the provenance distribution across
+   * all Entity nodes. Nodes with provenance_type of LLM_GENERATED, INFERENCE,
+   * BEHAVIORAL_INFERENCE, or any non-trusted source count as ungrounded.
    *
-   * TODO: Inject IWkgService and call getProvenanceStats() to compute this metric.
+   * The result is cached for 30 seconds to avoid hammering Neo4j on every
+   * detector run. If Neo4jService is unavailable or the query fails, the
+   * detector returns not-triggered with metric 0 (safe fallback — we cannot
+   * detect the problem without the graph).
+   *
+   * Alert threshold: ratio > 0.20.
    */
-  private detectHallucinatedKnowledge(): DetectorResult {
-    return {
-      name: 'HALLUCINATED_KNOWLEDGE',
-      triggered: false,
-      metric: 0,
-      threshold: 0.20,
-    };
+  private async detectHallucinatedKnowledge(): Promise<DetectorResult> {
+    const threshold = this.HALLUCINATED_KNOWLEDGE_RATIO_THRESHOLD;
+
+    // If Neo4jService is not available, we cannot measure this.
+    if (!this.neo4j) {
+      return this.noData('HALLUCINATED_KNOWLEDGE', threshold);
+    }
+
+    // Serve from cache if fresh enough.
+    const now = Date.now();
+    if (
+      this.cachedProvenanceRatio >= 0 &&
+      now - this.cachedProvenanceTimestamp < this.PROVENANCE_CACHE_TTL_MS
+    ) {
+      return {
+        name: 'HALLUCINATED_KNOWLEDGE',
+        triggered: this.cachedProvenanceRatio > threshold,
+        metric: this.cachedProvenanceRatio,
+        threshold,
+      };
+    }
+
+    // Query the WORLD graph for provenance distribution.
+    let session;
+    try {
+      session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+      const result = await session.run(
+        `MATCH (n:Entity)
+         RETURN n.provenance_type AS provenance, count(*) AS cnt`,
+      );
+
+      let totalEntities = 0;
+      let trustedEntities = 0;
+
+      for (const record of result.records) {
+        const provenance = record.get('provenance') as string | null;
+        const count = (record.get('cnt') as { toNumber?: () => number })?.toNumber?.()
+          ?? Number(record.get('cnt'));
+        totalEntities += count;
+
+        // SENSOR and GUARDIAN provenance are trusted experiential sources.
+        // GUARDIAN_APPROVED_INFERENCE and TAUGHT_PROCEDURE are also trusted
+        // because they carry explicit guardian endorsement.
+        // SYSTEM_BOOTSTRAP is trusted (seed knowledge from cold start).
+        if (
+          provenance === 'SENSOR' ||
+          provenance === 'GUARDIAN' ||
+          provenance === 'GUARDIAN_APPROVED_INFERENCE' ||
+          provenance === 'TAUGHT_PROCEDURE' ||
+          provenance === 'SYSTEM_BOOTSTRAP'
+        ) {
+          trustedEntities += count;
+        }
+      }
+
+      // If there are no entities at all, there is nothing to hallucinate.
+      if (totalEntities === 0) {
+        this.cachedProvenanceRatio = 0;
+        this.cachedProvenanceTimestamp = now;
+        return this.noData('HALLUCINATED_KNOWLEDGE', threshold);
+      }
+
+      const untrustedRatio = (totalEntities - trustedEntities) / totalEntities;
+
+      // Cache the result.
+      this.cachedProvenanceRatio = untrustedRatio;
+      this.cachedProvenanceTimestamp = now;
+
+      return {
+        name: 'HALLUCINATED_KNOWLEDGE',
+        triggered: untrustedRatio > threshold,
+        metric: untrustedRatio,
+        threshold,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `HALLUCINATED_KNOWLEDGE detector query failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // On query failure, return safe fallback (not triggered).
+      return this.noData('HALLUCINATED_KNOWLEDGE', threshold);
+    } finally {
+      if (session) {
+        await session.close();
+      }
+    }
   }
 
   /**
-   * Detect DEPRESSIVE_ATTRACTOR: >80% negative self-evaluations in KG(Self).
+   * Detect DEPRESSIVE_ATTRACTOR: learned helplessness — the system believes
+   * it cannot succeed at anything.
    *
-   * Placeholder. Requires a KG(Self) query that returns the ratio of negative
-   * self-evaluations (e.g., nodes with negative valence in the self-model).
-   * Until wired, returns false with metric 0.
+   * Uses a composite signal from three available data sources:
    *
-   * TODO: Inject ISelfKgService and call getSelfEvaluationStats() to compute this.
+   * 1. **SHRUG rate** — fraction of arbitrations resulting in SHRUG over the
+   *    last 50 entries. High SHRUG means the system keeps declining to act.
+   *    Normalized against DEPRESSIVE_SHRUG_RATIO_THRESHOLD (0.50).
+   *
+   * 2. **Mean prediction error** — average MAE across the prediction window.
+   *    Consistently wrong predictions signal that the system's model of the
+   *    world is failing. Normalized against DEPRESSIVE_MAE_THRESHOLD (0.25).
+   *
+   * 3. **Chronically elevated negative drives** — Sadness and Anxiety from
+   *    the current drive snapshot. These drives reflect the motivational
+   *    signature of helplessness. Uses the higher of the two, normalized
+   *    against DEPRESSIVE_DRIVE_THRESHOLD (0.60).
+   *
+   * The composite metric is the mean of the three normalized signals, each
+   * clamped to [0, 1]. Alert when composite > DEPRESSIVE_COMPOSITE_THRESHOLD
+   * (0.60).
+   *
+   * Requires at least some data in the arbitration or prediction windows to
+   * produce a meaningful signal. Returns not-triggered with metric 0 when
+   * both windows are empty (cold start).
    */
   private detectDepressiveAttractor(): DetectorResult {
+    const threshold = this.DEPRESSIVE_COMPOSITE_THRESHOLD;
+
+    // Need at least one data source to produce a meaningful signal.
+    if (
+      this.arbitrationWindow.length === 0 &&
+      this.predictionWindow.length === 0
+    ) {
+      return this.noData('DEPRESSIVE_ATTRACTOR', threshold);
+    }
+
+    // Signal 1: SHRUG rate — fraction of arbitrations that gave up.
+    let shrugSignal = 0;
+    if (this.arbitrationWindow.length > 0) {
+      const shrugCount = this.arbitrationWindow.filter((e) => e === 'shrug').length;
+      const shrugRatio = shrugCount / this.arbitrationWindow.length;
+      // Normalize: 0 at zero shrugs, 1.0 at or above the shrug threshold.
+      shrugSignal = Math.min(1.0, shrugRatio / this.DEPRESSIVE_SHRUG_RATIO_THRESHOLD);
+    }
+
+    // Signal 2: Mean prediction error — how wrong the system's predictions are.
+    let maeSignal = 0;
+    if (this.predictionWindow.length > 0) {
+      const meanMae =
+        this.predictionWindow.reduce((sum, e) => sum + e.mae, 0) /
+        this.predictionWindow.length;
+      // Normalize: 0 at zero MAE, 1.0 at or above the MAE threshold.
+      maeSignal = Math.min(1.0, meanMae / this.DEPRESSIVE_MAE_THRESHOLD);
+    }
+
+    // Signal 3: Chronically elevated negative drives (Sadness, Anxiety).
+    // Use the higher of the two — either alone is a depressive indicator.
+    const snapshot = this.driveStateReader.getCurrentState();
+    const sadness = snapshot.pressureVector[DriveName.Sadness];
+    const anxiety = snapshot.pressureVector[DriveName.Anxiety];
+    const worstNegativeDrive = Math.max(sadness, anxiety);
+    // Only count positive pressure (drives in relief range are not depressive).
+    const driveSignal =
+      worstNegativeDrive > 0
+        ? Math.min(1.0, worstNegativeDrive / this.DEPRESSIVE_DRIVE_THRESHOLD)
+        : 0;
+
+    // Composite: mean of the three normalized signals.
+    // Each signal contributes equally. All three must be somewhat elevated
+    // for the composite to cross threshold — a single elevated signal alone
+    // is not enough to diagnose learned helplessness.
+    const activeSignals: number[] = [];
+
+    if (this.arbitrationWindow.length > 0) {
+      activeSignals.push(shrugSignal);
+    }
+    if (this.predictionWindow.length > 0) {
+      activeSignals.push(maeSignal);
+    }
+    // Drive signal is always available (drive reader never returns null).
+    activeSignals.push(driveSignal);
+
+    const composite =
+      activeSignals.reduce((sum, s) => sum + s, 0) / activeSignals.length;
+
     return {
       name: 'DEPRESSIVE_ATTRACTOR',
-      triggered: false,
-      metric: 0,
-      threshold: 0.80,
+      triggered: composite > threshold,
+      metric: composite,
+      threshold,
     };
   }
 

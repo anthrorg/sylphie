@@ -235,6 +235,12 @@ export interface PlanOutcomeData {
   readonly executionSuccessful: boolean;
   readonly driveEffectsObserved: Partial<Record<DriveName, number>>;
   readonly predictionAccurate: boolean;
+  /**
+   * Mean Absolute Error from the prediction evaluation, in [0.0, 1.0].
+   * Provided when the outcome comes from a PREDICTION_EVALUATED event.
+   * Used by PlanEvaluationService to flag consistently-failing procedures.
+   */
+  readonly mae?: number;
 }
 
 // ---------------------------------------------------------------------------

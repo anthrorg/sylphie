@@ -8,15 +8,31 @@
  * This creates a behavioral pattern: under stress, failures hit harder,
  * reinforcing more cautious behavior until anxiety decreases.
  *
+ * Drive effects (applied via applyContingencies):
+ * - High anxiety + negative outcome: amplify all negative drive deltas by 1.5x.
+ *   This makes failures under stress more impactful, pushing toward caution.
+ * - High anxiety + positive outcome: provide anxiety relief (-0.10).
+ *   Successfully acting despite stress reduces anxiety (builds confidence).
+ *
  * This is a Type 1 computation — no blocking calls, pure arithmetic.
  */
 
-import { verboseFor } from '@sylphie/shared';
+import { DriveName, verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('DriveEngine');
 
+/** Threshold above which anxiety is considered elevated. */
+const ANXIETY_THRESHOLD = 0.7;
+
+/** Amplification factor for negative drive effects under high anxiety. */
+const NEGATIVE_AMPLIFICATION_FACTOR = 1.5;
+
+/** Anxiety relief granted when a positive outcome occurs under high anxiety. */
+const ANXIETY_RELIEF_ON_SUCCESS = -0.10;
+
 /**
- * AnxietyAmplification: Computes amplified confidence reductions under stress.
+ * AnxietyAmplification: Computes amplified confidence reductions under stress
+ * AND produces drive-level effects for the contingency coordinator.
  */
 export class AnxietyAmplification {
   /**
@@ -41,7 +57,7 @@ export class AnxietyAmplification {
     }
 
     // Only amplify if anxiety was elevated (>0.7)
-    if (anxietyAtExecution <= 0.7) {
+    if (anxietyAtExecution <= ANXIETY_THRESHOLD) {
       return baseReduction;
     }
 
@@ -50,10 +66,79 @@ export class AnxietyAmplification {
       anxietyAtExecution,
       outcome,
       baseReduction,
-      amplifiedReduction: baseReduction * 1.5,
-      factor: 1.5,
+      amplifiedReduction: baseReduction * NEGATIVE_AMPLIFICATION_FACTOR,
+      factor: NEGATIVE_AMPLIFICATION_FACTOR,
     });
-    return baseReduction * 1.5;
+    return baseReduction * NEGATIVE_AMPLIFICATION_FACTOR;
+  }
+
+  /**
+   * Compute drive-level effects from anxiety amplification.
+   *
+   * Called by the ContingencyCoordinator during applyContingencies().
+   * Two behavioral effects:
+   *
+   * 1. High anxiety + negative outcome: amplify all existing negative drive
+   *    effects by 1.5x. The amplified portion is returned as additional deltas.
+   *    This makes failures under stress hurt more, reinforcing cautious behavior.
+   *
+   * 2. High anxiety + positive outcome: provide anxiety relief (-0.10).
+   *    Successfully acting under stress demonstrates competence and reduces
+   *    future anxiety in similar contexts.
+   *
+   * @param anxietyAtExecution - Anxiety level at time of action dispatch
+   * @param outcome - 'positive' or 'negative'
+   * @param existingDriveEffects - The drive effects already computed by the
+   *   outcome payload (before contingencies). These are what get amplified.
+   * @returns Partial map of additional drive deltas from anxiety amplification
+   */
+  public computeDriveEffects(
+    anxietyAtExecution: number,
+    outcome: 'positive' | 'negative',
+    existingDriveEffects: Partial<Record<DriveName, number>>,
+  ): Partial<Record<DriveName, number>> {
+    // No effect if anxiety is not elevated
+    if (anxietyAtExecution <= ANXIETY_THRESHOLD) {
+      return {};
+    }
+
+    const deltas: Partial<Record<DriveName, number>> = {};
+
+    if (outcome === 'negative') {
+      // Amplify negative drive effects: for each negative delta in the outcome,
+      // add an additional 0.5x of that delta (total becomes 1.5x of original).
+      // We return only the ADDITIONAL portion — the base is already applied
+      // by the normal outcome processing.
+      for (const [drive, value] of Object.entries(existingDriveEffects)) {
+        if (value !== undefined && value > 0) {
+          // Positive delta = pressure increase (a bad effect).
+          // Amplify it by adding 50% more.
+          const amplification = value * (NEGATIVE_AMPLIFICATION_FACTOR - 1.0);
+          deltas[drive as DriveName] = amplification;
+        }
+      }
+
+      if (Object.keys(deltas).length > 0) {
+        vlog('anxiety amplification drive effects (negative outcome)', {
+          anxietyAtExecution,
+          outcome,
+          amplifiedDrives: deltas,
+        });
+      }
+    } else {
+      // Positive outcome under high anxiety: provide anxiety relief.
+      // Acting successfully despite stress is a learning signal that
+      // reduces anxiety for future similar situations.
+      deltas[DriveName.Anxiety] = ANXIETY_RELIEF_ON_SUCCESS;
+
+      vlog('anxiety amplification drive effects (positive outcome)', {
+        anxietyAtExecution,
+        outcome,
+        anxietyRelief: ANXIETY_RELIEF_ON_SUCCESS,
+      });
+    }
+
+    return deltas;
   }
 }
 

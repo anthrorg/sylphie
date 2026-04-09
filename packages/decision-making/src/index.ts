@@ -8,6 +8,25 @@ export { DecisionMakingModule } from './decision-making.module';
 /** The sole public injection token for this subsystem. */
 export { DECISION_MAKING_SERVICE } from './decision-making.tokens';
 
+/**
+ * Arbitration metrics token and concrete class.
+ * Exported so MetricsController can inject ArbitrationService directly to read
+ * accumulated Type 1 / Type 2 / SHRUG counts for the CANON health metric.
+ * The token is an alias to the module-internal ARBITRATION_SERVICE symbol.
+ */
+export { ARBITRATION_SERVICE } from './decision-making.tokens';
+export { ArbitrationService } from './arbitration/arbitration.service';
+export type { ArbitrationMetrics } from './arbitration/arbitration.service';
+
+/**
+ * Attractor monitor token and concrete class.
+ * Exported so MetricsController can inject AttractorMonitorService to read the
+ * rolling prediction window for PredictionMAEMetric.
+ */
+export { ATTRACTOR_MONITOR_SERVICE } from './decision-making.tokens';
+export { AttractorMonitorService } from './monitoring/attractor-monitor.service';
+export type { DetectorResult } from './monitoring/attractor-monitor.service';
+
 /** Public interface types for consumers. */
 export type { IDecisionMakingService } from './interfaces/decision-making.interfaces';
 

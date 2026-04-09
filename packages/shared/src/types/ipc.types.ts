@@ -209,6 +209,39 @@ export interface ActionOutcomePayload {
     /** Actual outcome value [0.0, 1.0]. */
     readonly actualValue: number;
   };
+
+  /**
+   * Optional information gain metrics for Curiosity Information Gain contingency.
+   *
+   * CANON §A.14 Behavioral Contingency — Curiosity Information Gain:
+   * Curiosity relief is proportional to actual new information gained.
+   * The main backend populates these fields from WKG operations that
+   * occurred during action execution.
+   *
+   * If absent, the curiosity contingency degrades gracefully (returns 0).
+   */
+  readonly informationGainMetrics?: {
+    /** Number of new WKG nodes created during this action's execution. */
+    readonly newNodes: number;
+    /** Sum of positive confidence increases for existing WKG nodes. */
+    readonly confidenceDeltas: number;
+    /** Number of prediction errors that were resolved by the outcome. */
+    readonly resolvedErrors: number;
+  };
+
+  /**
+   * Optional timestamp of when a social comment was initiated.
+   *
+   * CANON §A.14 Behavioral Contingency — Social Comment Quality:
+   * When the action was a Sylphie-initiated social comment, this records
+   * the wall-clock timestamp of initiation. Used to evaluate whether
+   * the guardian responded within the 30-second bonus window.
+   *
+   * If absent, the social comment quality contingency does not fire
+   * during applyContingencies(). The standalone processGuardianResponse()
+   * path remains available as an additional trigger.
+   */
+  readonly socialCommentTimestamp?: number;
 }
 
 /**

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static';
 import {
   PrismaModule,
   TimescaleModule,
@@ -52,6 +53,15 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
       envFilePath: path.resolve(process.cwd(), '.env'),
       load: [neo4jConfig, timescaleConfig, postgresConfig, ollamaConfig, voiceConfig],
     }),
+    // Serve the Vite-built frontend in production (no-op when dir is absent)
+    ...(process.env.NODE_ENV === 'production'
+      ? [
+          ServeStaticModule.forRoot({
+            rootPath: path.resolve(process.cwd(), 'frontend', 'dist'),
+            exclude: ['/api/(.*)', '/ws/(.*)'],
+          }),
+        ]
+      : []),
     PrismaModule,
     TimescaleModule,
     DriveEngineModule,

@@ -1,5 +1,6 @@
 /**
- * ActionRetrieverService — WKG candidate retrieval with LRU cache.
+ * ActionRetrieverService — WKG candidate retrieval with LRU cache and
+ * drive-modulated ranking.
  *
  * CANON §Subsystem 1 (Decision Making): Retrieves action candidates from the
  * World Knowledge Graph. Each candidate carries a motivating drive (the
@@ -12,9 +13,21 @@
  * provenance with base confidence 0.40. They are never elevated unless
  * guardian-confirmed.
  *
- * LRU cache: 50 entries, 5-minute TTL, keyed by context fingerprint.
- * Prevents redundant WKG queries for identical context fingerprints within
- * the same session window.
+ * Drive-modulated ranking: Candidates are scored with a composite function:
+ *   finalScore = W_CONFIDENCE * confidence
+ *              + W_CONTEXT   * contextMatchScore
+ *              + W_DRIVE     * driveRelevanceScore
+ *
+ * Drive relevance measures how well a procedure's predicted drive effects
+ * (negative values = relief) align with the current drive pressures.
+ * Procedures that relieve the highest-pressure drives score higher.
+ * When a procedure has no driveEffects metadata, driveRelevanceScore
+ * defaults to 0.0 and the composite gracefully degrades to the prior
+ * confidence + context ranking.
+ *
+ * LRU cache: 50 entries, 5-minute TTL, keyed by context fingerprint + drive
+ * state hash. The drive state hash ensures that cache entries are invalidated
+ * when the drive state changes significantly enough to alter rankings.
  *
  * Neo4j is injected @Optional. When unavailable, retrieval returns an empty
  * candidate list (which triggers the Type 2 path) and a debug message is
@@ -64,6 +77,66 @@ const LRU_CAPACITY = 50;
 
 /** Cache entry TTL in milliseconds (5 minutes). */
 const LRU_TTL_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Composite Scoring Weights
+// ---------------------------------------------------------------------------
+
+/**
+ * Weights for the composite ranking function.
+ *
+ * confidence:    Primary signal. ACT-R dynamics make this the strongest signal
+ *                for well-tested procedures.
+ * contextMatch:  Secondary. Jaccard similarity — lightweight but useful for
+ *                disambiguating between procedures with similar confidence.
+ * driveRelevance: Tertiary. How well the procedure's predicted effects align
+ *                with current drive pressures. This is the new signal that
+ *                makes retrieval drive-aware.
+ *
+ * The weights sum to 1.0 so the composite score stays in [0.0, 1.0].
+ */
+const W_CONFIDENCE = 0.50;
+const W_CONTEXT = 0.30;
+const W_DRIVE = 0.20;
+
+// ---------------------------------------------------------------------------
+// Drive Key Normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Lookup table mapping display-name drive keys (used in bootstrap seed
+ * driveEffects) to canonical DriveName enum values. Handles the mismatch
+ * between seed keys like "Social", "Cognitive Awareness" and DriveName
+ * enum values like "social", "cognitiveAwareness".
+ *
+ * Built once at module load from DRIVE_INDEX_ORDER for zero maintenance cost.
+ */
+const DRIVE_KEY_NORMALIZE: ReadonlyMap<string, DriveName> = (() => {
+  const map = new Map<string, DriveName>();
+  for (const drive of DRIVE_INDEX_ORDER) {
+    // Canonical enum value (e.g., "social", "cognitiveAwareness")
+    map.set(drive, drive);
+    // Lowercase match (already covered but explicit)
+    map.set(drive.toLowerCase(), drive);
+  }
+  // Display-name mappings for bootstrap seeds
+  map.set('social', DriveName.Social);
+  map.set('curiosity', DriveName.Curiosity);
+  map.set('boredom', DriveName.Boredom);
+  map.set('anxiety', DriveName.Anxiety);
+  map.set('satisfaction', DriveName.Satisfaction);
+  map.set('sadness', DriveName.Sadness);
+  map.set('focus', DriveName.Focus);
+  map.set('guilt', DriveName.Guilt);
+  map.set('integrity', DriveName.Integrity);
+  map.set('system health', DriveName.SystemHealth);
+  map.set('systemhealth', DriveName.SystemHealth);
+  map.set('moral valence', DriveName.MoralValence);
+  map.set('moralvalence', DriveName.MoralValence);
+  map.set('cognitive awareness', DriveName.CognitiveAwareness);
+  map.set('cognitiveawareness', DriveName.CognitiveAwareness);
+  return map;
+})();
 
 /**
  * Minimal LRU cache backed by a Map.
@@ -177,16 +250,24 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
    *      confidence >= retrieval threshold (0.50).
    *   3. Compute Jaccard similarity between each node's triggerContext and
    *      the provided contextFingerprint.
-   *   4. Assign the motivating drive (highest-pressure drive in driveSnapshot).
-   *   5. Sort by confidence descending.
-   *   6. Cache and return.
+   *   4. Compute drive relevance: how well each procedure's predicted
+   *      driveEffects align with the current drive pressures.
+   *   5. Assign the motivating drive (highest-pressure drive in driveSnapshot).
+   *   6. Sort by composite score (confidence * W_CONFIDENCE +
+   *      contextMatch * W_CONTEXT + driveRelevance * W_DRIVE) descending.
+   *   7. Cache and return.
+   *
+   * When a procedure has no driveEffects metadata, driveRelevanceScore
+   * defaults to 0.0 and the composite gracefully degrades to confidence +
+   * context ranking.
    *
    * An empty array is a valid result. The arbitration service handles it
    * by entering the Type 2 path.
    *
    * @param contextFingerprint - Semantic fingerprint of the current input context.
-   * @param driveSnapshot      - Current drive state for motivating drive assignment.
-   * @returns Array of ActionCandidate records. May be empty.
+   * @param driveSnapshot      - Current drive state for motivating drive assignment
+   *                             and drive relevance scoring.
+   * @returns Array of ActionCandidate records, ranked by composite score. May be empty.
    */
   async retrieve(
     contextFingerprint: string,
@@ -266,26 +347,41 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             driveEffects,
           };
 
+          const driveRelevanceScore = this.computeDriveRelevance(
+            driveEffects,
+            driveSnapshot,
+          );
+
           return {
             procedureData,
             confidence: row.confidence,
             motivatingDrive,
             contextMatchScore,
+            driveRelevanceScore,
           };
         })
-        .sort((a, b) => b.confidence - a.confidence);
+        .sort((a, b) => this.compositeScore(b) - this.compositeScore(a));
 
+      const topCandidate = candidates.length > 0 ? candidates[0] : null;
       vlog('action retriever WKG query', {
         fingerprint: contextFingerprint.substring(0, 16),
         candidates: candidates.length,
-        topConfidence: candidates.length > 0 ? +candidates[0].confidence.toFixed(3) : null,
+        topConfidence: topCandidate ? +topCandidate.confidence.toFixed(3) : null,
+        topContextMatch: topCandidate ? +topCandidate.contextMatchScore.toFixed(3) : null,
+        topDriveRelevance: topCandidate?.driveRelevanceScore != null
+          ? +topCandidate.driveRelevanceScore.toFixed(3) : null,
+        topComposite: topCandidate ? +this.compositeScore(topCandidate).toFixed(3) : null,
         motivatingDrive,
         cacheSize: this.cache.size,
       });
 
       this.logger.debug(
         `ActionRetriever: retrieved ${candidates.length} candidates from WKG ` +
-          `(motivatingDrive: ${motivatingDrive})`,
+          `(motivatingDrive: ${motivatingDrive}` +
+          (topCandidate
+            ? `, top composite: ${this.compositeScore(topCandidate).toFixed(3)}`
+            : '') +
+          `)`,
       );
 
       this.cache.set(contextFingerprint, candidates);
@@ -463,6 +559,98 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
   // ---------------------------------------------------------------------------
   // Private utilities
   // ---------------------------------------------------------------------------
+
+  /**
+   * Compute how well a procedure's predicted drive effects align with the
+   * current drive pressures.
+   *
+   * The algorithm:
+   *   1. For each drive in the procedure's driveEffects, find the corresponding
+   *      current pressure value from the snapshot.
+   *   2. A negative driveEffect (relief) on a high-pressure drive is highly
+   *      relevant. Conversely, relief on an already-satisfied (low/negative
+   *      pressure) drive is less useful.
+   *   3. The per-drive relevance is: currentPressure * abs(relief).
+   *      Only negative effects (relief) contribute positively. Positive effects
+   *      (increasing pressure) contribute negatively.
+   *   4. Sum per-drive relevance and normalize to [0.0, 1.0].
+   *
+   * Returns 0.0 when driveEffects is empty (graceful fallback to existing
+   * behavior). Returns 0.0 when no drive effect aligns with current pressures.
+   *
+   * @param driveEffects  - Predicted effects from the procedure node.
+   * @param driveSnapshot - Current drive state.
+   * @returns Relevance score in [0.0, 1.0].
+   */
+  private computeDriveRelevance(
+    driveEffects: Partial<Record<DriveName, number>>,
+    driveSnapshot: DriveSnapshot,
+  ): number {
+    const keys = Object.keys(driveEffects);
+    if (keys.length === 0) {
+      return 0.0;
+    }
+
+    const { pressureVector } = driveSnapshot;
+    let relevanceSum = 0.0;
+    let maxPossibleRelevance = 0.0;
+
+    for (const rawKey of keys) {
+      // Normalize the key to a canonical DriveName
+      const driveName = DRIVE_KEY_NORMALIZE.get(rawKey.toLowerCase());
+      if (driveName === undefined) {
+        continue; // Unknown drive key — skip silently
+      }
+
+      const effect = driveEffects[rawKey as DriveName] ?? 0;
+      const currentPressure = pressureVector[driveName];
+
+      // Only positive pressure values represent unmet need (range [0, 1.0]).
+      // Drives at or below zero are already satisfied.
+      const clampedPressure = Math.max(0, currentPressure);
+
+      // Negative effect = relief. For relevance, we want:
+      //   high pressure + strong relief = high relevance
+      //   low pressure  + any relief    = low relevance
+      //   any pressure  + positive effect (worsening) = negative relevance
+      //
+      // Per-drive relevance = clampedPressure * (-effect)
+      //   relief (effect < 0) => positive contribution
+      //   worsening (effect > 0) => negative contribution
+      relevanceSum += clampedPressure * (-effect);
+
+      // Track max possible relevance for normalization:
+      // max pressure is 1.0, max relief magnitude we see in seeds is ~0.25
+      // Use absolute effect value * 1.0 as the per-drive max
+      maxPossibleRelevance += Math.abs(effect) * 1.0;
+    }
+
+    if (maxPossibleRelevance <= 0) {
+      return 0.0;
+    }
+
+    // Normalize to [0.0, 1.0] and clamp
+    return Math.max(0.0, Math.min(1.0, relevanceSum / maxPossibleRelevance));
+  }
+
+  /**
+   * Compute the composite ranking score for a candidate.
+   *
+   * Combines confidence, context match, and drive relevance with fixed weights.
+   * When driveRelevanceScore is absent (e.g., latent-space candidates),
+   * the drive component contributes 0.0 and ranking degrades gracefully
+   * to confidence + context.
+   *
+   * @param candidate - The action candidate to score.
+   * @returns Composite score in [0.0, 1.0].
+   */
+  private compositeScore(candidate: ActionCandidate): number {
+    return (
+      W_CONFIDENCE * candidate.confidence +
+      W_CONTEXT * candidate.contextMatchScore +
+      W_DRIVE * (candidate.driveRelevanceScore ?? 0.0)
+    );
+  }
 
   /**
    * Compute Jaccard similarity between two strings tokenized on whitespace.

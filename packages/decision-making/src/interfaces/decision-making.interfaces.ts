@@ -460,6 +460,23 @@ export interface IConfidenceUpdaterService {
     outcome: 'reinforced' | 'decayed' | 'counter_indicated',
     guardianFeedback?: 'confirmation' | 'correction',
   ): Promise<void>;
+
+  /**
+   * Record a prediction MAE observation for an action procedure.
+   *
+   * Appends the MAE value to a rolling window (capped at 10 entries, FIFO).
+   * The stored values are used by the internal graduation and demotion checks
+   * that run after each confidence update.
+   *
+   * This method should be called from the decision loop whenever a prediction
+   * evaluation produces an MAE for a procedure-backed action. It is safe to
+   * call before or after update() — the ordering does not matter because the
+   * MAE window is read lazily during the next graduation/demotion check.
+   *
+   * @param actionId - WKG procedure node ID of the action.
+   * @param mae      - Mean absolute error from PredictionEvaluation (0.0–1.0).
+   */
+  recordPredictionMAE(actionId: string, mae: number): void;
 }
 
 // ---------------------------------------------------------------------------

@@ -90,6 +90,18 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   /** Maximum number of gap type entries to retain in the rolling accumulator. */
   private readonly RECENT_GAP_TYPES_CAP = 20;
 
+  /**
+   * Maps actionId → latent pattern IDs written during that cycle's write-back.
+   *
+   * Populated when latent space patterns are written (confidence=0.3).
+   * Consumed by reportOutcome() to update pattern confidence based on real
+   * outcome data. Capped at 100 entries to prevent unbounded growth.
+   */
+  private readonly pendingLatentPatterns = new Map<string, string[]>();
+
+  /** Maximum entries in pendingLatentPatterns before LRU eviction. */
+  private readonly MAX_PENDING_LATENT = 100;
+
   constructor(
     @Inject(EXECUTOR_ENGINE)
     private readonly executorEngine: IExecutorEngine,
@@ -665,18 +677,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         encodingDepth,
       );
 
-      // Confidence update for non-SHRUG, non-novel-type2 actions.
-      if (
-        arbitrationResult.type !== 'SHRUG' &&
-        arbitrationResult.candidate.procedureData !== null
-      ) {
-        const procedureId = arbitrationResult.candidate.procedureData.id;
-        try {
-          await this.confidenceUpdater.update(procedureId, 'reinforced');
-        } catch (err) {
-          this.logger.warn(`Confidence update failed for ${procedureId}: ${err}`);
-        }
-      }
+      // NOTE: Confidence updates are intentionally NOT performed here in the
+      // LEARNING phase. They are deferred to reportOutcome(), which is called by
+      // Communication after response delivery when real outcome data (guardian
+      // feedback, drive deltas) is available. Updating here would cause double
+      // reinforcement — every action would get an unconditional confidence boost
+      // in addition to the outcome-based update in reportOutcome().
 
       // Optional consolidation check — runs if the service is wired.
       if (this.consolidationService) {
@@ -725,6 +731,77 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       const cycleLatencyMs = Date.now() - cycleStartTime;
 
+      // ── Latent space + WKG write-back ────────────────────────────────────
+      // If this cycle produced a response (Type 2 or SHRUG-with-LLM-fallback),
+      // write per-modality patterns to the latent space so Type 1 catches it
+      // next time on the relevant modality stream. Also write to WKG.
+      //
+      // Patterns are written at LOW initial confidence (0.3) because we don't
+      // yet know if the response was good. reportOutcome() updates confidence
+      // later based on real outcome data (guardian feedback, drive deltas).
+      let latentPatternIds: string[] = [];
+
+      if (responseText.length > 0 && !multiModalMatch) {
+        // Only write if this was NOT already a latent space hit (avoid duplication)
+        try {
+          const wkgCtx = await this.wkgContext.getContextForFrame(frame);
+          const entityIds = wkgCtx.entities.map((e) => e.nodeId);
+
+          // Write per-modality patterns (text, audio, video — not drives/faces)
+          latentPatternIds = await this.latentSpace.writeMultiModal(
+            frame.modality_embeddings,
+            responseText,
+            {
+              procedureId: actionId !== 'SHRUG' ? actionId : undefined,
+              confidence: 0.3,
+              deliberationSummary: `${arbitrationResult.type} response to: ${inputSummary}`,
+              entityIds,
+              sessionId: driveSnapshot.sessionId,
+            },
+          );
+          const primaryPatternId = latentPatternIds[0] ?? randomUUID();
+
+          // Write ActionProcedure to WKG (also at low initial confidence)
+          const procedureId = await this.wkgContext.writeActionProcedure({
+            name: `learned-${primaryPatternId.substring(0, 8)}`,
+            category: 'LearnedResponse',
+            triggerContext: inputSummary,
+            responseText,
+            actionSequence: [{
+              index: 0,
+              stepType: 'LLM_GENERATE',
+              params: { instruction: responseText },
+            }],
+            provenance: 'INFERENCE',
+            confidence: 0.3,
+            entityIds,
+            motivatingDrive: dominantDrive,
+          });
+
+          this.logger.debug(
+            `Write-back: ${latentPatternIds.length} modality patterns (confidence=0.3), ` +
+              `wkg_proc=${procedureId?.substring(0, 8) ?? 'none'}, ` +
+              `entities=${entityIds.length}`,
+          );
+        } catch (err) {
+          this.logger.warn(`Write-back failed: ${err}`);
+        }
+      }
+
+      // Track latent pattern IDs for outcome-based confidence updates.
+      // reportOutcome() will look these up to adjust pattern confidence
+      // based on real results (guardian feedback, drive deltas).
+      if (latentPatternIds.length > 0) {
+        this.pendingLatentPatterns.set(actionId, latentPatternIds);
+        // LRU eviction: remove oldest entries when cap is exceeded.
+        if (this.pendingLatentPatterns.size > this.MAX_PENDING_LATENT) {
+          const oldest = this.pendingLatentPatterns.keys().next().value;
+          if (oldest !== undefined) {
+            this.pendingLatentPatterns.delete(oldest);
+          }
+        }
+      }
+
       // Only emit a CycleResponse if there is actual text to deliver.
       // Empty responses cause the frontend to show "Sylphie speaks" with no content.
       if (responseText.trim().length > 0) {
@@ -749,62 +826,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           model: responseModel,
           tokensUsed: responseTokens,
           knowledgeGrounding: responseGrounding,
+          preExecutionDriveSnapshot: driveSnapshot.pressureVector,
+          latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
         });
       } else {
         this.logger.debug(
           `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
         );
-      }
-
-      // ── Latent space + WKG write-back ────────────────────────────────────
-      // If this cycle produced a response (Type 2 or SHRUG-with-LLM-fallback),
-      // write per-modality patterns to the latent space so Type 1 catches it
-      // next time on the relevant modality stream. Also write to WKG.
-      if (responseText.length > 0 && !multiModalMatch) {
-        // Only write if this was NOT already a latent space hit (avoid duplication)
-        try {
-          const wkgCtx = await this.wkgContext.getContextForFrame(frame);
-          const entityIds = wkgCtx.entities.map((e) => e.nodeId);
-
-          // Write per-modality patterns (text, audio, video — not drives/faces)
-          const patternIds = await this.latentSpace.writeMultiModal(
-            frame.modality_embeddings,
-            responseText,
-            {
-              procedureId: actionId !== 'SHRUG' ? actionId : undefined,
-              confidence: arbitrationResult.type === 'SHRUG' ? 0.4 : 0.6,
-              deliberationSummary: `${arbitrationResult.type} response to: ${inputSummary}`,
-              entityIds,
-              sessionId: driveSnapshot.sessionId,
-            },
-          );
-          const primaryPatternId = patternIds[0] ?? randomUUID();
-
-          // Write ActionProcedure to WKG
-          const procedureId = await this.wkgContext.writeActionProcedure({
-            name: `learned-${primaryPatternId.substring(0, 8)}`,
-            category: 'LearnedResponse',
-            triggerContext: inputSummary,
-            responseText,
-            actionSequence: [{
-              index: 0,
-              stepType: 'LLM_GENERATE',
-              params: { instruction: responseText },
-            }],
-            provenance: 'INFERENCE',
-            confidence: arbitrationResult.type === 'SHRUG' ? 0.4 : 0.6,
-            entityIds,
-            motivatingDrive: dominantDrive,
-          });
-
-          this.logger.debug(
-            `Write-back: ${patternIds.length} modality patterns, ` +
-              `wkg_proc=${procedureId?.substring(0, 8) ?? 'none'}, ` +
-              `entities=${entityIds.length}`,
-          );
-        } catch (err) {
-          this.logger.warn(`Write-back failed: ${err}`);
-        }
       }
 
       // ── Route sensory prediction errors to drives ─────────────────────────
@@ -989,6 +1017,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       ? 'reinforced'
       : 'counter_indicated';
 
+    // Feed MAE into the confidence updater's rolling window BEFORE update()
+    // so that the graduation/demotion checks inside update() see fresh data.
+    if (predictionEvaluation) {
+      this.confidenceUpdater.recordPredictionMAE(actionId, predictionEvaluation.mae);
+    }
+
     try {
       await this.confidenceUpdater.update(actionId, confidenceOutcome);
     } catch (err) {
@@ -1023,6 +1057,25 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
       }
+    }
+
+    // ── Update latent space pattern confidence based on real outcome ────────
+    // Patterns were written at speculative 0.3 confidence. Now that we have
+    // real outcome data, adjust: boost on success, reduce on failure.
+    const pendingPatterns = this.pendingLatentPatterns.get(actionId);
+    if (pendingPatterns && pendingPatterns.length > 0) {
+      const newConfidence = isAccurate ? 0.5 : 0.15;
+      for (const patternId of pendingPatterns) {
+        this.latentSpace.updateConfidence(patternId, newConfidence);
+      }
+      this.pendingLatentPatterns.delete(actionId);
+
+      vlog('latent confidence updated via reportOutcome', {
+        actionId,
+        patternCount: pendingPatterns.length,
+        outcome: confidenceOutcome,
+        newConfidence,
+      });
     }
   }
 

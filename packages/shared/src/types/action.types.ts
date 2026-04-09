@@ -168,6 +168,19 @@ export interface ActionCandidate {
    * Used as a tiebreaker when multiple candidates have similar confidence.
    */
   readonly contextMatchScore: number;
+
+  /**
+   * How well this candidate's predicted drive effects align with current drive
+   * pressures. Score in [0.0, 1.0]. Higher = better alignment.
+   *
+   * A procedure that relieves the highest-pressure drives scores higher.
+   * Computed during retrieval by comparing the procedure's driveEffects
+   * (negative values = relief) against the current pressureVector.
+   *
+   * Optional: defaults to 0.0 for candidates constructed outside the retriever
+   * (e.g., latent space matches, Type 2 novel candidates).
+   */
+  readonly driveRelevanceScore?: number;
 }
 
 // ---------------------------------------------------------------------------
