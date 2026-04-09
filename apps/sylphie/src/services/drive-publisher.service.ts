@@ -100,13 +100,13 @@ export class DrivePublisherService implements OnModuleInit, OnModuleDestroy {
       type: 'executor_cycle',
       timestamp: snapshot.timestamp instanceof Date
         ? snapshot.timestamp.getTime()
-        : Number(snapshot.timestamp),
+        : new Date(snapshot.timestamp as unknown as string).getTime(),
       pressure,
       pressure_metadata: {
         sequence_number: snapshot.tickNumber,
         timestamp_ms: snapshot.timestamp instanceof Date
           ? snapshot.timestamp.getTime()
-          : Number(snapshot.timestamp),
+          : new Date(snapshot.timestamp as unknown as string).getTime(),
         is_stale: false,
       },
       drive_velocity: driveVelocity,

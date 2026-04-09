@@ -99,7 +99,7 @@ export function validateDriveSnapshotCoherence(
   if (lastValidTimestamp) {
     const lastValidMs = lastValidTimestamp instanceof Date ? lastValidTimestamp.getTime() : Number(lastValidTimestamp);
     if (lastValidMs > 0) {
-      const snapshotMs = snapshot.timestamp instanceof Date ? snapshot.timestamp.getTime() : Number(snapshot.timestamp);
+      const snapshotMs = snapshot.timestamp instanceof Date ? snapshot.timestamp.getTime() : new Date(snapshot.timestamp as unknown as string).getTime();
       const timeSinceLastValid = snapshotMs - lastValidMs;
       if (timeSinceLastValid > 5000) {
         return {
@@ -128,9 +128,16 @@ export function validateDriveSnapshotCoherence(
  *
  * This is the defensive copy mechanism required by IDriveStateReader.getCurrentState().
  *
+ * NOTE: JSON.parse(JSON.stringify(...)) converts Date objects to ISO strings.
+ * We reconstruct the timestamp field as a Date so consumers always receive the
+ * correct type declared by the DriveSnapshot interface.
+ *
  * @param snapshot - The snapshot to copy
- * @returns A defensive JSON copy of the snapshot
+ * @returns A defensive JSON copy of the snapshot with timestamp as Date
  */
 export function defensiveCopySnapshot(snapshot: DriveSnapshot): DriveSnapshot {
-  return JSON.parse(JSON.stringify(snapshot));
+  const copy = JSON.parse(JSON.stringify(snapshot));
+  // Restore timestamp to Date — JSON round-trip serialises it to an ISO string.
+  copy.timestamp = new Date(copy.timestamp);
+  return copy as DriveSnapshot;
 }

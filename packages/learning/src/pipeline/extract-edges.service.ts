@@ -72,9 +72,13 @@ export class ExtractEdgesService implements IExtractEdgesService {
 
     const confidence = resolveBaseConfidence(EDGE_PROVENANCE);
     const pairs = buildPairs(entities, MAX_PAIRS);
-    const edges: ExtractedEdge[] = [];
 
-    vlog('extractEdges: building pairs', {
+    if (pairs.length === 0) {
+      vlog('extractEdges: no valid pairs', { eventId: event.id });
+      return [];
+    }
+
+    vlog('extractEdges: batching UNWIND+MERGE', {
       eventId: event.id,
       entityCount: entities.length,
       pairsToAttempt: pairs.length,
@@ -82,34 +86,7 @@ export class ExtractEdgesService implements IExtractEdgesService {
       confidence,
     });
 
-    for (const [source, target] of pairs) {
-      const ok = await this.mergeRelatedToEdge(
-        source.nodeId,
-        target.nodeId,
-        confidence,
-      );
-
-      if (ok) {
-        vlog('edge extracted', {
-          eventId: event.id,
-          source: source.label,
-          target: target.label,
-          relType: 'RELATED_TO',
-          provenance: EDGE_PROVENANCE,
-          confidence,
-        });
-        edges.push({
-          sourceId: source.nodeId,
-          sourceLabel: source.label,
-          targetId: target.nodeId,
-          targetLabel: target.label,
-          relType: 'RELATED_TO',
-          provenance: EDGE_PROVENANCE,
-          confidence,
-          sessionId: event.session_id,
-        });
-      }
-    }
+    const edges = await this.mergeRelatedToEdgesBatched(pairs, confidence, event);
 
     vlog('extractEdges complete', { eventId: event.id, edgesCreated: edges.length });
     this.logger.debug(
@@ -123,19 +100,33 @@ export class ExtractEdgesService implements IExtractEdgesService {
   // ---------------------------------------------------------------------------
 
   /**
-   * MERGE a RELATED_TO edge between two entity nodes.
-   * Returns true on success, false if Neo4j is unavailable or query fails.
+   * Batch MERGE RELATED_TO edges for all pairs in a single UNWIND query.
+   *
+   * Opens one Neo4j session, sends one UNWIND+MERGE Cypher statement for
+   * all pairs, and returns the successfully created ExtractedEdge objects.
+   * This replaces the previous sequential per-pair session+MERGE loop,
+   * reducing up to MAX_PAIRS round-trips down to exactly one.
+   *
+   * Atomic failure is acceptable for co-occurrence edges — if the batch
+   * fails, all pairs are lost for this cycle but will be re-derived on
+   * the next maintenance run.
    */
-  private async mergeRelatedToEdge(
-    sourceId: string,
-    targetId: string,
+  private async mergeRelatedToEdgesBatched(
+    pairs: Array<[ExtractedEntity, ExtractedEntity]>,
     confidence: number,
-  ): Promise<boolean> {
+    event: UnlearnedEvent,
+  ): Promise<ExtractedEdge[]> {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
 
     try {
-      await session.run(
-        `MATCH (a:Entity {node_id: $sourceId}), (b:Entity {node_id: $targetId})
+      const pairParams = pairs.map(([source, target]) => ({
+        sourceId: source.nodeId,
+        targetId: target.nodeId,
+      }));
+
+      const result = await session.run(
+        `UNWIND $pairs AS pair
+         MATCH (a:Entity {node_id: pair.sourceId}), (b:Entity {node_id: pair.targetId})
          MERGE (a)-[r:RELATED_TO]->(b)
          ON CREATE SET
            r.confidence      = $confidence,
@@ -145,22 +136,67 @@ export class ExtractEdgesService implements IExtractEdgesService {
            r.confidence = CASE WHEN $confidence > r.confidence
                                THEN $confidence
                                ELSE r.confidence END,
-           r.updated_at = datetime()`,
+           r.updated_at = datetime()
+         RETURN a.node_id AS sourceId, b.node_id AS targetId`,
         {
-          sourceId,
-          targetId,
+          pairs: pairParams,
           confidence,
           provenance: EDGE_PROVENANCE,
         },
       );
-      return true;
+
+      // Build a lookup from nodeId → entity for label resolution
+      const entityById = new Map<string, ExtractedEntity>();
+      for (const [source, target] of pairs) {
+        entityById.set(source.nodeId, source);
+        entityById.set(target.nodeId, target);
+      }
+
+      const edges: ExtractedEdge[] = [];
+      for (const record of result.records) {
+        const sourceId = record.get('sourceId') as string;
+        const targetId = record.get('targetId') as string;
+        const source = entityById.get(sourceId);
+        const target = entityById.get(targetId);
+
+        if (source && target) {
+          vlog('edge extracted', {
+            eventId: event.id,
+            source: source.label,
+            target: target.label,
+            relType: 'RELATED_TO',
+            provenance: EDGE_PROVENANCE,
+            confidence,
+          });
+          edges.push({
+            sourceId: source.nodeId,
+            sourceLabel: source.label,
+            targetId: target.nodeId,
+            targetLabel: target.label,
+            relType: 'RELATED_TO',
+            provenance: EDGE_PROVENANCE,
+            confidence,
+            sessionId: event.session_id,
+          });
+        }
+      }
+
+      if (result.records.length !== pairs.length) {
+        this.logger.warn(
+          `extractEdges batch: expected ${pairs.length} pairs but ` +
+            `${result.records.length} matched (some Entity nodes may be missing)`,
+        );
+      }
+
+      return edges;
     } catch (err) {
       this.logger.error(
-        `mergeRelatedToEdge failed (${sourceId} -> ${targetId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `mergeRelatedToEdgesBatched failed for event ${event.id} ` +
+          `(${pairs.length} pairs): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
       );
-      return false;
+      return [];
     } finally {
       await session.close();
     }

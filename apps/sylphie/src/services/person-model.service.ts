@@ -393,6 +393,70 @@ export function extractFactsFromText(text: string): ExtractedFact[] {
     });
   }
 
+  // "My favorite X is Y" — e.g. "my favorite color is blue"
+  const favRegex = /my favorite (\w+(?:\s+\w+)?) is (.+?)(?:[,.]|and\b|$)/gi;
+  let favMatch: RegExpExecArray | null;
+  while ((favMatch = favRegex.exec(lower)) !== null) {
+    const category = favMatch[1].trim().replace(/\s+/g, '_');
+    const favValue = favMatch[2].trim().substring(0, 50);
+    if (favValue) {
+      facts.push({
+        key: `favorite_${category}`,
+        value: favValue,
+        source: 'self_reported',
+        target: 'speaker',
+        rawText: text,
+      });
+    }
+  }
+
+  // "My X is Y" — generic possessive fact e.g. "my job is teacher", "my hobby is painting"
+  // Exclude "name" (handled above) and "favorite" (handled above).
+  const myXisY = /\bmy ((?!name\b|favorite\b)\w+(?:\s+\w+)?) is (.+?)(?:[,.]|and\b|$)/gi;
+  let myMatch: RegExpExecArray | null;
+  while ((myMatch = myXisY.exec(lower)) !== null) {
+    const myKey = myMatch[1].trim().replace(/\s+/g, '_');
+    const myVal = myMatch[2].trim().substring(0, 50);
+    // Skip very short or purely stopword values
+    if (myVal.length >= 2 && myKey.length >= 2) {
+      facts.push({
+        key: myKey,
+        value: myVal,
+        source: 'self_reported',
+        target: 'speaker',
+        rawText: text,
+      });
+    }
+  }
+
+  // "I have a X named Y" / "I have a X called Y" — pets, kids, etc.
+  const haveNamedRegex = /i have (?:a |an )?(\w+(?:\s+\w+)?) (?:named|called) (\w+)/gi;
+  let haveMatch: RegExpExecArray | null;
+  while ((haveMatch = haveNamedRegex.exec(lower)) !== null) {
+    const thingType = haveMatch[1].trim();
+    const thingName = haveMatch[2].trim();
+    const capName = thingName.charAt(0).toUpperCase() + thingName.slice(1);
+    facts.push({
+      key: thingType.replace(/\s+/g, '_'),
+      value: capName,
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
+  }
+
+  // "I'm from X" / "I am from X"
+  const fromMatch = lower.match(/i(?:'m| am) from (.+?)(?:[,.]|$)/);
+  if (fromMatch) {
+    facts.push({
+      key: 'origin',
+      value: fromMatch[1].trim().substring(0, 50),
+      source: 'self_reported',
+      target: 'speaker',
+      rawText: text,
+    });
+  }
+
   // "I am X" / "I'm X" (occupation, state, identity)
   const iAmMatch = lower.match(/i(?:'m| am) (?:a |an )?(\w+(?:\s+\w+)?)/);
   if (iAmMatch && !['not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'feeling'].includes(iAmMatch[1].split(/\s+/)[0])) {

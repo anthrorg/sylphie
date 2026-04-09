@@ -111,9 +111,14 @@ export class DecisionEventLoggerService implements IDecisionEventLogger, OnModul
   /**
    * Force flush all buffered events to TimescaleDB.
    *
-   * Converts each buffered event into a SQL INSERT and persists via
-   * TimescaleService.query(). If TimescaleService is unavailable, events
-   * are logged at warn level and discarded.
+   * Builds a single multi-row INSERT with parameterized placeholders for
+   * all buffered events, reducing up to BATCH_SIZE individual database
+   * round-trips down to one. Pattern follows the Drive Engine's
+   * TimescaleWriter.buildInsertQuery() reference implementation.
+   *
+   * If TimescaleService is unavailable, events are logged at warn level
+   * and discarded. Batch failure is atomic (all-or-nothing), which is an
+   * acceptable tradeoff for observability data.
    */
   async flush(): Promise<void> {
     if (this.eventBuffer.length === 0) {
@@ -135,29 +140,58 @@ export class DecisionEventLoggerService implements IDecisionEventLogger, OnModul
 
     this.logger.debug(`Flushing ${events.length} decision events to TimescaleDB`);
 
-    for (const event of events) {
-      try {
-        await this.timescale.query(
-          `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, correlation_id, schema_version)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            event.id,
-            event.eventType,
-            event.timestamp,
-            'DECISION_MAKING',
-            event.sessionId,
-            JSON.stringify(event.driveSnapshot),
-            JSON.stringify(event.payload),
-            event.correlationId ?? null,
-            1,
-          ],
-        );
-      } catch (err) {
-        this.logger.error(
-          `Failed to record decision event (type: ${event.eventType}): ${err}`,
-        );
-      }
+    try {
+      const { sql, params } = this.buildBatchInsert(events);
+      await this.timescale.query(sql, params);
+    } catch (err) {
+      const eventTypes = events.map((e) => e.eventType);
+      this.logger.error(
+        `Failed to flush ${events.length} decision events ` +
+          `(types: ${eventTypes.join(', ')}): ${err}`,
+      );
     }
+  }
+
+  /**
+   * Build a parameterized multi-row INSERT for a batch of events.
+   *
+   * Constructs numbered placeholders ($1, $2, ...) with 9 columns per
+   * event row. Follows the same pattern as the Drive Engine's
+   * TimescaleWriter.buildInsertQuery().
+   *
+   * @param events - Buffered events to insert
+   * @returns { sql, params } for parameterized query
+   */
+  private buildBatchInsert(events: BufferedEvent[]): { sql: string; params: unknown[] } {
+    const params: unknown[] = [];
+    const valueStrings: string[] = [];
+
+    events.forEach((event, index) => {
+      const base = index * 9; // 9 columns per event
+
+      params.push(
+        event.id,                              // $base+1: id
+        event.eventType,                       // $base+2: type
+        event.timestamp,                       // $base+3: timestamp
+        'DECISION_MAKING',                     // $base+4: subsystem
+        event.sessionId,                       // $base+5: session_id
+        JSON.stringify(event.driveSnapshot),   // $base+6: drive_snapshot
+        JSON.stringify(event.payload),         // $base+7: payload
+        event.correlationId ?? null,           // $base+8: correlation_id
+        1,                                     // $base+9: schema_version
+      );
+
+      valueStrings.push(
+        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, ` +
+          `$${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`,
+      );
+    });
+
+    const sql =
+      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, correlation_id, schema_version) ` +
+      `VALUES ${valueStrings.join(', ')}`;
+
+    return { sql, params };
   }
 
   /**

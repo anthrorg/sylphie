@@ -179,9 +179,17 @@ export class DriveReaderService implements IDriveStateReader {
    * @throws {DriveCoherenceError} If the snapshot fails validation
    */
   updateSnapshot(snapshot: DriveSnapshot): void {
+    // Coerce timestamp to Date — snapshots arrive over the WS wire as plain JSON,
+    // so JSON.parse leaves the timestamp field as an ISO string, not a Date object.
+    // All downstream consumers (driveState$ subscribers, getCurrentState()) depend
+    // on snapshot.timestamp being a Date instance.
+    const normalized: DriveSnapshot = snapshot.timestamp instanceof Date
+      ? snapshot
+      : { ...snapshot, timestamp: new Date(snapshot.timestamp as unknown as string) };
+
     // Validate coherence before caching
     const coherenceResult = validateDriveSnapshotCoherence(
-      snapshot,
+      normalized,
       this.lastValidSnapshotTimestamp,
     );
 
@@ -195,8 +203,8 @@ export class DriveReaderService implements IDriveStateReader {
     }
 
     // Update the internal snapshot and track timestamp for staleness detection
-    this.snapshotSubject.next(snapshot);
-    this.lastValidSnapshotTimestamp = snapshot.timestamp;
+    this.snapshotSubject.next(normalized);
+    this.lastValidSnapshotTimestamp = normalized.timestamp;
 
   }
 }

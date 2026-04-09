@@ -283,10 +283,17 @@ export class DeliberationService {
     if (!monologueParsed.needsDeliberation && monologueParsed.response) {
       const totalLatencyMs = Date.now() - startTime;
 
-      // Determine grounding from intent + WKG state
+      // Determine grounding from response content first, then intent + WKG state.
+      // Response text is the primary signal: an ignorance admission is always UNKNOWN,
+      // regardless of WKG context loaded or intent classification.
       let knowledgeGrounding: KnowledgeGrounding;
-      if (monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION') {
-        knowledgeGrounding = 'GROUNDED'; // Conversational responses are always grounded
+      const responseText = monologueParsed.response!;
+      if (isIgnoranceResponse(responseText)) {
+        // Honest "I don't know" — WKG was consulted but couldn't answer.
+        knowledgeGrounding = 'UNKNOWN';
+      } else if (monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION') {
+        // Conversational exchanges are social, not WKG-backed.
+        knowledgeGrounding = 'LLM_ASSISTED';
       } else if (wkg.entities.length > 0 || wkg.facts.length > 0) {
         knowledgeGrounding = 'GROUNDED';
       } else {
@@ -414,48 +421,18 @@ export class DeliberationService {
       candidates.push({ text: candidateResponse.content.trim(), reasoning: 'Direct response' });
     }
 
-    // ── Step 3: Selection ───────────────────────────────────────────────
-    this.logger.debug('Deliberation step 3: Selection');
+    // ── Step 3: Selection (deterministic scoring — no LLM call) ────────
+    this.logger.debug('Deliberation step 3: Selection (scored)');
 
-    const selectionCtx = this.contextWindow.assemble({
-      step: 'SELECTION',
-      reservedForGeneration: 100,
-      systemParts: [
-        `You are Sylphie choosing which response to give to ${speakerName}.`,
-        'Pick the response that is most warm, natural, and appropriate.',
-        '- PREFER [GROUNDED] candidates for conversation (greetings, acknowledgments, feelings).',
-        '- For greetings/conversation, NEVER pick a response that says "I don\'t know".',
-        '- Only pick [UNKNOWN] candidates for factual world-knowledge questions.',
-        '- Reject any candidate that sounds like a chatbot or assistant.',
-      ],
-      currentMessages: [
-        { role: 'user', content: `Choose the best response for this situation:\n\nInput: "${rawText}"\n\nCandidates:\n${candidates.map((c, i) => `${i + 1}. ${c.text}`).join('\n')}\n\nReply with ONLY the number of the best choice and a one-sentence reason.` },
-      ],
-      conversationHistory,
-    });
-
-    const selectionResponse = await this.llm.complete({
-      messages: selectionCtx.messages,
-      systemPrompt: selectionCtx.systemPrompt,
-      maxTokens: 100,
-      temperature: DELIBERATION_TEMPERATURE,
-      tier: 'medium',
-      metadata: { callerSubsystem: 'COMMUNICATION', purpose: 'DELIBERATION_SELECTION', sessionId: driveSnapshot.sessionId },
-    });
-
-    totalPromptTokens += selectionResponse.tokensUsed.prompt;
-    totalCompletionTokens += selectionResponse.tokensUsed.completion;
-
-    const selectedIndex = parseSelection(selectionResponse.content, candidates.length);
+    const scored = scoreCandidates(candidates, monologueParsed.intent, wkg);
+    const selectedIndex = scored.bestIndex;
     const selected = candidates[selectedIndex];
 
-    vlog('step 3: selection', {
+    vlog('step 3: selection (scored)', {
       selectedIndex,
       selectedPreview: selected.text.substring(0, 80),
-      model: selectionResponse.model,
-      promptTokens: selectionResponse.tokensUsed.prompt,
-      completionTokens: selectionResponse.tokensUsed.completion,
-      latencyMs: selectionResponse.latencyMs,
+      scores: scored.scores.map((s, i) => ({ index: i, score: +s.score.toFixed(3), factors: s.factors })),
+      rationale: scored.rationale,
     });
 
     // Parse grounding tag from the selected candidate text.
@@ -463,12 +440,13 @@ export class DeliberationService {
     const { text: cleanedText, grounding: parsedGrounding } = parseGroundingTag(selected.text);
     let finalResponseText = cleanedText;
 
-    // Determine knowledge grounding: parsed tag > WKG inference > default
+    // Determine knowledge grounding: parsed tag > WKG inference > default.
+    // Pass the cleaned response text so inferGrounding can detect ignorance admissions.
     let knowledgeGrounding: KnowledgeGrounding = parsedGrounding
-      ?? inferGrounding(wkg);
+      ?? inferGrounding(wkg, cleanedText);
 
     let confidence = 0.5 + (selectedIndex === 0 ? 0.1 : 0); // Slight boost if first choice
-    let rationale = selectionResponse.content.trim();
+    let rationale = scored.rationale;
 
     this.logger.debug(`Selected candidate ${selectedIndex + 1}: "${selected.text.substring(0, 60)}..."`);
 
@@ -629,6 +607,12 @@ export class DeliberationService {
       knowledgeGrounding = finalTagParse.grounding;
     }
 
+    // Final guard: an ignorance admission can never be GROUNDED regardless of
+    // what tag the arbiter attached (LLM sometimes emits tags incorrectly).
+    if (isIgnoranceResponse(finalResponseText) && knowledgeGrounding === 'GROUNDED') {
+      knowledgeGrounding = 'UNKNOWN';
+    }
+
     // Extract any new entity names mentioned in the response
     const discoveredEntities = extractNewEntities(finalResponseText, wkg);
 
@@ -722,16 +706,119 @@ function parseCandidates(text: string): DeliberationCandidate[] {
   return candidates;
 }
 
-/** Parse the selection response to get the chosen candidate index. */
-function parseSelection(text: string, candidateCount: number): number {
-  const match = text.match(/(\d+)/);
-  if (match) {
-    const index = parseInt(match[1], 10) - 1;
-    if (index >= 0 && index < candidateCount) {
-      return index;
+// ---------------------------------------------------------------------------
+// Deterministic candidate scoring (replaces LLM selection call)
+// ---------------------------------------------------------------------------
+
+/** Chatbot/assistant phrases that should be penalized. */
+const CHATBOT_RE = /\b(as an AI|I'?m here to help|how can I assist|how may I help|I don'?t have feelings|I'?m just a|language model|I'?m an? (?:AI|artificial)|I cannot feel|I am not able to)\b/i;
+
+/** "I don't know" hedging patterns. */
+const IDK_RE = /\bI don'?t (?:really )?know\b/i;
+
+interface CandidateScore {
+  readonly score: number;
+  readonly factors: string[];
+}
+
+interface ScoredSelection {
+  readonly bestIndex: number;
+  readonly scores: readonly CandidateScore[];
+  readonly rationale: string;
+}
+
+/**
+ * Score each candidate deterministically and pick the best one.
+ *
+ * Replaces the Step 3 LLM call. The rules encoded here mirror the selection
+ * prompt that was previously sent to the LLM:
+ *   - Prefer GROUNDED candidates for conversational input
+ *   - Penalize "I don't know" for greetings/emotion/facts
+ *   - Penalize chatbot/assistant language
+ *   - Bonus for referencing known WKG entities
+ *   - Prefer concise responses
+ */
+function scoreCandidates(
+  candidates: DeliberationCandidate[],
+  intent: MonologueClassification['intent'],
+  wkg: WkgContext,
+): ScoredSelection {
+  const isConversational = intent === 'GREETING' || intent === 'EMOTION' || intent === 'FACT';
+
+  const scores: CandidateScore[] = candidates.map((candidate) => {
+    let score = 0;
+    const factors: string[] = [];
+    const { grounding } = parseGroundingTag(candidate.text);
+
+    // ── Grounding weight ──────────────────────────────────────────────
+    if (grounding === 'GROUNDED') {
+      score += 1.0;
+      factors.push('grounded:+1.0');
+    } else if (grounding === 'LLM_ASSISTED') {
+      score += 0.5;
+      factors.push('assisted:+0.5');
+    } else if (grounding === 'UNKNOWN') {
+      score += isConversational ? 0.1 : 0.7;
+      factors.push(isConversational ? 'unknown-conv:+0.1' : 'unknown-factual:+0.7');
+    } else {
+      score += 0.5;
+      factors.push('untagged:+0.5');
+    }
+
+    // ── Chatbot language penalty ──────────────────────────────────────
+    if (CHATBOT_RE.test(candidate.text)) {
+      score -= 0.5;
+      factors.push('chatbot:-0.5');
+    }
+
+    // ── "I don't know" penalty in conversational context ──────────────
+    if (isConversational && IDK_RE.test(candidate.text)) {
+      score -= 0.7;
+      factors.push('idk-conv:-0.7');
+    }
+
+    // ── Question-ending penalty (candidates should not ask questions) ─
+    if (candidate.text.trimEnd().endsWith('?')) {
+      score -= 0.15;
+      factors.push('ends-?:-0.15');
+    }
+
+    // ── WKG entity mention bonus ──────────────────────────────────────
+    if (wkg.entities.length > 0) {
+      const lower = candidate.text.toLowerCase();
+      const mentionsKnown = wkg.entities.some((e) =>
+        lower.includes(e.label.toLowerCase()),
+      );
+      if (mentionsKnown) {
+        score += 0.15;
+        factors.push('entity:+0.15');
+      }
+    }
+
+    // ── Verbosity penalty ─────────────────────────────────────────────
+    if (candidate.text.split(/\s+/).length > 50) {
+      score -= 0.1;
+      factors.push('verbose:-0.1');
+    }
+
+    return { score, factors };
+  });
+
+  // Pick the highest-scoring candidate. On ties, prefer the first (position bias).
+  let bestIndex = 0;
+  let bestScore = scores[0].score;
+  for (let i = 1; i < scores.length; i++) {
+    if (scores[i].score > bestScore) {
+      bestScore = scores[i].score;
+      bestIndex = i;
     }
   }
-  return 0; // Default to first candidate
+
+  const rationale =
+    `Scored selection: candidate ${bestIndex + 1} (${bestScore.toFixed(2)}) — ` +
+    scores[bestIndex].factors.join(', ');
+
+  return { bestIndex, scores, rationale };
 }
 
 /** Parse the arbiter's decision. */
@@ -898,20 +985,52 @@ function parseMonologueClassification(text: string): MonologueClassification {
     }
   }
 
-  // Check if the monologue signaled it needs further deliberation
+  // Check if the monologue signaled it needs further deliberation.
+  //
+  // Short-circuit is only valid for simple conversational intents where a
+  // one-step monologue response is architecturally sufficient:
+  //   GREETING, EMOTION, FACT — no reasoning required, direct response is fine.
+  //
+  // QUESTION always proceeds to full deliberation even when the monologue
+  // produced a plausible-looking response. The monologue's response text is
+  // still used as inner-thought context in step 2 candidate generation, so it
+  // is not wasted — it just does not short-circuit the pipeline.
+  //
+  // UNKNOWN and COMMAND already force deliberation; QUESTION is added here.
   const needsDeliberation = !response
     || response.toUpperCase().includes('NEEDS_DELIBERATION')
     || intent === 'UNKNOWN'
-    || intent === 'COMMAND';
+    || intent === 'COMMAND'
+    || intent === 'QUESTION';
 
   return { intent, entity, thought, response, needsDeliberation };
 }
 
 /**
- * Infer knowledge grounding from WKG context when no explicit tag is present.
- * If the WKG had relevant entities/facts, assume GROUNDED; otherwise LLM_ASSISTED.
+ * Returns true when the response text is an honest admission of ignorance.
+ * An ignorance response is NEVER GROUNDED — the WKG state is irrelevant.
+ *
+ * Matches first-person denials: "I don't know", "I'm not sure", "I have no
+ * idea", "I don't have access to", "I can't recall", etc.
  */
-function inferGrounding(wkg: WkgContext): KnowledgeGrounding {
+function isIgnoranceResponse(text: string): boolean {
+  return /\b(i\s+don'?t\s+know|i\s+have\s+no\s+(idea|information|knowledge|record|way\s+to\s+know)|i\s+'?m\s+not\s+sure|i\s+can'?t\s+(recall|remember|tell|say)|i\s+do\s+not\s+know|no\s+information\s+about)\b/i.test(text);
+}
+
+/**
+ * Infer knowledge grounding from WKG context and the actual response text.
+ *
+ * Rules (in priority order):
+ *   1. If the response is an honest admission of ignorance → UNKNOWN.
+ *      WKG context may have been loaded but was not enough to answer; the
+ *      response itself is the ground truth for what was communicated.
+ *   2. If WKG had matching entities or facts → GROUNDED (response used them).
+ *   3. Otherwise → LLM_ASSISTED (general LLM knowledge, no WKG backing).
+ */
+function inferGrounding(wkg: WkgContext, responseText: string): KnowledgeGrounding {
+  if (isIgnoranceResponse(responseText)) {
+    return 'UNKNOWN';
+  }
   if (wkg.entities.length > 0 || wkg.facts.length > 0) {
     return 'GROUNDED';
   }

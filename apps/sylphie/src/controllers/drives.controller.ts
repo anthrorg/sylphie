@@ -38,7 +38,7 @@ export class PressureController {
     const hasRealTick = snapshot.tickNumber > 0;
     const snapshotMs = snapshot.timestamp instanceof Date
       ? snapshot.timestamp.getTime()
-      : Number(snapshot.timestamp);
+      : new Date(snapshot.timestamp as unknown as string).getTime();
     const isRecent = Date.now() - snapshotMs < 2000;
     const isConnected = hasRealTick && isRecent;
     return {

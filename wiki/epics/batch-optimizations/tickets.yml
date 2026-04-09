@@ -1,0 +1,93 @@
+# ============================================================================
+# Epic: Batch Database Optimizations
+# ============================================================================
+#
+# Replaces sequential per-item database round-trips with batched operations
+# across the Learning and Decision Making subsystems.
+#
+# Source: wiki/researchedIdeas/2026-04-09-batch-*.md
+# Date: 2026-04-09
+# ============================================================================
+
+epic:
+  name: "Batch Database Optimizations"
+  description: >
+    Replace sequential per-item database round-trips with batched operations
+    in DecisionEventLoggerService (TimescaleDB) and ExtractEdgesService (Neo4j).
+    Both are well-established patterns with low risk and clear prior art.
+
+tickets:
+
+  # --------------------------------------------------------------------------
+  # T001: Batch Decision Event Flush (ALREADY IMPLEMENTED)
+  # --------------------------------------------------------------------------
+  - id: T001
+    title: "Batch INSERT for DecisionEventLoggerService.flush()"
+    status: done
+    assignee: forge
+    package: packages/decision-making
+    file: packages/decision-making/src/logging/decision-event-logger.service.ts
+    source: wiki/researchedIdeas/2026-04-09-batch-decision-event-flush.md
+    complexity: trivial
+    risk: low
+    description: >
+      Replace sequential per-event INSERT loop with a single multi-row INSERT.
+      Already implemented — flush() uses buildBatchInsert() with parameterized
+      placeholders ($1, $2, ...) for 9 columns per event. Follows the Drive
+      Engine TimescaleWriter pattern.
+    notes: >
+      Found already implemented when this epic was created. The current code
+      uses atomic batch inserts with proper error logging and TimescaleService
+      unavailability handling.
+
+  # --------------------------------------------------------------------------
+  # T002: Batch Neo4j Edge MERGEs in ExtractEdgesService
+  # --------------------------------------------------------------------------
+  - id: T002
+    title: "UNWIND-based batch MERGE for ExtractEdgesService.extractEdges()"
+    status: in-progress
+    assignee: atlas
+    package: packages/learning
+    file: packages/learning/src/pipeline/extract-edges.service.ts
+    source: wiki/researchedIdeas/2026-04-09-batch-neo4j-edge-merges-in-extract-edges.md
+    complexity: trivial
+    risk: low
+    depends_on: []
+    description: >
+      Replace the sequential per-pair Neo4j session+MERGE calls in
+      extractEdges() with a single UNWIND-based batched Cypher query,
+      reducing up to 10 round-trips and 10 session lifecycles per event
+      down to exactly one of each.
+    acceptance_criteria:
+      - extractEdges() uses a single UNWIND+MERGE Cypher query instead of a loop
+      - Only one Neo4j session is opened per extractEdges() call
+      - Edge provenance, confidence, and MERGE semantics are preserved exactly
+      - Error handling logs batch failure with pair count and returns empty array
+      - All returned ExtractedEdge objects match the previous interface contract
+      - buildPairs() pure function is unchanged
+    implementation_notes: >
+      Reference: WkgContextService already uses UNWIND for batch reads.
+      Pattern: UNWIND $pairs AS pair MATCH (a:Entity), (b:Entity) MERGE (a)-[r:RELATED_TO]->(b)
+      Atomic failure is acceptable — same rationale as T001 for observability data.
+
+  # --------------------------------------------------------------------------
+  # T003: Cross-Session Insight Synthesis (DEFERRED)
+  # --------------------------------------------------------------------------
+  - id: T003
+    title: "Cross-Session Insight Synthesis Service"
+    status: deferred
+    assignee: learning
+    package: packages/learning
+    source: wiki/researchedIdeas/2026-04-09-cross-session-insight-synthesis.md
+    complexity: moderate
+    risk: medium
+    description: >
+      Add a second-order reflection pass that compares INSIGHT nodes across
+      sessions to discover patterns, contradictions, and evolving themes.
+    deferred_reason: >
+      Verdict was "yes-with-caveats". Requires Jim's input on:
+      1. Confidence dynamics for "inferences of inferences" (CANON ruling needed)
+      2. New insight types vs. reuse existing with synthesis flag
+      3. Trigger cadence (timer vs. threshold)
+      4. Whether synthesis counts as "retrieval-and-use" under CANON §Immutable Standard 3
+      CANON.md does not currently exist in the repo, so pre-approval cannot proceed.

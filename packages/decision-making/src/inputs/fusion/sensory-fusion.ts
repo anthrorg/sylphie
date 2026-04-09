@@ -60,6 +60,8 @@ export class SensoryFusionService {
     const modalityEmbeddings: Record<string, number[]> = {};
     const raw: Record<string, unknown> = {};
 
+    const encodedModalityNames = new Set<string>();
+
     for (const encoder of this.registry.getAll()) {
       const rawValue = inputs.get(encoder.modalityName);
       if (rawValue !== undefined) {
@@ -67,6 +69,17 @@ export class SensoryFusionService {
         modalityEmbeddings[encoder.modalityName] =
           await encoder.encode(rawValue);
         raw[encoder.modalityName] = rawValue;
+        encodedModalityNames.add(encoder.modalityName);
+      }
+    }
+
+    // Pass through any values that have no encoder (e.g. conversation_history,
+    // person_model, speaker_name). These are metadata set via
+    // TickSamplerService.update() that downstream services read from frame.raw
+    // but that do not participate in the fused embedding.
+    for (const [name, value] of inputs) {
+      if (!encodedModalityNames.has(name)) {
+        raw[name] = value;
       }
     }
 
