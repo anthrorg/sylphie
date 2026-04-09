@@ -7,6 +7,8 @@ import { useGraphWebSocket, useTelemetryWebSocket } from '../hooks/useWebSocket'
 import { NodeInspector } from '../components/Graph/NodeInspector'
 import { SkillManager } from '../components/Skills/SkillManager'
 import { FEAgentPanel } from '../components/FEAgent/FEAgentPanel'
+import { SupervisorPanel } from '../components/Supervisor/SupervisorPanel'
+import { useSupervisorStore } from '../store/supervisorSlice'
 
 /**
  * DashboardLayout — shell for the new /dashboard/* routes.
@@ -16,6 +18,7 @@ import { FEAgentPanel } from '../components/FEAgent/FEAgentPanel'
  */
 const DashboardLayout: React.FC = () => {
   const setVoiceState = useAppStore((s) => s.setVoiceState)
+  const { panelOpen: supervisorOpen, setPanelOpen: setSupervisorOpen } = useSupervisorStore()
 
   // Connect to backend WebSockets (graph + telemetry)
   useGraphWebSocket()
@@ -51,6 +54,7 @@ const DashboardLayout: React.FC = () => {
       <SkillManager />
       <NodeInspector />
       <FEAgentPanel />
+      <SupervisorPanel open={supervisorOpen} onClose={() => setSupervisorOpen(false)} />
     </>
   )
 }

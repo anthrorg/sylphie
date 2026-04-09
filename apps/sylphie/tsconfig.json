@@ -15,7 +15,9 @@
       "@sylphie/learning": ["packages/learning/src"],
       "@sylphie/learning/*": ["packages/learning/src/*"],
       "@sylphie/planning": ["packages/planning/src"],
-      "@sylphie/planning/*": ["packages/planning/src/*"]
+      "@sylphie/planning/*": ["packages/planning/src/*"],
+      "@sylphie/supervisor": ["packages/supervisor/src"],
+      "@sylphie/supervisor/*": ["packages/supervisor/src/*"]
     }
   },
   "include": [

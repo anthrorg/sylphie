@@ -223,8 +223,14 @@ export function useConversationWebSocket() {
       reconnectTimeoutRef.current = null
     }
 
-    if (wsRef.current?.readyState !== WebSocket.CLOSED) {
-      wsRef.current?.close()
+    // Close the old socket AND null the ref so its event handlers become
+    // no-ops (they guard on `wsRef.current !== ws`). This prevents the
+    // race where the new socket opens before the old one's onclose fires,
+    // which was causing the server to see 2 clients and double-deliver.
+    const oldWs = wsRef.current
+    wsRef.current = null
+    if (oldWs && oldWs.readyState !== WebSocket.CLOSED) {
+      oldWs.close()
     }
 
     try {

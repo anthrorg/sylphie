@@ -18,10 +18,12 @@ import {
   Insights as InsightsIcon,
   ChatBubbleOutline as ChatIcon,
   Code as CodeIcon,
+  Psychology as PsychologyIcon,
   RestartAlt as RestartAltIcon,
   Logout as LogoutIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
+import { useSupervisorStore } from '../../store/supervisorSlice'
 import { useSessionTimer } from '../../hooks/useSessionTimer'
 
 // ---------------------------------------------------------------------------
@@ -405,6 +407,34 @@ export const Sidebar: React.FC = () => {
             accentHue={195} // cyan — code/structure
           />
         </Stack>
+
+        {/* ── Supervisor (opens dialog overlay) ─────────────────────── */}
+        <Box sx={{ mt: 2, px: 0.5 }}>
+          <ButtonBase
+            onClick={() => useSupervisorStore.getState().togglePanel()}
+            sx={{
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'flex-start',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 1.5,
+              py: 1,
+              borderRadius: 1.5,
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                bgcolor: 'rgba(156,39,176,0.08)',
+                '& .sup-icon': { color: '#CE93D8' },
+                '& .sup-text': { color: 'rgba(206,147,216,0.9)' },
+              },
+            }}
+          >
+            <PsychologyIcon className="sup-icon" sx={{ fontSize: 16, color: 'rgba(255,255,255,0.3)', transition: 'color 0.2s' }} />
+            <Typography className="sup-text" sx={{ fontSize: '0.75rem', fontWeight: 500, color: 'rgba(255,255,255,0.4)', transition: 'color 0.2s' }}>
+              Supervisor
+            </Typography>
+          </ButtonBase>
+        </Box>
       </Box>
 
       {/* ── Session vitals strip ──────────────────────────────────── */}

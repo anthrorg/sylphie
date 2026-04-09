@@ -4,6 +4,7 @@ import {
   Circle as CircleIcon,
   Extension as ExtensionIcon,
   InsightsOutlined as InsightsIcon,
+  Psychology as PsychologyIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
 import { useSessionTimer } from '../../hooks/useSessionTimer'
@@ -37,7 +38,7 @@ const StatusDot: React.FC<{ state: WSState; label: string }> = ({ state, label }
   )
 }
 
-export const TopBar: React.FC<{ onOpenObservatory?: () => void }> = ({ onOpenObservatory }) => {
+export const TopBar: React.FC<{ onOpenObservatory?: () => void; onOpenSupervisor?: () => void }> = ({ onOpenObservatory, onOpenSupervisor }) => {
   const { wsState, graphStats, toggleSkillPanel, voiceState, cameraState, sessionStart } =
     useAppStore()
 
@@ -77,6 +78,18 @@ export const TopBar: React.FC<{ onOpenObservatory?: () => void }> = ({ onOpenObs
               onClick={onOpenObservatory}
             >
               Observatory
+            </Button>
+          )}
+
+          {onOpenSupervisor && (
+            <Button
+              startIcon={<PsychologyIcon />}
+              color="inherit"
+              variant="outlined"
+              size="small"
+              onClick={onOpenSupervisor}
+            >
+              Supervisor
             </Button>
           )}
 

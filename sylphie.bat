@@ -43,16 +43,21 @@ echo       All %total% containers healthy.
 echo.
 
 :: Build shared package and generate Prisma client
-echo [3/4] Building shared package...
+echo [3/6] Building shared package...
 call yarn prisma:generate
 call yarn build:shared
 
-:: Launch drive server, frontend, and backend
-echo [4/5] Launching Drive Engine server...
+:: Launch cognition service (TensorFlow pipeline)
+echo [4/6] Launching Cognition Service...
+start "Cognition Service" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie\packages\cognition-service && python -m uvicorn main:app --host 127.0.0.1 --port 8431"
+timeout /t 2 /nobreak >nul
+
+:: Launch drive server
+echo [5/6] Launching Drive Engine server...
 start "Drive Server" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev:drive-server"
 timeout /t 2 /nobreak >nul
 
-echo [5/5] Launching Frontend and Backend...
+echo [6/6] Launching Frontend and Backend...
 start "Sylphie Frontend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev"
 start "Sylphie Backend" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie && yarn dev:backend"
 
@@ -61,6 +66,7 @@ echo ========================================
 echo  Frontend:     http://localhost:5173
 echo  Backend:      http://localhost:3000
 echo  Drive Server: ws://localhost:3001
+echo  Cognition:    http://localhost:8431
 echo  Perception:   http://localhost:8430
 echo  SearXNG:      http://localhost:8888
 echo ========================================

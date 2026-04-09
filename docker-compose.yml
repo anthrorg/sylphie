@@ -147,6 +147,28 @@ services:
       retries: 3
       start_period: 30s
 
+  cognition:
+    build:
+      context: ./packages/cognition-service
+      dockerfile: Dockerfile
+    container_name: sylphie-cognition
+    ports:
+      - "${COGNITION_PORT:-8431}:8431"
+    volumes:
+      - cognition_weights:/app/weights
+    environment:
+      COGNITION_PORT: "8431"
+      COGNITION_TRAINING_ENABLED: "${COGNITION_TRAINING_ENABLED:-true}"
+      COGNITION_BOOTSTRAP_MODE: "${COGNITION_BOOTSTRAP_MODE:-shadow}"
+      COGNITION_CHECKPOINT_INTERVAL: "${COGNITION_CHECKPOINT_INTERVAL:-1000}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8431/cognition/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   searxng:
     image: searxng/searxng:latest
     container_name: sylphie-searxng
@@ -173,4 +195,5 @@ volumes:
   neo4j_pkg_data:
   neo4j_pkg_logs:
   postgres_data:
+  cognition_weights:
   timescaledb_data:

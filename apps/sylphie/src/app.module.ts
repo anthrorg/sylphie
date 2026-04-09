@@ -17,6 +17,7 @@ import { DecisionMakingModule } from '@sylphie/decision-making';
 import { LearningModule } from '@sylphie/learning';
 import { PlanningModule } from '@sylphie/planning';
 import { DriveEngineModule } from '@sylphie/drive-engine';
+import { SupervisorModule } from '@sylphie/supervisor';
 import { GraphController } from './controllers/graph.controller';
 import { PkgController } from './controllers/pkg.controller';
 import { SkillsController } from './controllers/skills.controller';
@@ -25,11 +26,13 @@ import { VoiceController } from './controllers/voice.controller';
 import { MetricsController } from './controllers/metrics.controller';
 import { DebugController } from './controllers/debug.controller';
 import { AuthController } from './controllers/auth.controller';
+import { SupervisorController } from './controllers/supervisor.controller';
 import { GraphGateway } from './gateways/graph.gateway';
 import { ConversationGateway } from './gateways/conversation.gateway';
 import { TelemetryGateway } from './gateways/telemetry.gateway';
 import { PerceptionGateway } from './gateways/perception.gateway';
 import { AudioGateway } from './gateways/audio.gateway';
+import { SupervisorGateway } from './gateways/supervisor.gateway';
 import { SensoryLoggerService } from './services/sensory-logger.service';
 import { DrivePublisherService } from './services/drive-publisher.service';
 import { WkgQueryService } from './services/wkg-query.service';
@@ -45,6 +48,9 @@ import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
 import { SceneEventDetectorService } from './services/scene-event-detector.service';
 import { VisualWorkingMemoryService } from './services/visual-working-memory.service';
 import { TelemetryBroadcastService } from './services/telemetry-broadcast.service';
+import { SupervisorBroadcastService } from './services/supervisor-broadcast.service';
+import { CognitionGatewayService } from './services/cognition-gateway.service';
+import { CognitionBridgeService } from './services/cognition-bridge.service';
 
 @Module({
   imports: [
@@ -68,6 +74,7 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
     DecisionMakingModule,
     LearningModule,
     PlanningModule,
+    SupervisorModule,
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -128,6 +135,7 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
     VoiceController,
     MetricsController,
     DebugController,
+    SupervisorController,
   ],
   providers: [
     // Sensory pipeline providers are now inside DecisionMakingModule
@@ -147,12 +155,16 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
     SceneEventDetectorService,
     VisualWorkingMemoryService,
     TelemetryBroadcastService,
+    SupervisorBroadcastService,
+    CognitionGatewayService,
+    CognitionBridgeService,
     // Gateways
     GraphGateway,
     ConversationGateway,
     TelemetryGateway,
     PerceptionGateway,
     AudioGateway,
+    SupervisorGateway,
   ],
 })
 export class AppModule {}

@@ -12,7 +12,8 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
-import { BarChart as BarChartIcon, Close as CloseIcon, Extension as ExtensionIcon } from '@mui/icons-material'
+import { BarChart as BarChartIcon, Close as CloseIcon, Extension as ExtensionIcon, Psychology as PsychologyIcon } from '@mui/icons-material'
+import { SupervisorPanel } from './components/Supervisor/SupervisorPanel'
 
 import { useAppStore } from './store'
 import { useSessionTimer } from './hooks/useSessionTimer'
@@ -42,6 +43,7 @@ const GAP = 8
 const Dashboard = () => {
   const { setVoiceState } = useAppStore()
   const [observatoryOpen, setObservatoryOpen] = useState(false)
+  const [supervisorOpen, setSupervisorOpen] = useState(false)
 
   useGraphWebSocket()
   useTelemetryWebSocket()
@@ -57,7 +59,7 @@ const Dashboard = () => {
   return (
     <>
       <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-        <TopBar onOpenObservatory={() => setObservatoryOpen(true)} />
+        <TopBar onOpenObservatory={() => setObservatoryOpen(true)} onOpenSupervisor={() => setSupervisorOpen(true)} />
         <Box sx={{ p: `${GAP}px`, overflow: 'auto', flex: 1 }}>
 
           {/* Row 1: graph | chat | radar */}
@@ -119,13 +121,15 @@ const Dashboard = () => {
           <ObservatoryPanel />
         </DialogContent>
       </Dialog>
+
+      <SupervisorPanel open={supervisorOpen} onClose={() => setSupervisorOpen(false)} />
     </>
   )
 }
 
 export default Dashboard
 
-const TopBar: React.FC<{ onOpenObservatory: () => void }> = ({ onOpenObservatory }) => {
+const TopBar: React.FC<{ onOpenObservatory: () => void; onOpenSupervisor: () => void }> = ({ onOpenObservatory, onOpenSupervisor }) => {
   const { wsState, graphStats, toggleSkillPanel, voiceState, cameraState, sessionStart } = useAppStore()
   const isDevMode = useDevMode()
   const elapsed = useSessionTimer(sessionStart)
@@ -154,6 +158,16 @@ const TopBar: React.FC<{ onOpenObservatory: () => void }> = ({ onOpenObservatory
               sx={{ color: (theme) => theme.palette.background.default }}
             >
               Observatory
+            </Button>
+            <Button
+              startIcon={<PsychologyIcon />}
+              color="inherit"
+              variant="outlined"
+              size="small"
+              onClick={onOpenSupervisor}
+              sx={{ color: (theme) => theme.palette.background.default }}
+            >
+              Supervisor
             </Button>
             {isDevMode && (
               <Button startIcon={<ExtensionIcon />} color="inherit" variant="outlined" size="small" onClick={toggleSkillPanel} sx={{ color: (theme) => theme.palette.background.default }}>
