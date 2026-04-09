@@ -50,7 +50,9 @@ import type {
   GraduationState,
   GraduationRecord,
   CycleResponse,
+  WorkingMemorySnapshot,
 } from '@sylphie/shared';
+import type { WkgContext } from '../wkg/wkg-context.service';
 
 // ---------------------------------------------------------------------------
 // IDecisionMakingService — main facade
@@ -760,4 +762,62 @@ export interface IDecisionEventLogger {
    * Called during cycle completion and error recovery.
    */
   flush(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// IWorkingMemoryService
+// ---------------------------------------------------------------------------
+
+/**
+ * Interface for the activation-driven working memory buffer.
+ *
+ * Sits between raw data sources (WKG, episodic memory, drives, perception)
+ * and the deliberation pipeline. Items from different sources compete for
+ * slots based on relevance to the current sensory frame.
+ *
+ * The activation function is a weighted composite of:
+ * - Relevance to current input (Jaccard similarity + entity overlap)
+ * - Source confidence (WKG confidence, episode ageWeight)
+ * - Temporal recency (exponential decay)
+ * - Drive modulation (high-pressure drives boost associated content)
+ * - Spreading activation (cross-source boosting via WKG graph connections)
+ *
+ * CANON §Subsystem 1 (Decision Making): Working memory selects which
+ * knowledge is relevant to the current decision cycle. It does not store
+ * or modify knowledge — it only selects and activates.
+ *
+ * Injection token: WORKING_MEMORY_SERVICE (decision-making.tokens.ts)
+ * Provided by:    WorkingMemoryService
+ */
+export interface IWorkingMemoryService {
+  /**
+   * Assemble a working memory snapshot for the current decision cycle.
+   *
+   * Takes the current sensory frame, WKG context, drive state, and episodic
+   * memory as inputs. Scores all candidate items via the activation function,
+   * runs spreading activation for cross-source boosting, applies drive
+   * modulation, enforces capacity and token budget, and returns a snapshot.
+   *
+   * Called once per decision cycle, before deliberation begins.
+   *
+   * @param frame        - Current sensory frame (carries raw text, entities).
+   * @param wkgContext   - Pre-fetched WKG context for this frame.
+   * @param driveSnapshot - Current drive state (read-only).
+   * @param episodes     - Recent episodes from episodic memory.
+   * @param tokenBudget  - Maximum total tokens for the snapshot.
+   * @returns WorkingMemorySnapshot with activation-ranked items.
+   */
+  assemble(
+    frame: SensoryFrame,
+    wkgContext: WkgContext,
+    driveSnapshot: DriveSnapshot,
+    episodes: readonly Episode[],
+    tokenBudget: number,
+  ): WorkingMemorySnapshot;
+
+  /**
+   * Get the most recent snapshot without re-assembling.
+   * Returns null if assemble() has never been called.
+   */
+  getLastSnapshot(): WorkingMemorySnapshot | null;
 }

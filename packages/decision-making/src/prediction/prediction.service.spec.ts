@@ -87,7 +87,7 @@ function makeOutcome(
   const arbitrationResult: ArbitrationResult = {
     type: 'TYPE_2',
     candidate: makeCandidate(actionId),
-    reason: 'test',
+    llmRationale: 'test',
   };
   return {
     selectedAction: {
@@ -262,8 +262,9 @@ describe('PredictionService', () => {
       const context = makeContext(makeSnapshot());
       await service.generatePredictions([makeCandidate('old')], context, 1);
 
-      // Prune with 0ms cutoff — everything is stale
-      service.pruneStale(0);
+      // Wait 5ms then prune with 1ms cutoff — prediction is now stale
+      await new Promise(resolve => setTimeout(resolve, 5));
+      service.pruneStale(1);
 
       expect(service.getActivePredictionIdForAction('old')).toBeNull();
     });

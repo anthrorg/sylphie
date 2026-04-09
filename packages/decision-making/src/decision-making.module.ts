@@ -19,7 +19,8 @@
  *   CONFIDENCE_UPDATER_SERVICE, THRESHOLD_COMPUTATION_SERVICE,
  *   ACTION_HANDLER_REGISTRY, PROCESS_INPUT_SERVICE, DECISION_EVENT_LOGGER,
  *   SHRUGGABLE_ACTION_SERVICE, TYPE_1_TRACKER_SERVICE,
- *   ATTRACTOR_MONITOR_SERVICE, CONTRADICTION_SCANNER
+ *   ATTRACTOR_MONITOR_SERVICE, CONTRADICTION_SCANNER,
+ *   WORKING_MEMORY_SERVICE
  *
  * CANON §Drive Isolation: DriveEngineModule is imported so that DRIVE_STATE_READER
  * and ACTION_OUTCOME_REPORTER tokens are resolvable. No subsystem module may
@@ -56,6 +57,7 @@ import {
   ATTRACTOR_MONITOR_SERVICE,
   CONTRADICTION_SCANNER,
   DECISION_MAKING_SERVICE,
+  WORKING_MEMORY_SERVICE,
 } from './decision-making.tokens';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,7 @@ import { ScenePredictionService } from './prediction/scene-prediction.service';
 import { DeliberationService } from './deliberation/deliberation.service';
 import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
+import { WorkingMemoryService } from './working-memory/working-memory.service';
 
 // ---------------------------------------------------------------------------
 // Sensory pipeline services
@@ -195,6 +198,12 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // ── Scene Prediction (per-object prediction for novelty/disappearance detection)
     ScenePredictionService,
+
+    // ── Working Memory (activation-driven context buffer for deliberation)
+    {
+      provide: WORKING_MEMORY_SERVICE,
+      useClass: WorkingMemoryService,
+    },
 
     // ── Deliberation Pipeline (multi-step Type 2 reasoning)
     DeliberationService,

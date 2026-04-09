@@ -162,3 +162,14 @@ export const ATTRACTOR_MONITOR_SERVICE = Symbol('ATTRACTOR_MONITOR_SERVICE');
  * with GapType.CONTRADICTION.
  */
 export const CONTRADICTION_SCANNER = Symbol('CONTRADICTION_SCANNER');
+
+/**
+ * Injection token for IWorkingMemoryService.
+ * INTERNAL TO DecisionMakingModule ONLY. Not exported from index.ts.
+ *
+ * Activation-driven working memory buffer. Sits between raw data sources
+ * (WKG, episodic memory, drives, perception) and the deliberation pipeline.
+ * Selects relevant content based on input relevance, drive state, and
+ * spreading activation from WKG graph connections.
+ */
+export const WORKING_MEMORY_SERVICE = Symbol('WORKING_MEMORY_SERVICE');

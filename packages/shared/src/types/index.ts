@@ -107,6 +107,13 @@ export {
   type SceneSnapshot,
 } from './scene.types';
 
+// Working memory types
+export {
+  type WorkingMemorySourceType,
+  type WorkingMemoryItem,
+  type WorkingMemorySnapshot,
+} from './working-memory.types';
+
 // LLM types
 export {
   LLM_SERVICE,

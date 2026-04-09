@@ -37,8 +37,8 @@ import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
 import { ContextWindowService } from './context-window.service';
-import type { IEpisodicMemoryService, IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
-import { EPISODIC_MEMORY_SERVICE, DECISION_EVENT_LOGGER } from '../decision-making.tokens';
+import type { IEpisodicMemoryService, IDecisionEventLogger, IWorkingMemoryService } from '../interfaces/decision-making.interfaces';
+import { EPISODIC_MEMORY_SERVICE, DECISION_EVENT_LOGGER, WORKING_MEMORY_SERVICE } from '../decision-making.tokens';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -142,6 +142,10 @@ export class DeliberationService {
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+
+    @Optional()
+    @Inject(WORKING_MEMORY_SERVICE)
+    private readonly workingMemory: IWorkingMemoryService | null,
   ) {}
 
   /**
@@ -177,11 +181,18 @@ export class DeliberationService {
     });
     const rawText = frame.raw['text'] as string | undefined ?? '';
     const driveSnapshot = context.driveSnapshot;
-    const driveSummary = buildDriveSummary(driveSnapshot);
-    const episodeSummary = buildEpisodeSummary(context);
     const conversationHistory = frame.raw['conversation_history'] as LlmMessage[] | undefined ?? [];
     const speakerName = frame.raw['speaker_name'] as string | undefined ?? 'the person talking to you';
-    const sceneDescription = frame.raw['scene_description'] as string | undefined ?? '';
+
+    // Assemble working memory snapshot (activation-driven context selection).
+    // Falls back to flat concatenation when workingMemory is null.
+    const wmSnapshot = this.workingMemory?.assemble(
+      frame, wkg, driveSnapshot, context.recentEpisodes, 1500,
+    ) ?? null;
+
+    const wmSummary = wmSnapshot
+      ? `What I know:\n${wmSnapshot.formattedSummary}`
+      : this.buildFlatContext(wkg, driveSnapshot, context, frame);
 
     // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');
@@ -211,10 +222,7 @@ export class DeliberationService {
         '- Things said in this conversation are things you know. You do not need world knowledge for them.',
         '- If this needs complex reasoning, write NEEDS_DELIBERATION as the response.',
         '',
-        wkg.summary ? `What I know:\n${wkg.summary}` : 'What I know: Nothing specific yet.',
-        sceneDescription ? `What I see:\n${sceneDescription}` : '',
-        driveSummary ? `How I\'m feeling: ${driveSummary}` : '',
-        episodeSummary ? `Recent conversation:\n${episodeSummary}` : '',
+        wmSummary,
         '',
         'MORE EXAMPLES:',
         '',
@@ -370,9 +378,7 @@ export class DeliberationService {
         'You should NEVER say "I don\'t know" in response to greetings, introductions, or conversation.',
         '',
         `My inner thoughts: ${innerMonologue}`,
-        wkg.summary ? `\nWhat I know:\n${wkg.summary}` : '\nWhat I know: Nothing about the world yet.',
-        sceneDescription ? `\nWhat I see:\n${sceneDescription}` : '',
-        driveSummary ? `\nHow I'm feeling: ${driveSummary}` : '',
+        `\n${wmSummary}`,
       ],
       currentMessages: [
         { role: 'user' as const, content: rawText || innerMonologue },
@@ -476,8 +482,7 @@ export class DeliberationService {
         reservedForGeneration: STEP_MAX_TOKENS,
         systemParts: [
           'Argue why this response is a good choice. Cite specific knowledge if available.',
-          wkg.summary ? `Known facts: ${wkg.summary}` : '',
-          episodeSummary ? `Recent experience: ${episodeSummary}` : '',
+          wmSummary,
         ],
         currentMessages: [
           { role: 'user', content: `Argue FOR this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
@@ -493,7 +498,7 @@ export class DeliberationService {
           '- Does it contradict anything I know?',
           '- Does it match my current emotional state?',
           '- Could it be misunderstood?',
-          wkg.summary ? `Known facts: ${wkg.summary}` : '',
+          wmSummary,
         ],
         currentMessages: [
           { role: 'user', content: `Argue AGAINST this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
@@ -546,8 +551,7 @@ export class DeliberationService {
           '- If you REJECT, you MUST provide an alternative response after REJECT.',
           '  Format: REJECT — alternative response here',
           '',
-          driveSummary ? `Current state: ${driveSummary}` : '',
-          wkg.summary ? `Known facts: ${wkg.summary}` : 'Known facts: None relevant.',
+          wmSummary,
         ],
         currentMessages: [
           { role: 'user', content: [
@@ -665,6 +669,31 @@ export class DeliberationService {
   // ---------------------------------------------------------------------------
   // Fallback
   // ---------------------------------------------------------------------------
+
+  /**
+   * Build flat context string when WorkingMemoryService is unavailable.
+   * Preserves the original behavior for graceful degradation.
+   */
+  private buildFlatContext(
+    wkg: WkgContext,
+    driveSnapshot: DriveSnapshot,
+    context: CognitiveContext,
+    frame: SensoryFrame,
+  ): string {
+    const sceneDescription = (frame.raw['scene_description'] as string | undefined) ?? '';
+    const parts: string[] = [];
+
+    parts.push(wkg.summary ? `What I know:\n${wkg.summary}` : 'What I know: Nothing specific yet.');
+    if (sceneDescription) parts.push(`What I see:\n${sceneDescription}`);
+
+    const driveSummary = buildDriveSummary(driveSnapshot);
+    if (driveSummary) parts.push(`How I'm feeling: ${driveSummary}`);
+
+    const episodeSummary = buildEpisodeSummary(context);
+    if (episodeSummary) parts.push(`Recent conversation:\n${episodeSummary}`);
+
+    return parts.join('\n');
+  }
 
   private fallbackResult(reason: string): DeliberationResult {
     return {
