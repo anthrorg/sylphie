@@ -19,7 +19,10 @@
 import {
   DriveName,
   type PressureVector,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import { type ActionOutcomePayload } from '@sylphie/shared';
 import { getOrCreateSatisfactionHabituation } from './satisfaction-habituation';
 import { getOrCreateAnxietyAmplification } from './anxiety-amplification';
@@ -91,6 +94,19 @@ export class ContingencyCoordinator {
     );
     if (curiosityRelief !== 0) {
       deltas[DriveName.Curiosity] = (deltas[DriveName.Curiosity] || 0) + curiosityRelief;
+    }
+
+    const firedContingencies: string[] = [];
+    if (satisfactionRelief !== 0) firedContingencies.push('satisfaction-habituation');
+    if (guiltRelief !== 0) firedContingencies.push('guilt-repair');
+    if (curiosityRelief !== 0) firedContingencies.push('curiosity-information-gain');
+
+    if (firedContingencies.length > 0) {
+      vlog('contingencies fired', {
+        actionType: outcome.actionType,
+        fired: firedContingencies,
+        deltas,
+      });
     }
 
     return deltas;

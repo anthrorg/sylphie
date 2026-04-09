@@ -23,6 +23,7 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   resolveBaseConfidence,
+  verboseFor,
 } from '@sylphie/shared';
 import type {
   IExtractEdgesService,
@@ -30,6 +31,8 @@ import type {
   ExtractedEdge,
   UnlearnedEvent,
 } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,11 +65,22 @@ export class ExtractEdgesService implements IExtractEdgesService {
     entities: ExtractedEntity[],
     event: UnlearnedEvent,
   ): Promise<ExtractedEdge[]> {
-    if (entities.length < 2) return [];
+    if (entities.length < 2) {
+      vlog('extractEdges: skipped — fewer than 2 entities', { eventId: event.id, entityCount: entities.length });
+      return [];
+    }
 
     const confidence = resolveBaseConfidence(EDGE_PROVENANCE);
     const pairs = buildPairs(entities, MAX_PAIRS);
     const edges: ExtractedEdge[] = [];
+
+    vlog('extractEdges: building pairs', {
+      eventId: event.id,
+      entityCount: entities.length,
+      pairsToAttempt: pairs.length,
+      provenance: EDGE_PROVENANCE,
+      confidence,
+    });
 
     for (const [source, target] of pairs) {
       const ok = await this.mergeRelatedToEdge(
@@ -76,6 +90,14 @@ export class ExtractEdgesService implements IExtractEdgesService {
       );
 
       if (ok) {
+        vlog('edge extracted', {
+          eventId: event.id,
+          source: source.label,
+          target: target.label,
+          relType: 'RELATED_TO',
+          provenance: EDGE_PROVENANCE,
+          confidence,
+        });
         edges.push({
           sourceId: source.nodeId,
           sourceLabel: source.label,
@@ -89,6 +111,7 @@ export class ExtractEdgesService implements IExtractEdgesService {
       }
     }
 
+    vlog('extractEdges complete', { eventId: event.id, edgesCreated: edges.length });
     this.logger.debug(
       `ExtractEdges: event ${event.id} → ${edges.length} RELATED_TO edges`,
     );

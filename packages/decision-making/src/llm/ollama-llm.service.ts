@@ -21,13 +21,16 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Ollama } from 'ollama';
-import type {
-  ILlmService,
-  LlmRequest,
-  LlmResponse,
-  LlmTier,
-  Type2CostEstimate,
+import {
+  verboseFor,
+  type ILlmService,
+  type LlmRequest,
+  type LlmResponse,
+  type LlmTier,
+  type Type2CostEstimate,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('LLM');
 
 // ---------------------------------------------------------------------------
 // Tool calling types
@@ -203,6 +206,18 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const content = choice?.content || choice?.reasoning_content || '';
 
     const tier = request.tier ?? 'deep';
+
+    vlog('DeepSeek complete', {
+      model,
+      tier,
+      purpose: request.metadata.purpose,
+      promptTokens,
+      completionTokens,
+      latencyMs,
+      cost: +cost.toFixed(6),
+      responseLength: content.length,
+    });
+
     this.logger.debug(
       `LLM complete [${tier}/DeepSeek/${model}]: ` +
         `${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
@@ -228,8 +243,18 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
    */
   async complete(request: LlmRequest): Promise<LlmResponse> {
     if (!this.available) {
+      vlog('LLM unavailable', { reason: 'circuit breaker or lesion test' });
       throw new Error('LLM service unavailable (circuit breaker tripped or lesion test active)');
     }
+
+    vlog('LLM request', {
+      tier: request.tier ?? 'medium',
+      purpose: request.metadata.purpose,
+      promptChars: (request.systemPrompt?.length ?? 0) + request.messages.reduce((s, m) => s + m.content.length, 0),
+      messageCount: request.messages.length,
+      maxTokens: request.maxTokens,
+      routeDeepSeek: (request.tier === 'deep' && this.useDeepSeek) || (request.tier === 'medium' && this.useDeepSeekMedium),
+    });
 
     // Route deep tier to DeepSeek (reasoning model)
     if (request.tier === 'deep' && this.useDeepSeek) {
@@ -245,6 +270,11 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
             `Circuit breaker tripped after ${this.consecutiveFailures} DeepSeek failures.`,
           );
         }
+        vlog('DeepSeek deep FAILED', {
+          consecutiveFailures: this.consecutiveFailures,
+          circuitBroken: !this.available,
+          error: err instanceof Error ? err.message : String(err),
+        });
         this.logger.error(
           `DeepSeek call failed (failures=${this.consecutiveFailures}): ` +
             `${err instanceof Error ? err.message : String(err)}`,
@@ -267,6 +297,11 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
             `Circuit breaker tripped after ${this.consecutiveFailures} DeepSeek medium failures.`,
           );
         }
+        vlog('DeepSeek medium FAILED', {
+          consecutiveFailures: this.consecutiveFailures,
+          circuitBroken: !this.available,
+          error: err instanceof Error ? err.message : String(err),
+        });
         this.logger.error(
           `DeepSeek medium call failed (failures=${this.consecutiveFailures}): ` +
             `${err instanceof Error ? err.message : String(err)}`,
@@ -306,6 +341,17 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       const promptTokens = response.prompt_eval_count ?? 0;
       const completionTokens = response.eval_count ?? 0;
 
+      vlog('Ollama complete', {
+        model,
+        tier: request.tier ?? 'medium',
+        purpose: request.metadata.purpose,
+        promptTokens,
+        completionTokens,
+        latencyMs,
+        responseLength: response.message.content.length,
+        numGpu,
+      });
+
       this.logger.debug(
         `LLM complete [${request.tier ?? 'medium'}/${model}]: ` +
           `${promptTokens}+${completionTokens} tokens, ${latencyMs}ms, ` +
@@ -329,6 +375,15 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
           `Circuit breaker tripped after ${this.consecutiveFailures} consecutive failures.`,
         );
       }
+
+      vlog('Ollama FAILED', {
+        model,
+        tier: request.tier ?? 'medium',
+        purpose: request.metadata.purpose,
+        latencyMs,
+        consecutiveFailures: this.consecutiveFailures,
+        error: err instanceof Error ? err.message : String(err),
+      });
 
       this.logger.error(
         `LLM call failed [${request.tier ?? 'medium'}/${model}] ` +
@@ -441,6 +496,17 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     }
 
     const latencyMs = Date.now() - startMs;
+
+    vlog('Ollama completeWithTools', {
+      model,
+      tier: request.tier ?? 'medium',
+      purpose: request.metadata.purpose,
+      promptTokens: totalPromptTokens,
+      completionTokens: totalCompletionTokens,
+      latencyMs,
+      toolCount: tools.length,
+      responseLength: finalContent.length,
+    });
 
     this.logger.debug(
       `LLM completeWithTools [${request.tier ?? 'medium'}/${model}]: ` +

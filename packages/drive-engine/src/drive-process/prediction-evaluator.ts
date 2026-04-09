@@ -13,6 +13,10 @@
  * The outcome's success/failure maps to prediction accuracy (absoluteError).
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import {
   MAE_WINDOW_SIZE,
   MAE_ACCURATE_THRESHOLD,
@@ -93,6 +97,14 @@ export class PredictionEvaluator {
       absoluteError,
       recordedAt: Date.now(),
     };
+
+    vlog('prediction recorded', {
+      predictionId,
+      actionType,
+      predicted: +predictedValue.toFixed(4),
+      actual: +actualValue.toFixed(4),
+      absoluteError: +absoluteError.toFixed(4),
+    });
 
     // Store globally
     this.predictions.set(predictionId, record);
@@ -178,6 +190,13 @@ export class PredictionEvaluator {
       classification = 'POOR';
     }
 
+    vlog('MAE computed', {
+      actionType,
+      mae: +mae.toFixed(4),
+      classification,
+      sampleCount,
+    });
+
     // Cache result
     this.maeCache.set(actionType, {
       mae,
@@ -246,13 +265,22 @@ export class PredictionEvaluator {
     }
 
     // Classify severity by MAE magnitude
+    let severity: 'low' | 'medium' | 'high';
     if (maeResult.mae < OPPORTUNITY_SEVERITY_LOW_THRESHOLD) {
-      return 'low';
+      severity = 'low';
     } else if (maeResult.mae < OPPORTUNITY_SEVERITY_MEDIUM_THRESHOLD) {
-      return 'medium';
+      severity = 'medium';
     } else {
-      return 'high';
+      severity = 'high';
     }
+
+    vlog('opportunity severity assessed', {
+      actionType,
+      mae: +maeResult.mae.toFixed(4),
+      severity,
+    });
+
+    return severity;
   }
 
   /**

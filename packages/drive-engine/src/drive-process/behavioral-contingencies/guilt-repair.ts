@@ -15,7 +15,9 @@
  * In-memory state tracks recent errors to detect behavioral change.
  */
 
-import { DriveName } from '@sylphie/shared';
+import { DriveName, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 interface ErrorContext {
   actionType: string;
@@ -80,6 +82,12 @@ export class GuiltyRepair {
 
     // On successful repair, clear related errors from history
     if (relief < 0) {
+      vlog('guilt repair fired', {
+        actionType,
+        hasAcknowledgment,
+        hasBehavioralChange,
+        relief,
+      });
       this.clearErrorsForActionType(actionType);
     }
 

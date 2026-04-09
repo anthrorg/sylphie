@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Subject } from 'rxjs';
-import { EMBEDDING_DIM, FaceDetection, SensoryFrame, VideoDetection } from '@sylphie/shared';
+import { EMBEDDING_DIM, FaceDetection, SensoryFrame, VideoDetection, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Perception');
 import type { SceneSnapshot } from '@sylphie/shared';
 import { SensoryFusionService } from '../fusion/sensory-fusion';
 import { ModalityRegistryService } from '../registry/modality-registry.service';
@@ -115,6 +117,11 @@ export class TickSamplerService {
     // Nudge the tick engine immediately for event-driven modalities.
     if (this.registry.getEventDrivenNames().has(modalityName)) {
       this.lastInputAt = Date.now();
+      vlog('event-driven input received', {
+        modality: modalityName,
+        valueType: typeof value,
+        ...(modalityName === 'text' ? { textPreview: String(value).substring(0, 80) } : {}),
+      });
       if (this.inputCallback) {
         this.inputCallback();
       }
@@ -217,6 +224,12 @@ export class TickSamplerService {
     }
 
     // Step 5: Emit and return.
+    vlog('tick sample produced', {
+      activeModalities: blendedFrame.active_modalities,
+      windowSize: this.window.length,
+      hasText: blendedFrame.active_modalities.includes('text'),
+    });
+
     this.frames$.next(blendedFrame);
     return blendedFrame;
   }

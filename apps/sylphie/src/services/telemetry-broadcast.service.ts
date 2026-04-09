@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Telemetry');
 
 /**
  * Manages telemetry WebSocket clients and broadcasts messages to the frontend.
@@ -38,10 +41,17 @@ export class TelemetryBroadcastService {
   /** Broadcast any telemetry message to all connected clients */
   broadcast(message: unknown) {
     const payload = JSON.stringify(message);
+    let sent = 0;
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(payload);
+        sent++;
       }
+    }
+    const msgType = (message as Record<string, unknown>)?.['type'];
+    if (msgType !== 'executor_cycle') {
+      // executor_cycle is 2Hz — skip vlog for it to avoid log flood
+      vlog('telemetry broadcast', { type: msgType, clientCount: sent });
     }
   }
 }

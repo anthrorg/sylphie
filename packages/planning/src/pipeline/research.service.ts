@@ -18,13 +18,15 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { TimescaleService } from '@sylphie/shared';
+import { TimescaleService, verboseFor } from '@sylphie/shared';
 import type {
   IResearchService,
   ResearchResult,
   EventSummary,
   QueuedOpportunity,
 } from '../interfaces/planning.interfaces';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -110,6 +112,18 @@ export class ResearchService implements IResearchService {
       const threshold = SUFFICIENCY_THRESHOLDS[classification] ?? 3;
       const sufficient = eventFrequency >= threshold;
 
+      vlog('research complete', {
+        opportunityId: opportunity.payload.id,
+        classification,
+        contextFingerprint,
+        eventFrequency,
+        recentOccurrences,
+        threshold,
+        sufficient,
+        contextPatterns,
+        relatedEventCount: relatedEvents.length,
+      });
+
       this.logger.debug(
         `Research for ${opportunity.payload.id}: frequency=${eventFrequency}, ` +
           `recent=${recentOccurrences}, sufficient=${sufficient} ` +
@@ -124,11 +138,9 @@ export class ResearchService implements IResearchService {
         contextPatterns,
       };
     } catch (err) {
-      this.logger.error(
-        `Research failed for opportunity ${opportunity.payload.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('research error', { opportunityId: opportunity.payload.id, error: message });
+      this.logger.error(`Research failed for opportunity ${opportunity.payload.id}: ${message}`);
       // On error, return insufficient to avoid proceeding with bad data.
       return {
         sufficient: false,

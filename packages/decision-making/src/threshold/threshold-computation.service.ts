@@ -19,7 +19,9 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { type DriveSnapshot, DriveName, CONFIDENCE_THRESHOLDS, type ThresholdResult } from '@sylphie/shared';
+import { type DriveSnapshot, DriveName, CONFIDENCE_THRESHOLDS, type ThresholdResult, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type { IThresholdComputationService } from '../interfaces/decision-making.interfaces';
 
 @Injectable()
@@ -79,6 +81,20 @@ export class ThresholdComputationService implements IThresholdComputationService
         `raw=${rawThreshold.toFixed(3)} final=${finalThreshold.toFixed(3)} ` +
         `clamped=${clamped}`,
     );
+
+    vlog('threshold computed', {
+      threshold: +finalThreshold.toFixed(3),
+      base: baseThreshold,
+      anxiety: +anxiety.toFixed(3),
+      anxietyMultiplier: +anxietyMultiplier.toFixed(3),
+      guilt: +guilt.toFixed(3),
+      moralMultiplier: +moralMultiplier.toFixed(3),
+      curiosity: +curiosity.toFixed(3),
+      boredom: +boredom.toFixed(3),
+      curiosityReduction: +curiosityReduction.toFixed(3),
+      raw: +rawThreshold.toFixed(3),
+      clamped,
+    });
 
     return {
       threshold: finalThreshold,

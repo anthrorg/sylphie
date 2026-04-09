@@ -13,6 +13,9 @@
 import type { DriveName } from '@sylphie/shared';
 import type { ActionOutcomePayload } from '@sylphie/shared';
 import type { PressureVector } from '@sylphie/shared';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 /**
  * Result of a Theater Prohibition check.
@@ -80,6 +83,13 @@ export function detectTheater(
   const isAuthenticRelief = verifyReliefExpression(driveValueAtExpression);
 
   if (expressionType === 'pressure' && !isAuthenticPressure) {
+    vlog('theater check', {
+      expressionType,
+      drive,
+      driveValue: driveValueAtExpression,
+      verdict: 'theatrical',
+      reason: `drive ${driveValueAtExpression} <= threshold ${PRESSURE_THRESHOLD}`,
+    });
     return {
       isTheatrical: true,
       reason: `Pressure expression (${drive}) requires drive > ${PRESSURE_THRESHOLD}, but was ${driveValueAtExpression}`,
@@ -90,6 +100,13 @@ export function detectTheater(
   }
 
   if (expressionType === 'relief' && !isAuthenticRelief) {
+    vlog('theater check', {
+      expressionType,
+      drive,
+      driveValue: driveValueAtExpression,
+      verdict: 'theatrical',
+      reason: `drive ${driveValueAtExpression} >= threshold ${RELIEF_THRESHOLD}`,
+    });
     return {
       isTheatrical: true,
       reason: `Relief expression (${drive}) requires drive < ${RELIEF_THRESHOLD}, but was ${driveValueAtExpression}`,
@@ -100,13 +117,22 @@ export function detectTheater(
   }
 
   // Expression passed directional check
-  return {
+  const verdict: TheaterVerdict = {
     isTheatrical: false,
     reason: `${expressionType} expression is authentic (drive value: ${driveValueAtExpression})`,
     expressionType,
     drive,
     driveValue: driveValueAtExpression,
   };
+
+  vlog('theater check', {
+    expressionType,
+    drive,
+    driveValue: driveValueAtExpression,
+    verdict: 'authentic',
+  });
+
+  return verdict;
 }
 
 /**

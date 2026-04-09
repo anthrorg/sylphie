@@ -25,7 +25,9 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { LlmMessage } from '@sylphie/shared';
+import { verboseFor, type LlmMessage } from '@sylphie/shared';
+
+const vlog = verboseFor('Deliberation');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -267,6 +269,19 @@ export class ContextWindowService {
           `(budget=${promptBudget})`,
       );
     }
+
+    vlog('context window assembled', {
+      step: request.step ?? 'DEFAULT',
+      stepBudget,
+      promptBudget,
+      estimatedPromptTokens,
+      historyIncluded: included.length,
+      historyDropped: dropped,
+      systemPromptTruncated,
+      systemPromptChars: systemPrompt.length,
+      messageCount: messages.length,
+      reservedForGeneration: request.reservedForGeneration,
+    });
 
     return {
       systemPrompt,

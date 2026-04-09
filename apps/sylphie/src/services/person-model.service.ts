@@ -20,7 +20,9 @@
  */
 
 import { Injectable, Logger, Optional, Inject, OnModuleInit } from '@nestjs/common';
-import { Neo4jService, Neo4jInstanceName, type PersonModelSummary } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, type PersonModelSummary, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Communication');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,6 +150,7 @@ export class PersonModelService implements OnModuleInit {
         { userId, username, isGuardian },
       );
       this.logger.log(`OKG Person anchor ensured: ${username} (${userId})`);
+      vlog('person node created/updated', { userId, username, isGuardian });
     } catch (err) {
       this.logger.warn(`OKG Person anchor write failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -219,6 +222,7 @@ export class PersonModelService implements OnModuleInit {
         },
       );
       this.logger.log(`OKG fact written: ${fact.key}="${fact.value}" for user ${userId}`);
+      vlog('fact written to OKG', { userId, key: fact.key, value: fact.value, source: fact.source, target: fact.target });
     } catch (err) {
       this.logger.warn(`OKG fact write failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -260,6 +264,7 @@ export class PersonModelService implements OnModuleInit {
       }));
 
       this.cache.set(userId, facts);
+      vlog('person facts loaded from OKG', { userId, factCount: facts.length });
       return facts;
     } catch (err) {
       this.logger.warn(`OKG fact load failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -305,6 +310,7 @@ export class PersonModelService implements OnModuleInit {
    */
   setActivePerson(personId: string): void {
     this.activePersonId = personId;
+    vlog('active person set', { personId });
   }
 
   /**
@@ -321,6 +327,7 @@ export class PersonModelService implements OnModuleInit {
   recordInteraction(personId: string): void {
     const count = this.interactionCounts.get(personId) ?? 0;
     this.interactionCounts.set(personId, count + 1);
+    vlog('interaction recorded', { personId, newCount: count + 1 });
   }
 
   /**

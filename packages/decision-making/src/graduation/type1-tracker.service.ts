@@ -37,7 +37,10 @@ import {
   type GraduationRecord,
   type GraduationState,
   type DriveSnapshot,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type { IType1TrackerService, IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 
@@ -130,6 +133,15 @@ export class Type1TrackerService implements IType1TrackerService {
 
     record.lastUpdatedAt = new Date();
 
+    vlog('type1 tracker observation', {
+      procedureId,
+      mae: +mae.toFixed(4),
+      confidence: +confidence.toFixed(4),
+      recentMAE: +record.recentMAE.toFixed(4),
+      state: record.state,
+      windowSize: record.maeHistory.length,
+    });
+
     // Evaluate state transitions.
     this.evaluateTransitions(record, confidence);
   }
@@ -198,6 +210,12 @@ export class Type1TrackerService implements IType1TrackerService {
         if (qualifiesForGraduation(confidence, record.recentMAE)) {
           record.state = 'TYPE_1_GRADUATED';
           record.graduatedAt = new Date();
+          vlog('TYPE_1 GRADUATION', {
+            procedureId: record.procedureId,
+            from: previousState,
+            confidence: +confidence.toFixed(3),
+            mae: +record.recentMAE.toFixed(4),
+          });
           this.logger.log(
             `Type1Tracker: ${record.procedureId} ${previousState} → TYPE_1_GRADUATED ` +
               `(confidence=${confidence.toFixed(3)}, MAE=${record.recentMAE.toFixed(4)})`,
@@ -210,6 +228,10 @@ export class Type1TrackerService implements IType1TrackerService {
         if (qualifiesForDemotion(record.recentMAE)) {
           record.state = 'TYPE_1_DEMOTED';
           record.demotedAt = new Date();
+          vlog('TYPE_1 DEMOTION', {
+            procedureId: record.procedureId,
+            mae: +record.recentMAE.toFixed(4),
+          });
           this.logger.warn(
             `Type1Tracker: ${record.procedureId} TYPE_1_GRADUATED → TYPE_1_DEMOTED ` +
               `(MAE=${record.recentMAE.toFixed(4)} exceeds demotionMAE threshold)`,

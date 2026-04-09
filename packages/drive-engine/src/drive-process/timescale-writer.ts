@@ -9,11 +9,14 @@
  */
 
 import { Pool, PoolClient } from 'pg';
+import { verboseFor } from '@sylphie/shared';
 import type { DriveEvent } from '../interfaces/drive-events';
 import {
   RETRY_COUNT,
   RETRY_BASE_DELAY_MS,
 } from '../constants/events';
+
+const vlog = verboseFor('DriveEngine');
 
 /**
  * TimescaleDB event writer for the Drive Engine child process.
@@ -98,11 +101,14 @@ export class TimescaleWriter {
       return;
     }
 
+    vlog('timescale write batch', { batchSize: events.length, eventTypes: events.map(e => e.type) });
+
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
         await this.writeBatchWithoutRetry(events);
+        vlog('timescale write success', { batchSize: events.length, attempt: attempt + 1 });
         return; // Success
       } catch (err) {
         lastError = err as Error;
@@ -116,6 +122,11 @@ export class TimescaleWriter {
     }
 
     // All retries exhausted
+    vlog('timescale write failed', {
+      batchSize: events.length,
+      retries: RETRY_COUNT,
+      error: lastError?.message,
+    });
     if (process.stderr) {
       process.stderr.write(
         `[TimescaleWriter] Failed after ${RETRY_COUNT} attempts: ${lastError?.message}\n`,

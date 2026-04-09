@@ -23,7 +23,9 @@
 
 import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { TimescaleService, EMBEDDING_DIM } from '@sylphie/shared';
+import { TimescaleService, EMBEDDING_DIM, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Memory');
 import { cosineSimilarity, parseEmbedding } from './vector-math';
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,17 @@ export class LatentSpaceService implements OnModuleInit {
       }
     }
 
-    if (!bestEntry) return null;
+    if (!bestEntry) {
+      vlog('latent searchByModality MISS', { modality, threshold, hotLayerSize: this.hotLayer.length });
+      return null;
+    }
+
+    vlog('latent searchByModality HIT', {
+      modality,
+      similarity: +bestSimilarity.toFixed(3),
+      patternId: bestEntry.id.substring(0, 8),
+      responsePreview: bestEntry.responseText.substring(0, 60),
+    });
 
     return {
       pattern: this.hotEntryToPattern(bestEntry),
@@ -269,6 +281,7 @@ export class LatentSpaceService implements OnModuleInit {
    */
   async write(pattern: NewPattern): Promise<string> {
     if (!pattern.responseText || pattern.responseText.trim().length === 0) {
+      vlog('latent write REJECTED', { modality: pattern.modality, reason: 'empty responseText' });
       this.logger.warn('Rejecting latent space write: responseText is empty.');
       return '';
     }
@@ -285,6 +298,15 @@ export class LatentSpaceService implements OnModuleInit {
       confidence: pattern.confidence,
       useCount: 0,
       entityIds: [...pattern.entityIds],
+    });
+
+    vlog('latent write', {
+      modality: pattern.modality,
+      patternId: id.substring(0, 8),
+      confidence: +pattern.confidence.toFixed(2),
+      entityCount: pattern.entityIds.length,
+      hotLayerSize: this.hotLayer.length,
+      responsePreview: pattern.responseText.substring(0, 60),
     });
 
     this.logger.debug(

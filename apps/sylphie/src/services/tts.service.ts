@@ -1,5 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Voice');
 
 /**
  * Text-to-Speech via ElevenLabs REST streaming API.
@@ -41,12 +44,16 @@ export class TtsService implements OnModuleInit {
    */
   async synthesize(text: string): Promise<Buffer | null> {
     if (!this.available) {
+      vlog('TTS unavailable — no API key', {});
       return null;
     }
 
     const trimmed = text.trim();
     if (!trimmed) return null;
 
+    vlog('TTS synthesis request', { textLength: trimmed.length, textPreview: trimmed.substring(0, 50) });
+
+    const t0 = Date.now();
     try {
       const response = await fetch(
         `https://api.elevenlabs.io/v1/text-to-speech/${this.voiceId}/stream`,
@@ -73,14 +80,19 @@ export class TtsService implements OnModuleInit {
         this.logger.error(
           `ElevenLabs API error ${response.status}: ${body.slice(0, 200)}`,
         );
+        vlog('TTS API error', { status: response.status, body: body.slice(0, 200) });
         return null;
       }
 
-      return Buffer.from(await response.arrayBuffer());
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const latencyMs = Date.now() - t0;
+      vlog('TTS synthesis complete', { latencyMs, audioBytes: buffer.length });
+      return buffer;
     } catch (err) {
       this.logger.error(
         `TTS synthesis failed: ${(err as Error).message}`,
       );
+      vlog('TTS synthesis error', { error: (err as Error).message });
       return null;
     }
   }

@@ -26,7 +26,9 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding } from '@sylphie/shared';
+import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import { DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, type IDriveStateReader, type IActionOutcomeReporter } from '@sylphie/drive-engine';
 import type {
   IDecisionMakingService,
@@ -252,10 +254,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   private async onTick(eventDriven: boolean): Promise<void> {
     // Non-overlapping guard.
     if (this.tickInFlight) {
+      vlog('tick skipped (in-flight guard)', { eventDriven });
       return;
     }
 
     if (this.executorEngine.getState() !== ExecutorState.IDLE) {
+      vlog('tick skipped (executor not IDLE)', { state: this.executorEngine.getState(), eventDriven });
       return;
     }
 
@@ -280,6 +284,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           return;
         }
         this.lastSelfInitiatedAt = now;
+        vlog('self-initiated tick', { pressure: +snapshot.totalPressure.toFixed(3), msSinceLastInput });
         this.logger.debug(
           `Self-initiated tick: pressure=${snapshot.totalPressure.toFixed(3)}`,
         );
@@ -289,6 +294,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     this.tickInFlight = true;
     try {
       const frame = await this.tickSampler.sample();
+
+      const rawText = frame.raw['text'] as string | undefined;
+      vlog('tick sampled frame', {
+        eventDriven,
+        modalities: frame.active_modalities,
+        textContent: rawText ? rawText.substring(0, 120) : null,
+        embeddingNorm: +Math.sqrt(frame.fused_embedding.reduce((s, v) => s + v * v, 0)).toFixed(4),
+      });
 
       // Persist the encoded frame to the sensory_ticks hypertable.
       // Fire-and-forget — never blocks the decision cycle.
@@ -342,6 +355,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // ── Step 1: Capture drive state for this cycle ─────────────────────────
       const driveSnapshot: DriveSnapshot = this.driveStateReader.getCurrentState();
       this.executorEngine.captureSnapshot(driveSnapshot);
+      vlog('cycle start', {
+        totalPressure: +driveSnapshot.totalPressure.toFixed(3),
+        tickNumber: driveSnapshot.tickNumber,
+      });
 
       // ── Step 2: IDLE -> CATEGORIZING ───────────────────────────────────────
       this.executorEngine.transition(ExecutorState.CATEGORIZING);
@@ -361,6 +378,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const { candidates: wkgCandidates, contextFingerprint, inputSummary, dominantDrive } =
         processInputResult;
 
+      vlog('processInput result', {
+        category: processInputResult.inputCategory,
+        wkgCandidates: wkgCandidates.length,
+        entities: processInputResult.entities.slice(0, 10),
+        dominantDrive,
+        fingerprint: contextFingerprint.substring(0, 16),
+      });
+
       // Check per-modality latent spaces FIRST — if we find a high-similarity
       // match on any modality, inject it as a Type 1 candidate. Each modality's
       // embedding is searched independently so text changes aren't drowned out
@@ -375,6 +400,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const latentMatch = multiModalMatch?.bestMatch ?? null;
 
       if (multiModalMatch) {
+        vlog('latent space HIT', {
+          bestModality: multiModalMatch.bestMatch.modality,
+          similarity: +multiModalMatch.bestMatch.similarity.toFixed(3),
+          composite: +multiModalMatch.compositeSimilarity.toFixed(3),
+          patternId: multiModalMatch.bestMatch.pattern.id.substring(0, 8),
+          matchModalities: multiModalMatch.matches.map(m => m.modality),
+          responsePreview: multiModalMatch.bestMatch.pattern.responseText.substring(0, 80),
+        });
         this.logger.debug(
           `Latent space HIT [${multiModalMatch.bestMatch.modality}]: ` +
             `similarity=${multiModalMatch.bestMatch.similarity.toFixed(3)}, ` +
@@ -407,6 +440,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         candidates.unshift(latentCandidate);
         this.latentSpace.recordUse(bestPattern.id);
       } else {
+        vlog('latent space MISS', { hotLayerSize: this.latentSpace.hotLayerSize });
         this.logger.debug('Latent space MISS (all modalities) — proceeding to normal arbitration.');
       }
 
@@ -439,6 +473,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         candidates,
         driveSnapshot,
       );
+
+      vlog('arbitration complete', {
+        type: arbitrationResult.type,
+        candidateCount: candidates.length,
+        predictionCount: predictions.length,
+        ...(arbitrationResult.type !== 'SHRUG' && arbitrationResult.candidate
+          ? {
+              candidateName: arbitrationResult.candidate.procedureData?.name,
+              candidateConfidence: +arbitrationResult.candidate.confidence.toFixed(3),
+            }
+          : {}),
+        ...(arbitrationResult.type === 'SHRUG' && arbitrationResult.shrugDetail
+          ? { gapTypes: arbitrationResult.shrugDetail.gapTypes, reason: arbitrationResult.reason }
+          : {}),
+      });
 
       // Accumulate SHRUG gap types for getCognitiveContext().
       if (arbitrationResult.type === 'SHRUG' && arbitrationResult.shrugDetail) {
@@ -476,6 +525,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         // cached response directly. No LLM call needed — this is Type 1.
         // Guard: only use latent match if responseText is non-empty.
         if (latentMatch && procedureData?.name?.startsWith('latent-') && latentMatch.pattern.responseText.trim().length > 0) {
+          vlog('executing Type 1 latent reflex', {
+            patternId: latentMatch.pattern.id.substring(0, 8),
+            similarity: +latentMatch.similarity.toFixed(3),
+            responsePreview: latentMatch.pattern.responseText.substring(0, 100),
+          });
           this.logger.debug(
             `Type 1 reflex from latent space — returning cached response (no LLM).`,
           );
@@ -508,6 +562,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // Type 2 novel response — no procedure node. Run the full
           // deliberation pipeline: monologue → candidates → selection →
           // debate (conditional) → arbiter → commit.
+          vlog('executing Type 2 deliberation (novel)', { inputSummary: inputSummary.substring(0, 80) });
           this.logger.debug('Type 2 novel: running deliberation pipeline');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
           executionResults.push({
@@ -682,6 +737,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Only emit a CycleResponse if there is actual text to deliver.
       // Empty responses cause the frontend to show "Sylphie speaks" with no content.
       if (responseText.trim().length > 0) {
+        vlog('emitting CycleResponse', {
+          arbitrationType: arbitrationResult.type,
+          actionId,
+          responseLength: responseText.length,
+          responsePreview: responseText.substring(0, 100),
+          model: responseModel,
+          latencyMs: cycleLatencyMs,
+          knowledgeGrounding: responseGrounding,
+          ...(responseTokens ? { tokens: responseTokens } : {}),
+        });
         this.responseSubject.next({
           turnId: randomUUID(),
           text: responseText,
@@ -810,6 +875,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.warn(`Unknown person pressure routing failed: ${err}`);
         }
       }
+
+      vlog('cycle complete', {
+        latencyMs: cycleLatencyMs,
+        arbitrationType: arbitrationResult.type,
+        actionId,
+        responseChars: responseText.length,
+        isType1Latent: !!latentMatch,
+        model: responseModel,
+      });
 
       this.logger.debug(
         `Decision cycle complete (${cycleLatencyMs}ms). Arbitration: ${arbitrationResult.type}. ` +

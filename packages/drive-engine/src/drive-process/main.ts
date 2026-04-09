@@ -15,6 +15,10 @@
  * process with its own message loop.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import { getOrCreateEngine } from './drive-engine';
 import { IpcTransport } from './message-transport';
 
@@ -22,14 +26,21 @@ import { IpcTransport } from './message-transport';
 // Initialization
 // ---------------------------------------------------------------------------
 
+vlog('child process starting', { pid: process.pid, nodeVersion: process.version });
+
 console.log(
   `[DriveEngine] Child process started (PID: ${process.pid}, node ${process.version})`,
 );
 
 const transport = new IpcTransport();
+vlog('IPC transport created');
+
 const engine = getOrCreateEngine(transport);
+vlog('engine instance created');
+
 engine.start();
 
+vlog('tick loop started');
 console.log('[DriveEngine] Tick loop started');
 
 // ---------------------------------------------------------------------------
@@ -37,6 +48,7 @@ console.log('[DriveEngine] Tick loop started');
 // ---------------------------------------------------------------------------
 
 function onShutdown(signal: string): void {
+  vlog('shutdown signal received', { signal });
   console.log(`[DriveEngine] Received ${signal}, shutting down gracefully`);
   engine.stop();
   process.exit(0);

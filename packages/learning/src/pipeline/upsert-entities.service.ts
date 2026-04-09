@@ -27,6 +27,7 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   resolveBaseConfidence,
+  verboseFor,
   type ProvenanceSource,
 } from '@sylphie/shared';
 import type {
@@ -34,6 +35,8 @@ import type {
   UnlearnedEvent,
   ExtractedEntity,
 } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,19 +63,46 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
 
   async upsertEntities(event: UnlearnedEvent): Promise<ExtractedEntity[]> {
     const labels = extractEntityLabels(event);
-    if (labels.length === 0) return [];
+    if (labels.length === 0) {
+      vlog('upsertEntities: no entity labels found', { eventId: event.id, eventType: event.type });
+      return [];
+    }
 
     const provenance = resolveProvenance(event);
     const confidence = resolveBaseConfidence(provenance);
 
+    vlog('upsertEntities: extracting entities', {
+      eventId: event.id,
+      eventType: event.type,
+      labels,
+      provenance,
+      confidence,
+    });
+
     const results: ExtractedEntity[] = [];
+    let created = 0;
+    let updated = 0;
 
     for (const label of labels) {
       const nodeId = await this.mergeEntityNode(label, provenance, confidence);
       if (nodeId) {
+        // Distinguish created vs updated by checking if nodeId matches the generated UUID prefix.
+        if (nodeId.startsWith('entity-')) {
+          created++;
+        } else {
+          updated++;
+        }
         results.push({ nodeId, label, provenance, confidence });
+        vlog('entity upserted', { eventId: event.id, label, nodeId, provenance, confidence });
       }
     }
+
+    vlog('upsertEntities complete', {
+      eventId: event.id,
+      total: results.length,
+      created,
+      updated,
+    });
 
     this.logger.debug(
       `UpsertEntities: event ${event.id} → ${results.length} entities upserted`,

@@ -26,7 +26,9 @@ import type {
   DriveName,
   SceneSnapshot,
 } from '@sylphie/shared';
-import { DRIVE_INDEX_ORDER } from '@sylphie/shared';
+import { DRIVE_INDEX_ORDER, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type { IEpisodicMemoryService, IActionRetrieverService } from '../interfaces/decision-making.interfaces';
 import { EPISODIC_MEMORY_SERVICE, ACTION_RETRIEVER_SERVICE } from '../decision-making.tokens';
 
@@ -104,10 +106,12 @@ export class ProcessInputService {
   ): Promise<ProcessInputResult> {
     // Step 1: Categorize based on active modalities
     const inputCategory = this.categorizeFrame(frame);
+    vlog('input categorized', { category: inputCategory, modalities: frame.active_modalities });
     this.logger.debug(`Categorized frame: ${inputCategory} (modalities: ${frame.active_modalities.join(', ')})`);
 
     // Step 2: Extract entities from raw modality data
     const entities = this.extractEntities(frame);
+    vlog('entities extracted', { count: entities.length, entities: entities.slice(0, 10) });
 
     // Step 3: Generate a one-line input summary for episodic memory
     const inputSummary = this.summarizeFrame(frame, inputCategory, entities);
@@ -117,6 +121,7 @@ export class ProcessInputService {
 
     // Step 5: Generate context fingerprint from fused embedding
     const contextFingerprint = this.generateFingerprint(frame, inputCategory, dominantDrive);
+    vlog('context fingerprint', { fingerprint: contextFingerprint.substring(0, 16), dominantDrive });
 
     // Step 6: Query episodic memory for similar contexts
     if (this.episodicMemory) {
@@ -124,6 +129,7 @@ export class ProcessInputService {
         contextFingerprint,
         DEFAULT_RECENT_EPISODES_FOR_CONTEXT,
       );
+      vlog('episodic memory query', { similarEpisodes: similarEpisodes.length });
       this.logger.debug(`Found ${similarEpisodes.length} similar prior episodes`);
     }
 
@@ -142,6 +148,14 @@ export class ProcessInputService {
     // Step 8: Rank (Type 1 first, then Type 2) and cap at Cowan's limit
     const ranked = rankCandidates(candidates);
     const capped = ranked.slice(0, INNER_MONOLOGUE_CAPACITY);
+
+    vlog('processInput complete', {
+      category: inputCategory,
+      totalCandidates: candidates.length,
+      cappedCandidates: capped.length,
+      topConfidence: capped.length > 0 ? +capped[0].confidence.toFixed(3) : null,
+      summary: inputSummary.substring(0, 80),
+    });
 
     return {
       inputCategory,

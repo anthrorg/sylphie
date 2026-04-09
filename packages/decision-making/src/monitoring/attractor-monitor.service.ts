@@ -48,7 +48,10 @@
  */
 
 import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
+import { verboseFor } from '@sylphie/shared';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
+
+const vlog = verboseFor('Cortex');
 import type { IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
 
 // ---------------------------------------------------------------------------
@@ -193,6 +196,11 @@ export class AttractorMonitorService {
 
     for (const result of results) {
       if (result.triggered) {
+        vlog('ATTRACTOR DETECTED', {
+          name: result.name,
+          metric: +result.metric.toFixed(3),
+          threshold: result.threshold,
+        });
         this.logger.warn(
           `Attractor state detected: ${result.name} ` +
             `(metric=${result.metric.toFixed(3)}, threshold=${result.threshold})`,
@@ -200,6 +208,15 @@ export class AttractorMonitorService {
         this.emitAttractorAlert(result);
       }
     }
+
+    vlog('attractor detectors run', {
+      windowSizes: {
+        arbitration: this.arbitrationWindow.length,
+        prediction: this.predictionWindow.length,
+      },
+      totalPredictions: this.totalPredictions,
+      triggered: results.filter(r => r.triggered).map(r => r.name),
+    });
 
     return results;
   }

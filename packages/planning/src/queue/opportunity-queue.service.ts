@@ -11,12 +11,15 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { verboseFor } from '@sylphie/shared';
 import type { OpportunityPriority } from '@sylphie/shared';
 import type {
   IOpportunityQueue,
   QueuedOpportunity,
   OpportunityQueueStatus,
 } from '../interfaces/planning.interfaces';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,6 +70,11 @@ export class OpportunityQueueService implements IOpportunityQueue {
       (item) => item.payload.contextFingerprint === opportunity.payload.contextFingerprint,
     );
     if (isDuplicate) {
+      vlog('opportunity enqueue rejected — duplicate', {
+        opportunityId: opportunity.payload.id,
+        contextFingerprint: opportunity.payload.contextFingerprint,
+        queueSize: this.queue.length,
+      });
       this.logger.debug(
         `Duplicate opportunity dropped: ${opportunity.payload.contextFingerprint}`,
       );
@@ -76,18 +84,35 @@ export class OpportunityQueueService implements IOpportunityQueue {
     // Rate-limit check -- GUARDIAN_TEACHING bypasses rate limiting.
     const isGuardianTeaching = opportunity.payload.classification === 'GUARDIAN_TEACHING';
     if (!isGuardianTeaching && this.isRateLimited()) {
+      vlog('opportunity enqueue rejected — rate limited', {
+        opportunityId: opportunity.payload.id,
+        plansCreatedInWindow: this.planCreationTimestamps.length,
+        max: MAX_PLANS_PER_WINDOW,
+      });
       this.logger.debug('Planning rate-limited -- opportunity rejected');
       return false;
     }
 
     // Hard cap.
     if (this.queue.length >= MAX_QUEUE_SIZE) {
+      vlog('opportunity enqueue rejected — queue at hard cap', {
+        opportunityId: opportunity.payload.id,
+        queueSize: this.queue.length,
+        cap: MAX_QUEUE_SIZE,
+      });
       this.logger.warn(`Queue at hard cap (${MAX_QUEUE_SIZE}) -- opportunity rejected`);
       return false;
     }
 
     this.queue.push(opportunity);
     this.sortQueue();
+
+    vlog('opportunity enqueued', {
+      opportunityId: opportunity.payload.id,
+      classification: opportunity.payload.classification,
+      priority: opportunity.currentPriority,
+      queueSize: this.queue.length,
+    });
 
     this.logger.debug(
       `Enqueued opportunity ${opportunity.payload.id} ` +
@@ -99,7 +124,14 @@ export class OpportunityQueueService implements IOpportunityQueue {
 
   dequeue(): QueuedOpportunity | null {
     if (this.queue.length === 0) return null;
-    return this.queue.shift()!;
+    const item = this.queue.shift()!;
+    vlog('opportunity dequeued', {
+      opportunityId: item.payload.id,
+      classification: item.payload.classification,
+      priority: item.currentPriority,
+      remainingQueueSize: this.queue.length,
+    });
+    return item;
   }
 
   applyDecay(): number {
@@ -118,6 +150,7 @@ export class OpportunityQueueService implements IOpportunityQueue {
 
     if (droppedCount > 0) {
       this.sortQueue();
+      vlog('decay sweep complete', { droppedCount, remainingQueueSize: this.queue.length });
       this.logger.debug(`Decay sweep: dropped ${droppedCount} opportunities`);
     }
 

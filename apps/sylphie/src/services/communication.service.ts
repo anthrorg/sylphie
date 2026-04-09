@@ -32,6 +32,7 @@ import {
   TimescaleService,
   DriveName,
   LLM_SERVICE,
+  verboseFor,
   type ILlmService,
   type CycleResponse,
   type DeliveryPayload,
@@ -40,6 +41,8 @@ import {
   type ActionOutcome,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Communication');
 import {
   DECISION_MAKING_SERVICE,
   type IDecisionMakingService,
@@ -186,6 +189,14 @@ export class CommunicationService implements OnModuleInit {
     if (teaching) {
       this.handleGuardianTeaching(teaching, sessionId);
     }
+
+    vlog('input parsed', {
+      inputType,
+      entityCount: entities.length,
+      guardianFeedback: guardianFeedbackType ?? null,
+      factCount: extractedFacts.length,
+      teaching: !!teaching,
+    });
 
     return {
       inputType,
@@ -446,6 +457,16 @@ export class CommunicationService implements OnModuleInit {
       costUsd: 0, // Local Ollama
       knowledgeGrounding: response.knowledgeGrounding,
     };
+
+    vlog('response delivered', {
+      turnId: response.turnId,
+      arbitrationType: response.arbitrationType,
+      isGrounded,
+      voiceCacheHit,
+      hasAudio: !!audioBase64,
+      textLen: response.text.length,
+      latencyMs: response.latencyMs,
+    });
 
     this.deliverySubject.next(delivery);
 

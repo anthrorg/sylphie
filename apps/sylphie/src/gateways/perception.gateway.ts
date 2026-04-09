@@ -7,7 +7,9 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
-import type { TrackedObjectDTO, SceneSummary, FaceDetection } from '@sylphie/shared';
+import { verboseFor, type TrackedObjectDTO, type SceneSummary, type FaceDetection } from '@sylphie/shared';
+
+const vlog = verboseFor('Perception');
 import { PersonModelService } from '../services/person-model.service';
 import { FaceSnapshotService } from '../services/face-snapshot.service';
 import { SceneEventDetectorService } from '../services/scene-event-detector.service';
@@ -72,6 +74,13 @@ export class PerceptionGateway
 
       // Feed object detections into the sensory pipeline
       const detections = result.detections ?? [];
+      const faces = result.faces ?? [];
+      vlog('frame processed', {
+        detections: detections.length,
+        faces: faces.length,
+        trackedObjects: (result.tracked_objects ?? []).length,
+        latencyMs: Date.now() - now,
+      });
       if (detections.length > 0) {
         this.tickSampler.updateVideoDetections(
           detections.map((d: any) => ({
@@ -83,7 +92,6 @@ export class PerceptionGateway
       }
 
       // Feed face detections into the sensory pipeline
-      const faces = result.faces ?? [];
       const mappedFaces: FaceDetection[] = faces.map((f: any) => ({
         confidence: f.confidence,
         bbox: [f.bbox_x_min, f.bbox_y_min, f.bbox_x_max, f.bbox_y_max] as [number, number, number, number],

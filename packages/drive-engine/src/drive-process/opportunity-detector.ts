@@ -7,6 +7,10 @@
  * prevent queue spam.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import type { PredictionEvaluator } from './prediction-evaluator';
 import type { PredictionOpportunitySignal } from './opportunity-signal';
 import {
@@ -79,6 +83,13 @@ export class OpportunityDetector {
       this.totalPressure,
     );
 
+    vlog('opportunity signal received', {
+      predictionType: signal.predictionType,
+      mae: +signal.mae.toFixed(4),
+      classification,
+      failureCount,
+    });
+
     // De-duplication: check if opportunity already exists for this prediction type
     const existing = this.registry.get(signal.predictionType);
     if (existing && DEDUPLICATION_ENABLED) {
@@ -94,6 +105,11 @@ export class OpportunityDetector {
       existing.mae = signal.mae;
       existing.classification = classification;
       existing.updatedAt = new Date();
+      vlog('opportunity deduplicated', {
+        predictionType: signal.predictionType,
+        updatedPriority: +newPriority.toFixed(4),
+        classification,
+      });
       return existing;
     }
 
@@ -119,6 +135,14 @@ export class OpportunityDetector {
 
     // Store in registry
     this.registry.set(signal.predictionType, opportunity);
+
+    vlog('opportunity created', {
+      id: opportunity.id,
+      predictionType: signal.predictionType,
+      classification,
+      priority: +priority.toFixed(4),
+      registrySize: this.registry.size,
+    });
 
     return opportunity;
   }

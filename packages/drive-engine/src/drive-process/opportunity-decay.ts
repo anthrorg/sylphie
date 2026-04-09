@@ -7,6 +7,10 @@
  * the opportunity is removed entirely.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import type { PredictionEvaluator } from './prediction-evaluator';
 import {
   DECAY_MAE_THRESHOLD,
@@ -43,12 +47,25 @@ export function applyDecay(
 
       // First time we see improvement: reduce priority
       if (opp.consecutiveGoodPredictions === 1) {
+        const oldPriority = opp.priority;
         opp.priority *= DECAY_PRIORITY_REDUCTION;
         opp.updatedAt = new Date();
+        vlog('opportunity decay: priority reduced', {
+          id: opp.id,
+          predictionType: opp.predictionType,
+          oldPriority: +oldPriority.toFixed(4),
+          newPriority: +opp.priority.toFixed(4),
+          mae: +maeResult.mae.toFixed(4),
+        });
       }
 
       // After sufficient consecutive good predictions: remove entirely
       if (opp.consecutiveGoodPredictions >= DECAY_REMOVAL_CONSECUTIVE_THRESHOLD) {
+        vlog('opportunity decay: removed', {
+          id: opp.id,
+          predictionType: opp.predictionType,
+          consecutiveGoodPredictions: opp.consecutiveGoodPredictions,
+        });
         // Don't add to toKeep — opportunity is removed
         continue;
       }

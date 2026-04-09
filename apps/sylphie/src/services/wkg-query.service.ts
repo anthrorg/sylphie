@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Knowledge');
 
 // ---------------------------------------------------------------------------
 // Shape expected by the frontend (mirrors frontend/src/types/index.ts)
@@ -151,21 +153,33 @@ export class WkgQueryService implements OnModuleInit {
    * Capped at 5 000 nodes / 10 000 edges to avoid overwhelming the frontend.
    */
   async getSnapshot(): Promise<GraphSnapshotDto> {
-    return this.getInstanceSnapshot(Neo4jInstanceName.WORLD);
+    const t0 = Date.now();
+    vlog('WKG query: getSnapshot', { instance: 'WORLD' });
+    const result = await this.getInstanceSnapshot(Neo4jInstanceName.WORLD);
+    vlog('WKG query: getSnapshot complete', { instance: 'WORLD', nodes: result.nodes.length, edges: result.edges.length, latencyMs: Date.now() - t0 });
+    return result;
   }
 
   /**
    * Fetch a full snapshot of the Other Knowledge Graph (person models).
    */
   async getOkgSnapshot(): Promise<GraphSnapshotDto> {
-    return this.getInstanceSnapshot(Neo4jInstanceName.OTHER, 1000, 5000);
+    const t0 = Date.now();
+    vlog('WKG query: getOkgSnapshot', { instance: 'OTHER' });
+    const result = await this.getInstanceSnapshot(Neo4jInstanceName.OTHER, 1000, 5000);
+    vlog('WKG query: getOkgSnapshot complete', { instance: 'OTHER', nodes: result.nodes.length, edges: result.edges.length, latencyMs: Date.now() - t0 });
+    return result;
   }
 
   /**
    * Fetch a full snapshot of the Self Knowledge Graph (Sylphie's self-model).
    */
   async getSkgSnapshot(): Promise<GraphSnapshotDto> {
-    return this.getInstanceSnapshot(Neo4jInstanceName.SELF, 1000, 5000);
+    const t0 = Date.now();
+    vlog('WKG query: getSkgSnapshot', { instance: 'SELF' });
+    const result = await this.getInstanceSnapshot(Neo4jInstanceName.SELF, 1000, 5000);
+    vlog('WKG query: getSkgSnapshot complete', { instance: 'SELF', nodes: result.nodes.length, edges: result.edges.length, latencyMs: Date.now() - t0 });
+    return result;
   }
 
   /**
@@ -207,6 +221,8 @@ export class WkgQueryService implements OnModuleInit {
 
   /** Fast count-only query for a given instance. */
   async getCount(instance: Neo4jInstanceName): Promise<{ nodes: number; edges: number }> {
+    const t0 = Date.now();
+    vlog('WKG query: getCount', { instance });
     const session = this.neo4j.getSession(instance, 'READ');
     try {
       const result = await session.run(
@@ -219,10 +235,12 @@ export class WkgQueryService implements OnModuleInit {
          RETURN nc, ec`,
       );
       const rec = result.records[0];
-      return {
+      const counts = {
         nodes: asNumber(rec?.get('nc'), 0),
         edges: asNumber(rec?.get('ec'), 0),
       };
+      vlog('WKG query: getCount complete', { instance, ...counts, latencyMs: Date.now() - t0 });
+      return counts;
     } finally {
       await session.close();
     }
@@ -234,6 +252,7 @@ export class WkgQueryService implements OnModuleInit {
     skip: number,
     limit: number,
   ): Promise<{ nodes: GraphNodeDto[]; total: number }> {
+    const t0 = Date.now();
     const countSession = this.neo4j.getSession(instance, 'READ');
     const dataSession = this.neo4j.getSession(instance, 'READ');
     try {
@@ -247,6 +266,7 @@ export class WkgQueryService implements OnModuleInit {
       ]);
       const total = asNumber(countResult.records[0]?.get('total'), 0);
       const nodes = dataResult.records.map((rec) => this.mapNodeRecord(rec));
+      vlog('WKG query: getNodePage', { instance, skip, limit, returned: nodes.length, total, latencyMs: Date.now() - t0 });
       return { nodes, total };
     } finally {
       await Promise.all([countSession.close(), dataSession.close()]);
@@ -259,6 +279,7 @@ export class WkgQueryService implements OnModuleInit {
     skip: number,
     limit: number,
   ): Promise<{ edges: GraphEdgeDto[]; total: number }> {
+    const t0 = Date.now();
     const countSession = this.neo4j.getSession(instance, 'READ');
     const dataSession = this.neo4j.getSession(instance, 'READ');
     try {
@@ -321,6 +342,7 @@ export class WkgQueryService implements OnModuleInit {
           created_at: asString(rProps.created_at) || new Date().toISOString(),
         };
       });
+      vlog('WKG query: getEdgePage', { instance, skip, limit, returned: edges.length, total, latencyMs: Date.now() - t0 });
       return { edges, total };
     } finally {
       await Promise.all([countSession.close(), dataSession.close()]);

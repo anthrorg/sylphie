@@ -19,11 +19,13 @@
  */
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { TimescaleService } from '@sylphie/shared';
+import { TimescaleService, verboseFor } from '@sylphie/shared';
 import type {
   IUpdateWkgService,
   UnlearnedEvent,
 } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 @Injectable()
 export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
@@ -103,13 +105,17 @@ export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
         [limit],
       );
 
+      vlog('unlearned events fetched', {
+        count: result.rows.length,
+        limit,
+        types: [...new Set(result.rows.map((e) => e.type))],
+      });
+
       return result.rows;
     } catch (err) {
-      this.logger.error(
-        `fetchUnlearnedEvents failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('fetchUnlearnedEvents error', { error: message });
+      this.logger.error(`fetchUnlearnedEvents failed: ${message}`);
       return [];
     }
   }
@@ -123,12 +129,11 @@ export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
         `UPDATE events SET has_learned = true WHERE id = $1`,
         [eventId],
       );
+      vlog('event marked as learned', { eventId });
     } catch (err) {
-      this.logger.error(
-        `markAsLearned failed for event ${eventId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('markAsLearned error', { eventId, error: message });
+      this.logger.error(`markAsLearned failed for event ${eventId}: ${message}`);
     }
   }
 }

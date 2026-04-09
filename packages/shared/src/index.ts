@@ -29,3 +29,6 @@ export * from './types';
 
 // Exceptions
 export * from './exceptions';
+
+// Verbose logging
+export { verbose, verboseFor, isVerbose, reconfigureVerbose } from './verbose';

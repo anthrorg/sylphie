@@ -10,7 +10,7 @@
  */
 
 import { Injectable, Inject, Optional, Logger } from '@nestjs/common';
-import { LLM_SERVICE, type ILlmService, type ActionStep } from '@sylphie/shared';
+import { LLM_SERVICE, verboseFor, type ILlmService, type ActionStep } from '@sylphie/shared';
 import type {
   IProposalService,
   PlanProposal,
@@ -18,6 +18,8 @@ import type {
   ResearchResult,
   SimulationResult,
 } from '../interfaces/planning.interfaces';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Service
@@ -41,24 +43,44 @@ export class ProposalService implements IProposalService {
 
     if (this.llm && this.llm.isAvailable()) {
       try {
+        vlog('propose: using LLM', {
+          opportunityId: opportunity.payload.id,
+          classification: opportunity.payload.classification,
+        });
         proposal = await this.proposeLlm(opportunity, research, simulation);
       } catch (err) {
-        this.logger.warn(
-          `LLM proposal failed, falling back to template: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        const message = err instanceof Error ? err.message : String(err);
+        vlog('propose: LLM failed, falling back to template', {
+          opportunityId: opportunity.payload.id,
+          error: message,
+        });
+        this.logger.warn(`LLM proposal failed, falling back to template: ${message}`);
         proposal = this.proposeTemplate(opportunity, simulation);
       }
     } else {
+      vlog('propose: LLM unavailable — using template', {
+        opportunityId: opportunity.payload.id,
+      });
       proposal = this.proposeTemplate(opportunity, simulation);
     }
 
     // Attach predicted drive effects from simulation's best outcome.
-    return {
+    const final = {
       ...proposal,
       predictedDriveEffects: simulation.bestOutcome?.estimatedDriveEffect ?? {},
     };
+
+    vlog('proposal generated', {
+      opportunityId: opportunity.payload.id,
+      name: final.name,
+      category: final.category,
+      triggerContext: final.triggerContext,
+      stepCount: final.actionSequence.length,
+      steps: final.actionSequence.map((s) => s.stepType),
+      rationale: final.rationale.substring(0, 100),
+    });
+
+    return final;
   }
 
   async refine(

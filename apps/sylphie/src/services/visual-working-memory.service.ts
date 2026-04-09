@@ -6,9 +6,12 @@ import {
   TimescaleService,
   type SceneSnapshot,
   type TrackedObjectDTO,
+  verboseFor,
 } from '@sylphie/shared';
 import { FaceSnapshotService } from './face-snapshot.service';
 import { PersonModelService } from './person-model.service';
+
+const vlog = verboseFor('Perception');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -238,6 +241,13 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           `VWM: entity stabilized → present: ${entity.displayName ?? entity.label} ` +
           `(ratio=${entity.presenceRatio.toFixed(2)}, node=${entity.nodeId ?? 'pending'})`,
         );
+        vlog('entity stabilized to present', {
+          entityId: entity.id,
+          label: entity.label,
+          displayName: entity.displayName,
+          presenceRatio: parseFloat(entity.presenceRatio.toFixed(2)),
+          nodeId: entity.nodeId,
+        });
         // Trigger WKG matching on transition to present
         void this.resolveEntityIdentity(entity).catch(err =>
           this.logger.warn(`VWM identity resolution failed: ${err}`),
@@ -262,6 +272,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
         this.logger.log(
           `VWM: entity gone: ${entity.displayName ?? entity.label} (${entity.id})`,
         );
+        vlog('entity gone', { entityId: entity.id, label: entity.label, displayName: entity.displayName });
         for (const tid of entity.trackIds) {
           this.trackToEntity.delete(tid);
         }
@@ -284,6 +295,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           entity.discovered = true;
           entity.displayName = personId;
           this.logger.log(`VWM: face identified → ${personId} for entity ${entity.id}`);
+          vlog('person identified in scene', { entityId: entity.id, personId });
         }
       }
     }
@@ -296,6 +308,18 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       for (const [id] of gone.slice(0, gone.length - 20)) {
         this.entities.delete(id);
       }
+    }
+
+    const presentEntities = [...this.entities.values()].filter(e => e.state === 'present');
+    const undiscoveredCount = presentEntities.filter(e => !e.discovered && e.label !== 'person').length;
+    const unknownPersonCount = presentEntities.filter(e => !e.discovered && e.label === 'person').length;
+    if (presentEntities.length > 0) {
+      vlog('scene update', {
+        trackedTotal: this.entities.size,
+        presentCount: presentEntities.length,
+        undiscoveredObjects: undiscoveredCount,
+        unknownPersons: unknownPersonCount,
+      });
     }
   }
 

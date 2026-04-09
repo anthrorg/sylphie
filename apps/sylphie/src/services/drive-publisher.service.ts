@@ -12,8 +12,10 @@ import { Injectable, Inject, OnModuleInit, OnModuleDestroy, Logger } from '@nest
 import { Subscription } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
-import { DriveSnapshot } from '@sylphie/shared';
+import { DriveSnapshot, verboseFor } from '@sylphie/shared';
 import { TelemetryBroadcastService } from './telemetry-broadcast.service';
+
+const vlog = verboseFor('DriveEngine');
 
 /** camelCase DriveName enum values → frontend snake_case keys */
 const DRIVE_KEY_MAP: Record<string, string> = {
@@ -47,16 +49,20 @@ export class DrivePublisherService implements OnModuleInit, OnModuleDestroy {
       .pipe(throttleTime(500)) // 2Hz to frontend — child process ticks at 10Hz
       .subscribe({
         next: (snapshot) => this.publishSnapshot(snapshot),
-        error: (err) =>
-          this.logger.error(`Drive state subscription error: ${err.message}`),
+        error: (err) => {
+          this.logger.error(`Drive state subscription error: ${err.message}`);
+          vlog('drive state subscription error', { error: err.message });
+        },
       });
 
     this.logger.log('Subscribed to drive state (publishing at 2Hz)');
+    vlog('drive publisher initialized', { throttleMs: 500 });
   }
 
   onModuleDestroy(): void {
     this.subscription?.unsubscribe();
     this.subscription = null;
+    vlog('drive publisher destroyed', {});
   }
 
   private publishSnapshot(snapshot: DriveSnapshot): void {
@@ -83,6 +89,12 @@ export class DrivePublisherService implements OnModuleInit, OnModuleDestroy {
         dominantDrive = snakeKey;
       }
     }
+
+    vlog('drive snapshot published', {
+      tick: snapshot.tickNumber,
+      totalPressure: snapshot.totalPressure,
+      dominantDrive,
+    });
 
     this.telemetry.broadcast({
       type: 'executor_cycle',

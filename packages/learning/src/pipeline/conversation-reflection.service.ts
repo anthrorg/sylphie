@@ -38,9 +38,12 @@ import {
   TimescaleService,
   Neo4jService,
   Neo4jInstanceName,
+  verboseFor,
   type ILlmService,
   type LlmRequest,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Learning');
 import type {
   IConversationReflectionService,
   ILearningEventLogger,
@@ -163,17 +166,26 @@ export class ConversationReflectionService implements IConversationReflectionSer
         [MIN_EVENTS_FOR_REFLECTION],
       );
 
-      return result.rows.map((row) => ({
+      const candidates = result.rows.map((row) => ({
         sessionId: row.session_id,
         lastEventAt: new Date(row.last_event_at),
         eventCount: parseInt(row.event_count, 10),
       }));
+
+      vlog('findReflectableSessions', {
+        found: candidates.length,
+        sessions: candidates.map((c) => ({
+          sessionId: c.sessionId,
+          eventCount: c.eventCount,
+          quietSinceMs: Date.now() - c.lastEventAt.getTime(),
+        })),
+      });
+
+      return candidates;
     } catch (err) {
-      this.logger.warn(
-        `findReflectableSessions failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('findReflectableSessions error', { error: message });
+      this.logger.warn(`findReflectableSessions failed: ${message}`);
       return [];
     }
   }
@@ -200,6 +212,7 @@ export class ConversationReflectionService implements IConversationReflectionSer
     // 2. Check LLM availability — do NOT mark as reflected if unavailable,
     //    so the system retries when LLM comes back.
     if (!this.llm || !this.llm.isAvailable()) {
+      vlog('reflectOnSession: LLM unavailable — skipping', { sessionId });
       this.logger.debug('reflectOnSession: LLM unavailable, skipping');
       return noopResult;
     }
@@ -210,6 +223,15 @@ export class ConversationReflectionService implements IConversationReflectionSer
     // 4. Build prompt and call LLM.
     const prompt = buildReflectionPrompt(events, knownEntities);
     const correlationId = `reflection-${randomUUID().substring(0, 8)}`;
+
+    vlog('reflectOnSession: calling LLM', {
+      sessionId,
+      eventCount: events.length,
+      knownEntityCount: knownEntities.length,
+      knownEntities,
+      correlationId,
+      model: 'medium',
+    });
 
     const request: LlmRequest = {
       messages: [{ role: 'user', content: prompt }],
@@ -242,6 +264,18 @@ export class ConversationReflectionService implements IConversationReflectionSer
 
     // 5. Parse insights from LLM response.
     const insights = parseReflectionResponse(responseContent);
+
+    vlog('reflectOnSession: insights parsed', {
+      sessionId,
+      insightsParsed: insights.length,
+      insights: insights.map((i) => ({
+        type: i.insightType,
+        confidence: i.confidence,
+        description: i.description.substring(0, 80),
+        entities: i.referencedEntities,
+        suggestedEdge: i.suggestedEdge,
+      })),
+    });
 
     if (insights.length === 0) {
       this.logger.debug(
@@ -298,6 +332,13 @@ export class ConversationReflectionService implements IConversationReflectionSer
       },
       sessionId,
     );
+
+    vlog('reflectOnSession complete', {
+      sessionId,
+      insightsCreated: totalInsights,
+      edgesCreated: totalEdges,
+      insightsParsed: insights.length,
+    });
 
     this.logger.log(
       `Reflection complete for ${sessionId}: ${totalInsights} insights, ${totalEdges} edges`,

@@ -40,7 +40,10 @@ import {
   type ActionCandidate,
   type ActionOutcome,
   type DriveSnapshot,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type {
   IPredictionService,
   IDecisionEventLogger,
@@ -152,6 +155,14 @@ export class PredictionService implements IPredictionService {
       });
       generated.push(prediction);
 
+      vlog('prediction generated', {
+        predictionId: prediction.id.substring(0, 8),
+        actionId: candidate.procedureData?.id ?? 'novel',
+        actionName: candidate.procedureData?.name ?? 'novel',
+        confidence: +confidence.toFixed(3),
+        driveEffectKeys: Object.keys(driveEffects),
+      });
+
       this.emitPredictionCreated(prediction, context.driveSnapshot);
     }
 
@@ -233,6 +244,14 @@ export class PredictionService implements IPredictionService {
 
     // Remove from active store once evaluated.
     this.activePredictions.delete(predictionId);
+
+    vlog('prediction evaluated', {
+      predictionId: predictionId.substring(0, 8),
+      actionId,
+      mae: +mae.toFixed(4),
+      accurate,
+      keyCount,
+    });
 
     this.logger.debug(
       `Prediction ${predictionId} evaluated: MAE=${mae.toFixed(4)}, accurate=${accurate}`,

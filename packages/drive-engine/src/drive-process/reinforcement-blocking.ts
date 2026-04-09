@@ -11,7 +11,10 @@
 
 import type { DriveName } from '@sylphie/shared';
 import type { ActionOutcomePayload } from '@sylphie/shared';
+import { verboseFor } from '@sylphie/shared';
 import type { TheaterVerdict } from './theater-prohibition';
+
+const vlog = verboseFor('DriveEngine');
 
 /**
  * Filtering result indicating whether effects should be applied.
@@ -57,6 +60,13 @@ export function filterEffectsForTheater(
   // Expression is theatrical: zero out all drive effects
   const blockedEffects = { ...outcome.driveEffects };
   const filteredEffects: Partial<Record<DriveName, number>> = {};
+
+  vlog('reinforcement blocked by theater check', {
+    actionType: outcome.actionType,
+    drive: verdict.drive,
+    driveValue: verdict.driveValue,
+    blockedEffects,
+  });
 
   return {
     shouldApplyEffects: false,

@@ -43,7 +43,10 @@ import {
   DriveName,
   DRIVE_INDEX_ORDER,
   CONFIDENCE_THRESHOLDS,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type { IActionRetrieverService } from '../interfaces/decision-making.interfaces';
 
 // ---------------------------------------------------------------------------
@@ -192,6 +195,11 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
     // Cache check.
     const cached = this.cache.get(contextFingerprint);
     if (cached !== null) {
+      vlog('action retriever cache HIT', {
+        fingerprint: contextFingerprint.substring(0, 16),
+        candidates: cached.length,
+        topConfidence: cached.length > 0 ? +cached[0].confidence.toFixed(3) : null,
+      });
       this.logger.debug(
         `ActionRetriever cache hit for fingerprint "${contextFingerprint.slice(0, 30)}..." ` +
           `(${cached.length} candidates)`,
@@ -201,6 +209,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
 
     // WKG unavailable — degrade to empty candidate list.
     if (!this.neo4j) {
+      vlog('action retriever cache MISS + no Neo4j', { fingerprint: contextFingerprint.substring(0, 16), degraded: true });
       this.logger.debug(
         'ActionRetriever: Neo4jService unavailable, returning empty candidates (Type 2 path).',
       );
@@ -265,6 +274,14 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
           };
         })
         .sort((a, b) => b.confidence - a.confidence);
+
+      vlog('action retriever WKG query', {
+        fingerprint: contextFingerprint.substring(0, 16),
+        candidates: candidates.length,
+        topConfidence: candidates.length > 0 ? +candidates[0].confidence.toFixed(3) : null,
+        motivatingDrive,
+        cacheSize: this.cache.size,
+      });
 
       this.logger.debug(
         `ActionRetriever: retrieved ${candidates.length} candidates from WKG ` +

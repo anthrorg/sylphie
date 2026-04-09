@@ -1,6 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { TickSamplerService } from '@sylphie/decision-making';
+import { verboseFor } from '@sylphie/shared';
 import { TelemetryBroadcastService } from './telemetry-broadcast.service';
+
+const vlog = verboseFor('Perception');
 
 const SAMPLE_INTERVAL_MS = 2000;
 
@@ -38,6 +41,11 @@ export class SensoryLoggerService implements OnModuleInit {
         'info',
         `[sensory] frame: [${modalities.join(', ')}] | fused=${hasSignal ? 'encoded' : 'zero'} | dim=${frame.fused_embedding.length}`,
       );
+      vlog('sensory event logged to TimescaleDB', {
+        modalities,
+        fusedDim: frame.fused_embedding.length,
+        hasSignal,
+      });
     } catch (err) {
       this.logger.warn(`Sample failed: ${(err as Error).message}`);
     }

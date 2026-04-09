@@ -26,8 +26,11 @@ import {
   Neo4jInstanceName,
   TimescaleService,
   FaceDetection,
+  verboseFor,
 } from '@sylphie/shared';
 import { randomUUID } from 'crypto';
+
+const vlog = verboseFor('Perception');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -219,6 +222,8 @@ export class FaceSnapshotService implements OnModuleInit {
     const angle = this.classifyAngle(primary.landmarks);
     if (!angle) return;
 
+    vlog('face frame processed', { personId, faceCount: faces.length, confidence: primary.confidence, angle });
+
     // Already have this angle?
     const state = this.getOrLoadState(personId);
     if (state.get(angle)) return;
@@ -272,11 +277,13 @@ export class FaceSnapshotService implements OnModuleInit {
     this.logger.log(
       `Captured ${angle} snapshot for ${personId} (${collected}/${ALL_ANGLES.length})`,
     );
+    vlog('face snapshot stored', { personId, angle, collected, total: ALL_ANGLES.length });
 
     if (collected >= ALL_ANGLES.length) {
       this.logger.log(
         `Face snapshot collection complete for ${personId}`,
       );
+      vlog('face snapshot collection complete', { personId });
     }
   }
 

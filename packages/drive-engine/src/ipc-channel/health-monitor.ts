@@ -15,7 +15,10 @@
  */
 
 import { Logger } from '@nestjs/common';
+import { verboseFor } from '@sylphie/shared';
 import { WsChannelService } from './ws-channel.service';
+
+const vlog = verboseFor('DriveEngine');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -140,6 +143,12 @@ export class HealthMonitor {
    */
   private performHealthCheck(): void {
     const report = this.getHealthReport();
+
+    vlog('health check', {
+      healthy: report.healthy,
+      msSinceLastSnapshot: report.msSinceLastSnapshot,
+      diagnosticMessage: report.diagnosticMessage,
+    });
 
     if (!report.healthy) {
       this.logger.warn(

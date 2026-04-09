@@ -26,6 +26,9 @@
     "start:backend": "yarn workspace @sylphie/app start",
     "dev:drive-server": "yarn workspace @sylphie/drive-server dev",
     "build:drive-server": "yarn workspace @sylphie/drive-server build",
-    "start:drive-server": "yarn workspace @sylphie/drive-server start"
+    "start:drive-server": "yarn workspace @sylphie/drive-server start",
+    "test:e2e": "npx tsx test/e2e/full-system.e2e.ts",
+    "test:arch": "npx tsx test/e2e/architecture-verification.e2e.ts",
+    "test:agi": "npx tsx test/e2e/agi-verification.e2e.ts"
   }
 }

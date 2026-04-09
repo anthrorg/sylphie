@@ -1,7 +1,9 @@
 import { Injectable, Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
-import { Neo4jService, Neo4jInstanceName, TimescaleService, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, TimescaleService, DriveName, DRIVE_INDEX_ORDER, CORE_DRIVES, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Knowledge');
 import { ACTION_OUTCOME_REPORTER, IActionOutcomeReporter } from '@sylphie/drive-engine';
 import {
   LatentSpaceService,
@@ -57,6 +59,7 @@ export class WkgBootstrapService implements OnModuleInit {
    * Called automatically on module init and after a WKG reset.
    */
   async bootstrap(): Promise<{ nodes: number }> {
+    vlog('WKG bootstrap starting', {});
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     const now = new Date().toISOString();
 
@@ -100,6 +103,7 @@ export class WkgBootstrapService implements OnModuleInit {
             now,
           },
         );
+        vlog('drive rule node seeded', { driveName, category, label: DRIVE_LABELS[driveName] });
       }
 
       // ── 3. Verify counts ──────────────────────────────────────────
@@ -108,6 +112,7 @@ export class WkgBootstrapService implements OnModuleInit {
       this.logger.log(
         `WKG bootstrap complete: ${cnt} nodes (1 anchor + 12 drives)`,
       );
+      vlog('WKG bootstrap complete', { totalNodes: cnt, driveCount: DRIVE_INDEX_ORDER.length });
 
       // ── 4. Bootstrap Self KG (Grafeo self-model) ──────────────────
       await this.bootstrapSelfKg(now);

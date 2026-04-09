@@ -19,7 +19,9 @@
 import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
-import { TimescaleService, EMBEDDING_DIM } from '@sylphie/shared';
+import { TimescaleService, EMBEDDING_DIM, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Voice');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,6 +123,7 @@ export class VoiceLatentSpaceService implements OnModuleInit {
     const entry = this.hotLayer.get(hash);
 
     if (!entry) {
+      vlog('voice cache miss', { textPreview: text.substring(0, 40), valence });
       return null;
     }
 
@@ -131,12 +134,14 @@ export class VoiceLatentSpaceService implements OnModuleInit {
         `Voice cache valence mismatch: cached=${entry.emotionalValence.toFixed(2)}, ` +
           `current=${valence.toFixed(2)} — regenerating TTS.`,
       );
+      vlog('voice cache valence mismatch', { textPreview: text.substring(0, 40), cachedValence: entry.emotionalValence, currentValence: valence });
       return null;
     }
 
     // Hit — update usage
     entry.usageCount++;
     this.updateUsage(entry.id);
+    vlog('voice cache hit', { textPreview: text.substring(0, 40), valence, usageCount: entry.usageCount });
 
     return {
       pattern: {
@@ -212,6 +217,7 @@ export class VoiceLatentSpaceService implements OnModuleInit {
       `Voice cache store: "${text.substring(0, 40)}..." (${audioBase64.length} b64 chars). ` +
         `Hot layer: ${this.hotLayer.size} patterns.`,
     );
+    vlog('voice cache store', { textPreview: text.substring(0, 40), textLength: text.length, audioB64Length: audioBase64.length, valence, hotLayerSize: this.hotLayer.size });
 
     // Persist to warm layer (fire-and-forget)
     if (this.timescale && this.schemaReady) {

@@ -15,12 +15,14 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, verboseFor } from '@sylphie/shared';
 import type {
   IProcedureCreationService,
   PlanProposal,
   QueuedOpportunity,
 } from '../interfaces/planning.interfaces';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Constants (from CANON via @sylphie/shared provenance + confidence types)
@@ -93,6 +95,19 @@ export class ProcedureCreationService implements IProcedureCreationService {
           guardianInstruction: opportunity.payload.guardianInstruction ?? null,
         },
       );
+
+      vlog('procedure created', {
+        nodeId,
+        name: proposal.name,
+        category: proposal.category,
+        provenanceType,
+        confidence,
+        isGuardianTeaching,
+        opportunityId: opportunity.payload.id,
+        actionStepCount: proposal.actionSequence.length,
+        steps: proposal.actionSequence.map((s) => s.stepType),
+        triggerContext: proposal.triggerContext,
+      });
 
       this.logger.log(
         `Created ActionProcedure node: ${nodeId} (${proposal.name}, ` +

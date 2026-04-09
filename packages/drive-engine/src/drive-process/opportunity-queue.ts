@@ -5,6 +5,10 @@
  * Bounded at MAX_QUEUE_SIZE. Emits top opportunities periodically to Planning.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import {
   MAX_QUEUE_SIZE,
 } from '../constants/opportunity-detection';
@@ -35,6 +39,12 @@ export class OpportunityQueue {
     if (this.opportunities.length > MAX_QUEUE_SIZE) {
       this.opportunities = this.opportunities.slice(0, MAX_QUEUE_SIZE);
     }
+
+    vlog('opportunity queue: item added', {
+      id: opp.id,
+      priority: +opp.priority.toFixed(4),
+      queueSize: this.opportunities.length,
+    });
   }
 
   /**
@@ -59,6 +69,7 @@ export class OpportunityQueue {
     const index = this.opportunities.findIndex((opp) => opp.id === id);
     if (index >= 0) {
       this.opportunities.splice(index, 1);
+      vlog('opportunity queue: item removed', { id, queueSize: this.opportunities.length });
       return true;
     }
     return false;

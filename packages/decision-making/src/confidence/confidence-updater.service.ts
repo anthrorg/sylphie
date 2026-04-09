@@ -57,7 +57,10 @@ import {
   DEFAULT_DECAY_RATES,
   type ACTRParams,
   type DriveSnapshot,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type {
   IConfidenceUpdaterService,
   IDecisionEventLogger,
@@ -164,6 +167,16 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
 
     const newConfidence = record.currentConfidence;
     const delta = newConfidence - oldConfidence;
+
+    vlog('confidence update', {
+      actionId,
+      outcome,
+      oldConfidence: +oldConfidence.toFixed(4),
+      newConfidence: +newConfidence.toFixed(4),
+      delta: +delta.toFixed(4),
+      guardianFeedback: guardianFeedback ?? null,
+      graduated: record.graduated,
+    });
 
     this.logger.debug(
       `Confidence update for ${actionId}: ${outcome} ` +

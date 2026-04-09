@@ -29,7 +29,10 @@ import {
   type CognitiveContext,
   type DriveSnapshot,
   type KnowledgeGrounding,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Deliberation');
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
@@ -156,6 +159,7 @@ export class DeliberationService {
     context: CognitiveContext,
   ): Promise<DeliberationResult> {
     if (!this.llm || !this.llm.isAvailable()) {
+      vlog('deliberation aborted: LLM unavailable');
       return this.fallbackResult('LLM service unavailable');
     }
 
@@ -165,6 +169,12 @@ export class DeliberationService {
 
     // Assemble WKG context for this frame — injected into every step.
     const wkg = await this.wkgContext.getContextForFrame(frame);
+    vlog('deliberation start', {
+      wkgEntities: wkg.entities.length,
+      wkgFacts: wkg.facts.length,
+      wkgProcedures: wkg.procedures.length,
+      rawTextLength: (frame.raw['text'] as string | undefined)?.length ?? 0,
+    });
     const rawText = frame.raw['text'] as string | undefined ?? '';
     const driveSnapshot = context.driveSnapshot;
     const driveSummary = buildDriveSummary(driveSnapshot);
@@ -245,10 +255,25 @@ export class DeliberationService {
     totalPromptTokens += monologueResponse.tokensUsed.prompt;
     totalCompletionTokens += monologueResponse.tokensUsed.completion;
 
+    vlog('step 1: inner monologue', {
+      model: monologueResponse.model,
+      promptTokens: monologueResponse.tokensUsed.prompt,
+      completionTokens: monologueResponse.tokensUsed.completion,
+      latencyMs: monologueResponse.latencyMs,
+      monologuePreview: innerMonologue.substring(0, 120),
+    });
+
     this.logger.debug(`Monologue: "${innerMonologue.substring(0, 120)}..."`);
 
     // ── Parse structured classification from monologue ───────────────────
     const monologueParsed = parseMonologueClassification(innerMonologue);
+    vlog('monologue classification', {
+      intent: monologueParsed.intent,
+      entity: monologueParsed.entity,
+      needsDeliberation: monologueParsed.needsDeliberation,
+      hasResponse: !!monologueParsed.response,
+    });
+
     this.logger.debug(
       `Classification: intent=${monologueParsed.intent}, entity=${monologueParsed.entity}, ` +
         `needsDeliberation=${monologueParsed.needsDeliberation}`,
@@ -267,6 +292,14 @@ export class DeliberationService {
       } else {
         knowledgeGrounding = 'UNKNOWN';
       }
+
+      vlog('deliberation short-circuit', {
+        intent: monologueParsed.intent,
+        latencyMs: totalLatencyMs,
+        totalTokens: totalPromptTokens + totalCompletionTokens,
+        responsePreview: monologueParsed.response!.substring(0, 80),
+        knowledgeGrounding,
+      });
 
       this.logger.log(
         `Deliberation short-circuit: ${monologueParsed.intent} resolved in 1 step, ` +
@@ -366,6 +399,14 @@ export class DeliberationService {
     totalCompletionTokens += candidateResponse.tokensUsed.completion;
 
     const candidates = parseCandidates(candidateResponse.content);
+    vlog('step 2: candidates generated', {
+      count: candidates.length,
+      model: candidateResponse.model,
+      promptTokens: candidateResponse.tokensUsed.prompt,
+      completionTokens: candidateResponse.tokensUsed.completion,
+      latencyMs: candidateResponse.latencyMs,
+      candidates: candidates.map(c => c.text.substring(0, 80)),
+    });
     this.logger.debug(`Generated ${candidates.length} candidates`);
 
     if (candidates.length === 0) {
@@ -408,6 +449,15 @@ export class DeliberationService {
     const selectedIndex = parseSelection(selectionResponse.content, candidates.length);
     const selected = candidates[selectedIndex];
 
+    vlog('step 3: selection', {
+      selectedIndex,
+      selectedPreview: selected.text.substring(0, 80),
+      model: selectionResponse.model,
+      promptTokens: selectionResponse.tokensUsed.prompt,
+      completionTokens: selectionResponse.tokensUsed.completion,
+      latencyMs: selectionResponse.latencyMs,
+    });
+
     // Parse grounding tag from the selected candidate text.
     // Candidates are formatted as: [GROUNDED|ASSISTED|UNKNOWN] response text
     const { text: cleanedText, grounding: parsedGrounding } = parseGroundingTag(selected.text);
@@ -429,6 +479,12 @@ export class DeliberationService {
       || (driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0) > 0.5;
 
     if (shouldDebate) {
+      vlog('step 4: debate triggered', {
+        confidence: +confidence.toFixed(3),
+        debateThreshold: DEBATE_THRESHOLD,
+        novelSituation: wkg.entities.length === 0,
+        anxietyLevel: +(driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0).toFixed(3),
+      });
       this.logger.debug('Deliberation step 4: For/Against debate (triggered)');
 
       const forCtx = this.contextWindow.assemble({
@@ -543,6 +599,16 @@ export class DeliberationService {
       confidence = arbiterDecision.confidence;
       rationale = arbiterDecision.rationale;
 
+      vlog('step 5: arbiter decision', {
+        action: arbiterDecision.action,
+        confidence: +confidence.toFixed(3),
+        model: arbiterResponse.model,
+        promptTokens: arbiterResponse.tokensUsed.prompt,
+        completionTokens: arbiterResponse.tokensUsed.completion,
+        latencyMs: arbiterResponse.latencyMs,
+        responsePreview: finalResponseText.substring(0, 80),
+      });
+
       this.logger.debug(
         `Arbiter: confidence=${confidence.toFixed(2)}, action=${arbiterDecision.action}`,
       );
@@ -585,6 +651,17 @@ export class DeliberationService {
       totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
       totalLatencyMs,
     };
+
+    vlog('deliberation complete', {
+      stepsExecuted,
+      totalLatencyMs,
+      totalPromptTokens,
+      totalCompletionTokens,
+      confidence: +confidence.toFixed(3),
+      knowledgeGrounding,
+      discoveredEntities: discoveredEntities.length,
+      responsePreview: finalResponseText.substring(0, 100),
+    });
 
     this.logger.log(
       `Deliberation complete: ${stepsExecuted} steps, ${totalLatencyMs}ms, ` +

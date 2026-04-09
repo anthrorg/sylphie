@@ -21,7 +21,9 @@
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { ExecutorState, type DriveSnapshot } from '@sylphie/shared';
+import { ExecutorState, type DriveSnapshot, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type { IExecutorEngine, IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 
@@ -173,6 +175,13 @@ export class ExecutorEngineService implements IExecutorEngine {
     this.currentState = targetState;
     this.stateEnteredAt = entryTime;
 
+    vlog('state transition', {
+      from: previousState,
+      to: targetState,
+      latencyMs: stateLatencyMs,
+      cycleId: this.currentCycleMetrics?.cycleId,
+    });
+
     // Emit a diagnostic event.
     if (this.eventLogger && this.lastDriveSnapshot) {
       try {
@@ -196,6 +205,7 @@ export class ExecutorEngineService implements IExecutorEngine {
     // Set a timeout for the incoming state (except IDLE — no timeout on rest state).
     if (targetState !== ExecutorState.IDLE) {
       this.stateTimeoutHandle = setTimeout(() => {
+        vlog('state TIMEOUT', { state: this.currentState, timeoutMs: getTimeoutForState(this.currentState) });
         this.logger.warn(
           `State timeout: ${this.currentState} exceeded ${getTimeoutForState(this.currentState)}ms. Forcing recovery.`,
         );
@@ -235,6 +245,8 @@ export class ExecutorEngineService implements IExecutorEngine {
 
     this.currentState = ExecutorState.IDLE;
     this.stateEnteredAt = Date.now();
+
+    vlog('forceIdle', { from: previousState, latencyMs: stateLatencyMs, cycleId: this.currentCycleMetrics?.cycleId });
 
     if (this.eventLogger && this.lastDriveSnapshot) {
       try {
@@ -304,6 +316,14 @@ export class ExecutorEngineService implements IExecutorEngine {
       stateLatencies[state] = latency;
       totalStateLatencyMs += latency;
     }
+
+    vlog('cycle metrics', {
+      cycleId: cycleMetrics.cycleId,
+      totalMs: totalCycleTimeMs,
+      stateMs: totalStateLatencyMs,
+      overheadMs: totalCycleTimeMs - totalStateLatencyMs,
+      stateLatencies,
+    });
 
     this.logger.debug(
       `Cycle ${cycleMetrics.cycleId} complete: ${totalCycleTimeMs}ms total, ` +

@@ -14,7 +14,7 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { TimescaleService, DriveName } from '@sylphie/shared';
+import { TimescaleService, DriveName, verboseFor } from '@sylphie/shared';
 import type {
   ISimulationService,
   SimulationResult,
@@ -22,6 +22,8 @@ import type {
   QueuedOpportunity,
   ResearchResult,
 } from '../interfaces/planning.interfaces';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,6 +110,23 @@ export class SimulationService implements ISimulationService {
       viable = true;
       bestOutcome = guardianOutcome;
     }
+
+    vlog('simulation complete', {
+      opportunityId: opportunity.payload.id,
+      affectedDrive,
+      outcomesEvaluated: outcomes.length,
+      viableOutcomes: viableOutcomes.length,
+      viable,
+      bestOutcome: bestOutcome
+        ? {
+            category: bestOutcome.actionCategory,
+            description: bestOutcome.description,
+            estimatedDriveEffect: bestOutcome.estimatedDriveEffect,
+            confidence: bestOutcome.confidenceEstimate,
+            risk: bestOutcome.riskScore,
+          }
+        : null,
+    });
 
     this.logger.debug(
       `Simulation for ${opportunity.payload.id}: ${outcomes.length} outcomes evaluated, ` +

@@ -11,12 +11,15 @@
  */
 
 import { Injectable, Inject, Logger } from '@nestjs/common';
+import { verboseFor } from '@sylphie/shared';
 import type {
   IPlanEvaluationService,
   PlanOutcomeData,
   IPlanningEventLogger,
 } from '../interfaces/planning.interfaces';
 import { PLANNING_EVENT_LOGGER } from '../planning.tokens';
+
+const vlog = verboseFor('Planning');
 
 @Injectable()
 export class PlanEvaluationService implements IPlanEvaluationService {
@@ -28,6 +31,13 @@ export class PlanEvaluationService implements IPlanEvaluationService {
   ) {}
 
   async evaluateOutcome(procedureId: string, outcome: PlanOutcomeData): Promise<void> {
+    vlog('plan evaluation', {
+      procedureId,
+      executionSuccessful: outcome.executionSuccessful,
+      predictionAccurate: outcome.predictionAccurate,
+      driveEffectsObserved: outcome.driveEffectsObserved,
+    });
+
     if (outcome.executionSuccessful) {
       this.eventLogger.log('PLAN_EVALUATION', {
         procedureId,
@@ -41,6 +51,12 @@ export class PlanEvaluationService implements IPlanEvaluationService {
           `(prediction accurate: ${outcome.predictionAccurate})`,
       );
     } else {
+      vlog('plan evaluation — execution failed', {
+        procedureId,
+        predictionAccurate: outcome.predictionAccurate,
+        driveEffectsObserved: outcome.driveEffectsObserved,
+      });
+
       this.eventLogger.log('PLAN_FAILURE', {
         procedureId,
         executionSuccessful: false,

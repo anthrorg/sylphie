@@ -30,7 +30,10 @@ import {
   type EpisodeInput,
   type EncodingDepth,
   type DriveSnapshot,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Memory');
 import type {
   IEpisodicMemoryService,
   IDecisionEventLogger,
@@ -110,6 +113,7 @@ export class EpisodicMemoryService implements IEpisodicMemoryService {
       input.attention <= ENCODING_GATE_THRESHOLD &&
       input.arousal <= ENCODING_GATE_THRESHOLD
     ) {
+      vlog('episode encoding REJECTED', { attention: +input.attention.toFixed(3), arousal: +input.arousal.toFixed(3), threshold: ENCODING_GATE_THRESHOLD });
       this.logger.debug(
         `Encoding gate rejected episode: attention=${input.attention}, arousal=${input.arousal}`,
       );
@@ -138,6 +142,15 @@ export class EpisodicMemoryService implements IEpisodicMemoryService {
     this.buffer[this.head] = episode;
     this.head = (this.head + 1) % RING_BUFFER_CAPACITY;
     this.count = Math.min(this.count + 1, RING_BUFFER_CAPACITY);
+
+    vlog('episode encoded', {
+      id: episode.id.substring(0, 8),
+      depth: effectiveDepth,
+      ageWeight: +ageWeight.toFixed(3),
+      bufferCount: this.count,
+      action: input.actionTaken,
+      summary: input.inputSummary.substring(0, 80),
+    });
 
     this.logger.debug(
       `Episode encoded (depth=${effectiveDepth}, id=${episode.id}, ageWeight=${ageWeight.toFixed(3)})`,
@@ -221,7 +234,16 @@ export class EpisodicMemoryService implements IEpisodicMemoryService {
       return weightDiff !== 0 ? weightDiff : b.similarity - a.similarity;
     });
 
-    return matches.slice(0, limit).map((m) => m.episode);
+    const results = matches.slice(0, limit).map((m) => m.episode);
+
+    vlog('episodic memory queryByContext', {
+      queriedFingerprint: contextFingerprint.substring(0, 16),
+      matches: results.length,
+      topSimilarity: matches.length > 0 ? +matches[0].similarity.toFixed(3) : null,
+      bufferCount: this.count,
+    });
+
+    return results;
   }
 
   // ---------------------------------------------------------------------------

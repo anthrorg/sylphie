@@ -6,8 +6,11 @@ import {
   type SceneSummary,
   type FaceDetection,
   SceneEventType,
+  verboseFor,
 } from '@sylphie/shared';
 import { FaceSnapshotService } from './face-snapshot.service';
+
+const vlog = verboseFor('Perception');
 
 /**
  * Detects semantic scene events by diffing tracked-object state across frames.
@@ -180,6 +183,12 @@ export class SceneEventDetectorService {
       this.logger.debug(
         `Scene events: ${events.map(e => `${e.type}(#${e.trackId} ${e.label}${e.personId ? ` [${e.personId}]` : ''})`).join(', ')}`,
       );
+      vlog('scene events detected', {
+        eventCount: events.length,
+        events: events.map(e => ({ type: e.type, trackId: e.trackId, label: e.label, personId: e.personId })),
+        objectCount: currentConfirmed.size,
+        faceCount: currentFaceTracks.size,
+      });
     }
 
     return {

@@ -15,8 +15,10 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { TimescaleService } from '@sylphie/shared';
+import { TimescaleService, verboseFor } from '@sylphie/shared';
 import type { ILearningEventLogger } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 @Injectable()
 export class LearningEventLoggerService implements ILearningEventLogger {
@@ -42,6 +44,17 @@ export class LearningEventLoggerService implements ILearningEventLogger {
     const id = randomUUID();
     const timestamp = new Date();
     const resolvedSessionId = sessionId ?? 'learning-internal';
+
+    vlog('learning event logged', {
+      eventType,
+      sessionId: resolvedSessionId,
+      payloadSummary: Object.fromEntries(
+        Object.entries(payload).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.substring(0, 60) : v,
+        ]),
+      ),
+    });
 
     this.timescale
       .query(

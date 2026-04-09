@@ -21,6 +21,9 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import type { LlmMessage } from '@sylphie/shared';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Communication');
 
 /**
  * Hard cap on message count. Even with short messages, we don't keep
@@ -60,6 +63,7 @@ export class ConversationHistoryService {
     this.history.push({ role: 'user', content: text });
     this.estimatedTokens += this.estimateMessageTokens(text);
     this.trim();
+    vlog('history: user message added', { length: text.length, historySize: this.history.length, estimatedTokens: this.estimatedTokens });
   }
 
   /** Add an assistant (Sylphie) message to the conversation history. */
@@ -67,6 +71,7 @@ export class ConversationHistoryService {
     this.history.push({ role: 'assistant', content: text });
     this.estimatedTokens += this.estimateMessageTokens(text);
     this.trim();
+    vlog('history: assistant message added', { length: text.length, historySize: this.history.length, estimatedTokens: this.estimatedTokens });
   }
 
   /** Get the current conversation history as a readonly array. */

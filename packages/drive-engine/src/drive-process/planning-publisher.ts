@@ -7,6 +7,10 @@
  * Rate-limited: max 5 opportunities per emission cycle (every 100 ticks ~1 second).
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import type { DriveIPCMessage } from '@sylphie/shared';
 import { DriveIPCMessageType, type OpportunityCreatedPayload } from '@sylphie/shared';
 import type { Opportunity } from './opportunity';
@@ -26,6 +30,11 @@ export class PlanningPublisher {
    * @param opportunities - Array of top opportunities to emit (pre-sorted by priority)
    */
   public publishOpportunities(opportunities: Opportunity[]): void {
+    vlog('publishing opportunities to planning', {
+      count: opportunities.length,
+      ids: opportunities.map(o => o.id),
+    });
+
     for (const opp of opportunities) {
       try {
         const message: DriveIPCMessage<OpportunityCreatedPayload> = {

@@ -10,6 +10,10 @@
  * only when severity is MEDIUM or HIGH (MAE >= 0.30).
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import { MAE_MODERATE_THRESHOLD } from '../constants/prediction-evaluation';
 
 /**
@@ -94,6 +98,14 @@ export function generatePredictionOpportunitySignal(
     contextFingerprint,
   };
 
+  vlog('opportunity signal generated', {
+    id: signal.id,
+    predictionType,
+    mae: +mae.toFixed(4),
+    severity,
+    recentFailures,
+  });
+
   return signal;
 }
 
@@ -108,7 +120,13 @@ export function generatePredictionOpportunitySignal(
  * @returns true if the signal should be emitted via IPC
  */
 export function shouldEmitOpportunitySignal(signal: PredictionOpportunitySignal): boolean {
-  return signal.severity === 'medium' || signal.severity === 'high';
+  const shouldEmit = signal.severity === 'medium' || signal.severity === 'high';
+  vlog('opportunity signal emit decision', {
+    id: signal.id,
+    severity: signal.severity,
+    shouldEmit,
+  });
+  return shouldEmit;
 }
 
 /**

@@ -8,7 +8,9 @@
  * CANON §E4-T008: Self-evaluation with circuit breaker and gradual recovery.
  */
 
-import { DriveName, DRIVE_INDEX_ORDER, INITIAL_DRIVE_STATE } from '@sylphie/shared';
+import { DriveName, DRIVE_INDEX_ORDER, INITIAL_DRIVE_STATE, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import {
   SELF_EVALUATION_INTERVAL_TICKS,
   SELF_KG_QUERY_TIMEOUT_MS,
@@ -60,6 +62,7 @@ export class SelfEvaluator {
   async evaluate(currentTick: number): Promise<void> {
     // Check circuit breaker
     if (this.circuitBreaker.isOpen()) {
+      vlog('self-eval skipped: circuit breaker open', { tick: currentTick });
       return; // Self-evaluation paused
     }
 
@@ -90,14 +93,29 @@ export class SelfEvaluator {
       this.baselineAdjustment.adjustBaselinesFromCapabilities(capabilities || []);
       this.evaluationCount++;
 
+      const diag = this.baselineAdjustment.getDiagnostics();
+      const capCount = capabilities ? capabilities.length : 0;
+
+      vlog('self-eval fired', {
+        evalNumber: this.evaluationCount,
+        tick: currentTick,
+        capabilitiesAssessed: capCount,
+        circuitBreakerState: this.circuitBreaker.getState(),
+        hasNegativeAssessment,
+        adjustedDrives: diag.adjustedDrives.map(d => ({
+          drive: d.drive,
+          old: +d.default.toFixed(4),
+          new: +d.adjusted.toFixed(4),
+        })),
+      });
+
       if (typeof process !== 'undefined' && process.stderr) {
-        const diag = this.baselineAdjustment.getDiagnostics();
-        const capCount = capabilities ? capabilities.length : 0;
         process.stderr.write(
           `[SelfEvaluator] Eval #${this.evaluationCount} at tick ${currentTick}: ${capCount} capabilities assessed, CB state=${this.circuitBreaker.getState()}, adjusted=${diag.adjustedDrives.length}\n`,
         );
       }
     } catch (err) {
+      vlog('self-eval error', { tick: currentTick, error: String(err) });
       if (typeof process !== 'undefined' && process.stderr) {
         process.stderr.write(`[SelfEvaluator] Error during evaluation: ${err}\n`);
       }

@@ -13,7 +13,9 @@
  * This is a Type 1 computation — no blocking calls, pure in-memory state.
  */
 
-import { DriveName } from '@sylphie/shared';
+import { DriveName, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 interface CommentRecord {
   timestamp: number;
@@ -100,6 +102,14 @@ export class SocialCommentQuality {
     this.commentBuffer = this.commentBuffer.filter(
       (c) => now - c.timestamp < this.COMMENT_BUFFER_TIMEOUT_MS,
     );
+
+    if (socialRelief !== 0 || satisfactionBonus !== 0) {
+      vlog('social comment quality assessed', {
+        socialRelief,
+        satisfactionBonus,
+        pendingComments: this.commentBuffer.filter(c => !c.responded).length,
+      });
+    }
 
     return {
       socialRelief,

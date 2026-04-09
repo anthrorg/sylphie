@@ -32,7 +32,10 @@ import {
   type WkgContextEntry,
   type ActionStep,
   DriveName,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -172,8 +175,17 @@ export class WkgContextService {
       // Build summary for LLM
       const summary = buildSummary(entities, facts, procedures);
 
+      vlog('WKG context assembled', {
+        entities: entities.length,
+        relationships: relationships.length,
+        facts: facts.length,
+        procedures: procedures.length,
+        summaryLength: summary.length,
+      });
+
       return { entities, relationships, facts, procedures, summary };
     } catch (err) {
+      vlog('WKG context query FAILED', { error: err instanceof Error ? err.message : String(err) });
       this.logger.warn(`WKG context query failed: ${err instanceof Error ? err.message : String(err)}`);
       return emptyContext();
     } finally {
@@ -434,6 +446,15 @@ export class WkgContextService {
          MERGE (p)-[:RELIEVES]->(d)`,
         { procId: nodeId, driveName: proc.motivatingDrive },
       );
+
+      vlog('WKG procedure written', {
+        nodeId,
+        name: proc.name,
+        category: proc.category,
+        entityCount: proc.entityIds.length,
+        motivatingDrive: proc.motivatingDrive,
+        confidence: proc.confidence,
+      });
 
       this.logger.log(
         `WKG ActionProcedure written: "${proc.name}" (${proc.category}) → ` +

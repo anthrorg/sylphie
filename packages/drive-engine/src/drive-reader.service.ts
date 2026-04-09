@@ -20,7 +20,10 @@ import {
   INITIAL_DRIVE_STATE,
   DriveName,
   computeTotalPressure,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import { IDriveStateReader } from './interfaces/drive-engine.interfaces';
 import {
   validateDriveSnapshotCoherence,
@@ -112,7 +115,14 @@ export class DriveReaderService implements IDriveStateReader {
    * @returns DriveSnapshot defensive copy — never null, never throws.
    */
   getCurrentState(): DriveSnapshot {
-    return defensiveCopySnapshot(this.snapshotSubject.value);
+    const snapshot = this.snapshotSubject.value;
+    const ageMs = Date.now() - snapshot.timestamp.getTime();
+    vlog('drive state read', {
+      tick: snapshot.tickNumber,
+      totalPressure: +snapshot.totalPressure.toFixed(4),
+      snapshotAgeMs: ageMs,
+    });
+    return defensiveCopySnapshot(snapshot);
   }
 
   /**

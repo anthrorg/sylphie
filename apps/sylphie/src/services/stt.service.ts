@@ -6,6 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Voice');
 
 export interface TranscriptResult {
   text: string;
@@ -58,8 +61,11 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
 
     if (!this.available) {
       this.logger.warn('STT unavailable — skipping session creation');
+      vlog('STT session skipped — no API key', { clientId });
       return;
     }
+
+    vlog('STT session starting', { clientId });
 
     // Start buffering audio chunks that arrive before the WS is open
     this.pendingBuffers.set(clientId, []);
@@ -81,6 +87,7 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
 
     ws.on('open', () => {
       this.logger.log(`Deepgram session opened for client ${clientId}`);
+      vlog('STT session open', { clientId });
 
       // Flush any audio chunks that arrived while the WS was connecting.
       // The first chunks contain the WebM header — Deepgram needs it.
@@ -110,12 +117,20 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
           const transcript = alt?.transcript ?? '';
           if (!transcript) return;
 
-          onTranscript({
+          const transcriptResult: TranscriptResult = {
             text: transcript,
             isFinal: !!data.is_final,
             confidence: alt?.confidence ?? 0,
             speechFinal: !!data.speech_final,
+          };
+          vlog('STT transcription result', {
+            clientId,
+            text: transcript,
+            confidence: transcriptResult.confidence,
+            is_final: transcriptResult.isFinal,
+            speech_final: transcriptResult.speechFinal,
           });
+          onTranscript(transcriptResult);
         } else {
           this.logger.debug(
             `Deepgram msg [${clientId}]: type=${data.type}`,
@@ -130,6 +145,7 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(
         `Deepgram error for client ${clientId}: ${err.message}`,
       );
+      vlog('STT session error', { clientId, error: err.message });
     });
 
     ws.on('close', (code: number, reason: Buffer) => {
@@ -137,6 +153,7 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Deepgram session closed for client ${clientId} (code=${code}${reasonStr ? `, reason=${reasonStr}` : ''})`,
       );
+      vlog('STT session closed', { clientId, code, reason: reasonStr });
       this.pendingBuffers.delete(clientId);
       const timer = this.keepAliveTimers.get(clientId);
       if (timer) {
@@ -185,6 +202,7 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
         // Already closed
       }
       this.sessions.delete(clientId);
+      vlog('STT session stopped', { clientId });
     }
   }
 

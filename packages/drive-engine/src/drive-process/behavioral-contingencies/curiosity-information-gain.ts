@@ -17,7 +17,9 @@
  * This is a Type 1 computation — no blocking calls, pure arithmetic.
  */
 
-import { DriveName } from '@sylphie/shared';
+import { DriveName, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 /**
  * Information gain metrics from a learning event.
@@ -58,6 +60,14 @@ export class CuriosityInformationGain {
       safeNewNodes * 0.05 + safeConfidenceDeltas * 0.1 + safeResolvedErrors * 0.15;
 
     // Return negative value (relief = drive reduction)
+    if (relief > 0) {
+      vlog('curiosity information gain', {
+        newNodes: safeNewNodes,
+        confidenceDeltas: safeConfidenceDeltas,
+        resolvedErrors: safeResolvedErrors,
+        relief: -relief,
+      });
+    }
     return -relief;
   }
 

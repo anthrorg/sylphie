@@ -16,6 +16,10 @@
  * decisions. The decision-making subsystem acts on them.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 import {
   GRADUATION_CONFIDENCE_THRESHOLD,
   GRADUATION_MAE_THRESHOLD,
@@ -72,6 +76,12 @@ export function checkGraduation(
   }
 
   // Both criteria met
+  vlog('graduation check: PASS', {
+    actionType,
+    confidence: +confidence.toFixed(3),
+    mae: +mae.toFixed(4),
+  });
+
   return {
     canGraduate: true,
     reason: `Ready for Type 1 graduation: confidence ${confidence.toFixed(3)} > ${GRADUATION_CONFIDENCE_THRESHOLD}, MAE ${mae.toFixed(4)} < ${GRADUATION_MAE_THRESHOLD}`,
@@ -96,11 +106,22 @@ export function checkDemotion(
   currentMAE: number,
 ): DemotionCheckResult {
   if (currentMAE > DEMOTION_MAE_THRESHOLD) {
+    vlog('demotion check: DEMOTE', {
+      actionType,
+      currentMAE: +currentMAE.toFixed(4),
+      threshold: DEMOTION_MAE_THRESHOLD,
+    });
     return {
       shouldDemote: true,
       reason: `Prediction accuracy degraded: MAE ${currentMAE.toFixed(4)} > demotion threshold ${DEMOTION_MAE_THRESHOLD}`,
     };
   }
+
+  vlog('demotion check: KEEP', {
+    actionType,
+    currentMAE: +currentMAE.toFixed(4),
+    threshold: DEMOTION_MAE_THRESHOLD,
+  });
 
   return {
     shouldDemote: false,

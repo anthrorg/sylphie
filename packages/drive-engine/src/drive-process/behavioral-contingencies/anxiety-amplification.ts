@@ -11,6 +11,10 @@
  * This is a Type 1 computation — no blocking calls, pure arithmetic.
  */
 
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
+
 /**
  * AnxietyAmplification: Computes amplified confidence reductions under stress.
  */
@@ -42,6 +46,13 @@ export class AnxietyAmplification {
     }
 
     // Apply 1.5x amplification
+    vlog('anxiety amplification fired', {
+      anxietyAtExecution,
+      outcome,
+      baseReduction,
+      amplifiedReduction: baseReduction * 1.5,
+      factor: 1.5,
+    });
     return baseReduction * 1.5;
   }
 }

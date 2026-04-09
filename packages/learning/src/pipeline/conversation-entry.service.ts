@@ -18,12 +18,14 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, verboseFor } from '@sylphie/shared';
 import type {
   IConversationEntryService,
   UnlearnedEvent,
   ExtractedEntity,
 } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,11 +70,21 @@ export class ConversationEntryService implements IConversationEntryService {
       event,
     );
 
-    if (!created) return '';
+    if (!created) {
+      vlog('createEntry: conversation node creation failed', { eventId: event.id });
+      return '';
+    }
 
     // Write MENTIONS edges for each entity that was successfully upserted.
     const validEntities = entities.filter((e) => !!e.nodeId);
     await this.writeMentionsEdges(convNodeId, validEntities);
+
+    vlog('conversation entry created', {
+      eventId: event.id,
+      convNodeId,
+      entityLinks: validEntities.map((e) => ({ label: e.label, nodeId: e.nodeId })),
+      mentionsCount: validEntities.length,
+    });
 
     this.logger.debug(
       `ConversationEntry: created ${convNodeId} with ${validEntities.length} MENTIONS edges`,

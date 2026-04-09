@@ -15,7 +15,10 @@ import {
   PressureDelta,
   INITIAL_DRIVE_STATE,
   clampDriveValue,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 /**
  * Mutable drive state vector.
@@ -62,6 +65,7 @@ export class DriveStateManager {
    * @param rates Map of per-drive rates (positive for accumulation, negative for decay)
    */
   applyRates(rates: Record<DriveName, number>): void {
+    const applied: { drive: string; rate: number; before: number; after: number }[] = [];
     for (const drive of DRIVE_INDEX_ORDER) {
       const rate = rates[drive];
       if (rate !== 0) {
@@ -71,8 +75,22 @@ export class DriveStateManager {
         if (rate < 0 && this.current[drive] <= 0) {
           continue;
         }
+        const before = this.current[drive];
         this.current[drive] += rate;
+        if (Math.abs(rate) >= 0.001) {
+          applied.push({ drive, rate, before, after: this.current[drive] });
+        }
       }
+    }
+    if (applied.length > 0) {
+      vlog('rates applied', {
+        changes: applied.map(a => ({
+          drive: a.drive,
+          rate: +a.rate.toFixed(5),
+          before: +a.before.toFixed(4),
+          after: +a.after.toFixed(4),
+        })),
+      });
     }
   }
 
@@ -82,9 +100,16 @@ export class DriveStateManager {
    * @param effects Partial map of drive deltas from an action outcome
    */
   applyOutcomeEffects(effects: Partial<Record<DriveName, number>>): void {
-    for (const [drive, delta] of Object.entries(effects)) {
-      const driveName = drive as DriveName;
-      this.current[driveName] += delta;
+    const entries = Object.entries(effects);
+    if (entries.length > 0) {
+      const deltas: Record<string, { delta: number; before: number; after: number }> = {};
+      for (const [drive, delta] of entries) {
+        const driveName = drive as DriveName;
+        const before = this.current[driveName];
+        this.current[driveName] += delta;
+        deltas[drive] = { delta, before, after: this.current[driveName] };
+      }
+      vlog('outcome effects applied', { deltas });
     }
   }
 

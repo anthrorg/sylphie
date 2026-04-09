@@ -17,7 +17,9 @@
  */
 
 import { Pool } from 'pg';
-import { DriveName, PressureVector } from '@sylphie/shared';
+import { DriveName, PressureVector, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import {
   RULE_RELOAD_INTERVAL_MS,
   RULE_CONFIDENCE_THRESHOLD,
@@ -168,6 +170,20 @@ export class RuleEngine {
       usedDefaultAffect = true;
     }
 
+    if (matchedRuleIds.length > 0) {
+      vlog('rules matched', {
+        eventType,
+        matchedCount: matchedRuleIds.length,
+        ruleIds: matchedRuleIds,
+        driveEffects,
+      });
+    } else if (usedDefaultAffect) {
+      vlog('rule default affect applied', {
+        eventType,
+        driveEffects,
+      });
+    }
+
     return {
       matchedRuleIds,
       driveEffects,
@@ -244,6 +260,11 @@ export class RuleEngine {
 
       // Invalidate cache when rules change
       this.cache.clear();
+
+      vlog('rules loaded from postgres', {
+        count: newRules.length,
+        ruleIds: newRules.map(r => r.id),
+      });
 
       // Log reload (to stderr, since this runs in a child process)
       if (typeof process !== 'undefined' && process.stderr) {

@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EMBEDDING_DIM, SensoryFrame } from '@sylphie/shared';
+import { EMBEDDING_DIM, SensoryFrame, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Perception');
 import { ModalityRegistryService } from '../registry/modality-registry.service';
 import { xavierMatrix, linearProject } from '../linear-algebra';
 
@@ -69,6 +71,12 @@ export class SensoryFusionService {
     }
 
     const fusedEmbedding = this.concatAndProject(modalityEmbeddings);
+
+    vlog('sensory fusion', {
+      activeModalities,
+      fusedDim: fusedEmbedding.length,
+      fusedNorm: +Math.sqrt(fusedEmbedding.reduce((s, v) => s + v * v, 0)).toFixed(4),
+    });
 
     return {
       timestamp: Date.now(),

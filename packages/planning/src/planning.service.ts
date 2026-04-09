@@ -27,8 +27,10 @@ import {
   OnModuleInit,
   OnModuleDestroy,
 } from '@nestjs/common';
-import { TimescaleService } from '@sylphie/shared';
+import { TimescaleService, verboseFor } from '@sylphie/shared';
 import type { OpportunityCreatedPayload } from '@sylphie/shared';
+
+const vlog = verboseFor('Planning');
 import type {
   IPlanningService,
   PlanningCycleResult,
@@ -221,6 +223,14 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
           typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload),
         );
 
+        vlog('opportunity received', {
+          opportunityId: opportunityPayload.id,
+          classification: opportunityPayload.classification,
+          priority: opportunityPayload.priority,
+          contextFingerprint: opportunityPayload.contextFingerprint,
+          affectedDrive: opportunityPayload.affectedDrive,
+        });
+
         this.eventLogger.log('OPPORTUNITY_RECEIVED', {
           opportunityId: opportunityPayload.id,
           classification: opportunityPayload.classification,
@@ -237,6 +247,13 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
         const accepted = this.queue.enqueue(queued);
 
         if (accepted) {
+          vlog('opportunity enqueued', {
+            opportunityId: opportunityPayload.id,
+            queueSize: this.queue.size(),
+            classification: opportunityPayload.classification,
+            initialPriority: queued.initialPriority,
+          });
+
           this.eventLogger.log('OPPORTUNITY_INTAKE', {
             opportunityId: opportunityPayload.id,
             queueSize: this.queue.size(),
@@ -301,6 +318,15 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
     }
 
     const oppId = opportunity.payload.id;
+
+    vlog('pipeline start', {
+      opportunityId: oppId,
+      classification: opportunity.payload.classification,
+      priority: opportunity.currentPriority,
+      affectedDrive: opportunity.payload.affectedDrive,
+      contextFingerprint: opportunity.payload.contextFingerprint,
+    });
+
     this.logger.log(
       `Planning pipeline: processing opportunity ${oppId} ` +
         `(${opportunity.payload.classification}, priority=${opportunity.currentPriority.toFixed(2)})`,
@@ -403,6 +429,15 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
 
       this.queue.recordPlanCreated();
 
+      vlog('pipeline complete — procedure created', {
+        opportunityId: oppId,
+        procedureNodeId: nodeId,
+        proposalName: currentProposal.name,
+        category: currentProposal.category,
+        isGuardianTeaching: opportunity.payload.classification === 'GUARDIAN_TEACHING',
+        predictedDriveEffects: currentProposal.predictedDriveEffects,
+      });
+
       this.eventLogger.log('PLAN_CREATED', {
         opportunityId: oppId,
         procedureNodeId: nodeId,
@@ -418,15 +453,13 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
 
       return { wasNoop: false, opportunityId: oppId, stage: 'CREATED', procedureNodeId: nodeId };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('pipeline failed — procedure creation error', { opportunityId: oppId, error: message });
       this.eventLogger.log('PLAN_FAILURE', {
         opportunityId: oppId,
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
-      this.logger.error(
-        `Procedure creation failed for ${oppId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      this.logger.error(`Procedure creation failed for ${oppId}: ${message}`);
       return { wasNoop: false, opportunityId: oppId, stage: 'CREATED', procedureNodeId: null };
     }
   }

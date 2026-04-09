@@ -25,8 +25,10 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, verboseFor } from '@sylphie/shared';
 import type { ICanProduceEdgesService, UnlearnedEvent } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -77,6 +79,13 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
     const phrases = extractSignificantPhrases(content);
     if (phrases.length === 0) return 0;
 
+    vlog('canProduceEdges: phrases extracted', {
+      conversationNodeId,
+      eventId: event.id,
+      phraseCount: phrases.length,
+      phrases,
+    });
+
     let created = 0;
 
     for (const phrase of phrases) {
@@ -86,6 +95,12 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
       const edgeCreated = await this.mergeCanProduceEdge(conversationNodeId, phrase, wordNodeId);
       if (edgeCreated) created++;
     }
+
+    vlog('canProduceEdges complete', {
+      conversationNodeId,
+      eventId: event.id,
+      canProduceEdgesCreated: created,
+    });
 
     this.logger.debug(
       `CanProduceEdges: conv ${conversationNodeId} → ${created} CAN_PRODUCE edges`,

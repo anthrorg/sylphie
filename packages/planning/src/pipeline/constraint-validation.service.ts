@@ -17,7 +17,7 @@
  */
 
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import { LLM_SERVICE, type ILlmService } from '@sylphie/shared';
+import { LLM_SERVICE, verboseFor, type ILlmService } from '@sylphie/shared';
 import type {
   IConstraintValidationService,
   ValidationResult,
@@ -26,6 +26,8 @@ import type {
   IProposalService,
 } from '../interfaces/planning.interfaces';
 import { PROPOSAL_SERVICE } from '../planning.tokens';
+
+const vlog = verboseFor('Planning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +76,10 @@ export class ConstraintValidationService implements IConstraintValidationService
   ): Promise<ValidationResult> {
     // Check LLM availability first.
     if (!this.llm.isAvailable()) {
+      vlog('constraintValidation: LLM unavailable — deferring', {
+        proposalName: proposal.name,
+        opportunityId: opportunity.payload.id,
+      });
       this.logger.warn('LLM unavailable -- deferring constraint validation');
       return {
         passed: false,
@@ -84,11 +90,26 @@ export class ConstraintValidationService implements IConstraintValidationService
       };
     }
 
+    vlog('constraintValidation: starting', {
+      proposalName: proposal.name,
+      opportunityId: opportunity.payload.id,
+      classification: opportunity.payload.classification,
+      maxRetries: MAX_RETRIES,
+    });
+
     let currentProposal = proposal;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = await this.runValidation(currentProposal, opportunity, attempt);
+
+        vlog('constraintValidation: attempt result', {
+          attempt,
+          opportunityId: opportunity.payload.id,
+          passed: result.passed,
+          reasoning: result.reasoning.substring(0, 100),
+          violations: result.violations,
+        });
 
         if (result.passed) {
           return result;
@@ -96,6 +117,11 @@ export class ConstraintValidationService implements IConstraintValidationService
 
         // If this was the last attempt, return the failure.
         if (attempt >= MAX_RETRIES) {
+          vlog('constraintValidation: all attempts exhausted', {
+            opportunityId: opportunity.payload.id,
+            attemptsUsed: attempt,
+            violations: result.violations,
+          });
           return result;
         }
 

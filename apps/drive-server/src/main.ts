@@ -27,7 +27,10 @@
 
 import { WebSocketServer } from 'ws';
 import { getOrCreateEngine } from '@sylphie/drive-engine/drive-process/drive-engine';
+import { verboseFor } from '@sylphie/shared';
 import { WebSocketServerTransport } from './ws-transport';
+
+const vlog = verboseFor('DriveEngine');
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -60,11 +63,13 @@ wss.on('connection', (ws, req) => {
   }
 
   console.log(`[DriveServer] Client connected from ${clientAddr}`);
+  vlog('WS client connected', { clientAddr });
   transport.setClient(ws);
 });
 
 wss.on('listening', () => {
   console.log(`[DriveServer] WebSocket server listening on ws://${HOST}:${PORT}`);
+  vlog('drive server started', { host: HOST, port: PORT });
 });
 
 wss.on('error', (err) => {
@@ -78,6 +83,7 @@ wss.on('error', (err) => {
 
 engine.start();
 console.log('[DriveServer] Drive engine tick loop started');
+vlog('drive engine tick loop started', {});
 
 // ---------------------------------------------------------------------------
 // Graceful Shutdown

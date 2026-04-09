@@ -13,7 +13,9 @@
  * This is a Type 1 computation — no blocking calls, pure in-memory state.
  */
 
-import { DriveName } from '@sylphie/shared';
+import { DriveName, verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 
 interface SatisfactionHabitationState {
   consecutiveSuccesses: number;
@@ -56,6 +58,12 @@ export class SatisfactionHabituation {
 
     // Habituation curve: diminishing returns
     const relief = this.habituationCurve(state.consecutiveSuccesses);
+
+    vlog('satisfaction habituation', {
+      actionType,
+      consecutiveSuccesses: state.consecutiveSuccesses,
+      relief,
+    });
 
     return relief;
   }

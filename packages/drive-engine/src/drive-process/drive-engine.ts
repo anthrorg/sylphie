@@ -24,7 +24,10 @@ import {
   DRIVE_INDEX_ORDER,
   computeTotalPressure,
   INITIAL_DRIVE_STATE,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import {
   DriveIPCMessage,
   DriveIPCMessageType,
@@ -169,6 +172,7 @@ export class DriveEngine {
     this.sessionId = '';
     this.tickNumber = 0;
     this.nextTickScheduledAt = Date.now();
+    vlog('tick loop started');
     this.scheduleTick();
   }
 
@@ -253,6 +257,7 @@ export class DriveEngine {
     this.sessionNumber++;
     this.opportunityDetector.setSessionNumber(this.sessionNumber);
     this.stateManager = new DriveStateManager(payload.initialDriveState.pressureVector);
+    vlog('session started', { sessionId: this.sessionId, sessionNumber: this.sessionNumber });
   }
 
   /**
@@ -339,6 +344,16 @@ export class DriveEngine {
 
       // Update opportunity detector with current totalPressure
       this.opportunityDetector.setTotalPressure(totalPressure);
+
+      // Log every 100th tick to avoid flooding
+      if (this.tickNumber % 100 === 0) {
+        vlog('tick checkpoint', {
+          tick: this.tickNumber,
+          totalPressure: +totalPressure.toFixed(4),
+          outcomesProcessed: outcomesToProcess.length,
+          queueDepth: this.outcomeQueue.length,
+        });
+      }
 
       // 8. Create and publish snapshot
       const deltas = this.stateManager.computeDeltas();
@@ -451,6 +466,13 @@ export class DriveEngine {
 
       // Filter effects based on theater verdict
       const filterResult = filterEffectsForTheater(actionPayload, verdict);
+
+      vlog('outcome applied', {
+        actionType: actionPayload.actionType,
+        theater: verdict.isTheatrical,
+        feedbackSource: actionPayload.feedbackSource,
+        effectCount: Object.keys(actionPayload.driveEffects ?? {}).length,
+      });
 
       if (filterResult.shouldApplyEffects) {
         // Expression is authentic: apply normal contingencies

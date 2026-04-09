@@ -6,7 +6,10 @@ import {
 import { Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
+import { verboseFor } from '@sylphie/shared';
 import { SttService, TranscriptResult } from '../services/stt.service';
+
+const vlog = verboseFor('Voice');
 
 let nextClientId = 1;
 
@@ -52,6 +55,7 @@ export class AudioGateway
   handleConnection(client: WebSocket) {
     const clientId = `audio-${nextClientId++}`;
     this.logger.log(`Audio client connected (${clientId})`);
+    vlog('audio client connected', { clientId, totalClients: this.clients.size + 1 });
 
     this.clients.set(clientId, {
       ws: client,
@@ -83,6 +87,11 @@ export class AudioGateway
     this.logger.log(
       `Audio client disconnected ${clientId} (${state?.chunkCount ?? 0} chunks, ${((state?.totalBytes ?? 0) / 1024).toFixed(1)} KB)`,
     );
+    vlog('audio client disconnected', {
+      clientId,
+      chunkCount: state?.chunkCount ?? 0,
+      totalKB: parseFloat(((state?.totalBytes ?? 0) / 1024).toFixed(1)),
+    });
 
     this.stt.closeSession(clientId);
     this.clients.delete(clientId);
@@ -130,6 +139,7 @@ export class AudioGateway
 
       if (fullText) {
         this.logger.log(`STT complete utterance: "${fullText}"`);
+        vlog('utterance complete', { clientId, text: fullText });
 
         // Send the complete accumulated utterance to the client.
         // The frontend relays this to ConversationGateway via the
@@ -225,6 +235,12 @@ export class AudioGateway
       this.logger.log(
         `Audio ${clientId}: ${state.chunkCount} chunks, ${(state.totalBytes / 1024).toFixed(1)} KB (${state.mimeType})`,
       );
+      vlog('audio chunks received', {
+        clientId,
+        chunkCount: state.chunkCount,
+        totalKB: parseFloat((state.totalBytes / 1024).toFixed(1)),
+        mimeType: state.mimeType,
+      });
     }
   }
 }

@@ -64,6 +64,9 @@ import {
   CONVERSATION_REFLECTION_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
+import { verboseFor } from '@sylphie/shared';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -222,6 +225,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   // ---------------------------------------------------------------------------
 
   private async executeCycle(): Promise<MaintenanceCycleResult> {
+    const cycleStartMs = Date.now();
     // Step 2a: fetch unlearned events.
     const events = await this.updateWkg.fetchUnlearnedEvents(MAX_EVENTS_PER_CYCLE);
 
@@ -237,6 +241,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     });
 
     this.logger.log(`Learning cycle: processing ${events.length} events`);
+    vlog('consolidation cycle started', { eventCount: events.length, max: MAX_EVENTS_PER_CYCLE });
 
     const result: Mutable<MaintenanceCycleResult> = {
       eventsProcessed: 0,
@@ -269,6 +274,14 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
         `${result.canProduceEdgesCreated} can_produce, ` +
         `${result.edgesRefined} refined`,
     );
+
+    vlog('consolidation cycle finished', {
+      events: result.eventsProcessed,
+      entities: result.entitiesUpserted,
+      edges: result.edgesUpserted,
+      refined: result.edgesRefined,
+      durationMs: Date.now() - cycleStartMs,
+    });
 
     return result;
   }

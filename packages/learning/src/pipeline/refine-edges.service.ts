@@ -32,6 +32,7 @@ import {
   TimescaleService,
   Neo4jService,
   Neo4jInstanceName,
+  verboseFor,
   type ILlmService,
   type LlmRequest,
 } from '@sylphie/shared';
@@ -40,6 +41,8 @@ import type {
   ExtractedEdge,
   UnlearnedEvent,
 } from '../interfaces/learning.interfaces';
+
+const vlog = verboseFor('Learning');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -95,6 +98,7 @@ export class RefineEdgesService implements IRefineEdgesService {
   ): Promise<number> {
     // Lesion Test: if LLM is not available, skip refinement gracefully.
     if (!this.llm || !this.llm.isAvailable()) {
+      vlog('refineEdges: LLM unavailable — skipping refinement', { eventId: event.id });
       this.logger.debug('RefineEdges: LLM unavailable, skipping');
       return 0;
     }
@@ -103,6 +107,14 @@ export class RefineEdgesService implements IRefineEdgesService {
 
     // Gather person context for edges that mention person-like entities.
     const personContext = await this.gatherPersonContext(edges, event.session_id);
+
+    vlog('refineEdges: calling LLM', {
+      eventId: event.id,
+      edgeCount: edges.length,
+      edges: edges.map((e) => `${e.sourceLabel} -> ${e.targetLabel}`),
+      hasPersonContext: personContext.length > 0,
+      model: 'quick',
+    });
 
     const prompt = buildRefinementPrompt(edges, personContext);
     const correlationId = event.id;
@@ -130,15 +142,25 @@ export class RefineEdgesService implements IRefineEdgesService {
     try {
       response = await this.llm.complete(request);
     } catch (err) {
-      this.logger.warn(
-        `RefineEdges: LLM call failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      vlog('refineEdges: LLM call failed', { eventId: event.id, error: message });
+      this.logger.warn(`RefineEdges: LLM call failed: ${message}`);
       return 0;
     }
 
     const refinements = parseRefinements(response.content, edges);
+
+    vlog('refineEdges: LLM response parsed', {
+      eventId: event.id,
+      refinementsFound: refinements.length,
+      refinements: refinements.map((r) => ({
+        source: r.edge.sourceLabel,
+        target: r.edge.targetLabel,
+        newType: r.newType,
+        oldType: r.edge.relType,
+      })),
+    });
+
     let refined = 0;
 
     for (const { edge, newType } of refinements) {
@@ -146,9 +168,17 @@ export class RefineEdgesService implements IRefineEdgesService {
       if (ok) {
         edge.relType = newType; // Mutate for downstream observability.
         refined++;
+        vlog('edge type refined', {
+          eventId: event.id,
+          source: edge.sourceLabel,
+          target: edge.targetLabel,
+          newType,
+          confidence: edge.confidence,
+        });
       }
     }
 
+    vlog('refineEdges complete', { eventId: event.id, refined, total: edges.length });
     this.logger.debug(
       `RefineEdges: event ${event.id} → ${refined}/${edges.length} edges refined`,
     );

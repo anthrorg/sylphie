@@ -27,7 +27,10 @@ import {
   type DriveSnapshot,
   type ShrugDetail,
   CONFIDENCE_THRESHOLDS,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 import type {
   IArbitrationService,
   IThresholdComputationService,
@@ -211,6 +214,13 @@ export class ArbitrationService implements IArbitrationService {
 
       this.logEvent('ARBITRATION_COMPLETE', { type: 'TYPE_1', threshold }, driveSnapshot);
 
+      vlog('arbitration → TYPE_1', {
+        procedure: bestType1.procedureData!.name,
+        confidence: +bestType1.confidence.toFixed(3),
+        threshold: +threshold.toFixed(3),
+        candidateCount: candidates.length,
+      });
+
       return { type: 'TYPE_1', candidate: bestType1 };
     }
 
@@ -236,6 +246,13 @@ export class ArbitrationService implements IArbitrationService {
     );
 
     this.logEvent('ARBITRATION_COMPLETE', { type: 'TYPE_2', threshold }, driveSnapshot);
+
+    vlog('arbitration → TYPE_2', {
+      bestConfidence: +bestType2.confidence.toFixed(3),
+      threshold: +threshold.toFixed(3),
+      qualifiedCount: qualified.length,
+      totalCandidates: candidates.length,
+    });
 
     return {
       type: 'TYPE_2',
@@ -297,6 +314,13 @@ export class ArbitrationService implements IArbitrationService {
       threshold,
       reason,
     };
+
+    vlog('arbitration → SHRUG', {
+      gapTypes,
+      threshold: +threshold.toFixed(3),
+      candidateCount: candidates.length,
+      reason,
+    });
 
     this.logEvent(
       'SHRUG_SELECTED',

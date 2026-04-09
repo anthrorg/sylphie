@@ -21,7 +21,10 @@ import WebSocket from 'ws';
 import {
   DriveIPCMessage,
   DriveIPCMessageType,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import { safeValidateMessage } from './ipc-message-validator';
 
 // ---------------------------------------------------------------------------
@@ -90,6 +93,7 @@ export class WsChannelService {
     this.ws.on('open', () => {
       this.connectTime = Date.now();
       this.lastMessageTime = Date.now();
+      vlog('WS connected', { url });
       this.logger.log(`Connected to Drive Engine at ${url}`);
       this.flushSendQueue();
     });
@@ -99,6 +103,7 @@ export class WsChannelService {
     });
 
     this.ws.on('close', (code, reason) => {
+      vlog('WS closed', { code, reason: reason?.toString() || 'none' });
       this.logger.warn(
         `Drive Engine connection closed (code: ${code}, reason: ${reason?.toString() || 'none'})`,
       );
@@ -106,6 +111,7 @@ export class WsChannelService {
     });
 
     this.ws.on('error', (error) => {
+      vlog('WS error', { error: error.message });
       this.logger.error(`Drive Engine connection error: ${error.message}`);
     });
   }
@@ -243,6 +249,7 @@ export class WsChannelService {
     }
 
     const msg = validation.data as DriveIPCMessage<any>;
+    vlog('WS message received', { type: msg.type });
     const handler = (this.messageHandlers as any)[msg.type];
     if (handler) {
       try {
@@ -267,6 +274,7 @@ export class WsChannelService {
 
       try {
         this.ws.send(JSON.stringify(pending.message));
+        vlog('WS message sent', { type: pending.message.type });
       } catch (error) {
         this.sendQueue.unshift(pending);
         this.logger.error(

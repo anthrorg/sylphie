@@ -27,9 +27,12 @@ import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
 import * as jwt from 'jsonwebtoken';
 import { TickSamplerService } from '@sylphie/decision-making';
+import { verboseFor } from '@sylphie/shared';
 import { CommunicationService } from '../services/communication.service';
 import { ConversationHistoryService } from '../services/conversation-history.service';
 import { PersonModelService } from '../services/person-model.service';
+
+const vlog = verboseFor('Communication');
 
 /** Authenticated user identity extracted from JWT. */
 interface ConnectedUser {
@@ -72,6 +75,11 @@ export class ConversationGateway
 
         // Send the response to all connected clients
         this.broadcast(delivery);
+        vlog('delivery broadcast', {
+          turnId: (delivery as any).turnId,
+          textLength: typeof (delivery as any).text === 'string' ? (delivery as any).text.length : undefined,
+          clients: this.clients.size,
+        });
       },
       error: (err) => {
         this.logger.error(`delivery$ stream error: ${err}`);
@@ -94,21 +102,25 @@ export class ConversationGateway
         `Conversation client connected: ${user.username} (${user.userId}) ` +
         `(${this.clients.size} total)`,
       );
+      vlog('client connected', { userId: user.userId, username: user.username, totalClients: this.clients.size });
 
       // Ensure OKG Person anchor node exists for this user
       void this.personModel.ensurePersonNode(user.userId, user.username, true);
       this.personModel.setActivePerson(user.userId);
     } else {
       this.logger.log(`Conversation client connected (${this.clients.size} total)`);
+      vlog('client connected (anonymous)', { totalClients: this.clients.size });
     }
 
     client.send(JSON.stringify({ type: 'system_status', is_thinking: false }));
   }
 
   handleDisconnect(client: WebSocket): void {
+    const user = this.clientUsers.get(client);
     this.clients.delete(client);
     this.clientUsers.delete(client);
     this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
+    vlog('client disconnected', { userId: user?.userId ?? 'anonymous', totalClients: this.clients.size });
   }
 
   // ---------------------------------------------------------------------------
@@ -121,16 +133,18 @@ export class ConversationGateway
     @ConnectedSocket() client: WebSocket,
   ): void {
     this.logger.log(`Text input: "${data.text}"`);
+    const preview = data.text.substring(0, 80);
+    const user = this.clientUsers.get(client);
+    const userId = user?.userId ?? 'guardian';
+    vlog('message received', { userId, textPreview: preview, textLength: data.text.length });
 
     // Acknowledge receipt immediately
     client.send(JSON.stringify({ type: 'input_ack' }));
 
     // Show thinking indicator while the executor processes
     this.broadcast({ type: 'thinking_indicator', is_thinking: true });
+    vlog('thinking indicator sent', { is_thinking: true });
 
-    // Resolve user identity for this client
-    const user = this.clientUsers.get(client);
-    const userId = user?.userId ?? 'guardian';
     const sessionId = `session-${userId}-${Date.now()}`;
 
     // Set active person so the person model is included in LLM context
@@ -142,8 +156,11 @@ export class ConversationGateway
       .then((handled) => {
         if (handled) {
           this.logger.log(`Trigger phrase handled: "${data.text}"`);
+          vlog('trigger phrase handled', { text: data.text });
           return;
         }
+
+        vlog('trigger phrase check: not a trigger, routing to normal pipeline', { userId });
 
         // Normal pipeline: parse input, feed into sensory pipeline
         this.communication.parseInput(data.text, sessionId, userId);

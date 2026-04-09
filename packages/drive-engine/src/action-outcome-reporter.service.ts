@@ -23,7 +23,10 @@ import {
   SoftwareMetricsPayload,
   DriveIPCMessageType,
   INITIAL_DRIVE_STATE,
+  verboseFor,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('DriveEngine');
 import { DriveName } from '@sylphie/shared';
 import { ProvenanceSource } from '@sylphie/shared';
 import { WsChannelService } from './ipc-channel/ws-channel.service';
@@ -114,6 +117,15 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       anxietyAtExecution: 0, // TODO: This should come from current drive state at time of execution
     };
 
+    vlog('outcome reported', {
+      actionId: outcome.actionId,
+      actionType: outcome.actionType,
+      success: outcome.success,
+      feedbackSource: feedbackSource,
+      effectCount: Object.keys(outcome.driveEffects).length,
+      driveEffects: outcome.driveEffects,
+    });
+
     // Enqueue for async delivery
     this.outcomeQueue.enqueueOutcome(payload);
   }
@@ -140,6 +152,13 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       windowStartAt: now, // TODO: Track actual window boundaries from caller
       windowEndAt: now,
     };
+
+    vlog('metrics reported', {
+      llmCallCount: metrics.llmCallCount,
+      llmLatencyMs: metrics.llmLatencyMs,
+      cognitiveEffortPressure: metrics.cognitiveEffortPressure,
+      tokenCount: metrics.tokenCount,
+    });
 
     // Enqueue for async delivery
     this.outcomeQueue.enqueueMetrics(payload);

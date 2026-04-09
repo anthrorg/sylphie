@@ -24,12 +24,15 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import type {
-  ArbitrationResult,
-  ActionCandidate,
-  GapType,
-  ShrugDetail,
+import {
+  verboseFor,
+  type ArbitrationResult,
+  type ActionCandidate,
+  type GapType,
+  type ShrugDetail,
 } from '@sylphie/shared';
+
+const vlog = verboseFor('Cortex');
 
 // ---------------------------------------------------------------------------
 // Metrics shape
@@ -135,6 +138,15 @@ export class ShrugImperativeService {
     // Update metrics
     this.shrugCount += 1;
     this.totalCandidatesRejected += candidates.length;
+
+    vlog('shrug created', {
+      gapTypes,
+      threshold: +threshold.toFixed(3),
+      candidateCount: candidates.length,
+      maxConfidence: +maxConfidence.toFixed(3),
+      totalShrugs: this.shrugCount,
+      reason,
+    });
 
     return {
       type: 'SHRUG',
