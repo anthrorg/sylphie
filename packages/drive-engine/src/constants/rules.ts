@@ -7,9 +7,14 @@
  * an incoming event. These are foundational contingencies that ensure the drive
  * system reacts appropriately to outcomes and metrics without requiring explicit
  * rule definition.
+ *
+ * TUNING TARGET: ~30 conversation responses should move primary drives from
+ * 1.0 to -10.0 (full relief). That's ~0.367 relief per response for primary
+ * drives (social, boredom, curiosity), ~0.18 for secondary drives.
  */
 
 import { DriveName } from '@sylphie/shared';
+import type { ActionOutcomePayload } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Rule Engine Configuration
@@ -48,86 +53,206 @@ export const RULE_CONFIDENCE_THRESHOLD = 0.3;
 export const RULE_CACHE_MAX_SIZE = 500;
 
 // ---------------------------------------------------------------------------
-// Default Affects (Fallback Contingencies)
+// Default Affects by Action Category
 // ---------------------------------------------------------------------------
 
 /**
- * Default behavioral effects when no rules match an incoming event.
- *
- * CANON §Contingency Requirement (Standard 2): Every reinforcement must trace
- * to a specific behavior. These defaults provide a behavioral baseline when
- * custom rules haven't been defined yet. Over time, custom rules will override
- * and refine these defaults.
- *
- * Keys are outcome types (event types) that the Drive Engine receives.
- * Values are partial maps of drive deltas to apply.
- *
- * Event types:
- *   action_success     — An executed action produced the expected positive outcome
- *   action_failure     — An executed action produced a negative outcome
- *   prediction_hit     — A prediction about future state was validated
- *   prediction_miss    — A prediction was incorrect
- *   guardian_confirmation — Guardian explicitly approved a behavior or state
- *   guardian_correction — Guardian explicitly corrected behavior or state
+ * Primary conversation relief per response: ~0.367.
+ * 30 responses × 0.367 = 11.01 → moves from 1.0 to -10.0.
  */
-export const DEFAULT_AFFECTS: Record<string, Partial<Record<DriveName, number>>> = {
-  // Action succeeded: broad mild relief across multiple drives
-  action_success: {
-    [DriveName.Satisfaction]: 0.1,     // Relief from achieving goal
-    [DriveName.SystemHealth]: -0.02,   // System is functioning properly
-    [DriveName.Anxiety]: -0.03,        // Success reduces anxiety
-    [DriveName.Boredom]: -0.02,        // Did something, less bored
+const PRIMARY_RELIEF = -0.367;
+
+/**
+ * Secondary relief per response: ~0.18 (half of primary).
+ */
+const SECONDARY_RELIEF = -0.183;
+
+/**
+ * Default drive effects by actionType (the procedure category).
+ *
+ * These fire when no PostgreSQL rule matches the incoming actionType.
+ * They represent the system's innate (bootstrap) response to different
+ * kinds of actions. Over time, guardian-approved rules will replace them.
+ *
+ * Negative values = relief (drive pressure decreases).
+ * Positive values = pressure (drive pressure increases).
+ */
+export const ACTION_TYPE_DEFAULTS: Record<string, Partial<Record<DriveName, number>>> = {
+  // -- Conversational actions (strong relief) --------------------------------
+
+  ConversationalResponse: {
+    [DriveName.Social]: PRIMARY_RELIEF,
+    [DriveName.Boredom]: PRIMARY_RELIEF,
+    [DriveName.Curiosity]: SECONDARY_RELIEF,
+    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Anxiety]: SECONDARY_RELIEF,
+    [DriveName.CognitiveAwareness]: SECONDARY_RELIEF,
   },
 
-  // Action failed: anxiety increase, mild satisfaction loss
-  action_failure: {
-    [DriveName.Anxiety]: 0.05,         // Increased vigilance
-    [DriveName.Satisfaction]: -0.05,   // Loss from failure
+  GuardianEngagement: {
+    [DriveName.Social]: PRIMARY_RELIEF,
+    [DriveName.Boredom]: PRIMARY_RELIEF,
+    [DriveName.Curiosity]: SECONDARY_RELIEF,
+    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Anxiety]: SECONDARY_RELIEF,
   },
 
-  // Prediction was correct: cognitive relief
-  prediction_hit: {
-    [DriveName.CognitiveAwareness]: -0.05, // Relief: world is predictable
-    [DriveName.Integrity]: -0.02,          // Predictions align with reality
+  SocialComment: {
+    [DriveName.Social]: PRIMARY_RELIEF,
+    [DriveName.Boredom]: -0.25,
+    [DriveName.Satisfaction]: 0.05,
   },
 
-  // Prediction was incorrect: increased cognitive pressure
-  prediction_miss: {
-    [DriveName.CognitiveAwareness]: 0.1, // Pressure: need to revise model
+  LearnedResponse: {
+    [DriveName.Social]: PRIMARY_RELIEF,
+    [DriveName.Boredom]: PRIMARY_RELIEF,
+    [DriveName.Curiosity]: SECONDARY_RELIEF,
+    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Anxiety]: SECONDARY_RELIEF,
   },
 
-  // Guardian confirmed behavior: strong multi-drive relief
-  guardian_confirmation: {
-    [DriveName.Satisfaction]: 0.15,    // Strong positive feedback
-    [DriveName.Social]: -0.15,         // Social need met (RELIEF, not pressure)
-    [DriveName.MoralValence]: -0.1,    // Acting in alignment with guardian values
-    [DriveName.Integrity]: -0.05,      // Guardian validates consistency
-    [DriveName.Anxiety]: -0.05,        // Confirmation reduces anxiety
+  // -- Knowledge/inquiry actions (curiosity-focused relief) ------------------
+
+  KnowledgeQuery: {
+    [DriveName.Curiosity]: PRIMARY_RELIEF,
+    [DriveName.CognitiveAwareness]: -0.25,
+    [DriveName.Boredom]: SECONDARY_RELIEF,
   },
 
-  // Guardian corrected behavior: guilt + loss, but also some relief
-  guardian_correction: {
-    [DriveName.Guilt]: 0.15,           // Negative feedback
-    [DriveName.Satisfaction]: -0.1,    // Loss from being corrected
-    [DriveName.Social]: -0.05,         // Still a social interaction (mild relief)
+  SocialInquiry: {
+    [DriveName.Social]: PRIMARY_RELIEF,
+    [DriveName.Curiosity]: -0.25,
+    [DriveName.Boredom]: SECONDARY_RELIEF,
   },
 
-  // Guardian is present / speaking (any interaction)
-  guardian_interaction: {
-    [DriveName.Social]: -0.1,          // Social need met by interaction
-    [DriveName.Boredom]: -0.05,        // Not bored when engaged
+  VisualInquiry: {
+    [DriveName.Curiosity]: PRIMARY_RELIEF,
+    [DriveName.Focus]: -0.25,
+    [DriveName.Boredom]: SECONDARY_RELIEF,
+  },
+
+  // -- Self-correction -------------------------------------------------------
+
+  SelfCorrection: {
+    [DriveName.Integrity]: -0.15,
+    [DriveName.MoralValence]: SECONDARY_RELIEF,
+  },
+
+  // -- Guardian teaching (pressure, not relief — drives learning need) -------
+
+  GuardianTeaching: {
+    [DriveName.CognitiveAwareness]: 0.15,
+  },
+
+  // -- Sensory signals (metadata-scaled, small per-tick) ---------------------
+  // These use metadata.count to scale. The base values here are per-unit.
+  // The drive engine multiplies by the count from metadata.
+
+  UndiscoveredObjectPressure: {
+    [DriveName.Curiosity]: 0.01,    // per undiscovered object
+    [DriveName.Focus]: 0.005,
+  },
+
+  UnknownPersonPressure: {
+    [DriveName.Social]: 0.015,      // per unknown person
+    [DriveName.Curiosity]: 0.005,
+  },
+
+  SensoryPrediction: {
+    [DriveName.Curiosity]: 0.01,    // scaled by prediction error magnitude
+  },
+
+  ScenePrediction: {
+    [DriveName.Curiosity]: 0.02,    // scaled by scene surprise magnitude
+    [DriveName.Anxiety]: 0.01,
   },
 };
 
 /**
- * Map of outcome types to their default affect keys.
- * Used to look up the correct default affect for an incoming event.
+ * Sensory action types that scale their effects by metadata counts/magnitudes.
+ * These are NOT flat defaults — the drive engine multiplies by the signal value.
  */
-export const OUTCOME_TYPE_TO_DEFAULT_AFFECT: Record<string, string> = {
-  action_success: 'action_success',
-  action_failure: 'action_failure',
-  prediction_hit: 'prediction_hit',
-  prediction_miss: 'prediction_miss',
-  guardian_confirmation: 'guardian_confirmation',
-  guardian_correction: 'guardian_correction',
+export const METADATA_SCALED_ACTION_TYPES = new Set([
+  'UndiscoveredObjectPressure',
+  'UnknownPersonPressure',
+  'SensoryPrediction',
+  'ScenePrediction',
+]);
+
+// ---------------------------------------------------------------------------
+// Legacy Default Affects (by outcome type)
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcome-level defaults (positive/negative, guardian feedback).
+ * These are layered ON TOP of the action-type defaults.
+ *
+ * For example, a ConversationalResponse with guardian_confirmation gets:
+ *   ACTION_TYPE_DEFAULTS['ConversationalResponse'] (base relief)
+ *   + OUTCOME_DEFAULTS['guardian_confirmation'] (bonus from guardian approval)
+ */
+export const OUTCOME_DEFAULTS: Record<string, Partial<Record<DriveName, number>>> = {
+  guardian_confirmation: {
+    [DriveName.Satisfaction]: 0.15,
+    [DriveName.MoralValence]: -0.10,
+    [DriveName.Anxiety]: -0.05,
+  },
+
+  guardian_correction: {
+    [DriveName.Guilt]: 0.15,
+    [DriveName.Satisfaction]: -0.10,
+  },
 };
+
+/**
+ * Compute the default affect for an action outcome signal.
+ *
+ * Combines:
+ * 1. Action-type defaults (what kind of action was it?)
+ * 2. Outcome-type bonuses (was it guardian confirmed/corrected?)
+ * 3. Metadata scaling for sensory signals
+ *
+ * @param payload - The ACTION_OUTCOME signal (no driveEffects field)
+ * @returns Computed drive effects map
+ */
+export function computeDefaultAffect(
+  payload: ActionOutcomePayload,
+): Partial<Record<DriveName, number>> {
+  const effects: Partial<Record<DriveName, number>> = {};
+
+  // 1. Action-type base effects
+  const actionDefaults = ACTION_TYPE_DEFAULTS[payload.actionType];
+  if (actionDefaults) {
+    for (const [drive, delta] of Object.entries(actionDefaults)) {
+      const d = drive as DriveName;
+      let scaledDelta = delta;
+
+      // Scale sensory signals by metadata
+      if (METADATA_SCALED_ACTION_TYPES.has(payload.actionType) && payload.metadata) {
+        const meta = payload.metadata;
+        if (payload.actionType === 'UndiscoveredObjectPressure' && meta.undiscoveredObjectCount != null) {
+          scaledDelta = delta * meta.undiscoveredObjectCount;
+        } else if (payload.actionType === 'UnknownPersonPressure' && meta.unknownPersonCount != null) {
+          scaledDelta = delta * meta.unknownPersonCount;
+        } else if (payload.actionType === 'SensoryPrediction' && meta.sensoryPredictionError != null) {
+          scaledDelta = delta * meta.sensoryPredictionError;
+        } else if (payload.actionType === 'ScenePrediction' && meta.sceneSurprise != null) {
+          scaledDelta = delta * meta.sceneSurprise;
+        }
+      }
+
+      effects[d] = (effects[d] ?? 0) + scaledDelta;
+    }
+  }
+
+  // 2. Outcome-type bonus (guardian feedback)
+  const outcomeDefaults = OUTCOME_DEFAULTS[payload.feedbackSource];
+  if (outcomeDefaults) {
+    for (const [drive, delta] of Object.entries(outcomeDefaults)) {
+      const d = drive as DriveName;
+      effects[d] = (effects[d] ?? 0) + delta;
+    }
+  }
+
+  return effects;
+}

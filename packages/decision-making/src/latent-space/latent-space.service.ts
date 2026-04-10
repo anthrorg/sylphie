@@ -21,7 +21,7 @@
  * On shutdown: hot layer is ephemeral — warm layer IS the persistence.
  */
 
-import { Injectable, Logger, Optional, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { TimescaleService, EMBEDDING_DIM, verboseFor } from '@sylphie/shared';
 
@@ -123,7 +123,7 @@ const DEFAULT_MODALITY_WEIGHT = 0.15;
 // ---------------------------------------------------------------------------
 
 @Injectable()
-export class LatentSpaceService implements OnModuleInit {
+export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LatentSpaceService.name);
 
   /** Hot layer — in-memory for fast cosine similarity. */
@@ -132,9 +132,25 @@ export class LatentSpaceService implements OnModuleInit {
   /** Whether the warm layer schema has been created. */
   private schemaReady = false;
 
+  /** Track pending warm-layer writes so we can flush on shutdown. */
+  private pendingWrites: Promise<void>[] = [];
+
   constructor(
     private readonly timescale: TimescaleService,
   ) {}
+
+  /**
+   * Flush all pending warm-layer writes on shutdown.
+   * Prevents pattern loss from unawaited fire-and-forget writes.
+   */
+  async onModuleDestroy(): Promise<void> {
+    if (this.pendingWrites.length > 0) {
+      this.logger.log(`Flushing ${this.pendingWrites.length} pending warm-layer writes...`);
+      await Promise.allSettled(this.pendingWrites);
+      this.pendingWrites = [];
+      this.logger.log('Warm-layer writes flushed.');
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -317,7 +333,7 @@ export class LatentSpaceService implements OnModuleInit {
 
     if (this.timescale && this.schemaReady) {
       const embeddingLiteral = `[${pattern.stimulusEmbedding.join(',')}]`;
-      this.timescale.query(
+      const writePromise = this.timescale.query(
         `INSERT INTO learned_patterns
            (id, modality, stimulus_embedding, response_text, procedure_id, confidence,
             use_count, recent_mae, deliberation_summary, entity_ids,
@@ -338,9 +354,14 @@ export class LatentSpaceService implements OnModuleInit {
           null,
           pattern.sessionId ?? null,
         ],
-      ).catch((err) => {
+      ).then(() => {
+        // Remove from pending list on success
+        this.pendingWrites = this.pendingWrites.filter(p => p !== writePromise);
+      }).catch((err) => {
+        this.pendingWrites = this.pendingWrites.filter(p => p !== writePromise);
         this.logger.warn(`Warm layer write failed: ${err instanceof Error ? err.message : String(err)}`);
       });
+      this.pendingWrites.push(writePromise);
     }
 
     return id;

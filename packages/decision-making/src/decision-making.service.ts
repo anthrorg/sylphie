@@ -447,7 +447,6 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             }],
             provenance: 'BEHAVIORAL_INFERENCE' as any,
             confidence: multiModalMatch.compositeSimilarity,
-            driveEffects: {},
           },
           confidence: multiModalMatch.compositeSimilarity,
           motivatingDrive: dominantDrive,
@@ -852,9 +851,8 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             actionId: 'undiscovered-objects',
             actionType: 'UndiscoveredObjectPressure',
             success: false,
-            driveEffects: {
-              [DriveName.Curiosity]: undiscoveredCount * 0.15,
-              [DriveName.Focus]: 0.1,
+            metadata: {
+              undiscoveredObjectCount: undiscoveredCount,
             },
             feedbackSource: 'INFERENCE',
             theaterCheck: {
@@ -877,10 +875,8 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             actionId: 'unknown-persons',
             actionType: 'UnknownPersonPressure',
             success: false,
-            driveEffects: {
-              [DriveName.Social]: unknownPersonCount * 0.20,
-              [DriveName.Curiosity]: unknownPersonCount * 0.10,
-              [DriveName.Focus]: 0.1,
+            metadata: {
+              unknownPersonCount: unknownPersonCount,
             },
             feedbackSource: 'INFERENCE',
             theaterCheck: {
@@ -971,74 +967,89 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   async reportOutcome(actionId: string, outcome: ActionOutcome): Promise<void> {
     const arbitrationType = outcome.selectedAction.arbitrationResult.type;
 
-    // SHRUG and novel TYPE_2 actions have no procedure node — skip confidence update.
-    if (
-      arbitrationType === 'SHRUG' ||
-      (arbitrationType === 'TYPE_2' &&
-        outcome.selectedAction.arbitrationResult.candidate.procedureData === null)
-    ) {
-      this.logger.debug(
-        `reportOutcome skipped for ${arbitrationType} action (no procedure node to update).`,
+    // Whether this action has a procedure node (needed for confidence updates
+    // and prediction evaluation, but NOT required for drive engine forwarding).
+    const hasProcedureNode =
+      arbitrationType !== 'SHRUG' &&
+      !(
+        arbitrationType === 'TYPE_2' &&
+        outcome.selectedAction.arbitrationResult.candidate.procedureData === null
       );
-      return;
-    }
 
-    // ── Evaluate prediction with real observed outcome ─────────────────────
-    // Find the prediction generated during PREDICTING state for this action.
-    // If found, evaluate it against the real driveEffectsObserved (not empty).
+    // ── Confidence updates & prediction evaluation (procedure-backed only) ──
     let predictionEvaluation: PredictionEvaluation | null = null;
-    const predictionId = this.predictionService.getActivePredictionIdForAction(actionId);
-    if (predictionId) {
-      try {
-        predictionEvaluation = this.predictionService.evaluatePrediction(predictionId, outcome);
+    let isAccurate = outcome.predictionAccurate;
 
-        // Feed evaluation to the attractor monitor so PLANNING_RUNAWAY and
-        // PREDICTION_PESSIMIST detectors have real data.
-        this.attractorMonitor.recordPrediction(
-          predictionEvaluation.mae,
-          predictionEvaluation.accurate,
-        );
+    if (hasProcedureNode) {
+      // Evaluate prediction with real observed outcome.
+      const predictionId = this.predictionService.getActivePredictionIdForAction(actionId);
+      if (predictionId) {
+        try {
+          predictionEvaluation = this.predictionService.evaluatePrediction(predictionId, outcome);
 
-        vlog('prediction evaluated via reportOutcome', {
-          predictionId: predictionId.substring(0, 8),
-          actionId,
-          mae: +predictionEvaluation.mae.toFixed(4),
-          accurate: predictionEvaluation.accurate,
-        });
-      } catch (err) {
-        this.logger.warn(`reportOutcome prediction evaluation failed for ${predictionId}: ${err}`);
+          this.attractorMonitor.recordPrediction(
+            predictionEvaluation.mae,
+            predictionEvaluation.accurate,
+          );
+
+          vlog('prediction evaluated via reportOutcome', {
+            predictionId: predictionId.substring(0, 8),
+            actionId,
+            mae: +predictionEvaluation.mae.toFixed(4),
+            accurate: predictionEvaluation.accurate,
+          });
+        } catch (err) {
+          this.logger.warn(`reportOutcome prediction evaluation failed for ${predictionId}: ${err}`);
+        }
       }
+
+      isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate;
+      const confidenceOutcome: 'reinforced' | 'counter_indicated' = isAccurate
+        ? 'reinforced'
+        : 'counter_indicated';
+
+      if (predictionEvaluation) {
+        this.confidenceUpdater.recordPredictionMAE(actionId, predictionEvaluation.mae);
+      }
+
+      try {
+        await this.confidenceUpdater.update(actionId, confidenceOutcome);
+      } catch (err) {
+        this.logger.warn(`reportOutcome confidence update failed for ${actionId}: ${err}`);
+      }
+    } else {
+      this.logger.debug(
+        `reportOutcome: skipping confidence update for ${arbitrationType} (no procedure node).`,
+      );
     }
 
-    // Determine outcome type for confidence updater.
-    // Use the real prediction evaluation result if available.
-    const isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate;
-    const confidenceOutcome: 'reinforced' | 'counter_indicated' = isAccurate
-      ? 'reinforced'
-      : 'counter_indicated';
-
-    // Feed MAE into the confidence updater's rolling window BEFORE update()
-    // so that the graduation/demotion checks inside update() see fresh data.
-    if (predictionEvaluation) {
-      this.confidenceUpdater.recordPredictionMAE(actionId, predictionEvaluation.mae);
-    }
-
-    try {
-      await this.confidenceUpdater.update(actionId, confidenceOutcome);
-    } catch (err) {
-      this.logger.warn(`reportOutcome confidence update failed for ${actionId}: ${err}`);
-    }
-
-    // Forward outcome to Drive Engine for drive evaluation (fire-and-forget).
-    // Include prediction data so the Drive Engine's PredictionEvaluator can
-    // track MAE, classify opportunity severity, and emit planning signals.
+    // ── Forward to Drive Engine (ALL outcomes, including SHRUG) ─────────────
+    // The drive engine needs to see every communication outcome so that
+    // behavioral contingencies (social comment quality, satisfaction habituation,
+    // etc.) can fire and relieve drives.
     if (this.actionOutcomeReporter) {
+      // Extract procedure metadata for actionType.
+      // SHRUG arbitration results don't carry a candidate, so we need to
+      // narrow the union before accessing it.
+      const arbResult = outcome.selectedAction.arbitrationResult;
+      const procedureData =
+        arbResult.type !== 'SHRUG' ? arbResult.candidate.procedureData : null;
+
+      // Use the procedure's category for actionType when available.
+      // Falls back to 'ConversationalResponse' for SHRUG/novel TYPE_2
+      // so the rule engine and contingencies can match meaningfully.
+      let actionType = 'ConversationalResponse';
+      if (arbitrationType === 'TYPE_1') {
+        actionType = procedureData?.category ?? 'ConversationalResponse';
+      } else if (arbitrationType === 'TYPE_2' && procedureData) {
+        actionType = procedureData.category;
+      }
+
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId,
-          actionType: outcome.selectedAction.arbitrationResult.type,
+          actionType,
           success: isAccurate,
-          driveEffects: outcome.driveEffectsObserved,
           feedbackSource: 'INFERENCE',
           theaterCheck: {
             expressionType: 'none',
@@ -1053,6 +1064,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 actualValue: predictionEvaluation.mae, // real MAE
               }
             : undefined,
+          // Set socialCommentTimestamp so the social comment quality
+          // contingency fires, recording this as a Sylphie-initiated
+          // comment and providing Social relief + Satisfaction bonus
+          // when the guardian responds within 30 seconds.
+          socialCommentTimestamp: Date.now(),
         });
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
@@ -1062,20 +1078,23 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // ── Update latent space pattern confidence based on real outcome ────────
     // Patterns were written at speculative 0.3 confidence. Now that we have
     // real outcome data, adjust: boost on success, reduce on failure.
-    const pendingPatterns = this.pendingLatentPatterns.get(actionId);
-    if (pendingPatterns && pendingPatterns.length > 0) {
-      const newConfidence = isAccurate ? 0.5 : 0.15;
-      for (const patternId of pendingPatterns) {
-        this.latentSpace.updateConfidence(patternId, newConfidence);
-      }
-      this.pendingLatentPatterns.delete(actionId);
+    if (hasProcedureNode) {
+      const confidenceOutcome = isAccurate ? 'reinforced' : 'counter_indicated';
+      const pendingPatterns = this.pendingLatentPatterns.get(actionId);
+      if (pendingPatterns && pendingPatterns.length > 0) {
+        const newConfidence = isAccurate ? 0.5 : 0.15;
+        for (const patternId of pendingPatterns) {
+          this.latentSpace.updateConfidence(patternId, newConfidence);
+        }
+        this.pendingLatentPatterns.delete(actionId);
 
-      vlog('latent confidence updated via reportOutcome', {
-        actionId,
-        patternCount: pendingPatterns.length,
-        outcome: confidenceOutcome,
-        newConfidence,
-      });
+        vlog('latent confidence updated via reportOutcome', {
+          actionId,
+          patternCount: pendingPatterns.length,
+          outcome: confidenceOutcome,
+          newConfidence,
+        });
+      }
     }
   }
 
@@ -1102,33 +1121,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     const totalError = Object.values(errors).reduce((sum, e) => sum + e, 0);
     if (totalError < 0.05) return; // negligible
 
-    const textError = errors['text'] ?? 0;
-    const audioError = errors['audio'] ?? 0;
-    const videoError = errors['video'] ?? 0;
-
-    const driveEffects: Partial<Record<DriveName, number>> = {};
-
-    if (textError > DecisionMakingService.SENSORY_TEXT_THRESHOLD) {
-      driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + textError * 0.3;
-    }
-    if (audioError > DecisionMakingService.SENSORY_AUDIO_THRESHOLD) {
-      driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + audioError * 0.15;
-      driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + audioError * 0.1;
-    }
-    if (videoError > DecisionMakingService.SENSORY_VIDEO_THRESHOLD) {
-      driveEffects[DriveName.Anxiety] = (driveEffects[DriveName.Anxiety] ?? 0) + videoError * 0.1;
-      driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + videoError * 0.1;
-    }
-
-    if (Object.keys(driveEffects).length === 0) return;
-
     if (this.actionOutcomeReporter) {
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId: 'sensory-prediction',
           actionType: 'SensoryPrediction',
           success: totalError < 0.3,
-          driveEffects,
+          metadata: { sensoryPredictionError: totalError },
           feedbackSource: 'INFERENCE',
           theaterCheck: {
             expressionType: 'none',
@@ -1160,49 +1159,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
     if (result.totalSurprise < 0.05) return;
 
-    const driveEffects: Partial<Record<DriveName, number>> = {};
-
-    for (const error of result.errors) {
-      switch (error.errorType) {
-        case 'novel':
-          if (error.label === 'person') {
-            // New person → curiosity + social drive
-            driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + 0.2;
-            driveEffects[DriveName.Social] = (driveEffects[DriveName.Social] ?? 0) + 0.15;
-            if (!error.personId) {
-              // Unknown person → extra focus ("who is this?")
-              driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + 0.15;
-            }
-          } else {
-            // New object → curiosity
-            driveEffects[DriveName.Curiosity] = (driveEffects[DriveName.Curiosity] ?? 0) + 0.1;
-          }
-          break;
-
-        case 'missing':
-          if (error.label === 'person') {
-            // Person left → mild anxiety + social
-            driveEffects[DriveName.Anxiety] = (driveEffects[DriveName.Anxiety] ?? 0) + 0.08;
-            driveEffects[DriveName.Social] = (driveEffects[DriveName.Social] ?? 0) + 0.05;
-          }
-          break;
-
-        case 'moved':
-          // Significant movement → focus
-          driveEffects[DriveName.Focus] = (driveEffects[DriveName.Focus] ?? 0) + error.magnitude * 0.1;
-          break;
-      }
-    }
-
-    if (Object.keys(driveEffects).length === 0) return;
-
     if (this.actionOutcomeReporter) {
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId: 'scene-prediction',
           actionType: 'ScenePrediction',
           success: result.totalSurprise < 0.2,
-          driveEffects,
+          metadata: { sceneSurprise: result.totalSurprise },
           feedbackSource: 'INFERENCE',
           theaterCheck: {
             expressionType: 'none',

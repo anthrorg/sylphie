@@ -36,7 +36,16 @@ const ActionOutcomePayloadSchema = z.object({
   actionId: z.string().min(1, 'actionId is required'),
   actionType: z.string(),
   outcome: z.enum(['positive', 'negative']),
-  driveEffects: z.record(DriveNameSchema, z.number().min(-10.0).max(1.0)),
+  // Signal metadata — the drive engine computes effects from these signals.
+  // No driveEffects field: the main process sends what happened, the drive
+  // engine decides what it means using its internal rule system.
+  metadata: z.object({
+    undiscoveredObjectCount: z.number().int().min(0).optional(),
+    unknownPersonCount: z.number().int().min(0).optional(),
+    sensoryPredictionError: z.number().min(0).max(1).optional(),
+    sceneSurprise: z.number().min(0).max(1).optional(),
+    guardianTeachingDrive: DriveNameSchema.optional(),
+  }).optional(),
   feedbackSource: z.enum([
     'guardian_confirmation',
     'guardian_correction',
@@ -49,7 +58,14 @@ const ActionOutcomePayloadSchema = z.object({
     isTheatrical: z.boolean(),
   }),
   anxietyAtExecution: z.number().min(-10.0).max(1.0),
-});
+  // Optional fields that the reporter may include
+  predictionData: z.object({
+    predictionId: z.string(),
+    predictedValue: z.number(),
+    actualValue: z.number(),
+  }).optional(),
+  socialCommentTimestamp: z.number().optional(),
+}).passthrough();
 
 /**
  * SOFTWARE_METRICS payload validation.

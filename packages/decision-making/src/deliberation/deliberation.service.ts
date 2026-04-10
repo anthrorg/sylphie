@@ -181,7 +181,10 @@ export class DeliberationService {
     });
     const rawText = frame.raw['text'] as string | undefined ?? '';
     const driveSnapshot = context.driveSnapshot;
+    // conversation_history now contains ONLY unanswered/pending messages.
+    // Answered exchanges are in conversation_summary as a compact text block.
     const conversationHistory = frame.raw['conversation_history'] as LlmMessage[] | undefined ?? [];
+    const conversationSummary = frame.raw['conversation_summary'] as string | undefined ?? '';
     const speakerName = frame.raw['speaker_name'] as string | undefined ?? 'the person talking to you';
 
     // Assemble working memory snapshot (activation-driven context selection).
@@ -215,6 +218,7 @@ export class DeliberationService {
         'Intent types: GREETING, EMOTION, QUESTION, FACT, COMMAND, UNKNOWN',
         '',
         'Rules:',
+        '- Only respond to the latest user message. The conversation summary below is context only — do not re-answer it.',
         '- GREETING/EMOTION: Always respond naturally. You can always do this.',
         `- FACT (someone telling you something): Acknowledge it. "My name is X" means THEIR name is X.`,
         '- QUESTION about something said in this conversation: Answer from the conversation.',
@@ -222,6 +226,7 @@ export class DeliberationService {
         '- Things said in this conversation are things you know. You do not need world knowledge for them.',
         '- If this needs complex reasoning, write NEEDS_DELIBERATION as the response.',
         '',
+        conversationSummary ? conversationSummary : '',
         wmSummary,
         '',
         'MORE EXAMPLES:',
@@ -360,6 +365,7 @@ export class DeliberationService {
         'Format as a numbered list: 1. [GROUNDED|ASSISTED|UNKNOWN] response text — reasoning',
         '',
         'RULES:',
+        '- Only respond to the latest user message. The conversation summary is background context only.',
         '- Be warm, natural, and conversational. You are NOT a chatbot or assistant.',
         '- NEVER end a response with a question.',
         '- Do not say "How can I assist you" or similar assistant phrases.',
@@ -377,6 +383,7 @@ export class DeliberationService {
         'IMPORTANT: "I don\'t know" is ONLY for world knowledge questions.',
         'You should NEVER say "I don\'t know" in response to greetings, introductions, or conversation.',
         '',
+        conversationSummary ? conversationSummary : '',
         `My inner thoughts: ${innerMonologue}`,
         `\n${wmSummary}`,
       ],

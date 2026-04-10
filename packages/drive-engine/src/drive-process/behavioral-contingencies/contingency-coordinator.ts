@@ -80,10 +80,13 @@ export class ContingencyCoordinator {
     //   - Negative outcome: amplify all positive (pressure-increasing) drive effects by 1.5x
     //   - Positive outcome: provide anxiety relief (-0.10)
     // The separate amplifyReduction() method is still available for WKG confidence reductions.
+    // driveEffects no longer comes from the payload — effects are computed
+    // internally by the rule/default-affect system. Pass empty map; the
+    // contingency still fires anxiety relief on positive outcomes.
     const anxietyEffects = this.anxietyAmplification.computeDriveEffects(
       outcome.anxietyAtExecution,
       outcome.outcome,
-      outcome.driveEffects,
+      {},
     );
     for (const [drive, value] of Object.entries(anxietyEffects)) {
       if (value !== undefined) {

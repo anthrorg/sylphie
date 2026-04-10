@@ -178,40 +178,72 @@ class GlobalModel:
     # ------------------------------------------------------------------
 
     def save(self, directory: str) -> None:
-        """Save model weights to disk."""
+        """Save model weights to disk atomically."""
         os.makedirs(directory, exist_ok=True)
         if HAS_TF and hasattr(self, "model"):
+            # Keras save_weights is already fairly safe, but use tmp+rename for npz
             self.model.save_weights(os.path.join(directory, "global_model.weights.h5"))
         else:
+            final_path = os.path.join(directory, "global_model_np.npz")
+            tmp_path = final_path + ".tmp"
             np.savez(
-                os.path.join(directory, "global_model_np.npz"),
+                tmp_path,
                 w1=self.w1, b1=self.b1,
                 w2=self.w2, b2=self.b2,
                 w_action=self.w_action, b_action=self.b_action,
                 w_aux=self.w_aux, b_aux=self.b_aux,
             )
+            os.replace(tmp_path, final_path)
         logger.info("Global model weights saved to %s", directory)
 
     def load(self, directory: str) -> bool:
-        """Load model weights from disk. Returns True if loaded, False if no checkpoint."""
-        if HAS_TF and hasattr(self, "model"):
-            path = os.path.join(directory, "global_model.weights.h5")
-            if os.path.exists(path):
-                self.model.load_weights(path)
-                logger.info("Global model weights loaded from %s", path)
-                return True
-        else:
-            path = os.path.join(directory, "global_model_np.npz")
-            if os.path.exists(path):
-                data = np.load(path)
-                self.w1 = data["w1"]
-                self.b1 = data["b1"]
-                self.w2 = data["w2"]
-                self.b2 = data["b2"]
-                self.w_action = data["w_action"]
-                self.b_action = data["b_action"]
-                self.w_aux = data["w_aux"]
-                self.b_aux = data["b_aux"]
-                logger.info("Global model (NumPy) weights loaded from %s", path)
-                return True
+        """Load model weights from disk. Returns True if loaded, False if no checkpoint.
+
+        Handles the transition from NumPy-saved weights (.npz) to TensorFlow
+        Keras weights (.h5). If TF is available, tries .h5 first; if not found,
+        loads from .npz and copies weights into the TF model layers.
+
+        Tolerates corrupted checkpoint files — logs a warning and keeps the
+        existing Xavier-initialized weights rather than crashing.
+        """
+        h5_path = os.path.join(directory, "global_model.weights.h5")
+        npz_path = os.path.join(directory, "global_model_np.npz")
+
+        try:
+            if HAS_TF and hasattr(self, "model"):
+                # Prefer native Keras weights
+                if os.path.exists(h5_path):
+                    self.model.load_weights(h5_path)
+                    logger.info("Global model weights loaded from %s", h5_path)
+                    return True
+                # Fall back to NumPy checkpoint — copy weights into TF model
+                if os.path.exists(npz_path):
+                    data = np.load(npz_path)
+                    weights = [
+                        data["w1"], data["b1"],
+                        data["w2"], data["b2"],
+                        data["w_action"], data["b_action"],
+                        data["w_aux"], data["b_aux"],
+                    ]
+                    self.model.set_weights(weights)
+                    logger.info("Global model (TF) loaded from NumPy checkpoint %s", npz_path)
+                    return True
+            else:
+                if os.path.exists(npz_path):
+                    data = np.load(npz_path)
+                    self.w1 = data["w1"]
+                    self.b1 = data["b1"]
+                    self.w2 = data["w2"]
+                    self.b2 = data["b2"]
+                    self.w_action = data["w_action"]
+                    self.b_action = data["b_action"]
+                    self.w_aux = data["w_aux"]
+                    self.b_aux = data["b_aux"]
+                    logger.info("Global model (NumPy) weights loaded from %s", npz_path)
+                    return True
+        except Exception as e:
+            logger.warning(
+                "Failed to load global model from %s: %s. "
+                "Keeping initialized weights.", directory, e,
+            )
         return False

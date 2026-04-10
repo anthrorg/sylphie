@@ -49,8 +49,17 @@ call yarn build:shared
 
 :: Launch cognition service (TensorFlow pipeline)
 echo [4/6] Launching Cognition Service...
-start "Cognition Service" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie\packages\cognition-service && python -m uvicorn main:app --host 127.0.0.1 --port 8431"
-timeout /t 2 /nobreak >nul
+:: Kill any stale process on port 8431
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr "8431.*LISTEN"') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+:: Set up venv if it exists, otherwise use global Python
+if exist "packages\cognition-service\.venv\Scripts\activate.bat" (
+    start "Cognition Service" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie\packages\cognition-service && .venv\Scripts\activate && python -m uvicorn main:app --host 127.0.0.1 --port 8431"
+) else (
+    start "Cognition Service" cmd /k "cd /d C:\Users\Jim\OneDrive\Desktop\Code\sylphie\packages\cognition-service && python -m uvicorn main:app --host 127.0.0.1 --port 8431"
+)
+timeout /t 3 /nobreak >nul
 
 :: Launch drive server
 echo [5/6] Launching Drive Engine server...

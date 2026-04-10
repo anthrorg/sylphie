@@ -161,20 +161,25 @@ class ConvergenceModel:
         return float(divergence[0, 0])
 
     def save(self, directory: str) -> None:
-        """Save convergence model weights."""
+        """Save convergence model weights atomically."""
         os.makedirs(directory, exist_ok=True)
+        final_path = os.path.join(directory, "convergence_model.npz")
+        tmp_path = final_path + ".tmp"
         np.savez(
-            os.path.join(directory, "convergence_model.npz"),
+            tmp_path,
             w1=self.w1, b1=self.b1,
             w_div=self.w_div, b_div=self.b_div,
             w_adj=self.w_adj, b_adj=self.b_adj,
             use_learned=np.array([self.use_learned]),
         )
+        os.replace(tmp_path, final_path)
 
     def load(self, directory: str) -> bool:
-        """Load convergence model weights."""
+        """Load convergence model weights. Tolerates corrupted checkpoints."""
         path = os.path.join(directory, "convergence_model.npz")
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return False
+        try:
             data = np.load(path)
             self.w1 = data["w1"]
             self.b1 = data["b1"]
@@ -186,4 +191,9 @@ class ConvergenceModel:
                 self.use_learned = bool(data["use_learned"][0])
             logger.info("Convergence model loaded from %s", path)
             return True
-        return False
+        except Exception as e:
+            logger.warning(
+                "Failed to load convergence model from %s: %s. "
+                "Keeping initialized weights.", path, e,
+            )
+            return False

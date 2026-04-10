@@ -129,11 +129,24 @@ export interface ActionOutcomePayload {
   readonly outcome: 'positive' | 'negative';
 
   /**
-   * Observed drive effects from this action.
-   * Partial map — only drives that changed are included.
-   * The Drive Engine reconciles these with rule-computed effects.
+   * Signal metadata for the drive engine to compute effects from.
+   *
+   * The main process sends WHAT HAPPENED (counts, magnitudes, flags).
+   * The drive engine decides WHAT IT MEANS using its internal rule system.
+   * No pre-computed drive deltas — the drive engine is fully isolated.
    */
-  readonly driveEffects: Partial<Record<DriveName, number>>;
+  readonly metadata?: {
+    /** Number of undiscovered objects currently in camera view. */
+    readonly undiscoveredObjectCount?: number;
+    /** Number of unrecognized persons currently in camera view. */
+    readonly unknownPersonCount?: number;
+    /** Sensory prediction error magnitude [0.0, 1.0]. */
+    readonly sensoryPredictionError?: number;
+    /** Scene prediction surprise magnitude [0.0, 1.0]. */
+    readonly sceneSurprise?: number;
+    /** Drive affected by guardian teaching instruction. */
+    readonly guardianTeachingDrive?: DriveName;
+  };
 
   /**
    * Source of the reinforcement feedback signal.

@@ -13,17 +13,16 @@
  * provenance with base confidence 0.40. They are never elevated unless
  * guardian-confirmed.
  *
- * Drive-modulated ranking: Candidates are scored with a composite function:
+ * Composite ranking: Candidates are scored with a composite function:
  *   finalScore = W_CONFIDENCE * confidence
  *              + W_CONTEXT   * contextMatchScore
  *              + W_DRIVE     * driveRelevanceScore
  *
- * Drive relevance measures how well a procedure's predicted drive effects
- * (negative values = relief) align with the current drive pressures.
- * Procedures that relieve the highest-pressure drives score higher.
- * When a procedure has no driveEffects metadata, driveRelevanceScore
- * defaults to 0.0 and the composite gracefully degrades to the prior
- * confidence + context ranking.
+ * Procedures no longer carry prescribed driveEffects — the Drive Engine
+ * computes effects internally. driveRelevanceScore is always 0.0, so the
+ * composite gracefully degrades to confidence + context ranking.
+ * W_DRIVE is retained in the formula to allow future re-activation without
+ * a formula change.
  *
  * LRU cache: 50 entries, 5-minute TTL, keyed by context fingerprint + drive
  * state hash. The drive state hash ensures that cache entries are invalidated
@@ -99,45 +98,6 @@ const W_CONFIDENCE = 0.50;
 const W_CONTEXT = 0.30;
 const W_DRIVE = 0.20;
 
-// ---------------------------------------------------------------------------
-// Drive Key Normalization
-// ---------------------------------------------------------------------------
-
-/**
- * Lookup table mapping display-name drive keys (used in bootstrap seed
- * driveEffects) to canonical DriveName enum values. Handles the mismatch
- * between seed keys like "Social", "Cognitive Awareness" and DriveName
- * enum values like "social", "cognitiveAwareness".
- *
- * Built once at module load from DRIVE_INDEX_ORDER for zero maintenance cost.
- */
-const DRIVE_KEY_NORMALIZE: ReadonlyMap<string, DriveName> = (() => {
-  const map = new Map<string, DriveName>();
-  for (const drive of DRIVE_INDEX_ORDER) {
-    // Canonical enum value (e.g., "social", "cognitiveAwareness")
-    map.set(drive, drive);
-    // Lowercase match (already covered but explicit)
-    map.set(drive.toLowerCase(), drive);
-  }
-  // Display-name mappings for bootstrap seeds
-  map.set('social', DriveName.Social);
-  map.set('curiosity', DriveName.Curiosity);
-  map.set('boredom', DriveName.Boredom);
-  map.set('anxiety', DriveName.Anxiety);
-  map.set('satisfaction', DriveName.Satisfaction);
-  map.set('sadness', DriveName.Sadness);
-  map.set('focus', DriveName.Focus);
-  map.set('guilt', DriveName.Guilt);
-  map.set('integrity', DriveName.Integrity);
-  map.set('system health', DriveName.SystemHealth);
-  map.set('systemhealth', DriveName.SystemHealth);
-  map.set('moral valence', DriveName.MoralValence);
-  map.set('moralvalence', DriveName.MoralValence);
-  map.set('cognitive awareness', DriveName.CognitiveAwareness);
-  map.set('cognitiveawareness', DriveName.CognitiveAwareness);
-  return map;
-})();
-
 /**
  * Minimal LRU cache backed by a Map.
  *
@@ -190,7 +150,7 @@ interface ProcedureRow {
   readonly triggerContext: string;
   readonly provenance: string;
   readonly confidence: number;
-  readonly driveEffects?: string | null;
+  readonly actionSequence?: string | null;
 }
 
 function isProcedureRow(value: unknown): value is ProcedureRow {
@@ -250,16 +210,13 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
    *      confidence >= retrieval threshold (0.50).
    *   3. Compute Jaccard similarity between each node's triggerContext and
    *      the provided contextFingerprint.
-   *   4. Compute drive relevance: how well each procedure's predicted
-   *      driveEffects align with the current drive pressures.
-   *   5. Assign the motivating drive (highest-pressure drive in driveSnapshot).
-   *   6. Sort by composite score (confidence * W_CONFIDENCE +
-   *      contextMatch * W_CONTEXT + driveRelevance * W_DRIVE) descending.
-   *   7. Cache and return.
+   *   4. Assign the motivating drive (highest-pressure drive in driveSnapshot).
+   *   5. Sort by composite score (confidence * W_CONFIDENCE +
+   *      contextMatch * W_CONTEXT + 0.0 * W_DRIVE) descending.
+   *   6. Cache and return.
    *
-   * When a procedure has no driveEffects metadata, driveRelevanceScore
-   * defaults to 0.0 and the composite gracefully degrades to confidence +
-   * context ranking.
+   * driveRelevanceScore is always 0.0 — procedures no longer carry prescribed
+   * driveEffects. The Drive Engine computes effects internally.
    *
    * An empty array is a valid result. The arbitration service handles it
    * by entering the Type 2 path.
@@ -302,12 +259,20 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
 
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
+      // COALESCE handles the property name divergence across creation paths:
+      //   Seeds:     p.id, p.driveEffects,              p.triggerContext, p.provenance,      p.actionSequence
+      //   Planning:  p.node_id, p.predicted_drive_effects, p.trigger_context, p.provenance_type, p.action_sequence
+      //   WKG write: p.node_id, (none),                  p.triggerContext, p.provenance_type, p.action_sequence
       const result = await session.run(
         `MATCH (p:ActionProcedure)
          WHERE p.confidence >= $threshold
-         RETURN p.id AS id, p.name AS name, p.category AS category,
-                p.triggerContext AS triggerContext, p.provenance AS provenance,
-                p.confidence AS confidence, p.driveEffects AS driveEffects`,
+         RETURN coalesce(p.id, p.node_id) AS id,
+                p.name AS name,
+                coalesce(p.category, 'ConversationalResponse') AS category,
+                coalesce(p.triggerContext, p.trigger_context) AS triggerContext,
+                coalesce(p.provenance, p.provenance_type) AS provenance,
+                p.confidence AS confidence,
+                coalesce(p.actionSequence, p.action_sequence) AS actionSequence`,
         { threshold: CONFIDENCE_THRESHOLDS.retrieval },
       );
 
@@ -320,14 +285,20 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             row.triggerContext,
           );
 
-          // Parse driveEffects from the Neo4j node (stored as JSON string)
-          let driveEffects: Partial<Record<DriveName, number>> = {};
+          // Parse actionSequence from Neo4j if stored, otherwise default to LLM_GENERATE.
+          // This allows procedures to specify custom step types (e.g., RESEARCH_ENTITY).
+          let actionSequence: ActionStep[] = [
+            { index: 0, stepType: 'LLM_GENERATE', params: {} } satisfies ActionStep,
+          ];
           try {
-            if (row.driveEffects) {
-              driveEffects = JSON.parse(row.driveEffects as string);
+            if (row.actionSequence) {
+              const parsed = JSON.parse(row.actionSequence as string);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                actionSequence = parsed;
+              }
             }
           } catch {
-            // Malformed JSON — use empty effects
+            // Malformed JSON — use default LLM_GENERATE
           }
 
           const procedureData: ActionProcedureData = {
@@ -335,29 +306,17 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             name: row.name,
             category: row.category ?? 'ConversationalResponse',
             triggerContext: row.triggerContext,
-            actionSequence: [
-              {
-                index: 0,
-                stepType: 'LLM_GENERATE',
-                params: {},
-              } satisfies ActionStep,
-            ],
+            actionSequence,
             provenance: row.provenance as ActionProcedureData['provenance'],
             confidence: row.confidence,
-            driveEffects,
           };
-
-          const driveRelevanceScore = this.computeDriveRelevance(
-            driveEffects,
-            driveSnapshot,
-          );
 
           return {
             procedureData,
             confidence: row.confidence,
             motivatingDrive,
             contextMatchScore,
-            driveRelevanceScore,
+            driveRelevanceScore: 0.0,
           };
         })
         .sort((a, b) => this.compositeScore(b) - this.compositeScore(a));
@@ -421,81 +380,58 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       name: string;
       category: string;
       triggerContext: string;
-      driveEffects: Record<string, number>;
+      actionSequence?: ActionStep[];
     }> = [
       {
         id: 'seed-greet',
         name: 'greet',
         category: 'SocialComment',
         triggerContext: 'hello hi greet greeting welcome',
-        driveEffects: {
-          Social: -0.15,       // Primary relief: social need met
-          Boredom: -0.05,      // Mild: interaction reduces boredom
-        },
       },
       {
         id: 'seed-acknowledge',
         name: 'acknowledge',
         category: 'ConversationalResponse',
         triggerContext: 'acknowledged understood received got it okay',
-        driveEffects: {
-          Integrity: -0.05,    // Responding honestly maintains integrity
-          Social: -0.05,       // Mild social relief from engagement
-        },
       },
       {
         id: 'seed-ask-clarification',
         name: 'ask_clarification',
         category: 'KnowledgeQuery',
         triggerContext: 'unclear ambiguous unknown what do you mean clarify',
-        driveEffects: {
-          'Cognitive Awareness': -0.1, // Primary: seeking clarity reduces cognitive pressure
-          Curiosity: -0.1,     // Asking satisfies curiosity
-          Anxiety: -0.05,      // Reducing ambiguity reduces anxiety
-        },
       },
       {
         id: 'seed-express-curiosity',
         name: 'express_curiosity',
         category: 'GuardianEngagement',
         triggerContext: 'interesting curious tell me more want to know learn',
-        driveEffects: {
-          Curiosity: -0.15,    // Primary relief: curiosity satisfied
-          Boredom: -0.1,       // Exploring is not boring
-          Social: -0.1,        // Engaging with guardian
-        },
       },
       {
         id: 'seed-shrug',
         name: 'shrug',
         category: 'SelfCorrection',
         triggerContext: 'unknown uncertain incomprehensible cannot respond',
-        driveEffects: {
-          Integrity: -0.1,     // Honest about not knowing (CANON Standard 4)
-          'Moral Valence': -0.05, // Acting with honesty
-        },
       },
       {
         id: 'seed-ask-about-object',
         name: 'ask_about_object',
         category: 'VisualInquiry',
         triggerContext: 'unknown object unrecognized what is that thing see something new visual',
-        driveEffects: {
-          Curiosity: -0.20,    // Primary relief: learning about the unknown
-          'Cognitive Awareness': -0.10, // Understanding environment
-          Focus: -0.05,        // Directing attention
-        },
       },
       {
         id: 'seed-ask-about-person',
         name: 'ask_about_person',
         category: 'SocialInquiry',
         triggerContext: 'unknown person unrecognized face who are you new person stranger introduce',
-        driveEffects: {
-          Social: -0.25,       // Primary relief: social need to connect
-          Curiosity: -0.10,    // Secondary: learning who they are
-          Focus: -0.05,        // Directing attention to the person
-        },
+      },
+      {
+        id: 'seed-research-entity',
+        name: 'research_entity',
+        category: 'KnowledgeQuery',
+        triggerContext: 'research learn about explore discover entity lookup definition what is information study investigate',
+        actionSequence: [
+          { index: 0, stepType: 'RESEARCH_ENTITY', params: {} },
+        ],
       },
     ];
 
@@ -531,7 +467,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
              p.triggerContext = $triggerContext,
              p.provenance = $provenance,
              p.confidence = $confidence,
-             p.driveEffects = $driveEffects,
+             p.actionSequence = $actionSequence,
              p.createdAt = datetime()`,
           {
             id: seed.id,
@@ -540,7 +476,9 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             triggerContext: seed.triggerContext,
             provenance: 'SYSTEM_BOOTSTRAP',
             confidence: BASE_CONFIDENCE,
-            driveEffects: JSON.stringify(seed.driveEffects),
+            actionSequence: seed.actionSequence
+              ? JSON.stringify(seed.actionSequence)
+              : null,
           },
         );
 
@@ -561,76 +499,14 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
   // ---------------------------------------------------------------------------
 
   /**
-   * Compute how well a procedure's predicted drive effects align with the
-   * current drive pressures.
+   * Drive relevance scoring. Procedures no longer carry prescribed driveEffects —
+   * the Drive Engine computes effects internally. Always returns 0.0, which causes
+   * the composite score to degrade gracefully to confidence + context ranking.
    *
-   * The algorithm:
-   *   1. For each drive in the procedure's driveEffects, find the corresponding
-   *      current pressure value from the snapshot.
-   *   2. A negative driveEffect (relief) on a high-pressure drive is highly
-   *      relevant. Conversely, relief on an already-satisfied (low/negative
-   *      pressure) drive is less useful.
-   *   3. The per-drive relevance is: currentPressure * abs(relief).
-   *      Only negative effects (relief) contribute positively. Positive effects
-   *      (increasing pressure) contribute negatively.
-   *   4. Sum per-drive relevance and normalize to [0.0, 1.0].
-   *
-   * Returns 0.0 when driveEffects is empty (graceful fallback to existing
-   * behavior). Returns 0.0 when no drive effect aligns with current pressures.
-   *
-   * @param driveEffects  - Predicted effects from the procedure node.
-   * @param driveSnapshot - Current drive state.
-   * @returns Relevance score in [0.0, 1.0].
+   * @returns 0.0
    */
-  private computeDriveRelevance(
-    driveEffects: Partial<Record<DriveName, number>>,
-    driveSnapshot: DriveSnapshot,
-  ): number {
-    const keys = Object.keys(driveEffects);
-    if (keys.length === 0) {
-      return 0.0;
-    }
-
-    const { pressureVector } = driveSnapshot;
-    let relevanceSum = 0.0;
-    let maxPossibleRelevance = 0.0;
-
-    for (const rawKey of keys) {
-      // Normalize the key to a canonical DriveName
-      const driveName = DRIVE_KEY_NORMALIZE.get(rawKey.toLowerCase());
-      if (driveName === undefined) {
-        continue; // Unknown drive key — skip silently
-      }
-
-      const effect = driveEffects[rawKey as DriveName] ?? 0;
-      const currentPressure = pressureVector[driveName];
-
-      // Only positive pressure values represent unmet need (range [0, 1.0]).
-      // Drives at or below zero are already satisfied.
-      const clampedPressure = Math.max(0, currentPressure);
-
-      // Negative effect = relief. For relevance, we want:
-      //   high pressure + strong relief = high relevance
-      //   low pressure  + any relief    = low relevance
-      //   any pressure  + positive effect (worsening) = negative relevance
-      //
-      // Per-drive relevance = clampedPressure * (-effect)
-      //   relief (effect < 0) => positive contribution
-      //   worsening (effect > 0) => negative contribution
-      relevanceSum += clampedPressure * (-effect);
-
-      // Track max possible relevance for normalization:
-      // max pressure is 1.0, max relief magnitude we see in seeds is ~0.25
-      // Use absolute effect value * 1.0 as the per-drive max
-      maxPossibleRelevance += Math.abs(effect) * 1.0;
-    }
-
-    if (maxPossibleRelevance <= 0) {
-      return 0.0;
-    }
-
-    // Normalize to [0.0, 1.0] and clamp
-    return Math.max(0.0, Math.min(1.0, relevanceSum / maxPossibleRelevance));
+  private computeDriveRelevance(): number {
+    return 0.0;
   }
 
   /**

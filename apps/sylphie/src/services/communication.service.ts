@@ -31,7 +31,6 @@ import { randomUUID } from 'crypto';
 import {
   TimescaleService,
   DriveName,
-  DRIVE_INDEX_ORDER,
   LLM_SERVICE,
   verboseFor,
   type ILlmService,
@@ -544,13 +543,6 @@ export class CommunicationService implements OnModuleInit {
       try {
         const postSnapshot = this.driveStateReader.getCurrentState();
 
-        // Compute real drive delta from the pre-execution snapshot stored
-        // on the CycleResponse to the current post-feedback state.
-        const driveEffectsObserved = computeDriveDelta(
-          pendingResponse.preExecutionDriveSnapshot,
-          postSnapshot.pressureVector,
-        );
-
         await this.decisionMaking.reportOutcome(pendingResponse.actionId, {
           selectedAction: {
             actionId: pendingResponse.actionId,
@@ -560,7 +552,7 @@ export class CommunicationService implements OnModuleInit {
           },
           predictionAccurate: feedbackType === 'confirmation',
           predictionError: feedbackType === 'confirmation' ? 0.1 : 0.8,
-          driveEffectsObserved,
+          driveEffectsObserved: {},
           anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
           observedAt: new Date(),
         });
@@ -812,28 +804,14 @@ export class CommunicationService implements OnModuleInit {
    * later via reportGuardianFeedback(), it will update the confidence again.
    */
   private async reportBasicOutcome(response: CycleResponse): Promise<void> {
-    // Skip for SHRUG — no action to reinforce
-    if (response.arbitrationType === 'SHRUG') return;
-
-    // Skip for Type 2 novel responses without procedure data
-    if (
-      response.arbitrationType === 'TYPE_2' &&
-      response.arbitrationResult.type === 'TYPE_2' &&
-      response.arbitrationResult.candidate.procedureData === null
-    ) {
-      return;
-    }
+    // All responses that produced text should report outcomes to the drive
+    // engine so that communicating relieves drives (Social, Boredom, etc.).
+    // SHRUG and novel TYPE_2 responses lack a procedure node, so the
+    // decision-making service will skip confidence updates for them — but
+    // it must still forward drive effects to the Drive Engine.
 
     try {
       const postSnapshot = this.driveStateReader.getCurrentState();
-
-      // Compute real drive delta if we have a pre-execution snapshot.
-      // Without the pre-snapshot, driveEffectsObserved stays empty and
-      // the prediction evaluator in reportOutcome() produces meaningless MAE.
-      const driveEffectsObserved = computeDriveDelta(
-        response.preExecutionDriveSnapshot,
-        postSnapshot.pressureVector,
-      );
 
       await this.decisionMaking.reportOutcome(response.actionId, {
         selectedAction: {
@@ -844,7 +822,7 @@ export class CommunicationService implements OnModuleInit {
         },
         predictionAccurate: false, // Unknown until guardian feedback
         predictionError: 0.5,      // Neutral — will be updated by feedback
-        driveEffectsObserved,
+        driveEffectsObserved: {},
         anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
         observedAt: new Date(),
       });
@@ -911,9 +889,8 @@ export class CommunicationService implements OnModuleInit {
       actionId: `guardian-teaching-${opportunityId}`,
       actionType: 'GuardianTeaching',
       success: false,
-      driveEffects: {
-        [DriveName.CognitiveAwareness]: 0.3,
-        [teaching.affectedDrive]: 0.2,
+      metadata: {
+        guardianTeachingDrive: teaching.affectedDrive,
       },
       feedbackSource: 'GUARDIAN',
       theaterCheck: {
@@ -968,33 +945,6 @@ export class CommunicationService implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Compute the per-drive delta between a pre-execution snapshot and the current
- * post-execution pressure vector.
- *
- * Only drives that actually changed (delta !== 0) are included in the result.
- * Returns an empty object if the pre-execution snapshot is unavailable (graceful
- * degradation for cycles that pre-date the preExecutionDriveSnapshot field).
- */
-function computeDriveDelta(
-  prePressure: PressureVector | undefined,
-  postPressure: PressureVector,
-): Partial<Record<DriveName, number>> {
-  if (!prePressure) return {};
-
-  const delta: Partial<Record<DriveName, number>> = {};
-  for (const drive of DRIVE_INDEX_ORDER) {
-    const pre = prePressure[drive] ?? 0;
-    const post = postPressure[drive] ?? 0;
-    const diff = post - pre;
-    // Only include drives that actually changed (threshold avoids float noise)
-    if (Math.abs(diff) > 1e-6) {
-      delta[drive] = diff;
-    }
-  }
-  return delta;
-}
 
 /**
  * Sanitize response text before delivery. Strips LLM formatting artifacts

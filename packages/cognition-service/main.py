@@ -57,13 +57,52 @@ from training.data_buffer import DataBuffer
 from training.trainer import Trainer
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — matches NestJS verbose format, appends to project-root logs/verbose.log
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+# Map Python logger names to short subsystem tags matching NestJS conventions
+_SUBSYSTEM_MAP = {
+    "cognition_service": "CognitionSvc",
+    "cognition_service.global_model": "CognitionModel",
+    "cognition_service.panel_models": "CognitionModel",
+    "cognition_service.convergence": "CognitionModel",
+    "cognition_service.deliberation": "CognitionModel",
+    "cognition_service.cycle": "CognitionCycle",
+    "cognition_service.training": "CognitionTrain",
+    "cognition_service.bootstrap": "CognitionBoot",
+}
+
+
+class _VerboseFormatter(logging.Formatter):
+    """Format log lines to match the NestJS verbose log format:
+    2026-04-09T23:43:22.774Z VERBOSE [Subsystem] message
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        from datetime import timezone, datetime
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%f"
+        )[:-3] + "Z"
+        subsystem = _SUBSYSTEM_MAP.get(record.name, "CognitionSvc")
+        level = "VERBOSE" if record.levelno <= logging.INFO else record.levelname
+        return f"{ts} {level} [{subsystem}] {record.getMessage()}"
+
+
+# Console handler (stderr, like NestJS)
+_console = logging.StreamHandler()
+_console.setFormatter(_VerboseFormatter())
+
+# File handler — append to project-root logs/verbose.log
+# The cognition-service runs from packages/cognition-service/,
+# so we go up two levels to reach the project root.
+_log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
+os.makedirs(_log_dir, exist_ok=True)
+_file_handler = logging.FileHandler(
+    os.path.join(_log_dir, "verbose.log"), mode="a", encoding="utf-8",
 )
+_file_handler.setFormatter(_VerboseFormatter())
+
+logging.basicConfig(level=logging.INFO, handlers=[_console, _file_handler])
 logger = logging.getLogger("cognition_service")
 
 # How many training samples to receive between periodic mode-advancement checks.

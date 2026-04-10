@@ -29,6 +29,7 @@
  */
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { type ActionStep, type SensoryFrame, type CognitiveContext, LLM_SERVICE, type ILlmService } from '@sylphie/shared';
 import { WkgContextService } from '../wkg/wkg-context.service';
 
@@ -88,6 +89,8 @@ export class ActionHandlerRegistryService {
 
     @Optional()
     private readonly wkgContext: WkgContextService | null,
+
+    private readonly config: ConfigService,
   ) {
     this.registerBuiltins();
   }
@@ -203,15 +206,21 @@ export class ActionHandlerRegistryService {
         ? `About the person I'm talking to (${personModel.personId}): ${personModel.knownFacts.join('; ')}`
         : '';
 
+      // conversation_history now contains ONLY pending (unanswered) messages.
+      // Answered exchanges are in conversation_summary as compact text.
+      const conversationSummary = cycleCtx.frame.raw['conversation_summary'] as string | undefined ?? '';
+
       const systemPrompt = [
         'You are Sylphie, a developing cognitive being. Respond authentically and concisely.',
+        'Only respond to the latest user message. The conversation summary is background context.',
         instruction ? `Task: ${instruction}` : '',
         personContext,
+        conversationSummary,
         driveLines ? `Current internal state: ${driveLines}` : '',
         recentEpisodeSummaries ? `Recent context:\n${recentEpisodeSummaries}` : '',
       ].filter(Boolean).join('\n\n');
 
-      // Build messages array with conversation history from the fused stream.
+      // Build messages array — only pending (unanswered) messages + current input.
       const conversationHistory = cycleCtx.frame.raw['conversation_history'] as
         Array<{ role: 'user' | 'assistant'; content: string }> | undefined;
 
@@ -235,7 +244,7 @@ export class ActionHandlerRegistryService {
           systemPrompt,
           maxTokens: 256,
           temperature: 0.7,
-          tier: 'quick',
+          tier: 'medium',
           metadata: {
             callerSubsystem: 'COMMUNICATION',
             purpose: 'LLM_GENERATE_ACTION_STEP',
@@ -308,6 +317,219 @@ export class ActionHandlerRegistryService {
       return { logged: true, timestamp: new Date().toISOString() };
     });
 
-    this.logger.debug('Built-in action step handlers registered: LLM_GENERATE, WKG_QUERY, TTS_SPEAK, LOG_EVENT');
+    // RESEARCH_ENTITY — autonomous entity research via web search + LLM extraction.
+    // Relieves curiosity and boredom by looking up an entity from reputable
+    // sources (wikipedia, dictionary, .edu), extracting structured knowledge
+    // via LLM, and writing low-confidence nodes/edges to the WKG.
+    this.handlers.set('RESEARCH_ENTITY', async (step, cycleCtx) => {
+      // 1. Determine entity to research
+      let entity = (step.params['entity'] as string) ?? '';
+      if (!entity) {
+        const rawText = cycleCtx.frame.raw['text'] as string | undefined;
+        entity = rawText?.trim() || cycleCtx.inputSummary;
+      }
+      if (!entity) {
+        this.logger.warn(`RESEARCH_ENTITY step ${step.index}: no entity to research.`);
+        return null;
+      }
+
+      this.logger.log(`RESEARCH_ENTITY: Researching "${entity}"`);
+
+      // 2. Query SearXNG for multiple reputable source types in parallel
+      const searxngUrl = this.config.get<string>('ollama.searxngUrl', 'http://localhost:8888');
+      const queries = [
+        `"${entity}" site:wikipedia.org`,
+        `"${entity}" definition dictionary`,
+        `"${entity}" site:edu`,
+      ];
+
+      type SearchHit = { title: string; url: string; snippet: string; source: string };
+      const searchResults: SearchHit[] = [];
+
+      const searchPromises = queries.map(async (q): Promise<SearchHit[]> => {
+        try {
+          const url = `${searxngUrl}/search?q=${encodeURIComponent(q)}&format=json&language=en&categories=general,science&pageno=1`;
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10_000);
+          const response = await fetch(url, {
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (!response.ok) return [];
+
+          const data = (await response.json()) as {
+            results?: Array<{ title?: string; url?: string; content?: string }>;
+          };
+          return (data.results ?? []).slice(0, 5).map((r) => ({
+            title: r.title ?? '',
+            url: r.url ?? '',
+            snippet: r.content ?? '',
+            source: classifySource(r.url ?? ''),
+          }));
+        } catch {
+          return [];
+        }
+      });
+
+      const allBatches = await Promise.all(searchPromises);
+      for (const batch of allBatches) searchResults.push(...batch);
+
+      // 3. Filter to reputable sources
+      const reputable = searchResults.filter((r) =>
+        /wikipedia\.org|\.edu|merriam-webster\.com|dictionary\.com|britannica\.com/.test(r.url),
+      );
+      const resultsToUse = reputable.length > 0 ? reputable : searchResults.slice(0, 5);
+
+      if (resultsToUse.length === 0) {
+        this.logger.warn(`RESEARCH_ENTITY: No search results for "${entity}".`);
+        return { entity, results: 0, nodes: [], edges: [], note: 'No results found' };
+      }
+
+      // 4. Ask LLM to extract structured knowledge graph nodes and edges
+      if (!this.llmService || !this.llmService.isAvailable()) {
+        this.logger.warn('RESEARCH_ENTITY: LLM unavailable. Returning raw results only.');
+        return { entity, results: resultsToUse.length, nodes: [], edges: [] };
+      }
+
+      const researchContext = resultsToUse
+        .map((r, i) => `[${i + 1}] ${r.title}\n    Source: ${r.source} (${r.url})\n    ${r.snippet}`)
+        .join('\n\n');
+
+      const extractionPrompt = [
+        `Extract structured knowledge about "${entity}" from the following web research.`,
+        'Identify key facts, related entities, and relationships.',
+        '',
+        'RESEARCH RESULTS:',
+        researchContext,
+        '',
+        'Respond with ONLY valid JSON in this exact format:',
+        '{',
+        '  "nodes": [{ "label": "EntityName", "type": "Concept|Person|Place|Thing|Event", "description": "brief description" }],',
+        '  "edges": [{ "source": "EntityA", "target": "EntityB", "type": "RELATIONSHIP_TYPE" }]',
+        '}',
+        '',
+        'Rules:',
+        '- Include the main entity as a node',
+        '- Include 3-8 related entities',
+        '- Use UPPERCASE_SNAKE_CASE for relationship types (IS_TYPE_OF, HAS_PROPERTY, LOCATED_IN, PART_OF, CREATED_BY, etc.)',
+        '- Only include facts clearly supported by the research results',
+      ].join('\n');
+
+      try {
+        const response = await this.llmService.complete({
+          messages: [{ role: 'user', content: extractionPrompt }],
+          systemPrompt:
+            'You are a knowledge graph extraction tool. Output ONLY valid JSON. No markdown, no explanation.',
+          maxTokens: 512,
+          temperature: 0.3,
+          tier: 'medium',
+          metadata: {
+            callerSubsystem: 'LEARNING',
+            purpose: 'RESEARCH_ENTITY_EXTRACTION',
+            sessionId: cycleCtx.cognitiveContext.driveSnapshot.sessionId,
+          },
+        });
+
+        // 5. Parse LLM response
+        interface ExtractedNode { label: string; type: string; description?: string }
+        interface ExtractedEdge { source: string; target: string; type: string }
+        let parsed: { nodes?: ExtractedNode[]; edges?: ExtractedEdge[] } = {};
+        try {
+          const cleaned = response.content
+            .replace(/```json?\s*/g, '')
+            .replace(/```\s*/g, '')
+            .trim();
+          parsed = JSON.parse(cleaned);
+        } catch {
+          this.logger.warn('RESEARCH_ENTITY: Failed to parse LLM extraction response.');
+          return { entity, results: resultsToUse.length, nodes: [], edges: [], parseError: true };
+        }
+
+        const nodes = parsed.nodes ?? [];
+        const edges = parsed.edges ?? [];
+
+        // 6. Write to WKG with low confidence (INFERENCE provenance → 0.30)
+        //    These are web-sourced and unvalidated. A future "seek_factual_validation"
+        //    action can elevate confidence after verification.
+        const WEB_RESEARCH_CONFIDENCE = 0.30;
+        const nodeIdMap = new Map<string, string>();
+
+        if (this.wkgContext) {
+          for (const node of nodes) {
+            const nodeId = await this.wkgContext.writeEntity({
+              label: node.label,
+              nodeType: node.type || 'Concept',
+              properties: {
+                ...(node.description ? { description: node.description } : {}),
+                source: 'web_research',
+                research_entity: entity,
+              },
+              provenance: 'INFERENCE',
+              confidence: WEB_RESEARCH_CONFIDENCE,
+            });
+            if (nodeId) nodeIdMap.set(node.label, nodeId);
+          }
+
+          for (const edge of edges) {
+            const sourceId = nodeIdMap.get(edge.source);
+            const targetId = nodeIdMap.get(edge.target);
+            if (sourceId && targetId) {
+              await this.wkgContext.writeRelationship({
+                sourceId,
+                targetId,
+                type: edge.type || 'RELATED_TO',
+                confidence: WEB_RESEARCH_CONFIDENCE,
+                provenance: 'INFERENCE',
+              });
+            }
+          }
+        }
+
+        this.logger.log(
+          `RESEARCH_ENTITY: "${entity}" — ${nodes.length} nodes, ${edges.length} edges ` +
+            `written to WKG (confidence: ${WEB_RESEARCH_CONFIDENCE})`,
+        );
+
+        return {
+          entity,
+          sourcesConsulted: resultsToUse.length,
+          nodesCreated: nodes.length,
+          edgesCreated: edges.length,
+          confidence: WEB_RESEARCH_CONFIDENCE,
+          nodes: nodes.map((n) => n.label),
+          edges: edges.map((e) => `${e.source} -[${e.type}]-> ${e.target}`),
+        };
+      } catch (err) {
+        this.logger.error(
+          `RESEARCH_ENTITY failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    });
+
+    this.logger.debug(
+      'Built-in action step handlers registered: LLM_GENERATE, WKG_QUERY, TTS_SPEAK, LOG_EVENT, RESEARCH_ENTITY',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/** Classify a URL into a human-readable source category. */
+function classifySource(url: string): string {
+  if (!url) return 'unknown';
+  try {
+    const hostname = new URL(url).hostname;
+    if (hostname.includes('wikipedia.org')) return 'encyclopedia';
+    if (hostname.includes('britannica.com')) return 'encyclopedia';
+    if (hostname.endsWith('.edu')) return 'academic';
+    if (hostname.includes('merriam-webster.com') || hostname.includes('dictionary.com')) return 'dictionary';
+    if (hostname.includes('arxiv.org') || hostname.includes('scholar.google')) return 'academic';
+    return 'web';
+  } catch {
+    return 'web';
   }
 }

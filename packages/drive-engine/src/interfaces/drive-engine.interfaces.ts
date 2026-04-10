@@ -275,10 +275,17 @@ export interface IActionOutcomeReporter {
     readonly success: boolean;
 
     /**
-     * Observed drive deltas from this action.
-     * Partial map — only drives that changed are included.
+     * Signal metadata for the drive engine to compute effects from.
+     * The main process sends what happened; the drive engine decides
+     * what it means using its internal rule system.
      */
-    readonly driveEffects: Partial<Record<DriveName, number>>;
+    readonly metadata?: {
+      readonly undiscoveredObjectCount?: number;
+      readonly unknownPersonCount?: number;
+      readonly sensoryPredictionError?: number;
+      readonly sceneSurprise?: number;
+      readonly guardianTeachingDrive?: DriveName;
+    };
 
     /**
      * Source of the feedback signal.
@@ -318,6 +325,14 @@ export interface IActionOutcomeReporter {
       readonly predictedValue: number;
       readonly actualValue: number;
     };
+
+    /**
+     * Wall-clock timestamp (ms) of a Sylphie-initiated comment.
+     * When set, the Drive Engine's social comment quality contingency
+     * records the comment and evaluates whether the guardian responded
+     * within 30 seconds, providing Social relief and Satisfaction bonus.
+     */
+    readonly socialCommentTimestamp?: number;
   }): void;
 
   /**

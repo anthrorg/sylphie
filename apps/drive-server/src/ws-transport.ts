@@ -42,6 +42,7 @@ export class WebSocketServerTransport implements IMessageTransport {
 
         if (!validation.success) {
           console.error(`[WsTransport] Invalid inbound message: ${validation.error}`);
+          console.error(`[WsTransport] Raw message: ${JSON.stringify(raw).substring(0, 500)}`);
           vlog('WS inbound message invalid', { error: validation.error });
           return;
         }

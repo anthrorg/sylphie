@@ -77,7 +77,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
     readonly actionId: string;
     readonly actionType: string;
     readonly success: boolean;
-    readonly driveEffects: Partial<Record<DriveName, number>>;
+    readonly metadata?: ActionOutcomePayload['metadata'];
     readonly feedbackSource: ProvenanceSource;
     readonly theaterCheck: {
       readonly expressionType: 'pressure' | 'relief' | 'none';
@@ -90,6 +90,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       readonly predictedValue: number;
       readonly actualValue: number;
     };
+    readonly socialCommentTimestamp?: number;
   }): void {
     // Map success boolean to outcome enum
     const outcomeValue = outcome.success ? 'positive' : 'negative';
@@ -103,14 +104,14 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
     const driveValueAtExpression = outcome.theaterCheck.driveValue ?? 0;
 
     const driveForTheater =
-      outcome.theaterCheck.correspondingDrive ?? ('System Health' as DriveName);
+      outcome.theaterCheck.correspondingDrive ?? DriveName.SystemHealth;
 
     // Construct the ActionOutcomePayload
     const payload: ActionOutcomePayload = {
       actionId: outcome.actionId,
       actionType: outcome.actionType,
       outcome: outcomeValue,
-      driveEffects: outcome.driveEffects,
+      metadata: outcome.metadata,
       feedbackSource,
       theaterCheck: {
         expressionType: outcome.theaterCheck.expressionType,
@@ -120,6 +121,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       },
       anxietyAtExecution: this.driveReader.getCurrentState().pressureVector[DriveName.Anxiety] ?? 0,
       predictionData: outcome.predictionData,
+      socialCommentTimestamp: outcome.socialCommentTimestamp,
     };
 
     vlog('outcome reported', {
@@ -127,8 +129,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       actionType: outcome.actionType,
       success: outcome.success,
       feedbackSource: feedbackSource,
-      effectCount: Object.keys(outcome.driveEffects).length,
-      driveEffects: outcome.driveEffects,
+      metadata: outcome.metadata,
       hasPredictionData: !!outcome.predictionData,
     });
 

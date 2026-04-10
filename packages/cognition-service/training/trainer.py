@@ -487,6 +487,15 @@ class Trainer:
     # Training loop
     # ------------------------------------------------------------------
 
+    # Minimum samples before training begins. With fewer samples the model
+    # memorises instantly (loss→0) and checkpoints burn disk I/O for nothing.
+    _MIN_BUFFER_SIZE = 10
+
+    # Minimum seconds between weight checkpoints. Prevents save-spamming
+    # when the training loop spins faster than the checkpoint interval
+    # would suggest (e.g., 1000 steps takes <1s with a tiny buffer).
+    _MIN_CHECKPOINT_INTERVAL_SEC = 60.0
+
     def _training_loop(self) -> None:
         """Main loop executed by the background thread.
 
@@ -494,10 +503,15 @@ class Trainer:
         too small to form a batch to avoid busy-spinning.
         """
         logger.info("Training loop started — waiting for samples")
+        last_checkpoint_time = time.monotonic()
         while not self._stop_event.is_set():
+            # Wait for meaningful data before starting to train.
+            if len(self._buffer) < self._MIN_BUFFER_SIZE:
+                self._stop_event.wait(timeout=1.0)
+                continue
+
             batch = self._replay.sample(self._buffer)
             if len(batch) < 2:
-                # Not enough data yet — yield and check again shortly.
                 self._stop_event.wait(timeout=0.5)
                 continue
 
@@ -521,8 +535,17 @@ class Trainer:
                     len(self._buffer),
                 )
 
+            # Checkpoint gated on both step count AND wall-clock time.
+            # Prevents save-spamming when steps fly at thousands/second.
             if steps % config.CHECKPOINT_INTERVAL == 0:
-                self._save_checkpoint(steps)
+                now = time.monotonic()
+                if (now - last_checkpoint_time) >= self._MIN_CHECKPOINT_INTERVAL_SEC:
+                    self._save_checkpoint(steps)
+                    last_checkpoint_time = now
+
+            # Yield between steps to prevent busy-spinning when the buffer
+            # is small and steps complete in microseconds.
+            self._stop_event.wait(timeout=0.01)
 
         logger.info("Training loop exited")
 

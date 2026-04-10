@@ -126,7 +126,10 @@ const SYSTEM_PROMPT_OVERHEAD_TOKENS = 8;
 // ---------------------------------------------------------------------------
 
 /** Default total context window budget if not configured. Llama 3.2 default. */
-const DEFAULT_TOTAL_BUDGET = 8192;
+// DeepSeek-chat supports 64K tokens. 16K is a reasonable per-step budget —
+// enough for rich conversation history without blowing cost on every call.
+// Was 8192 when targeting qwen2.5:3b via Ollama.
+const DEFAULT_TOTAL_BUDGET = 16384;
 
 /**
  * Per-step budget allocations as fractions of the total budget.

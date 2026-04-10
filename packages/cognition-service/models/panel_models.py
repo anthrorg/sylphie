@@ -127,21 +127,34 @@ class PanelModel:
         )
 
     def save(self, directory: str) -> None:
-        """Save weights to disk."""
+        """Save weights to disk atomically.
+
+        Writes to a temp file first, then renames. This prevents truncated
+        checkpoint files when the process is killed mid-save.
+        """
         os.makedirs(directory, exist_ok=True)
+        final_path = os.path.join(directory, f"panel_{self.name}.npz")
+        tmp_path = final_path + ".tmp"
         np.savez(
-            os.path.join(directory, f"panel_{self.name}.npz"),
+            tmp_path,
             w1=self.w1, b1=self.b1,
             w2=self.w2, b2=self.b2,
             w_action=self.w_action, b_action=self.b_action,
             w_conf=self.w_conf, b_conf=self.b_conf,
             w_domain=self.w_domain, b_domain=self.b_domain,
         )
+        os.replace(tmp_path, final_path)
 
     def load(self, directory: str) -> bool:
-        """Load weights from disk. Returns True if loaded."""
+        """Load weights from disk. Returns True if loaded.
+
+        Handles corrupted checkpoint files gracefully — logs a warning and
+        keeps the existing Xavier-initialized weights rather than crashing.
+        """
         path = os.path.join(directory, f"panel_{self.name}.npz")
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return False
+        try:
             data = np.load(path)
             self.w1 = data["w1"]
             self.b1 = data["b1"]
@@ -154,7 +167,13 @@ class PanelModel:
             self.w_domain = data["w_domain"]
             self.b_domain = data["b_domain"]
             return True
-        return False
+        except Exception as e:
+            logger.warning(
+                "Failed to load panel '%s' weights from %s: %s. "
+                "Keeping Xavier-initialized weights.",
+                self.name, path, e,
+            )
+            return False
 
 
 # ---------------------------------------------------------------------------

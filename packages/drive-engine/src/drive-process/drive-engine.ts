@@ -25,6 +25,7 @@ import {
   computeTotalPressure,
   INITIAL_DRIVE_STATE,
   verboseFor,
+  type PressureVector,
 } from '@sylphie/shared';
 
 const vlog = verboseFor('DriveEngine');
@@ -64,7 +65,8 @@ import {
 import { EventEmitter, type IEventEmitter } from './event-emitter';
 import { TimescaleWriter } from './timescale-writer';
 import { detectTheater, type TheaterVerdict } from './theater-prohibition';
-import { filterEffectsForTheater, logTheaterProhibition } from './reinforcement-blocking';
+import { logTheaterProhibition } from './reinforcement-blocking';
+import { getDefaultAffect } from './default-affect';
 import { getOrCreatePredictionEvaluator, PredictionEvaluator } from './prediction-evaluator';
 import {
   generatePredictionOpportunitySignal,
@@ -161,31 +163,85 @@ export class DriveEngine {
   }
 
   /**
+   * Attach a TimescaleWriter for state persistence.
+   * Must be called before start() to enable save/restore.
+   */
+  public setTimescaleWriter(writer: TimescaleWriter): void {
+    this.timescaleWriter = writer;
+  }
+
+  /**
+   * Restore drive state from TimescaleDB checkpoint.
+   *
+   * Called once at startup before start(). If a checkpoint exists, the
+   * pressure vector and tick number are restored so the drive engine
+   * resumes from where it left off instead of cold-starting from zeros.
+   *
+   * Returns true if state was restored, false if cold-starting.
+   */
+  public async restoreState(): Promise<boolean> {
+    if (!this.timescaleWriter) return false;
+
+    const checkpoint = await this.timescaleWriter.loadState();
+    if (!checkpoint) {
+      vlog('no checkpoint found — cold start from zeros');
+      return false;
+    }
+
+    // Restore pressure vector into the state manager
+    const restoredVector = checkpoint.pressureVector as Record<DriveName, number>;
+    this.stateManager = new DriveStateManager(restoredVector);
+    this.tickNumber = checkpoint.tickNumber;
+
+    vlog('drive state restored from checkpoint', {
+      tickNumber: this.tickNumber,
+      totalPressure: +computeTotalPressure(restoredVector).toFixed(4),
+    });
+    return true;
+  }
+
+  /**
    * Start the drive engine tick loop.
    * Called from the parent process once the child is initialized.
+   *
+   * If restoreState() was called first, resumes from the restored tick
+   * number. Otherwise cold-starts from tick 0.
    */
   public start(): void {
     if (this.isRunning) {
       return;
     }
     this.isRunning = true;
-    this.sessionId = '';
-    this.tickNumber = 0;
+    if (this.tickNumber === 0) {
+      // Only reset session if truly cold-starting (not restored)
+      this.sessionId = '';
+    }
     this.nextTickScheduledAt = Date.now();
-    vlog('tick loop started');
+    vlog('tick loop started', { tickNumber: this.tickNumber, restored: this.tickNumber > 0 });
     this.scheduleTick();
   }
 
   /**
    * Stop the drive engine gracefully.
-   * Called when the parent process is shutting down.
+   * Saves the current drive state to TimescaleDB before stopping.
    */
-  public stop(): void {
+  public async stop(): Promise<void> {
     this.isRunning = false;
     if (this.tickTimer) {
       clearTimeout(this.tickTimer);
       this.tickTimer = null;
     }
+
+    // Persist drive state for next startup
+    if (this.timescaleWriter) {
+      const frozen = this.stateManager.freezeCurrent();
+      await this.timescaleWriter.saveState(
+        frozen as unknown as Record<string, number>,
+        this.tickNumber,
+      );
+      vlog('drive state saved on shutdown', { tickNumber: this.tickNumber });
+    }
+
     this.ruleEngine.shutdown();
   }
 
@@ -419,8 +475,10 @@ export class DriveEngine {
    * computation and opportunity detection (E4-T009).
    */
   private applyOutcome(payload: ActionOutcomePayload | SoftwareMetricsPayload): void {
-    if ('driveEffects' in payload) {
-      // ACTION_OUTCOME
+    if ('actionType' in payload) {
+      // ACTION_OUTCOME — signal-based processing
+      // The main process sends WHAT HAPPENED (actionType, outcome, metadata).
+      // The drive engine decides WHAT IT MEANS using its internal rules.
       const actionPayload = payload as ActionOutcomePayload;
 
       // E4-T009: Record prediction outcome if present
@@ -436,23 +494,19 @@ export class DriveEngine {
         // E4-T010: Check for poor prediction accuracy and process via detector
         const severity = this.predictionEvaluator.getOpportunitySeverity(actionPayload.actionType);
         if (severity && severity !== 'low') {
-          // Generate opportunity signal for MEDIUM/HIGH severity
           const window = this.predictionEvaluator.getMAE(actionPayload.actionType);
           const signal = generatePredictionOpportunitySignal(
             actionPayload.actionType,
             window.mae,
-            [], // Note: we could pass recent predictions here for recentFailures count
+            [],
           );
 
           if (signal && shouldEmitOpportunitySignal(signal)) {
-            // Process signal through detector (classification, priority scoring, de-duplication)
             const opportunity = this.opportunityDetector.processSignal(
               signal,
               this.predictionEvaluator,
             );
-
             if (opportunity) {
-              // Add to priority queue
               this.opportunityQueue.add(opportunity);
             }
           }
@@ -460,45 +514,74 @@ export class DriveEngine {
       }
 
       // CANON Standard 1: Theater Prohibition enforcement
-      // Get current drive state for post-flight verification
       const currentState = this.stateManager.getCurrent() as Record<DriveName, number>;
       const verdict = detectTheater(actionPayload.theaterCheck, currentState);
 
-      // Filter effects based on theater verdict
-      const filterResult = filterEffectsForTheater(actionPayload, verdict);
+      if (verdict.isTheatrical) {
+        // Expression is theatrical: zero reinforcement
+        const logMsg = logTheaterProhibition(actionPayload, verdict, {});
+        console.error(`[DriveEngine] ${logMsg}`);
+        this.emitTheaterProhibitedEvent(actionPayload, verdict);
+        return;
+      }
+
+      // ── Compute effects from rules (or default affects) ──────────────
+      // The drive engine owns all effect computation. No pre-computed
+      // driveEffects come from the main process.
+      //
+      // 1. Try rule engine (PostgreSQL rules matched by actionType + drive state)
+      // 2. If no rules match → use default affects (hardcoded per action category)
+      // 3. If defaults used → flag actionType for rule debate (guardian review)
+      const ruleResult = this.ruleEngine.matchAndApply(
+        actionPayload.actionType,
+        currentState as PressureVector,
+      );
+
+      let computedEffects: Partial<Record<DriveName, number>>;
+      let usedDefault = false;
+
+      if (ruleResult.matchedRuleIds.length > 0) {
+        // Rules matched — use rule-computed effects
+        computedEffects = ruleResult.driveEffects;
+      } else {
+        // No rules matched — use default affects from action category
+        computedEffects = getDefaultAffect(actionPayload);
+        usedDefault = true;
+
+        // Flag for rule debate (async, non-blocking)
+        if (Object.keys(computedEffects).length > 0) {
+          const dsl = Object.entries(computedEffects)
+            .map(([drive, delta]) => `${drive} += ${delta}`)
+            .join('; ');
+          this.ruleEngine.proposeRuleForDebate(actionPayload.actionType, dsl).catch(() => {});
+        }
+      }
 
       vlog('outcome applied', {
         actionType: actionPayload.actionType,
-        theater: verdict.isTheatrical,
+        theater: false,
         feedbackSource: actionPayload.feedbackSource,
-        effectCount: Object.keys(actionPayload.driveEffects ?? {}).length,
+        effectCount: Object.keys(computedEffects).length,
+        source: usedDefault ? 'default-affect' : 'rule-engine',
+        computedEffects,
       });
 
-      if (filterResult.shouldApplyEffects) {
-        // Expression is authentic: apply normal contingencies
-        const weighted = this.applyGuardianWeighting(
-          filterResult.filteredEffects,
-          actionPayload.feedbackSource,
-        );
-        this.stateManager.applyOutcomeEffects(weighted);
+      // Apply guardian weighting (2x confirmation, 3x correction)
+      const weighted = this.applyGuardianWeighting(
+        computedEffects,
+        actionPayload.feedbackSource,
+      );
+      this.stateManager.applyOutcomeEffects(weighted);
 
-        // Apply behavioral contingencies (CANON §A.14)
-        // These fire on every outcome and adjust drives based on specific behavioral patterns
-        const contingencyDeltas = this.contingencyCoordinator.applyContingencies(
-          actionPayload,
-          currentState,
-        );
-        this.stateManager.applyOutcomeEffects(contingencyDeltas);
-      } else {
-        // Expression is theatrical: zero reinforcement
-        const logMsg = logTheaterProhibition(actionPayload, verdict, filterResult.blockedEffects);
-        console.error(`[DriveEngine] ${logMsg}`);
-        this.emitTheaterProhibitedEvent(actionPayload, verdict);
-      }
+      // Apply behavioral contingencies (CANON §A.14)
+      const contingencyDeltas = this.contingencyCoordinator.applyContingencies(
+        actionPayload,
+        currentState,
+      );
+      this.stateManager.applyOutcomeEffects(contingencyDeltas);
     } else if ('cognitiveEffortPressure' in payload) {
       // SOFTWARE_METRICS
       const metricsPayload = payload as SoftwareMetricsPayload;
-      // Apply cognitive effort pressure to CognitiveAwareness
       this.stateManager.applyDelta(
         DriveName.CognitiveAwareness,
         metricsPayload.cognitiveEffortPressure,

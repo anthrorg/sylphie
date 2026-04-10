@@ -33,7 +33,9 @@ import {
   RuleMatchContext,
 } from './rule-matching';
 import { parseEffect, accumulateRuleEffects } from './rule-application';
-import { applyDefaultAffect } from './default-affect';
+// getDefaultAffect is now signal-based (takes ActionOutcomePayload).
+// The rule engine's fallback path uses it via drive-engine.ts, not here.
+// Keep this import stub for the legacy event-type-based path.
 import { RuleMatchCache } from './rule-cache';
 
 /**
@@ -163,12 +165,9 @@ export class RuleEngine {
     // Apply matched rule effects
     let driveEffects = accumulateRuleEffects(matchedEffects);
 
-    // If no rules matched, apply default affect
-    let usedDefaultAffect = false;
-    if (matchedRuleIds.length === 0) {
-      driveEffects = applyDefaultAffect(eventType, driveEffects);
-      usedDefaultAffect = true;
-    }
+    // If no rules matched, the caller (drive-engine.ts) applies default
+    // affects via getDefaultAffect(). The rule engine just returns empty.
+    const usedDefaultAffect = matchedRuleIds.length === 0;
 
     if (matchedRuleIds.length > 0) {
       vlog('rules matched', {
@@ -294,6 +293,60 @@ export class RuleEngine {
     // Allow the timer to not prevent process exit
     if (this.reloadTimer.unref) {
       this.reloadTimer.unref();
+    }
+  }
+
+  /**
+   * Propose a rule for an unmatched action type.
+   *
+   * When no rules match an incoming actionType, the drive engine applies
+   * default affects and flags the action type for debate. The internal
+   * process will later deliberate on how the rule should be structured
+   * and submit it for guardian review.
+   *
+   * Deduplicates: skips if a pending proposal already exists for this actionType.
+   *
+   * @param actionType - The action category that had no matching rule
+   * @param defaultEffect - The DSL string of the default affect that was applied
+   */
+  async proposeRuleForDebate(actionType: string, defaultEffect: string): Promise<void> {
+    if (!this.pool) return;
+
+    try {
+      // Check if a pending proposal already exists for this actionType
+      const existing = await this.pool.query(
+        `SELECT id FROM proposed_drive_rules
+         WHERE trigger_pattern = $1 AND status = 'pending'
+         LIMIT 1`,
+        [actionType],
+      );
+
+      if (existing.rows.length > 0) {
+        return; // Already proposed, don't duplicate
+      }
+
+      await this.pool.query(
+        `INSERT INTO proposed_drive_rules
+           (id, trigger_pattern, effect, confidence, proposed_by, reasoning, status, created_at)
+         VALUES
+           (gen_random_uuid(), $1, $2, 0.5, 'DRIVE_ENGINE_DEFAULT', $3, 'pending', now())`,
+        [
+          actionType,
+          defaultEffect,
+          `No rule exists for actionType "${actionType}". Default affect applied. Awaiting guardian review.`,
+        ],
+      );
+
+      vlog('rule proposed for debate', { actionType, defaultEffect });
+    } catch (err) {
+      // Non-fatal: proposal failure shouldn't break the tick loop
+      if (typeof process !== 'undefined' && process.stderr) {
+        process.stderr.write(
+          `[RuleEngine] Failed to propose rule for "${actionType}": ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
     }
   }
 

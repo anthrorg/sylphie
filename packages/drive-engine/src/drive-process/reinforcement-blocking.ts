@@ -51,14 +51,14 @@ export function filterEffectsForTheater(
   if (!verdict.isTheatrical) {
     return {
       shouldApplyEffects: true,
-      filteredEffects: outcome.driveEffects,
+      filteredEffects: {},
       blockedEffects: {},
       reason: `Expression is authentic: ${verdict.reason}`,
     };
   }
 
   // Expression is theatrical: zero out all drive effects
-  const blockedEffects = { ...outcome.driveEffects };
+  const blockedEffects: Partial<Record<DriveName, number>> = {};
   const filteredEffects: Partial<Record<DriveName, number>> = {};
 
   vlog('reinforcement blocked by theater check', {

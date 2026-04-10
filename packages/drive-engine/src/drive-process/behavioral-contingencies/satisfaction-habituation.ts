@@ -71,16 +71,21 @@ export class SatisfactionHabituation {
   /**
    * Habituation curve: successive successes produce diminishing relief.
    *
+   * Satisfaction builds slowly from sustained interaction — not a dopamine
+   * hit per message. ~30 messages should bring it to moderate levels (~0.5),
+   * not max it out after 3.
+   *
    * @param successCount - Number of consecutive successes (1-indexed)
-   * @returns Relief amount in [0.02, 0.20]
+   * @returns Relief amount in [0.005, 0.05]
    */
   private habituationCurve(successCount: number): number {
-    if (successCount === 1) return 0.2;
-    if (successCount === 2) return 0.15;
-    if (successCount === 3) return 0.1;
-    if (successCount === 4) return 0.05;
-    // 5th and beyond
-    return 0.02;
+    if (successCount === 1) return 0.05;
+    if (successCount === 2) return 0.04;
+    if (successCount === 3) return 0.03;
+    if (successCount === 4) return 0.02;
+    if (successCount <= 10) return 0.01;
+    // 11th and beyond — baseline trickle
+    return 0.005;
   }
 
   /**

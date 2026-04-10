@@ -23,13 +23,14 @@
  * - Event logging via DECISION_EVENT_LOGGER instead of createDecisionMakingEvent.
  */
 
-import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
+import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import {
   type Episode,
   type EpisodeInput,
   type EncodingDepth,
   type DriveSnapshot,
+  TimescaleService,
   verboseFor,
 } from '@sylphie/shared';
 
@@ -47,8 +48,17 @@ import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 /** Maximum number of episodes in the ring buffer (CANON §Episodic Memory). */
 const RING_BUFFER_CAPACITY = 50;
 
-/** Encoding gate threshold. Either attention or arousal must exceed this. */
-const ENCODING_GATE_THRESHOLD = 0.60;
+/**
+ * Encoding gate threshold. Either attention or arousal must exceed this.
+ *
+ * Set to 0.15 (not 0.60) because attention and arousal are computed from
+ * drive averages that start near zero and accumulate slowly. At 0.60 the
+ * gate rejected ALL normal conversation — drives rarely reach that level
+ * within the first 30 minutes of a session. At 0.15, episodes begin
+ * encoding after 2-3 minutes of active conversation, which is when the
+ * curiosity + anxiety average crosses this threshold.
+ */
+const ENCODING_GATE_THRESHOLD = 0.15;
 
 /** Jaccard similarity threshold for queryByContext() to include a result. */
 const CONTEXT_SIMILARITY_THRESHOLD = 0.70;
@@ -58,8 +68,9 @@ const CONTEXT_SIMILARITY_THRESHOLD = 0.70;
 // ---------------------------------------------------------------------------
 
 @Injectable()
-export class EpisodicMemoryService implements IEpisodicMemoryService {
+export class EpisodicMemoryService implements IEpisodicMemoryService, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EpisodicMemoryService.name);
+  private schemaReady = false;
 
   /**
    * Ring buffer storage. Entries may be undefined when the buffer is not yet
@@ -82,7 +93,69 @@ export class EpisodicMemoryService implements IEpisodicMemoryService {
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+
+    @Optional()
+    @Inject(TimescaleService)
+    private readonly timescale: TimescaleService | null,
   ) {}
+
+  // ---------------------------------------------------------------------------
+  // Persistence — save/restore ring buffer across restarts
+  // ---------------------------------------------------------------------------
+
+  async onModuleInit(): Promise<void> {
+    if (!this.timescale) return;
+    try {
+      await this.timescale.query(`
+        CREATE TABLE IF NOT EXISTS episodic_memory_checkpoint (
+          slot INTEGER PRIMARY KEY,
+          episode JSONB NOT NULL
+        )
+      `);
+      this.schemaReady = true;
+
+      // Restore episodes from checkpoint
+      const result = await this.timescale.query<{ slot: number; episode: string }>(
+        `SELECT slot, episode FROM episodic_memory_checkpoint ORDER BY slot`,
+      );
+
+      if (result.rows.length > 0) {
+        let maxSlot = -1;
+        for (const row of result.rows) {
+          const ep = typeof row.episode === 'string' ? JSON.parse(row.episode) : row.episode;
+          // Restore Date objects from ISO strings
+          ep.timestamp = new Date(ep.timestamp);
+          ep.driveSnapshot.timestamp = new Date(ep.driveSnapshot.timestamp);
+          this.buffer[row.slot] = ep as Episode;
+          if (row.slot > maxSlot) maxSlot = row.slot;
+        }
+        this.count = result.rows.length;
+        this.head = (maxSlot + 1) % RING_BUFFER_CAPACITY;
+        this.logger.log(`Restored ${this.count} episodes from checkpoint`);
+      }
+    } catch (err) {
+      this.logger.warn(`Episodic memory persistence init failed: ${(err as Error).message}`);
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (!this.timescale || !this.schemaReady || this.count === 0) return;
+    try {
+      await this.timescale.query('TRUNCATE episodic_memory_checkpoint');
+      for (let i = 0; i < RING_BUFFER_CAPACITY; i++) {
+        const ep = this.buffer[i];
+        if (ep) {
+          await this.timescale.query(
+            `INSERT INTO episodic_memory_checkpoint (slot, episode) VALUES ($1, $2)`,
+            [i, JSON.stringify(ep)],
+          );
+        }
+      }
+      this.logger.log(`Saved ${this.count} episodes to checkpoint`);
+    } catch (err) {
+      this.logger.error(`Failed to save episodic memory: ${(err as Error).message}`);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // IEpisodicMemoryService — encode

@@ -138,18 +138,25 @@ class DeliberationPipeline:
         )
 
     def save(self, directory: str) -> None:
+        """Save pipeline weights atomically."""
         os.makedirs(directory, exist_ok=True)
+        final_path = os.path.join(directory, f"delib_{self.name}.npz")
+        tmp_path = final_path + ".tmp"
         np.savez(
-            os.path.join(directory, f"delib_{self.name}.npz"),
+            tmp_path,
             w1=self.w1, b1=self.b1,
             w2=self.w2, b2=self.b2,
             w_action=self.w_action, b_action=self.b_action,
             w_conf=self.w_conf, b_conf=self.b_conf,
         )
+        os.replace(tmp_path, final_path)
 
     def load(self, directory: str) -> bool:
+        """Load pipeline weights. Tolerates corrupted checkpoints."""
         path = os.path.join(directory, f"delib_{self.name}.npz")
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return False
+        try:
             data = np.load(path)
             self.w1 = data["w1"]
             self.b1 = data["b1"]
@@ -160,7 +167,12 @@ class DeliberationPipeline:
             self.w_conf = data["w_conf"]
             self.b_conf = data["b_conf"]
             return True
-        return False
+        except Exception as e:
+            logger.warning(
+                "Failed to load deliberation pipeline '%s' from %s: %s. "
+                "Keeping initialized weights.", self.name, path, e,
+            )
+            return False
 
 
 class SynthesisModel:
@@ -249,18 +261,25 @@ class SynthesisModel:
         )
 
     def save(self, directory: str) -> None:
+        """Save synthesis model weights atomically."""
         os.makedirs(directory, exist_ok=True)
+        final_path = os.path.join(directory, "synthesis_model.npz")
+        tmp_path = final_path + ".tmp"
         np.savez(
-            os.path.join(directory, "synthesis_model.npz"),
+            tmp_path,
             w1=self.w1, b1=self.b1,
             w_action=self.w_action, b_action=self.b_action,
             w_weights=self.w_weights, b_weights=self.b_weights,
             w_conf=self.w_conf, b_conf=self.b_conf,
         )
+        os.replace(tmp_path, final_path)
 
     def load(self, directory: str) -> bool:
+        """Load synthesis model weights. Tolerates corrupted checkpoints."""
         path = os.path.join(directory, "synthesis_model.npz")
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return False
+        try:
             data = np.load(path)
             self.w1 = data["w1"]
             self.b1 = data["b1"]
@@ -271,7 +290,12 @@ class SynthesisModel:
             self.w_conf = data["w_conf"]
             self.b_conf = data["b_conf"]
             return True
-        return False
+        except Exception as e:
+            logger.warning(
+                "Failed to load synthesis model from %s: %s. "
+                "Keeping initialized weights.", path, e,
+            )
+            return False
 
 
 class DeliberationSystem:

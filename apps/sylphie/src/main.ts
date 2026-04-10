@@ -2,11 +2,17 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
+import { reconfigureVerbose } from '@sylphie/shared';
 import { AppModule } from './app.module';
 import { WebSocketLoggerService } from './services/websocket-logger.service';
 import { TelemetryBroadcastService } from './services/telemetry-broadcast.service';
 
 async function bootstrap() {
+  // Re-read VERBOSE env var now that dotenv has loaded the .env file.
+  // The verbose module's configure() runs at import time, which may be
+  // before dotenv injects env vars. This ensures the file handler opens.
+  reconfigureVerbose();
+
   const logger = new WebSocketLoggerService();
   const app = await NestFactory.create(AppModule, { logger });
 

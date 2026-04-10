@@ -277,6 +277,109 @@ export class TimescaleWriter {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // -------------------------------------------------------------------------
+  // Drive state persistence — save/restore across restarts
+  // -------------------------------------------------------------------------
+
+  /**
+   * Save the current drive state snapshot to a dedicated persistence row.
+   *
+   * Uses an UPSERT keyed on a fixed sentinel ID ('drive_state_checkpoint')
+   * so there is always exactly one row. Called on graceful shutdown.
+   */
+  async saveState(pressureVector: Record<string, number>, tickNumber: number): Promise<void> {
+    if (!this.isReady) return;
+
+    try {
+      const client = await this.pool.connect();
+      try {
+        await client.query(
+          `INSERT INTO drive_state_checkpoint (id, pressure_vector, tick_number, saved_at)
+           VALUES ('latest', $1, $2, NOW())
+           ON CONFLICT (id) DO UPDATE SET
+             pressure_vector = $1,
+             tick_number = $2,
+             saved_at = NOW()`,
+          [JSON.stringify(pressureVector), tickNumber],
+        );
+        vlog('drive state saved', { tickNumber });
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if (process.stderr) {
+        process.stderr.write(`[TimescaleWriter] saveState failed: ${err}\n`);
+      }
+    }
+  }
+
+  /**
+   * Load the most recently saved drive state from TimescaleDB.
+   *
+   * Returns null if no checkpoint exists (true cold start).
+   * Called once at startup before the tick loop begins.
+   */
+  async loadState(): Promise<{ pressureVector: Record<string, number>; tickNumber: number } | null> {
+    if (!this.isReady) return null;
+
+    try {
+      const client = await this.pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT pressure_vector, tick_number FROM drive_state_checkpoint WHERE id = 'latest'`,
+        );
+        if (result.rows.length === 0) return null;
+
+        const row = result.rows[0];
+        const pressureVector = typeof row.pressure_vector === 'string'
+          ? JSON.parse(row.pressure_vector)
+          : row.pressure_vector;
+        const tickNumber = typeof row.tick_number === 'number'
+          ? row.tick_number
+          : parseInt(row.tick_number, 10) || 0;
+
+        vlog('drive state loaded', { tickNumber, drives: Object.keys(pressureVector).length });
+        return { pressureVector, tickNumber };
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      // Table may not exist yet — that's fine, it's a cold start
+      if (process.stderr) {
+        process.stderr.write(`[TimescaleWriter] loadState failed (cold start): ${err}\n`);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Ensure the drive_state_checkpoint table exists.
+   * Called once during init().
+   */
+  async ensureCheckpointTable(): Promise<void> {
+    if (!this.isReady) return;
+
+    try {
+      const client = await this.pool.connect();
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS drive_state_checkpoint (
+            id TEXT PRIMARY KEY,
+            pressure_vector JSONB NOT NULL,
+            tick_number INTEGER NOT NULL DEFAULT 0,
+            saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if (process.stderr) {
+        process.stderr.write(`[TimescaleWriter] ensureCheckpointTable failed: ${err}\n`);
+      }
+    }
+  }
+
   /**
    * Gracefully close the connection pool.
    *

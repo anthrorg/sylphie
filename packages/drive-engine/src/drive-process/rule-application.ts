@@ -136,9 +136,13 @@ export function accumulateRuleEffects(
   const parsedEffects: ParsedEffect[] = [];
 
   for (const effectStr of ruleEffects) {
-    const parsed = parseEffect(effectStr);
-    if (parsed) {
-      parsedEffects.push(parsed);
+    // Support multi-effect DSL: "anxiety += 0.05; satisfaction -= 0.05"
+    const parts = effectStr.split(';').map(s => s.trim()).filter(Boolean);
+    for (const part of parts) {
+      const parsed = parseEffect(part);
+      if (parsed) {
+        parsedEffects.push(parsed);
+      }
     }
   }
 

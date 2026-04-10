@@ -92,10 +92,26 @@ export class ConversationGateway
   // ---------------------------------------------------------------------------
 
   handleConnection(client: WebSocket, ...args: any[]): void {
-    this.clients.add(client);
-
     // Extract user identity from JWT token in query params
     const user = this.extractUserFromConnection(args);
+
+    // Evict stale connections from the same user. React StrictMode double-mounts
+    // effects in dev, and page navigations can open new sockets before the old
+    // one's onclose fires — causing duplicate delivery. One user = one socket.
+    if (user) {
+      for (const existing of this.clients) {
+        const existingUser = this.clientUsers.get(existing);
+        if (existingUser?.userId === user.userId && existing !== client) {
+          this.clients.delete(existing);
+          this.clientUsers.delete(existing);
+          try { existing.close(); } catch { /* already closing */ }
+          vlog('evicted stale connection', { userId: user.userId });
+        }
+      }
+    }
+
+    this.clients.add(client);
+
     if (user) {
       this.clientUsers.set(client, user);
       this.logger.log(
@@ -167,9 +183,17 @@ export class ConversationGateway
 
         this.tickSampler.updateText(data.text);
 
+        // Pass split history: summary (answered exchanges as text) + pending
+        // (unanswered user messages as real turns). This structurally prevents
+        // the LLM from re-answering already-addressed messages.
+        const splitHistory = this.conversationHistory.getSplitHistory();
         this.tickSampler.update(
           'conversation_history',
-          [...this.conversationHistory.getHistory()],
+          splitHistory.pending,
+        );
+        this.tickSampler.update(
+          'conversation_summary',
+          splitHistory.summary,
         );
         this.tickSampler.update(
           'person_model',

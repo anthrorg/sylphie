@@ -255,7 +255,7 @@ export class RefineEdgesService implements IRefineEdgesService {
         'EDGE: <source> -> <target> | <TYPE>',
       maxTokens: 512,
       temperature: 0.3,
-      tier: 'quick',
+      tier: 'medium',
       metadata: {
         callerSubsystem: 'LEARNING',
         purpose: 'EDGE_REFINEMENT',
