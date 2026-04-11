@@ -64,6 +64,7 @@ export class ExtractEdgesService implements IExtractEdgesService {
   async extractEdges(
     entities: ExtractedEntity[],
     event: UnlearnedEvent,
+    typedPairs?: Set<string>,
   ): Promise<ExtractedEdge[]> {
     if (entities.length < 2) {
       vlog('extractEdges: skipped — fewer than 2 entities', { eventId: event.id, entityCount: entities.length });
@@ -71,10 +72,17 @@ export class ExtractEdgesService implements IExtractEdgesService {
     }
 
     const confidence = resolveBaseConfidence(EDGE_PROVENANCE);
-    const pairs = buildPairs(entities, MAX_PAIRS);
+
+    // Use sentence-level co-occurrence when content is available.
+    // Only pair entities that appear in the same sentence, not all pairs
+    // from the entire event. This dramatically reduces noise.
+    const content = extractContent(event);
+    const pairs = content
+      ? buildSentencePairs(entities, content, MAX_PAIRS, typedPairs)
+      : buildPairs(entities, MAX_PAIRS, typedPairs);
 
     if (pairs.length === 0) {
-      vlog('extractEdges: no valid pairs', { eventId: event.id });
+      vlog('extractEdges: no valid pairs after filtering', { eventId: event.id });
       return [];
     }
 
@@ -82,6 +90,7 @@ export class ExtractEdgesService implements IExtractEdgesService {
       eventId: event.id,
       entityCount: entities.length,
       pairsToAttempt: pairs.length,
+      skippedTyped: typedPairs?.size ?? 0,
       provenance: EDGE_PROVENANCE,
       confidence,
     });
@@ -209,20 +218,26 @@ export class ExtractEdgesService implements IExtractEdgesService {
 
 /**
  * Build pairs from an entity list, capped at maxPairs.
+ * Skips pairs that already have typed edges from the structured extractor.
  *
- * Uses the natural (i, j) ordering to keep the combination space bounded.
- * For 3 entities [A, B, C] this produces [(A,B), (A,C), (B,C)].
+ * Fallback used when no event content is available for sentence-level gating.
  */
 function buildPairs(
   entities: ExtractedEntity[],
   maxPairs: number,
+  typedPairs?: Set<string>,
 ): Array<[ExtractedEntity, ExtractedEntity]> {
   const pairs: Array<[ExtractedEntity, ExtractedEntity]> = [];
 
   outer: for (let i = 0; i < entities.length; i++) {
     for (let j = i + 1; j < entities.length; j++) {
-      // Skip if either node_id is empty (write failed upstream).
       if (!entities[i].nodeId || !entities[j].nodeId) continue;
+
+      // Skip if this pair already has a typed edge.
+      if (typedPairs) {
+        const key = `${entities[i].nodeId}:${entities[j].nodeId}`;
+        if (typedPairs.has(key)) continue;
+      }
 
       pairs.push([entities[i], entities[j]]);
       if (pairs.length >= maxPairs) break outer;
@@ -230,4 +245,61 @@ function buildPairs(
   }
 
   return pairs;
+}
+
+/**
+ * Build pairs using sentence-level co-occurrence.
+ *
+ * Only pairs entities that appear in the SAME sentence. This is far more
+ * meaningful than all-pairs from the entire event: "Jim went to New York.
+ * Sarah likes coffee." should NOT produce a Jim↔Coffee edge.
+ *
+ * Also skips pairs that already have typed edges from the structured extractor.
+ */
+function buildSentencePairs(
+  entities: ExtractedEntity[],
+  content: string,
+  maxPairs: number,
+  typedPairs?: Set<string>,
+): Array<[ExtractedEntity, ExtractedEntity]> {
+  const sentences = content.split(/(?<=[.!?])\s+/);
+  const pairs: Array<[ExtractedEntity, ExtractedEntity]> = [];
+  const seen = new Set<string>();
+
+  for (const sentence of sentences) {
+    const lower = sentence.toLowerCase();
+
+    // Find which entities appear in this sentence.
+    const present = entities.filter((e) =>
+      e.nodeId && lower.includes(e.label.toLowerCase()),
+    );
+
+    // Create pairs only within this sentence.
+    for (let i = 0; i < present.length; i++) {
+      for (let j = i + 1; j < present.length; j++) {
+        const key = `${present[i].nodeId}:${present[j].nodeId}`;
+        const reverseKey = `${present[j].nodeId}:${present[i].nodeId}`;
+
+        // Skip if already seen or already has a typed edge.
+        if (seen.has(key)) continue;
+        if (typedPairs?.has(key)) continue;
+
+        seen.add(key);
+        seen.add(reverseKey);
+        pairs.push([present[i], present[j]]);
+
+        if (pairs.length >= maxPairs) return pairs;
+      }
+    }
+  }
+
+  return pairs;
+}
+
+/** Extract text content from an event payload. */
+function extractContent(event: UnlearnedEvent): string | null {
+  const payload = event.payload;
+  if (typeof payload['content'] === 'string') return payload['content'];
+  if (typeof payload['text'] === 'string') return payload['text'];
+  return null;
 }

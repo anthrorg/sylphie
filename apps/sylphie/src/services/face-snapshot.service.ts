@@ -72,8 +72,13 @@ const CROP_INTERVAL_MS = 1500;
 /** Minimum face detection confidence to attempt a crop. */
 const MIN_CONFIDENCE = 0.65;
 
-/** Cosine similarity threshold for face identification. */
-const IDENTIFICATION_THRESHOLD = 0.75;
+/**
+ * Cosine similarity threshold for face identification.
+ * EfficientNet-B0 embeddings vary significantly across angles, so this
+ * needs to be lower than you'd expect. 0.55 catches same-person matches
+ * while still rejecting genuinely different faces.
+ */
+const IDENTIFICATION_THRESHOLD = 0.55;
 
 // ---------------------------------------------------------------------------
 // Angle classification thresholds
@@ -185,6 +190,44 @@ export class FaceSnapshotService implements OnModuleInit {
     }
 
     return null;
+  }
+
+  /**
+   * Match a face against ALL centroids (known + unknown persons).
+   *
+   * Unlike identifyFace() which only returns known persons, this also
+   * returns existing unknown-person-* IDs. Used by VWM to deduplicate
+   * before creating new unknown person nodes.
+   *
+   * @returns { personId, similarity } if match found, null otherwise
+   */
+  matchFace(embedding: number[]): { personId: string; similarity: number } | null {
+    if (embedding.length === 0) return null;
+
+    let bestPersonId: string | null = null;
+    let bestSimilarity = -1;
+
+    for (const centroid of this.centroids.values()) {
+      if (centroid.embedding.length === 0) continue;
+      const sim = cosineSimilarity(embedding, centroid.embedding);
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestPersonId = centroid.personId;
+      }
+    }
+
+    if (bestSimilarity >= IDENTIFICATION_THRESHOLD && bestPersonId) {
+      return { personId: bestPersonId, similarity: bestSimilarity };
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the number of face centroids in the hot layer.
+   */
+  getCentroidCount(): number {
+    return this.centroids.size;
   }
 
   // ---------------------------------------------------------------------------

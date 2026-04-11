@@ -104,7 +104,7 @@ export class ConversationGateway
         if (existingUser?.userId === user.userId && existing !== client) {
           this.clients.delete(existing);
           this.clientUsers.delete(existing);
-          try { existing.close(); } catch { /* already closing */ }
+          try { existing.close(1012, 'replaced'); } catch { /* already closing */ }
           vlog('evicted stale connection', { userId: user.userId });
         }
       }

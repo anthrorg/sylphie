@@ -19,6 +19,7 @@ import {
   ChatBubbleOutline as ChatIcon,
   Code as CodeIcon,
   Psychology as PsychologyIcon,
+  Gavel as GavelIcon,
   RestartAlt as RestartAltIcon,
   Logout as LogoutIcon,
 } from '@mui/icons-material'
@@ -406,6 +407,14 @@ export const Sidebar: React.FC = () => {
             to="/dashboard/codebase"
             accentHue={195} // cyan — code/structure
           />
+          {isGuardian && (
+            <NavItem
+              icon={<GavelIcon />}
+              label="Guardian"
+              to="/dashboard/guardian"
+              accentHue={30} // orange — guardian authority
+            />
+          )}
         </Stack>
 
         {/* ── Supervisor (opens dialog overlay) ─────────────────────── */}

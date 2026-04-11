@@ -31,6 +31,7 @@ import { randomUUID } from 'crypto';
 import {
   TimescaleService,
   DriveName,
+  DRIVE_INDEX_ORDER,
   LLM_SERVICE,
   verboseFor,
   type ILlmService,
@@ -813,6 +814,21 @@ export class CommunicationService implements OnModuleInit {
     try {
       const postSnapshot = this.driveStateReader.getCurrentState();
 
+      // Compute observed drive effects as the delta between pre-execution
+      // and post-execution pressure vectors. Without this, predictions are
+      // always compared against an empty object and MAE drifts upward.
+      const observed: Partial<Record<DriveName, number>> = {};
+      if (response.preExecutionDriveSnapshot) {
+        for (const drive of DRIVE_INDEX_ORDER) {
+          const pre = response.preExecutionDriveSnapshot[drive] ?? 0;
+          const post = postSnapshot.pressureVector[drive] ?? 0;
+          const delta = post - pre;
+          if (Math.abs(delta) > 0.001) {
+            observed[drive] = delta;
+          }
+        }
+      }
+
       await this.decisionMaking.reportOutcome(response.actionId, {
         selectedAction: {
           actionId: response.actionId,
@@ -822,7 +838,7 @@ export class CommunicationService implements OnModuleInit {
         },
         predictionAccurate: false, // Unknown until guardian feedback
         predictionError: 0.5,      // Neutral — will be updated by feedback
-        driveEffectsObserved: {},
+        driveEffectsObserved: observed,
         anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
         observedAt: new Date(),
       });

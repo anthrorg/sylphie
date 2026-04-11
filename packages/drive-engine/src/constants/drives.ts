@@ -47,14 +47,14 @@ export const MAX_TICK_DRIFT_MS = 100;
  * CANON §A.14: Core and complement accumulation schedule.
  */
 export const DRIVE_ACCUMULATION_RATES: Readonly<Record<DriveName, number>> = {
-  // Core drives: always accumulating (fundamental needs)
-  // Rates are per-tick at 1Hz (1 tick = 1 second).
-  // Tuned for Phase 1.5: no relief actions yet, so rates are slow enough
-  // that drives don't all max out within a single session (~30-60 min).
-  [DriveName.SystemHealth]: 0.0009,    // ~15 min to fill from 0.2
-  [DriveName.MoralValence]: 0.0006,    // ~22 min to fill from 0.2
-  [DriveName.Integrity]: 0.0006,       // ~22 min to fill from 0.2
-  [DriveName.CognitiveAwareness]: 0.0006, // ~22 min to fill from 0.2
+  // Core drives: action-driven only. No base accumulation.
+  // MoralValence, Integrity, CognitiveAwareness move only through action
+  // outcomes and guardian feedback. SystemHealth is a derived composite
+  // of the other three — computed in cross-modulation, not accumulated.
+  [DriveName.SystemHealth]: 0.0,       // Composite of MoralValence + Integrity + CognitiveAwareness
+  [DriveName.MoralValence]: 0.0,       // Action-driven only (SelfCorrection, guardian feedback)
+  [DriveName.Integrity]: 0.0,          // Action-driven only (SelfCorrection, anxiety cross-mod)
+  [DriveName.CognitiveAwareness]: 0.0, // Action-driven only (ConversationalResponse, KnowledgeQuery)
 
   // Complement drives: mixed accumulation and decay
   [DriveName.Guilt]: 0.0, // Event-only, no base accumulation

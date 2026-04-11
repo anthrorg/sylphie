@@ -35,8 +35,20 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+
+# Suppress TensorFlow GPU-not-available warning on native Windows.
+# TF >= 2.11 dropped native CUDA on Windows; the DirectML plugin is not yet
+# available for Python 3.13.  CPU inference is well within our 50 ms budget
+# at 5.5 M parameters, so this is informational noise.
+if sys.platform == "win32":
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+    # TF_CPP_MIN_LOG_LEVEL: 0=all, 1=no INFO, 2=no WARNING, 3=no ERROR
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    # Also silence TF's Python-level logger (propagates through root logger)
+    logging.getLogger("tensorflow").setLevel(logging.ERROR)
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse

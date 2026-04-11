@@ -84,7 +84,7 @@ export const ACTION_TYPE_DEFAULTS: Record<string, Partial<Record<DriveName, numb
     [DriveName.Social]: PRIMARY_RELIEF,
     [DriveName.Boredom]: PRIMARY_RELIEF,
     [DriveName.Curiosity]: SECONDARY_RELIEF,
-    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Satisfaction]: 0.012,
     [DriveName.Anxiety]: SECONDARY_RELIEF,
     [DriveName.CognitiveAwareness]: SECONDARY_RELIEF,
   },
@@ -93,21 +93,21 @@ export const ACTION_TYPE_DEFAULTS: Record<string, Partial<Record<DriveName, numb
     [DriveName.Social]: PRIMARY_RELIEF,
     [DriveName.Boredom]: PRIMARY_RELIEF,
     [DriveName.Curiosity]: SECONDARY_RELIEF,
-    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Satisfaction]: 0.012,
     [DriveName.Anxiety]: SECONDARY_RELIEF,
   },
 
   SocialComment: {
     [DriveName.Social]: PRIMARY_RELIEF,
     [DriveName.Boredom]: -0.25,
-    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Satisfaction]: 0.012,
   },
 
   LearnedResponse: {
     [DriveName.Social]: PRIMARY_RELIEF,
     [DriveName.Boredom]: PRIMARY_RELIEF,
     [DriveName.Curiosity]: SECONDARY_RELIEF,
-    [DriveName.Satisfaction]: 0.05,
+    [DriveName.Satisfaction]: 0.012,
     [DriveName.Anxiety]: SECONDARY_RELIEF,
   },
 

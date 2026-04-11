@@ -32,10 +32,13 @@ import {
   LEARNING_SERVICE,
   UPDATE_WKG_SERVICE,
   UPSERT_ENTITIES_SERVICE,
+  EXTRACT_TYPED_EDGES_SERVICE,
   EXTRACT_EDGES_SERVICE,
   CONVERSATION_ENTRY_SERVICE,
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
+  DETECT_CONTRADICTIONS_SERVICE,
+  CONFIDENCE_DECAY_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
   CROSS_SESSION_SYNTHESIS_SERVICE,
   LEARNING_EVENT_LOGGER,
@@ -44,10 +47,13 @@ import {
 import { LearningService } from './learning.service';
 import { UpdateWkgService } from './pipeline/update-wkg.service';
 import { UpsertEntitiesService } from './pipeline/upsert-entities.service';
+import { ExtractTypedEdgesService } from './pipeline/extract-typed-edges.service';
 import { ExtractEdgesService } from './pipeline/extract-edges.service';
 import { ConversationEntryService } from './pipeline/conversation-entry.service';
 import { CanProduceEdgesService } from './pipeline/can-produce-edges.service';
 import { RefineEdgesService } from './pipeline/refine-edges.service';
+import { DetectContradictionsService } from './pipeline/detect-contradictions.service';
+import { ConfidenceDecayService } from './pipeline/confidence-decay.service';
 import { ConversationReflectionService } from './pipeline/conversation-reflection.service';
 import { CrossSessionSynthesisService } from './pipeline/cross-session-synthesis.service';
 import { LearningEventLoggerService } from './logging/learning-event-logger.service';
@@ -80,7 +86,13 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
       useClass: UpsertEntitiesService,
     },
 
-    // ── Pipeline step 4: edge derivation (RELATED_TO pairs) ─────────────────
+    // ── Pipeline step 3b: structured fact → typed edge extraction ─────────
+    {
+      provide: EXTRACT_TYPED_EDGES_SERVICE,
+      useClass: ExtractTypedEdgesService,
+    },
+
+    // ── Pipeline step 4: co-occurrence edge derivation (RELATED_TO, leftovers) ──
     {
       provide: EXTRACT_EDGES_SERVICE,
       useClass: ExtractEdgesService,
@@ -102,6 +114,18 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
     {
       provide: REFINE_EDGES_SERVICE,
       useClass: RefineEdgesService,
+    },
+
+    // ── Pipeline step 7b: post-refinement contradiction detection ──────────
+    {
+      provide: DETECT_CONTRADICTIONS_SERVICE,
+      useClass: DetectContradictionsService,
+    },
+
+    // ── Periodic cycle: confidence decay + garbage collection ──────────────
+    {
+      provide: CONFIDENCE_DECAY_SERVICE,
+      useClass: ConfidenceDecayService,
     },
 
     // ── Pipeline step 8: Conversation reflection (holistic session analysis) ──

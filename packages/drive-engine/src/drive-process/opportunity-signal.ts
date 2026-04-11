@@ -10,6 +10,7 @@
  * only when severity is MEDIUM or HIGH (MAE >= 0.30).
  */
 
+import { randomUUID } from 'crypto';
 import { verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('DriveEngine');
@@ -131,8 +132,7 @@ export function shouldEmitOpportunitySignal(signal: PredictionOpportunitySignal)
 
 /**
  * Generate a unique ID for an opportunity signal.
- * Uses a simple timestamp-based approach suitable for in-process IDs.
  */
 function generateId(): string {
-  return `opp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  return randomUUID();
 }

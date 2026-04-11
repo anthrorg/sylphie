@@ -65,6 +65,15 @@ export interface GraphStats {
   edges: number
 }
 
+export type WkgViewMode = 'ambient' | 'explorer'
+
+export interface SearchNodeResult {
+  node_id: string
+  label: string
+  node_type: string
+  score: number
+}
+
 // ---------------------------------------------------------------------------
 // Conversation
 // ---------------------------------------------------------------------------

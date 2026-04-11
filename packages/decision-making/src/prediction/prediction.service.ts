@@ -431,11 +431,14 @@ function predictDriveEffects(
     for (const drive of DRIVE_INDEX_ORDER) {
       let sum = 0;
       for (const ep of matchingEpisodes) {
-        sum += ep.driveSnapshot.pressureVector[drive];
+        // Use driveDeltas (per-tick changes) — NOT pressureVector (absolute
+        // values). Predictions estimate the *effect* an action will have on
+        // drives, which is a delta, not an absolute pressure level.
+        sum += ep.driveSnapshot.driveDeltas[drive];
       }
       const avg = sum / matchingEpisodes.length;
       // Only include drives with a non-trivial average to keep the map sparse.
-      if (Math.abs(avg) > 0.01) {
+      if (Math.abs(avg) > 0.001) {
         effects[drive] = avg;
       }
     }

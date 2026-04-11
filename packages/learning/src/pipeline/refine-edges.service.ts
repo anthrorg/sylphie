@@ -48,25 +48,13 @@ const vlog = verboseFor('Learning');
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Valid refined edge types the LLM may return. */
-const VALID_REFINED_TYPES = new Set([
-  'LIKES',
-  'DISLIKES',
-  'KNOWS',
-  'WORKS_AT',
-  'LIVES_AT',
-  'OWNS',
-  'USES',
-  'CREATED',
-  'BELONGS_TO',
-  'IS_PART_OF',
-  'IS_TYPE_OF',
-  'LOCATED_IN',
-  'HAS_PROPERTY',
-  'CAUSED_BY',
-  'LED_TO',
-  'RELATED_TO',
-]);
+/**
+ * Validate that an LLM-returned type is a well-formed Cypher relationship
+ * type: 2-40 chars, UPPER_SNAKE_CASE, no leading/trailing underscores.
+ * The edge IS the predicate — no whitelist. The LLM picks the most accurate
+ * relationship type for the context.
+ */
+const VALID_TYPE_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/;
 
 // ---------------------------------------------------------------------------
 // Heuristic rule table
@@ -250,7 +238,8 @@ export class RefineEdgesService implements IRefineEdgesService {
       messages: [{ role: 'user', content: prompt }],
       systemPrompt:
         'You are a knowledge graph analyst. Your task is to classify generic ' +
-        'RELATED_TO edges between entities into more specific relationship types. ' +
+        'RELATED_TO edges between entities into the most accurate relationship predicate. ' +
+        'Use UPPER_SNAKE_CASE predicates that read naturally as source PREDICATE target. ' +
         'Respond with one line per edge in the format: ' +
         'EDGE: <source> -> <target> | <TYPE>',
       maxTokens: 512,
@@ -464,9 +453,10 @@ function buildRefinementPrompt(
 
   return [
     'Classify the relationship type for each entity pair below.',
-    'Use one of these types: LIKES, DISLIKES, KNOWS, WORKS_AT, LIVES_AT, OWNS, USES,',
-    'CREATED, BELONGS_TO, IS_PART_OF, IS_TYPE_OF, LOCATED_IN, HAS_PROPERTY,',
-    'CAUSED_BY, LED_TO, RELATED_TO.',
+    'Use the most accurate UPPER_SNAKE_CASE predicate for the relationship.',
+    'The predicate should read naturally as: <source> <PREDICATE> <target>.',
+    'Examples: MARRIED_TO, WORKS_AT, LIKES, PARENT_OF, TREATS, COMPOSED_OF, LOCATED_IN.',
+    'Use RELATED_TO only when no more specific predicate fits.',
     '',
     'For each pair, respond with exactly:',
     'EDGE: <source> -> <target> | <TYPE>',
@@ -506,7 +496,7 @@ function parseRefinements(
     const edge = edgeMap.get(key);
 
     if (!edge) continue;
-    if (!VALID_REFINED_TYPES.has(rawType)) continue;
+    if (!VALID_TYPE_RE.test(rawType) || rawType.length > 40) continue;
     if (rawType === edge.relType) continue; // Already this type.
 
     result.push({ edge, newType: rawType, source: 'LLM' });

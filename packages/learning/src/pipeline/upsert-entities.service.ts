@@ -228,32 +228,144 @@ function extractContent(event: UnlearnedEvent): string | null {
 }
 
 /**
- * Extract title-cased tokens from free text (proper noun heuristic).
+ * Common English words that are frequently title-cased at the start of
+ * sentences but are not meaningful entities. Filtering these prevents the
+ * WKG from accumulating noise like "The", "This", "What", etc.
+ */
+const STOPWORDS = new Set([
+  // Determiners & pronouns
+  'the', 'this', 'that', 'these', 'those', 'its', 'his', 'her', 'our',
+  'your', 'their', 'my', 'she', 'he', 'they', 'we', 'it',
+  // Question words & conjunctions
+  'what', 'when', 'where', 'which', 'who', 'how', 'why', 'and', 'but',
+  'or', 'so', 'if', 'because', 'since', 'while', 'although', 'unless',
+  // Common sentence-initial adverbs & filler
+  'here', 'there', 'then', 'now', 'just', 'also', 'only', 'even',
+  'still', 'already', 'yet', 'very', 'really', 'actually', 'perhaps',
+  'maybe', 'well', 'sure', 'okay', 'yes', 'yeah', 'no', 'not',
+  // Prepositions that start sentences
+  'about', 'after', 'before', 'during', 'between', 'through', 'above',
+  'below', 'into', 'over', 'under', 'from', 'with', 'without',
+  // Quantifiers & misc
+  'each', 'every', 'some', 'any', 'all', 'both', 'other', 'another',
+  'such', 'many', 'more', 'most', 'several', 'few', 'much',
+  // Discourse markers
+  'please', 'thanks', 'thank', 'sorry', 'hello', 'hey', 'wow',
+  // Temporal words (not proper nouns)
+  'today', 'tomorrow', 'yesterday', 'later', 'soon', 'never', 'always',
+  // Verbs that start sentences
+  'can', 'could', 'would', 'should', 'will', 'did', 'does', 'do',
+  'has', 'have', 'had', 'was', 'were', 'are', 'is', 'am', 'been',
+  'being', 'got', 'get', 'let', 'make', 'take', 'give', 'keep',
+  // Additional common words
+  'think', 'know', 'want', 'need', 'like', 'said', 'tell', 'told',
+  'see', 'look', 'find', 'come', 'went', 'going', 'things', 'something',
+  'everything', 'nothing', 'anything', 'someone', 'everyone',
+]);
+
+/**
+ * Day names, month names, and other temporal/calendar words that appear
+ * title-cased but are almost never meaningful entities for the WKG.
+ */
+const TEMPORAL_WORDS = new Set([
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july',
+  'august', 'september', 'october', 'november', 'december',
+  'morning', 'afternoon', 'evening', 'night', 'midnight', 'noon',
+  'spring', 'summer', 'autumn', 'fall', 'winter',
+]);
+
+/**
+ * Extract entity names from free text with compound entity merging.
  *
- * Matches words that:
- *   - Start with an uppercase letter
- *   - Are longer than 1 character
- *   - Are not all-caps abbreviations (those tend to be noise)
+ * Strategy:
+ *   1. Split text into words, clean punctuation.
+ *   2. Walk the word list looking for runs of consecutive capitalized words
+ *      (e.g. "New York City" → one entity "New York City").
+ *   3. Single capitalized words become entities on their own.
+ *   4. Stopwords, temporal words, and ALL_CAPS abbreviations are filtered.
+ *   5. A single capitalized word at position 0 in a sentence is only kept
+ *      if it also appears capitalized elsewhere (not just sentence-initial).
  *
- * Strips punctuation before checking.
+ * This replaces the old extractTitleCasedTokens which treated every
+ * capitalized word as an independent entity.
  */
 function extractTitleCasedTokens(text: string): string[] {
+  // Split into sentences so we can detect sentence-initial words.
+  const sentences = text.split(/(?<=[.!?])\s+/);
   const seen = new Set<string>();
-  const tokens: string[] = [];
+  const entities: string[] = [];
 
-  for (const word of text.split(/\s+/)) {
-    const clean = word.replace(/[.,!?;:'"()\[\]]/g, '');
-    if (
-      clean.length > 1 &&
-      /^[A-Z]/.test(clean) &&
-      !/^[A-Z]+$/.test(clean)   // exclude ALL_CAPS abbreviations
-    ) {
-      if (!seen.has(clean)) {
-        seen.add(clean);
-        tokens.push(clean);
+  // First pass: collect all capitalized words that appear mid-sentence
+  // (these are almost certainly proper nouns, not sentence-initial noise).
+  const midSentenceCapitals = new Set<string>();
+  for (const sentence of sentences) {
+    const words = sentence.split(/\s+/);
+    for (let i = 1; i < words.length; i++) {
+      const clean = words[i].replace(/[.,!?;:'"()\[\]]/g, '');
+      if (clean.length > 1 && /^[A-Z]/.test(clean) && !/^[A-Z]+$/.test(clean)) {
+        midSentenceCapitals.add(clean.toLowerCase());
       }
     }
   }
 
-  return tokens;
+  for (const sentence of sentences) {
+    const words = sentence.split(/\s+/);
+    let i = 0;
+
+    while (i < words.length) {
+      const clean = words[i].replace(/[.,!?;:'"()\[\]]/g, '');
+
+      if (!isEntityCandidate(clean)) {
+        i++;
+        continue;
+      }
+
+      // Sentence-initial word: only keep if it also appears mid-sentence
+      // somewhere in the text (confirming it's a proper noun, not just
+      // capitalized because it starts a sentence).
+      if (i === 0 && !midSentenceCapitals.has(clean.toLowerCase())) {
+        i++;
+        continue;
+      }
+
+      // Try to merge consecutive capitalized words into a compound entity.
+      // "New York City" → one entity instead of three fragments.
+      const compoundParts = [clean];
+      let j = i + 1;
+      while (j < words.length) {
+        const nextClean = words[j].replace(/[.,!?;:'"()\[\]]/g, '');
+        if (isEntityCandidate(nextClean)) {
+          compoundParts.push(nextClean);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      const entity = compoundParts.join(' ');
+      if (!seen.has(entity)) {
+        seen.add(entity);
+        entities.push(entity);
+      }
+
+      i = j;
+    }
+  }
+
+  return entities;
+}
+
+/**
+ * Check if a single cleaned word qualifies as an entity candidate.
+ * Must be capitalized, > 1 char, not ALL_CAPS, not a stopword, not temporal.
+ */
+function isEntityCandidate(clean: string): boolean {
+  return (
+    clean.length > 1 &&
+    /^[A-Z]/.test(clean) &&
+    !/^[A-Z]+$/.test(clean) &&
+    !STOPWORDS.has(clean.toLowerCase()) &&
+    !TEMPORAL_WORDS.has(clean.toLowerCase())
+  );
 }

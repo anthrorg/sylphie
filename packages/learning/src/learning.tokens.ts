@@ -35,6 +35,16 @@ export const UPDATE_WKG_SERVICE = Symbol('UPDATE_WKG_SERVICE');
 export const UPSERT_ENTITIES_SERVICE = Symbol('UPSERT_ENTITIES_SERVICE');
 
 /**
+ * Injection token for ExtractTypedEdgesService (Step 3b).
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Structured fact extraction: parses (subject, predicate, object) triples
+ * from event text and creates properly typed edges (LIKES, WORKS_AT, etc.)
+ * directly in the WKG. Runs before co-occurrence edge extraction.
+ */
+export const EXTRACT_TYPED_EDGES_SERVICE = Symbol('EXTRACT_TYPED_EDGES_SERVICE');
+
+/**
  * Injection token for ExtractEdgesService (Step 4).
  * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
  *
@@ -70,6 +80,24 @@ export const CAN_PRODUCE_EDGES_SERVICE = Symbol('CAN_PRODUCE_EDGES_SERVICE');
  * LLM is unavailable (Lesion Test support).
  */
 export const REFINE_EDGES_SERVICE = Symbol('REFINE_EDGES_SERVICE');
+
+/**
+ * Injection token for DetectContradictionsService.
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Post-refinement contradiction detection: checks newly typed edges against
+ * existing graph knowledge and creates CONTRADICTS edges for conflicts.
+ */
+export const DETECT_CONTRADICTIONS_SERVICE = Symbol('DETECT_CONTRADICTIONS_SERVICE');
+
+/**
+ * Injection token for ConfidenceDecayService.
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Periodic confidence decay and garbage collection: applies time-based
+ * decay using per-provenance rates and prunes orphaned low-confidence nodes.
+ */
+export const CONFIDENCE_DECAY_SERVICE = Symbol('CONFIDENCE_DECAY_SERVICE');
 
 /**
  * Injection token for LearningEventLoggerService.

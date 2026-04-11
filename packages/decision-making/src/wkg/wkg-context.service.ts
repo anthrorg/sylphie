@@ -397,14 +397,66 @@ export class WkgContextService {
   /**
    * Create a new ActionProcedure node from a Type 2 deliberation outcome.
    * Links it to involved entities and the motivating drive.
+   *
+   * Deduplication: before creating a new node, checks for existing procedures
+   * with similar triggerContext (Jaccard similarity > 0.70). If a match is
+   * found, the existing procedure's confidence is boosted instead of creating
+   * a duplicate. This prevents graph bloat from repeated Type 2 deliberations
+   * on similar inputs.
    */
   async writeActionProcedure(proc: NewProcedure): Promise<string> {
     if (!this.neo4j) return '';
 
-    const nodeId = `proc-${randomUUID().substring(0, 8)}`;
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
-      // Create the procedure node
+      // ── Deduplication check ──────────────────────────────────────────────
+      const existingResult = await session.run(
+        `MATCH (p:ActionProcedure)
+         WHERE p.category = $category
+         RETURN p.node_id AS nodeId, p.name AS name,
+                coalesce(p.triggerContext, p.trigger_context) AS triggerContext,
+                p.confidence AS confidence
+         LIMIT 50`,
+        { category: proc.category },
+      );
+
+      const newTokens = tokenize(proc.triggerContext);
+      for (const record of existingResult.records) {
+        const existingContext = (record.get('triggerContext') as string) ?? '';
+        const similarity = jaccardSimilarity(newTokens, tokenize(existingContext));
+
+        if (similarity > 0.70) {
+          // Duplicate found — boost existing procedure's confidence instead.
+          const existingId = record.get('nodeId') as string;
+          const existingConf = record.get('confidence') as number;
+          const boosted = Math.min(1.0, existingConf + 0.05);
+
+          await session.run(
+            `MATCH (p:ActionProcedure {node_id: $nodeId})
+             SET p.confidence = $confidence, p.updated_at = datetime()`,
+            { nodeId: existingId, confidence: boosted },
+          );
+
+          vlog('WKG procedure deduplicated', {
+            existingId,
+            existingName: record.get('name'),
+            similarity: +similarity.toFixed(3),
+            oldConfidence: +existingConf.toFixed(3),
+            newConfidence: +boosted.toFixed(3),
+          });
+
+          this.logger.log(
+            `WKG ActionProcedure deduplicated: "${proc.name}" matched existing ` +
+              `"${record.get('name')}" (similarity: ${similarity.toFixed(2)}, ` +
+              `confidence: ${existingConf.toFixed(2)} → ${boosted.toFixed(2)})`,
+          );
+          return existingId;
+        }
+      }
+
+      // ── No duplicate — create new procedure ──────────────────────────────
+      const nodeId = `proc-${randomUUID().substring(0, 8)}`;
+
       await session.run(
         `CREATE (p:ActionProcedure {
            node_id: $nodeId,
@@ -508,31 +560,64 @@ export class WkgContextService {
     }
   }
 
-  /** Fuzzy match entity names against WKG node labels. */
+  /**
+   * Match entity names against WKG node labels using the kg_label_fulltext
+   * index. Falls back to CONTAINS substring matching if the full-text query
+   * fails (e.g., index not yet created).
+   */
   private async matchEntities(session: any, names: string[]): Promise<WkgEntity[]> {
     if (names.length === 0) return [];
 
-    // Case-insensitive search against node labels
-    const result = await session.run(
-      `UNWIND $names AS name
-       MATCH (n)
-       WHERE toLower(n.label) CONTAINS toLower(name)
-         AND NOT n:Word
-       RETURN DISTINCT n.node_id AS nodeId, n.label AS label,
-              labels(n)[0] AS nodeType, properties(n) AS props,
-              n.confidence AS confidence, n.provenance_type AS provenance
-       LIMIT 20`,
-      { names },
+    // Build a Lucene query: escape special chars, join with OR for multi-term search.
+    const escaped = names.map((n) =>
+      n.replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, '\\$&'),
     );
+    const luceneQuery = escaped.join(' OR ');
 
-    return result.records.map((r: any) => ({
-      nodeId: r.get('nodeId'),
-      label: r.get('label') ?? '',
-      nodeType: r.get('nodeType') ?? 'Unknown',
-      properties: r.get('props') ?? {},
-      confidence: r.get('confidence') ?? 0.5,
-      provenance: r.get('provenance') ?? 'INFERENCE',
-    }));
+    try {
+      const result = await session.run(
+        `CALL db.index.fulltext.queryNodes('kg_label_fulltext', $query)
+         YIELD node, score
+         WHERE NOT node:Word
+         RETURN DISTINCT node.node_id AS nodeId, node.label AS label,
+                labels(node)[0] AS nodeType, properties(node) AS props,
+                node.confidence AS confidence, node.provenance_type AS provenance
+         ORDER BY score DESC
+         LIMIT 20`,
+        { query: luceneQuery },
+      );
+
+      return result.records.map((r: any) => ({
+        nodeId: r.get('nodeId'),
+        label: r.get('label') ?? '',
+        nodeType: r.get('nodeType') ?? 'Unknown',
+        properties: r.get('props') ?? {},
+        confidence: r.get('confidence') ?? 0.5,
+        provenance: r.get('provenance') ?? 'INFERENCE',
+      }));
+    } catch {
+      // Fallback: full-text index may not exist yet. Use CONTAINS.
+      const result = await session.run(
+        `UNWIND $names AS name
+         MATCH (n)
+         WHERE toLower(n.label) CONTAINS toLower(name)
+           AND NOT n:Word
+         RETURN DISTINCT n.node_id AS nodeId, n.label AS label,
+                labels(n)[0] AS nodeType, properties(n) AS props,
+                n.confidence AS confidence, n.provenance_type AS provenance
+         LIMIT 20`,
+        { names },
+      );
+
+      return result.records.map((r: any) => ({
+        nodeId: r.get('nodeId'),
+        label: r.get('label') ?? '',
+        nodeType: r.get('nodeType') ?? 'Unknown',
+        properties: r.get('props') ?? {},
+        confidence: r.get('confidence') ?? 0.5,
+        provenance: r.get('provenance') ?? 'INFERENCE',
+      }));
+    }
   }
 
   /** Get relationships between a set of entity IDs. */
@@ -596,25 +681,69 @@ function emptyContext(): WkgContext {
   return { entities: [], relationships: [], facts: [], procedures: [], summary: '' };
 }
 
-/** Extract potential entity names from text (capitalized words, proper nouns). */
+/**
+ * Extract entity names from text for WKG context matching.
+ *
+ * Uses the same quality standards as the learning pipeline:
+ *   - Capitalized words only (proper noun heuristic)
+ *   - Merges consecutive capitalized words into compounds ("New York")
+ *   - Filters stopwords and temporal words
+ *   - Does NOT include arbitrary lowercase words (that was concept-word
+ *     pollution that matched random graph nodes)
+ */
 function extractEntityNames(text: string): string[] {
+  const stopwords = new Set([
+    'the', 'this', 'that', 'these', 'those', 'its', 'his', 'her', 'our',
+    'your', 'their', 'my', 'she', 'he', 'they', 'we', 'it',
+    'what', 'when', 'where', 'which', 'who', 'how', 'why', 'and', 'but',
+    'or', 'so', 'if', 'because', 'since', 'while', 'although', 'unless',
+    'here', 'there', 'then', 'now', 'just', 'also', 'only', 'even',
+    'still', 'already', 'yet', 'very', 'really', 'actually', 'perhaps',
+    'maybe', 'well', 'sure', 'okay', 'yes', 'yeah', 'no', 'not',
+    'about', 'after', 'before', 'during', 'between', 'through', 'above',
+    'below', 'into', 'over', 'under', 'from', 'with', 'without',
+    'each', 'every', 'some', 'any', 'all', 'both', 'other', 'another',
+    'please', 'thanks', 'thank', 'sorry', 'hello', 'hey',
+    'today', 'tomorrow', 'yesterday', 'later', 'soon', 'never', 'always',
+    'can', 'could', 'would', 'should', 'will', 'did', 'does', 'do',
+    'has', 'have', 'had', 'was', 'were', 'are', 'is', 'am', 'been',
+    'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+    'january', 'february', 'march', 'april', 'may', 'june', 'july',
+    'august', 'september', 'october', 'november', 'december',
+  ]);
+
+  const isCandidate = (w: string): boolean =>
+    w.length > 1 &&
+    /^[A-Z]/.test(w) &&
+    !/^[A-Z]+$/.test(w) &&
+    !stopwords.has(w.toLowerCase());
+
   const words = text.split(/\s+/);
   const entities: string[] = [];
+  const seen = new Set<string>();
+  let i = 0;
 
-  for (const word of words) {
-    const clean = word.replace(/[.,!?;:'"]/g, '');
-    if (clean.length > 1 && /^[A-Z]/.test(clean)) {
-      entities.push(clean);
+  while (i < words.length) {
+    const clean = words[i].replace(/[.,!?;:'"()\[\]]/g, '');
+    if (!isCandidate(clean)) { i++; continue; }
+
+    // Merge consecutive capitalized words.
+    const parts = [clean];
+    let j = i + 1;
+    while (j < words.length) {
+      const next = words[j].replace(/[.,!?;:'"()\[\]]/g, '');
+      if (isCandidate(next)) { parts.push(next); j++; } else break;
     }
+
+    const entity = parts.join(' ');
+    if (!seen.has(entity)) {
+      seen.add(entity);
+      entities.push(entity);
+    }
+    i = j;
   }
 
-  // Also include significant lowercase words for concept matching
-  const lower = text.toLowerCase();
-  const conceptWords = lower.split(/\s+/)
-    .filter((w) => w.length > 4)
-    .map((w) => w.replace(/[.,!?;:'"]/g, ''));
-
-  return [...new Set([...entities, ...conceptWords])];
+  return entities;
 }
 
 /** Build subject-predicate-object facts from entities and relationships. */
@@ -703,4 +832,19 @@ function buildSummary(entities: WkgEntity[], facts: WkgFact[], procedures: WkgEn
 /** Sanitize a relationship type for use in Cypher (only alphanumeric + underscore). */
 function sanitizeRelType(type: string): string {
   return type.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+}
+
+/** Tokenize a string into lowercase whitespace-delimited tokens. */
+function tokenize(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/\s+/).filter(Boolean));
+}
+
+/** Compute Jaccard similarity between two pre-tokenized sets. */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0.0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection++;
+  }
+  return intersection / (a.size + b.size - intersection);
 }

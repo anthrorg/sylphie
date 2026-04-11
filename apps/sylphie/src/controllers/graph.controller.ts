@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query, Logger, BadRequestException } from '@nestjs/common';
-import { WkgQueryService, GraphSnapshotDto } from '../services/wkg-query.service';
+import { WkgQueryService, GraphSnapshotDto, SearchNodeResult, NeighborhoodDto } from '../services/wkg-query.service';
 
 @Controller('graph')
 export class GraphController {
@@ -27,6 +27,33 @@ export class GraphController {
   @Get('pkg')
   async getPkgSnapshot(): Promise<GraphSnapshotDto> {
     return this.wkg.getPkgSnapshot();
+  }
+
+  // ── Explorer view — search + neighborhood ───────────────────────────
+  // These MUST appear before :instance/* wildcard routes.
+
+  @Get('wkg/search')
+  async searchNodes(
+    @Query('q') query: string,
+    @Query('limit') limitStr = '10',
+  ): Promise<SearchNodeResult[]> {
+    if (!query || query.trim().length < 1) {
+      throw new BadRequestException('Query parameter "q" is required (min 1 character)');
+    }
+    const limit = Math.min(50, Math.max(1, parseInt(limitStr, 10) || 10));
+    return this.wkg.searchNodes(query.trim(), limit);
+  }
+
+  @Get('wkg/neighborhood')
+  async getNeighborhood(
+    @Query('nodeId') nodeId: string,
+    @Query('hops') hopsStr = '2',
+  ): Promise<NeighborhoodDto> {
+    if (!nodeId || nodeId.trim().length < 1) {
+      throw new BadRequestException('Query parameter "nodeId" is required');
+    }
+    const hops = Math.max(1, Math.min(3, parseInt(hopsStr, 10) || 2));
+    return this.wkg.getNeighborhood(nodeId.trim(), hops);
   }
 
   // ── Paginated endpoints for progressive loading ─────────────────────

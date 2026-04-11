@@ -181,9 +181,8 @@ export class DeliberationService {
     });
     const rawText = frame.raw['text'] as string | undefined ?? '';
     const driveSnapshot = context.driveSnapshot;
-    // conversation_history now contains ONLY unanswered/pending messages.
-    // Answered exchanges are in conversation_summary as a compact text block.
-    const conversationHistory = frame.raw['conversation_history'] as LlmMessage[] | undefined ?? [];
+    // Answered exchanges are in conversation_summary as compact system-prompt text.
+    // The messages array only contains the current user message — no history turns.
     const conversationSummary = frame.raw['conversation_summary'] as string | undefined ?? '';
     const speakerName = frame.raw['speaker_name'] as string | undefined ?? 'the person talking to you';
 
@@ -252,7 +251,9 @@ export class DeliberationService {
       currentMessages: [
         { role: 'user', content: rawText || 'No specific input — drive pressure triggered this cycle.' },
       ],
-      conversationHistory,
+      // No conversationHistory here — answered exchanges are in the system
+      // prompt summary, and the current message is in currentMessages.
+      // This ensures the LLM only sees one user turn to respond to.
     });
 
     const monologueResponse = await this.llm.complete({
@@ -390,7 +391,6 @@ export class DeliberationService {
       currentMessages: [
         { role: 'user' as const, content: rawText || innerMonologue },
       ],
-      conversationHistory,
     });
 
     const candidateRequest = {
@@ -494,7 +494,6 @@ export class DeliberationService {
         currentMessages: [
           { role: 'user', content: `Argue FOR this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
         ],
-        conversationHistory,
       });
 
       const againstCtx = this.contextWindow.assemble({
@@ -510,7 +509,6 @@ export class DeliberationService {
         currentMessages: [
           { role: 'user', content: `Argue AGAINST this response being appropriate: "${selected.text}"\n\nContext: Someone said "${rawText}"` },
         ],
-        conversationHistory,
       });
 
       const [forResponse, againstResponse] = await Promise.all([
@@ -574,7 +572,6 @@ export class DeliberationService {
             'Then rate confidence 0-10.',
           ].join('\n') },
         ],
-        conversationHistory,
       });
 
       const arbiterResponse = await this.llm.complete({

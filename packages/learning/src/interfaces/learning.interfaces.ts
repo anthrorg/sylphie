@@ -77,6 +77,8 @@ export interface MaintenanceCycleResult {
   readonly canProduceEdgesCreated: number;
   /** Number of edges refined by the LLM. */
   readonly edgesRefined: number;
+  /** Number of contradictions detected between new and existing edges. */
+  readonly contradictionsDetected: number;
   /** Whether this cycle was a no-op (no unlearned events found). */
   readonly wasNoop: boolean;
 }
@@ -180,16 +182,42 @@ export interface IUpsertEntitiesService {
 }
 
 /**
+ * Step 3b: ExtractTypedEdgesService interface.
+ *
+ * Before blind co-occurrence edges, extracts structured (subject, predicate,
+ * object) triples from the event text and creates properly typed edges
+ * directly. Returns the set of entity pairs that already have typed edges
+ * so the downstream co-occurrence step can skip them.
+ */
+export interface IExtractTypedEdgesService {
+  /**
+   * Parse structured facts from event text and create typed edges in the WKG.
+   *
+   * @returns The typed edges created and a set of entity pair keys that
+   *          should be excluded from RELATED_TO co-occurrence creation.
+   */
+  extractTypedEdges(
+    entities: ExtractedEntity[],
+    event: UnlearnedEvent,
+  ): Promise<{ edges: ExtractedEdge[]; typedPairs: Set<string> }>;
+}
+
+/**
  * Step 4: ExtractEdgesService interface.
  */
 export interface IExtractEdgesService {
   /**
-   * Create RELATED_TO edges between each pair of entities from the same event.
-   * Returns the list of created/updated edges for downstream refinement.
+   * Create RELATED_TO edges between entity pairs that co-occur in the same
+   * sentence. Skips pairs that already have typed edges from the structured
+   * extractor (typedPairs).
+   *
+   * @param typedPairs - Set of "sourceId:targetId" keys that already have
+   *                     typed edges and should be skipped.
    */
   extractEdges(
     entities: ExtractedEntity[],
     event: UnlearnedEvent,
+    typedPairs?: Set<string>,
   ): Promise<ExtractedEdge[]>;
 }
 
@@ -237,6 +265,57 @@ export interface IRefineEdgesService {
     edges: ExtractedEdge[],
     event: UnlearnedEvent,
   ): Promise<number>;
+}
+
+/**
+ * Post-refinement step: DetectContradictionsService interface.
+ *
+ * After edge refinement classifies RELATED_TO edges into typed relationships,
+ * checks whether any newly typed edge contradicts an existing edge between
+ * the same entity pair (e.g., LIKES + DISLIKES). Creates CONTRADICTS edges
+ * consumed by the ContradictionScannerService in decision-making.
+ */
+export interface IDetectContradictionsService {
+  /**
+   * Check refined edges for contradictions against existing graph knowledge.
+   * Creates CONTRADICTS edges for any detected conflicts.
+   *
+   * @returns Number of contradictions detected and persisted.
+   */
+  detectContradictions(
+    edges: ExtractedEdge[],
+    event: UnlearnedEvent,
+  ): Promise<number>;
+}
+
+/**
+ * Periodic cycle: ConfidenceDecayService interface.
+ *
+ * Applies time-based confidence decay using per-provenance rates and prunes
+ * orphaned low-confidence Entity nodes. Runs as a separate timer cycle,
+ * not per-event.
+ */
+export interface IConfidenceDecayService {
+  /**
+   * Run a single decay + pruning cycle on the WORLD knowledge graph.
+   *
+   * @returns Summary of decay and pruning actions.
+   */
+  runDecayCycle(): Promise<DecayCycleResult>;
+}
+
+/**
+ * Summary of a completed confidence decay + pruning cycle.
+ */
+export interface DecayCycleResult {
+  /** Number of nodes whose confidence was reduced by time-based decay. */
+  readonly nodesDecayed: number;
+  /** Number of edges whose confidence was reduced by time-based decay. */
+  readonly edgesDecayed: number;
+  /** Number of orphaned low-confidence Entity nodes removed from the graph. */
+  readonly nodesPruned: number;
+  /** Whether this cycle was a no-op (nothing decayed or pruned). */
+  readonly wasNoop: boolean;
 }
 
 /**

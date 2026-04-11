@@ -14,6 +14,7 @@ import {
   TelemetryPressure,
   TelemetryCycle,
   WebRTCState,
+  WkgViewMode,
 } from '../types'
 
 interface ActionHistoryEntry {
@@ -112,6 +113,11 @@ interface AppState {
   selectedNodeId: string | null
   graphFilters: GraphFilters
 
+  // WKG view mode (ambient 3D vs explorer)
+  wkgViewMode: WkgViewMode
+  explorerHistory: Array<{ nodeId: string; label: string }>
+  explorerDepth: number
+
   // Telemetry state
   pressure: TelemetryPressure
   executorState: string
@@ -154,6 +160,10 @@ interface AppState {
   toggleSessionInfo: () => void
   setNodeInspector: (open: boolean, nodeId?: string | null) => void
   setGraphFilters: (filters: Partial<GraphFilters>) => void
+  setWkgViewMode: (mode: WkgViewMode) => void
+  pushExplorerHistory: (nodeId: string, label: string) => void
+  popExplorerHistory: () => void
+  setExplorerDepth: (depth: number) => void
   updateTelemetry: (data: TelemetryCycle) => void
   addActionToHistory: (action: string, confidence: number) => void
   addPredictionToHistory: (action: string, accuracy: number) => void
@@ -258,6 +268,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   sessionInfoExpanded: false,
   nodeInspectorOpen: false,
   selectedNodeId: null,
+  wkgViewMode: 'ambient',
+  explorerHistory: [],
+  explorerDepth: 2,
   graphFilters: {
     schemaLevel: 'all',
     provenance: 'all',
@@ -368,6 +381,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => ({
       graphFilters: { ...prev.graphFilters, ...filters },
     })),
+
+  setWkgViewMode: (mode) => set({ wkgViewMode: mode }),
+
+  pushExplorerHistory: (nodeId, label) =>
+    set((prev) => ({
+      explorerHistory: [...prev.explorerHistory, { nodeId, label }].slice(-10),
+    })),
+
+  popExplorerHistory: () =>
+    set((prev) => ({
+      explorerHistory: prev.explorerHistory.slice(0, -1),
+    })),
+
+  setExplorerDepth: (depth) => set({ explorerDepth: Math.max(1, Math.min(3, depth)) }),
 
   // Called on every executor_cycle telemetry message from the backend WS
   updateTelemetry: (data) => {

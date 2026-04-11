@@ -406,10 +406,31 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       if (entity.personId) {
         entity.discovered = true;
         entity.displayName = entity.personId;
-      } else {
-        // Unknown person — create a placeholder OKG node and start collecting snapshots
-        await this.createUnknownPersonNode(entity);
+        return;
       }
+
+      // Try to match this face against ALL known centroids (known + unknown)
+      // before creating a new node. This prevents duplicate unknown person
+      // nodes when the same face gets a new track ID from re-detection.
+      if (entity.embedding) {
+        const match = this.faceSnapshot.matchFace(entity.embedding);
+        if (match) {
+          entity.nodeId = match.personId;
+          entity.discovered = !match.personId.startsWith('unknown-person-');
+          entity.personId = match.personId;
+          entity.displayName = entity.discovered ? match.personId : null;
+          // Update the centroid with this new embedding for better accuracy
+          this.faceSnapshot.updateCentroid(match.personId, entity.embedding);
+          this.logger.log(
+            `VWM: face matched existing ${entity.discovered ? 'known' : 'unknown'} person: ` +
+            `${match.personId} (sim=${match.similarity.toFixed(3)})`,
+          );
+          return;
+        }
+      }
+
+      // No match — genuinely new face. Create a placeholder OKG node.
+      await this.createUnknownPersonNode(entity);
       return;
     }
 

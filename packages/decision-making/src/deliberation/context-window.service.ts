@@ -51,8 +51,9 @@ export interface ContextAssemblyRequest {
   /**
    * Conversation history ordered chronologically (oldest first).
    * Filled from most recent backward until the token budget is exhausted.
+   * Optional — when omitted, only currentMessages are used (no history turns).
    */
-  readonly conversationHistory: readonly LlmMessage[];
+  readonly conversationHistory?: readonly LlmMessage[];
 
   /**
    * Max tokens reserved for the model's generation (num_predict).
@@ -210,7 +211,7 @@ export class ContextWindowService {
         systemPrompt: '',
         messages: request.currentMessages.map((m) => ({ role: m.role, content: m.content })),
         historyMessagesIncluded: 0,
-        historyMessagesDropped: request.conversationHistory.length,
+        historyMessagesDropped: request.conversationHistory?.length ?? 0,
         estimatedPromptTokens: 0,
         systemPromptTruncated: true,
       };
@@ -250,7 +251,7 @@ export class ContextWindowService {
       - currentTokens;
 
     const { included, dropped } = this.fitHistory(
-      request.conversationHistory,
+      request.conversationHistory ?? [],
       Math.max(0, remainingBudget),
     );
 

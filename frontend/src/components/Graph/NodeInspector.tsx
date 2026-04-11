@@ -24,7 +24,7 @@ import {
   Warning as WarningIcon,
 } from '@mui/icons-material'
 import { useAppStore } from '../../store'
-import { PROVENANCE_COLORS } from './GraphPanel'
+import { PROVENANCE_COLORS } from './graphStyles'
 
 // Retrieval threshold from CANON: confidence must exceed 0.50 to be usable
 const RETRIEVAL_THRESHOLD = 0.5

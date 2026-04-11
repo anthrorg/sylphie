@@ -1,14 +1,17 @@
-import React, { useEffect } from 'react'
-import { Box, LinearProgress, Typography } from '@mui/material'
+import React, { Suspense, useEffect } from 'react'
+import { Box, CircularProgress, LinearProgress, Typography } from '@mui/material'
 import {
   AccountTree as AccountTreeIcon,
   Person as PersonIcon,
   Psychology as PsychologyIcon,
 } from '@mui/icons-material'
-import { GraphPanel } from '../../components/Graph/GraphPanel'
 import { MiniGraphPanel } from '../../components/Graph/MiniGraphPanel'
+import { WkgViewSwitcher } from '../../components/Graph/WkgViewSwitcher'
+import { ExplorerView } from '../../components/Graph/ExplorerView'
 import { useAppStore } from '../../store'
 import { useProgressiveSnapshot } from '../../hooks/useProgressiveSnapshot'
+
+const AmbientView = React.lazy(() => import('../../components/Graph/AmbientView'))
 
 // ---------------------------------------------------------------------------
 // Shared glass-panel style for the new dashboard views
@@ -123,6 +126,9 @@ export const GraphsView: React.FC = () => {
   const okg = useProgressiveSnapshot('okg', 15_000)
   const skg = useProgressiveSnapshot('skg', 15_000)
 
+  // WKG view mode (ambient 3D vs explorer)
+  const wkgViewMode = useAppStore((s) => s.wkgViewMode)
+
   // Push progressive data into the store so other components can access it
   const setOkgData = useAppStore((s) => s.setOkgData)
   const setOkgStats = useAppStore((s) => s.setOkgStats)
@@ -161,8 +167,17 @@ export const GraphsView: React.FC = () => {
           label="World Knowledge Graph"
           color="#64B5F6"
         />
+        <WkgViewSwitcher />
         <Box sx={{ width: '100%', height: '100%' }}>
-          <GraphPanel />
+          <Suspense
+            fallback={
+              <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: '#0a0e17' }}>
+                <CircularProgress size={24} sx={{ color: 'rgba(255,255,255,0.3)' }} />
+              </Box>
+            }
+          >
+            {wkgViewMode === 'ambient' ? <AmbientView /> : <ExplorerView />}
+          </Suspense>
         </Box>
       </GlassPanel>
 

@@ -45,12 +45,16 @@ import type {
   MaintenanceCycleResult,
   ReflectionResult,
   SynthesisCycleResult,
+  DecayCycleResult,
   IUpdateWkgService,
   IUpsertEntitiesService,
+  IExtractTypedEdgesService,
   IExtractEdgesService,
   IConversationEntryService,
   ICanProduceEdgesService,
   IRefineEdgesService,
+  IDetectContradictionsService,
+  IConfidenceDecayService,
   IConversationReflectionService,
   ICrossSessionSynthesisService,
   ILearningEventLogger,
@@ -59,10 +63,13 @@ import type {
 import {
   UPDATE_WKG_SERVICE,
   UPSERT_ENTITIES_SERVICE,
+  EXTRACT_TYPED_EDGES_SERVICE,
   EXTRACT_EDGES_SERVICE,
   CONVERSATION_ENTRY_SERVICE,
   CAN_PRODUCE_EDGES_SERVICE,
   REFINE_EDGES_SERVICE,
+  DETECT_CONTRADICTIONS_SERVICE,
+  CONFIDENCE_DECAY_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
   CROSS_SESSION_SYNTHESIS_SERVICE,
   LEARNING_EVENT_LOGGER,
@@ -87,6 +94,9 @@ const REFLECTION_INTERVAL_MS = 300_000; // 5 minutes
 /** Interval between cross-session synthesis cycles in milliseconds. */
 const SYNTHESIS_INTERVAL_MS = 1_800_000; // 30 minutes
 
+/** Interval between confidence decay + pruning cycles in milliseconds. */
+const DECAY_INTERVAL_MS = 600_000; // 10 minutes
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -104,6 +114,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   /** Guard against overlapping synthesis cycles. */
   private synthesisInFlight = false;
 
+  /** Guard against overlapping decay cycles. */
+  private decayInFlight = false;
+
   /** Timer handle for the automatic maintenance cycle. */
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -113,12 +126,18 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   /** Timer handle for the automatic cross-session synthesis cycle. */
   private synthesisTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Timer handle for the automatic confidence decay cycle. */
+  private decayTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(
     @Inject(UPDATE_WKG_SERVICE)
     private readonly updateWkg: IUpdateWkgService,
 
     @Inject(UPSERT_ENTITIES_SERVICE)
     private readonly upsertEntities: IUpsertEntitiesService,
+
+    @Inject(EXTRACT_TYPED_EDGES_SERVICE)
+    private readonly extractTypedEdges: IExtractTypedEdgesService,
 
     @Inject(EXTRACT_EDGES_SERVICE)
     private readonly extractEdges: IExtractEdgesService,
@@ -131,6 +150,12 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
     @Inject(REFINE_EDGES_SERVICE)
     private readonly refineEdges: IRefineEdgesService,
+
+    @Inject(DETECT_CONTRADICTIONS_SERVICE)
+    private readonly detectContradictions: IDetectContradictionsService,
+
+    @Inject(CONFIDENCE_DECAY_SERVICE)
+    private readonly confidenceDecay: IConfidenceDecayService,
 
     @Inject(CONVERSATION_REFLECTION_SERVICE)
     private readonly conversationReflection: IConversationReflectionService,
@@ -181,10 +206,21 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       });
     }, SYNTHESIS_INTERVAL_MS);
 
+    this.decayTimer = setInterval(() => {
+      this.runDecayCycle().catch((err: unknown) => {
+        this.logger.error(
+          `Decay cycle threw an unhandled error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }, DECAY_INTERVAL_MS);
+
     this.logger.log(
       `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s, ` +
         `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s, ` +
-        `synthesis cycle every ${SYNTHESIS_INTERVAL_MS / 1000}s`,
+        `synthesis cycle every ${SYNTHESIS_INTERVAL_MS / 1000}s, ` +
+        `decay cycle every ${DECAY_INTERVAL_MS / 1000}s`,
     );
   }
 
@@ -200,6 +236,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     if (this.synthesisTimer !== null) {
       clearInterval(this.synthesisTimer);
       this.synthesisTimer = null;
+    }
+    if (this.decayTimer !== null) {
+      clearInterval(this.decayTimer);
+      this.decayTimer = null;
     }
     this.logger.log('Learning subsystem stopped');
   }
@@ -265,6 +305,20 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     }
   }
 
+  async runDecayCycle(): Promise<DecayCycleResult> {
+    if (this.decayInFlight) {
+      this.logger.debug('Decay cycle already in flight — skipping');
+      return { nodesDecayed: 0, edgesDecayed: 0, nodesPruned: 0, wasNoop: true };
+    }
+
+    this.decayInFlight = true;
+    try {
+      return await this.confidenceDecay.runDecayCycle();
+    } finally {
+      this.decayInFlight = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Private: full cycle
   // ---------------------------------------------------------------------------
@@ -295,6 +349,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       conversationsCreated: 0,
       canProduceEdgesCreated: 0,
       edgesRefined: 0,
+      contradictionsDetected: 0,
       wasNoop: false,
     };
 
@@ -310,6 +365,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       conversationsCreated: result.conversationsCreated,
       canProduceEdgesCreated: result.canProduceEdgesCreated,
       edgesRefined: result.edgesRefined,
+      contradictionsDetected: result.contradictionsDetected,
     });
 
     this.logger.log(
@@ -317,7 +373,8 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
         `${result.entitiesUpserted} entities, ${result.edgesUpserted} edges, ` +
         `${result.conversationsCreated} conversations, ` +
         `${result.canProduceEdgesCreated} can_produce, ` +
-        `${result.edgesRefined} refined`,
+        `${result.edgesRefined} refined, ` +
+        `${result.contradictionsDetected} contradictions`,
     );
 
     vlog('consolidation cycle finished', {
@@ -325,6 +382,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       entities: result.entitiesUpserted,
       edges: result.edgesUpserted,
       refined: result.edgesRefined,
+      contradictions: result.contradictionsDetected,
       durationMs: Date.now() - cycleStartMs,
     });
 
@@ -359,9 +417,21 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
         );
       }
 
-      // Step 4: extract edges.
-      const edges = await this.extractEdges.extractEdges(entities, event);
-      result.edgesUpserted += edges.length;
+      // Step 3b: extract typed edges from structured facts.
+      // These are high-quality edges like (Jim) -[LIKES]-> (Coffee) parsed
+      // directly from sentence structure. They go into the graph first.
+      const { edges: typedEdges, typedPairs } =
+        await this.extractTypedEdges.extractTypedEdges(entities, event);
+      result.edgesUpserted += typedEdges.length;
+
+      // Step 4: extract co-occurrence edges (RELATED_TO) for leftover pairs.
+      // Only creates edges between entities in the same sentence that don't
+      // already have a typed edge from step 3b.
+      const cooccurrenceEdges = await this.extractEdges.extractEdges(entities, event, typedPairs);
+      result.edgesUpserted += cooccurrenceEdges.length;
+
+      // Combine all edges for downstream refinement and contradiction detection.
+      const edges = [...typedEdges, ...cooccurrenceEdges];
 
       // Step 5: create conversation entry.
       const convNodeId = await this.conversationEntry.createEntry(event, entities);
@@ -390,6 +460,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
           event.session_id,
         );
       }
+
+      // Step 7b: post-refinement contradiction detection.
+      const contradictions = await this.detectContradictions.detectContradictions(edges, event);
+      result.contradictionsDetected += contradictions;
 
       // Step 2b: mark as learned.
       await this.updateWkg.markAsLearned(event.id);
@@ -424,6 +498,7 @@ function noop(): MaintenanceCycleResult {
     conversationsCreated: 0,
     canProduceEdgesCreated: 0,
     edgesRefined: 0,
+    contradictionsDetected: 0,
     wasNoop: true,
   };
 }

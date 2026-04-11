@@ -192,6 +192,90 @@ export class WkgBootstrapService implements OnModuleInit {
   }
 
   /**
+   * WORLD-only reset: wipe the World Knowledge Graph and re-bootstrap.
+   *
+   * Preserves everything else:
+   *   - Neo4j SELF and OTHER graphs (identity + person models)
+   *   - TimescaleDB: learned_patterns, voice_patterns, sensory_ticks (tensor pipeline)
+   *   - PostgreSQL: proposed_drive_rules, users
+   *   - Drive Engine state, in-memory caches
+   *
+   * Resets has_learned = false on INPUT_RECEIVED/INPUT_PARSED events so the
+   * learning pipeline reprocesses them with the improved extraction pipeline.
+   * This rebuilds the WKG organically from existing conversation history.
+   */
+  async resetWorldOnly(): Promise<{
+    nodesDeleted: number;
+    edgesDeleted: number;
+    nodesCreated: number;
+    eventsReset: number;
+  }> {
+    // ── 1. Count what's in WORLD before wiping ──────────────────────────
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    let nodesDeleted = 0;
+    let edgesDeleted = 0;
+
+    try {
+      const countResult = await session.run(
+        `MATCH (n) OPTIONAL MATCH (n)-[r]-() RETURN count(DISTINCT n) AS nodes, count(DISTINCT r) AS edges`,
+      );
+      nodesDeleted = countResult.records[0].get('nodes').toNumber();
+      edgesDeleted = countResult.records[0].get('edges').toNumber();
+
+      // ── 2. Wipe WORLD only ──────────────────────────────────────────
+      await session.run(`MATCH (n) DETACH DELETE n`);
+      this.logger.warn(
+        `Neo4j [WORLD] reset: ${nodesDeleted} nodes, ${edgesDeleted} edges deleted`,
+      );
+    } finally {
+      await session.close();
+    }
+
+    // ── 3. Reset has_learned so old events get reprocessed ─────────────
+    let eventsReset = 0;
+    try {
+      const result = await this.timescale.query<{ count: string }>(
+        `UPDATE events SET has_learned = false
+         WHERE type IN ('INPUT_RECEIVED', 'INPUT_PARSED')
+           AND has_learned = true
+         RETURNING id`,
+      );
+      eventsReset = result.rows.length;
+      this.logger.warn(`TimescaleDB: reset has_learned on ${eventsReset} events for reprocessing`);
+    } catch (err) {
+      this.logger.warn(
+        `has_learned reset failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // ── 4. Reset reflected_sessions so conversations get re-reflected ──
+    try {
+      await this.timescale.query(`TRUNCATE reflected_sessions CASCADE`);
+      this.logger.warn('TimescaleDB: truncated reflected_sessions');
+    } catch {
+      // Table may not exist — that's fine
+    }
+
+    // ── 5. Reset synthesized_insight_pairs so synthesis re-runs ─────────
+    try {
+      await this.timescale.query(`TRUNCATE synthesized_insight_pairs CASCADE`);
+      this.logger.warn('TimescaleDB: truncated synthesized_insight_pairs');
+    } catch {
+      // Table may not exist — that's fine
+    }
+
+    // ── 6. Re-bootstrap WORLD (CoBeing anchor + Drive nodes) ──────────
+    const { nodes: nodesCreated } = await this.bootstrap();
+
+    this.logger.warn(
+      `WORLD-only reset complete: ${nodesDeleted} nodes deleted, ${nodesCreated} re-created, ` +
+        `${eventsReset} events queued for reprocessing. SELF/OTHER/tensor pipeline preserved.`,
+    );
+
+    return { nodesDeleted, edgesDeleted, nodesCreated, eventsReset };
+  }
+
+  /**
    * Full system reset: clear ALL persistent stores, then re-bootstrap WKG.
    *
    * Clears:

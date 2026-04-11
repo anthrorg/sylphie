@@ -125,7 +125,10 @@ export const CROSS_MODULATION_RULES: readonly CrossModulationRule[] = [
       'High anxiety (>0.7) increases integrity pressure. At anxiety=1.0: +0.0012/s (~2x base integrity rate).',
   },
 
-  // Rule 3 (priority 2): High systemHealth pressure amplifies anxiety
+  // Rule 3 (priority 2): High systemHealth pressure amplifies anxiety.
+  // SystemHealth is now a composite (computed after cross-modulation), so this
+  // rule fires based on the PREVIOUS tick's composite value — a one-tick lag
+  // that prevents feedback loops.
   {
     id: 'system-health-amplifies-anxiety',
     source: DriveName.SystemHealth,
@@ -242,6 +245,32 @@ export function applyCrossModulation(
         `${rule.id}: ${rule.source}(${effect.sourceValue.toFixed(3)})→${rule.target} ${effect.targetBefore.toFixed(3)}→${effect.targetAfter.toFixed(3)}`,
       );
     }
+  }
+
+  // ── SystemHealth composite ──────────────────────────────────────────────
+  // SystemHealth is not an independent drive — it's derived from the mean of
+  // the other three core drives (MoralValence, Integrity, CognitiveAwareness).
+  // When those drives are relieved through actions, SystemHealth drops. When
+  // they're under pressure, SystemHealth rises. This makes it a readable
+  // summary of overall core-drive health.
+  //
+  // Computed AFTER all rules so the composite reflects the post-modulation
+  // state of its sources. The system-health-amplifies-anxiety rule (above)
+  // reads the PREVIOUS tick's composite value — a one-tick lag that prevents
+  // feedback loops.
+  const compositeBefore = state[DriveName.SystemHealth];
+  state[DriveName.SystemHealth] =
+    (state[DriveName.MoralValence] +
+      state[DriveName.Integrity] +
+      state[DriveName.CognitiveAwareness]) / 3;
+
+  if (Math.abs(state[DriveName.SystemHealth] - compositeBefore) > 0.001) {
+    effects.push(
+      `system-health-composite: avg(MV=${state[DriveName.MoralValence].toFixed(3)}, ` +
+        `INT=${state[DriveName.Integrity].toFixed(3)}, ` +
+        `CA=${state[DriveName.CognitiveAwareness].toFixed(3)}) = ` +
+        `${state[DriveName.SystemHealth].toFixed(3)}`,
+    );
   }
 
   if (effects.length > 0) {

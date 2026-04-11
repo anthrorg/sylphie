@@ -35,6 +35,17 @@ export interface GraphSnapshotDto {
   edges: GraphEdgeDto[];
 }
 
+export interface SearchNodeResult {
+  node_id: string;
+  label: string;
+  node_type: string;
+  score: number;
+}
+
+export interface NeighborhoodDto extends GraphSnapshotDto {
+  truncated: boolean;
+}
+
 // Properties that are promoted to top-level fields on GraphNodeDto and should
 // not be duplicated into the generic `properties` bag.
 const NODE_META_KEYS = new Set([
@@ -80,10 +91,10 @@ interface PkgCache {
 // three Grafeo-style graphs used at runtime by the decision-making,
 // learning, communication, and planning subsystems.
 //
-// NOTE: Entities created via `MERGE (n {label: $label})` without a Neo4j
-// label cannot benefit from label-scoped property indexes. The full-text
-// index partially covers this gap. A future refactor should ensure all
-// WKG nodes carry at least an :Entity label.
+// NOTE: All current MERGE paths include a Neo4j label (:Entity, :ActionProcedure,
+// etc.). Legacy unlabeled nodes are migrated to :Entity on module init via
+// LABEL_MIGRATION_CYPHER below. The full-text index covers all knowledge-bearing
+// node labels for fuzzy lookups.
 // ---------------------------------------------------------------------------
 
 const KG_INDEX_STATEMENTS = [
@@ -346,6 +357,115 @@ export class WkgQueryService implements OnModuleInit {
       return { edges, total };
     } finally {
       await Promise.all([countSession.close(), dataSession.close()]);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Search & neighborhood queries — used by the Explorer view
+  // -----------------------------------------------------------------------
+
+  /**
+   * Full-text search across WKG node labels using the kg_label_fulltext index.
+   * Appends `*` for prefix matching (e.g. "cur" matches "curiosity").
+   */
+  async searchNodes(query: string, limit = 10): Promise<SearchNodeResult[]> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      // Escape lucene special chars and append wildcard for prefix matching
+      const sanitized = query.replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, '\\$&');
+      const result = await session.run(
+        `CALL db.index.fulltext.queryNodes('kg_label_fulltext', $query)
+         YIELD node, score
+         RETURN node.node_id AS node_id,
+                node.label AS label,
+                node.node_type AS node_type,
+                labels(node) AS labels,
+                score
+         ORDER BY score DESC
+         LIMIT ${limit}`,
+        { query: `${sanitized}*` },
+      );
+      return result.records.map((rec) => ({
+        node_id: asString(rec.get('node_id')),
+        label: asString(rec.get('label')),
+        node_type: asString(rec.get('node_type')) || (rec.get('labels') as string[])?.[0] || 'Unknown',
+        score: asNumber(rec.get('score'), 0),
+      }));
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Fetch the N-hop ego-graph neighborhood around a given node.
+   * Returns all nodes within `hops` hops and all edges between them.
+   * Capped at 500 nodes to prevent explosion on highly connected nodes.
+   */
+  async getNeighborhood(nodeId: string, hops: number): Promise<NeighborhoodDto> {
+    const clampedHops = Math.max(1, Math.min(3, hops));
+    const maxNodes = 500;
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      // Step 1: collect all nodes within N hops
+      const nodeResult = await session.run(
+        `MATCH (center {node_id: $nodeId})
+         CALL {
+           WITH center
+           MATCH (center)-[*1..${clampedHops}]-(neighbor)
+           RETURN DISTINCT neighbor
+           LIMIT ${maxNodes + 1}
+         }
+         WITH center, collect(DISTINCT neighbor) AS neighbors
+         WITH [center] + neighbors AS allNodes
+         UNWIND allNodes AS n
+         RETURN DISTINCT n, labels(n) AS labels, elementId(n) AS eid`,
+        { nodeId },
+      );
+
+      const truncated = nodeResult.records.length > maxNodes;
+      const nodeRecords = truncated ? nodeResult.records.slice(0, maxNodes) : nodeResult.records;
+      const nodes: GraphNodeDto[] = nodeRecords.map((rec) => this.mapNodeRecord(rec));
+
+      // Collect node IDs for edge filtering
+      const nodeIdSet = new Set(nodes.map((n) => n.node_id));
+
+      // Step 2: fetch all edges between the collected nodes
+      const edgeResult = await session.run(
+        `MATCH (a)-[r]->(b)
+         WHERE a.node_id IN $nodeIds AND b.node_id IN $nodeIds
+         RETURN r, type(r) AS rel_type,
+                elementId(r) AS eid,
+                a.node_id AS source_node_id,
+                b.node_id AS target_node_id
+         LIMIT 5000`,
+        { nodeIds: [...nodeIdSet] },
+      );
+
+      const edges: GraphEdgeDto[] = edgeResult.records.map((rec) => {
+        const r = rec.get('r');
+        const relType: string = rec.get('rel_type');
+        const eid: string = rec.get('eid');
+        const rProps = r.properties as Record<string, unknown>;
+        const properties: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(rProps)) {
+          if (!EDGE_META_KEYS.has(k)) properties[k] = toPlain(v);
+        }
+        return {
+          edge_id: asString(rProps.edge_id) || eid,
+          source_node_id: asString(rec.get('source_node_id')),
+          target_node_id: asString(rec.get('target_node_id')),
+          edge_type: relType,
+          label: asString(rProps.label) || relType,
+          properties,
+          confidence: asNumber(rProps.confidence, 0.5),
+          created_at: asString(rProps.created_at) || new Date().toISOString(),
+        };
+      });
+
+      this.logger.log(`Neighborhood(${nodeId}, ${clampedHops}): ${nodes.length} nodes, ${edges.length} edges${truncated ? ' (TRUNCATED)' : ''}`);
+      return { nodes, edges, truncated };
+    } finally {
+      await session.close();
     }
   }
 

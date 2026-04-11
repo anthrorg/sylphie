@@ -6,6 +6,8 @@
  * with priority scoring, classification, and decay.
  */
 
+import { randomUUID } from 'crypto';
+
 /**
  * Classification of an opportunity by origin type.
  */
@@ -92,5 +94,5 @@ export function createOpportunity(
  * Generate a unique ID for an opportunity.
  */
 function generateOpportunityId(): string {
-  return `opp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  return randomUUID();
 }

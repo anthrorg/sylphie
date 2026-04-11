@@ -2,11 +2,13 @@ import * as path from 'path';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
+import { Pool } from 'pg';
 import {
   PrismaModule,
   TimescaleModule,
   Neo4jModule,
   Neo4jInstanceName,
+  POSTGRES_RUNTIME_POOL,
   neo4jConfig,
   timescaleConfig,
   postgresConfig,
@@ -27,6 +29,7 @@ import { MetricsController } from './controllers/metrics.controller';
 import { DebugController } from './controllers/debug.controller';
 import { AuthController } from './controllers/auth.controller';
 import { SupervisorController } from './controllers/supervisor.controller';
+import { RulesController } from './controllers/rules.controller';
 import { GraphGateway } from './gateways/graph.gateway';
 import { ConversationGateway } from './gateways/conversation.gateway';
 import { TelemetryGateway } from './gateways/telemetry.gateway';
@@ -51,6 +54,7 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
 import { SupervisorBroadcastService } from './services/supervisor-broadcast.service';
 import { CognitionGatewayService } from './services/cognition-gateway.service';
 import { CognitionBridgeService } from './services/cognition-bridge.service';
+import { GuardianRulesService } from './services/guardian-rules.service';
 
 @Module({
   imports: [
@@ -136,8 +140,27 @@ import { CognitionBridgeService } from './services/cognition-bridge.service';
     MetricsController,
     DebugController,
     SupervisorController,
+    RulesController,
   ],
   providers: [
+    // PostgreSQL runtime pool for guardian rule management
+    {
+      provide: POSTGRES_RUNTIME_POOL,
+      useFactory: (config: ConfigService): Pool => {
+        return new Pool({
+          host: config.get('postgres.host', 'localhost'),
+          port: config.get('postgres.port', 5434),
+          database: config.get('postgres.database', 'sylphie_system'),
+          user: config.get('postgres.runtimeUser', 'sylphie_app'),
+          password: config.get('postgres.runtimePassword', 'sylphie_app_dev'),
+          max: 3,
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 5000,
+        });
+      },
+      inject: [ConfigService],
+    },
+    GuardianRulesService,
     // Sensory pipeline providers are now inside DecisionMakingModule
     SensoryLoggerService,
     DrivePublisherService,
