@@ -220,6 +220,15 @@ export class AttractorMonitorService {
     return { mae, sampleCount, windowSize: this.PREDICTION_WINDOW_SIZE };
   }
 
+  /**
+   * Return the last N prediction MAE values from the rolling window.
+   * Used by the tensor cognition sidecar's Learning Panel.
+   */
+  getRecentMAEValues(count: number): number[] {
+    const entries = this.predictionWindow.slice(-count);
+    return entries.map((e) => e.mae);
+  }
+
   // ---------------------------------------------------------------------------
   // Detection
   // ---------------------------------------------------------------------------

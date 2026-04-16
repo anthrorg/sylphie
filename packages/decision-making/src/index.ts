@@ -28,7 +28,10 @@ export { AttractorMonitorService } from './monitoring/attractor-monitor.service'
 export type { DetectorResult } from './monitoring/attractor-monitor.service';
 
 /** Public interface types for consumers. */
-export type { IDecisionMakingService } from './interfaces/decision-making.interfaces';
+export type { IDecisionMakingService, ITensorInferenceService, TensorInferenceResult, PanelContext } from './interfaces/decision-making.interfaces';
+
+/** Tensor inference — externally provided by @Global() CognitionModule. */
+export { TENSOR_INFERENCE_SERVICE } from './decision-making.tokens';
 
 /** Latent space — exported for system reset. */
 export { LatentSpaceService } from './latent-space/latent-space.service';

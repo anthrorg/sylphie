@@ -101,6 +101,20 @@ export interface CycleResponse {
    * data rather than the initial speculative confidence (0.3).
    */
   readonly latentPatternIds?: readonly string[];
+
+  // ── Tensor cognition sidecar metadata (optional) ─────────────────────────
+
+  /** Tensor model's top action category prediction, if sidecar was available. */
+  readonly tensorTopCategory?: string;
+
+  /** Tensor model's urgency signal [0,1], if sidecar was available. */
+  readonly tensorUrgency?: number;
+
+  /** Whether the 4 panel models reached consensus on this cycle. */
+  readonly tensorConsensus?: boolean;
+
+  /** Bootstrap mode at decision time: shadow | audit | partial | full. */
+  readonly bootstrapMode?: string;
 }
 
 // ---------------------------------------------------------------------------

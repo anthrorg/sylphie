@@ -80,6 +80,22 @@ export class TickSamplerService {
     return this.window.length;
   }
 
+  /**
+   * Return the most recent frame without consuming event-driven inputs
+   * or updating the EWMA blend.
+   *
+   * Used by the tensor training path to submit training data on every tick
+   * without interfering with the full decision cycle's sample() call.
+   * Returns a zero-filled frame if no frames have been produced yet.
+   */
+  async peek(): Promise<SensoryFrame> {
+    const last = this.window[this.window.length - 1];
+    if (last) return last;
+
+    // No frames yet — produce one via sample() to bootstrap the window
+    return this.sample();
+  }
+
   /** Clear all in-memory state (e.g., on system reset). */
   clear(): void {
     this.latestValues.clear();
@@ -137,6 +153,17 @@ export class TickSamplerService {
 
   updateText(text: string): void {
     this.update('text', text);
+  }
+
+  /**
+   * Inject synthetic text for autonomous processing (e.g., boredom research).
+   * Unlike updateText, this does NOT update lastInputAt or trigger the
+   * event-driven callback — it just makes the text available for the next
+   * sample() call. This prevents synthetic text from being treated as user input.
+   */
+  injectSyntheticText(text: string): void {
+    this.latestValues.set('text', text);
+    vlog('synthetic text injected', { textPreview: text.substring(0, 80) });
   }
 
   updateDriveVector(vector: number[]): void {

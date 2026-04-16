@@ -1,14 +1,16 @@
 # Ideas Research Report
 
 **Generated:** 2026-04-09
-**Last Updated:** 2026-04-09
+**Last Updated:** 2026-04-13
 **Scope:** All proposed ideas in `/wiki/ideas/`
 
 ---
 
 ## Executive Summary
 
-Fifteen proposed ideas were researched against the current Sylphie codebase. All are feasible with varying levels of complexity and impact. Below is a prioritized summary followed by detailed findings for each idea.
+Forty-six proposed ideas were researched against the current Sylphie codebase (15 original + 29 new as of 2026-04-12 + 2 new as of 2026-04-13). Below is a prioritized summary followed by detailed findings for each idea.
+
+### Original Ideas (2026-04-09)
 
 | # | Idea | Feasibility | Effort | Risk | Priority |
 |---|------|-------------|--------|------|----------|
@@ -29,6 +31,47 @@ Fifteen proposed ideas were researched against the current Sylphie codebase. All
 | 15 | Decision Cycle Structured Error Recovery | HIGH | HIGH (16-20 hrs) | MEDIUM | Cross-Cutting |
 
 **Note:** `batch-decision-event-flush.md` was empty and excluded from research.
+
+### New Ideas (2026-04-12)
+
+| # | Idea | Feasibility | Effort | Risk | Priority |
+|---|------|-------------|--------|------|----------|
+| 16 | Clean Up Stale Stub Comments in ActionHandlerRegistry | HIGH | LOW (1 day) | NONE | Documentation |
+| 17 | Wire HALLUCINATED/DEPRESSIVE Attractor Detectors | ALREADY DONE | N/A | N/A | No Action Needed |
+| 18 | Forward Drive Events to TimescaleDB | HIGH | MODERATE (2-3 days) | LOW | Integration |
+| 19 | Implement DrivesController Stub Endpoints | HIGH | MODERATE (2-3 days) | MEDIUM | API Wiring |
+| 20 | Wire IPCSelfKgReader for Real KG(Self) Access | HIGH | HIGH (5-7 days) | MEDIUM | Core Architecture |
+| 21 | Support 'call' Step Type in MorphologyExecutor | HIGH | MODERATE (3-4 days) | MEDIUM | Feature |
+| 22 | Remove SensoryLoggerService Temporary Stand-in | HIGH | MODERATE (2-3 days) | HIGH | Cleanup/Refactor |
+| 23 | Simulation Cross-Drive Effect Aggregation | HIGH | MODERATE (3-4 days) | MEDIUM | Feature/Ranking |
+| 24 | Implement Real Theater Prohibition Validation | HIGH | MODERATE (3-4 days) | MEDIUM | Validation |
+| 25 | Add Timeout Guards to LLM Calls in Learning Pipeline | HIGH | LOW (1-2 days) | LOW | Quick Win |
+| 26 | Per-Row Error Isolation in Planning Ingest | HIGH | LOW (1 day) | LOW | Quick Win |
+| 27 | Add Jitter and Iterative Retry in Recovery Mechanism | HIGH | LOW (1-2 days) | LOW | Resilience |
+| 28 | Adaptive Candidate Scoring Weights | HIGH | MODERATE (4-5 days) | MEDIUM | High Value |
+| 29 | Perception Frame Source Timeout Guards | HIGH | LOW (1-2 days) | MEDIUM | Quick Win |
+| 30 | Supervisor Verdict Audit Trail | HIGH | MODERATE (3-4 days) | LOW | High Value |
+| 31 | Ungrounded Insight Re-grounding Sweep | HIGH | MODERATE (3-4 days) | LOW | Medium Value |
+| 32 | Windowed Sampling for Long Session Reflection | HIGH | MODERATE (3-4 days) | MEDIUM | High Value |
+| 33 | Learning Pipeline Neo4j Session Batching | HIGH | LOW (1-2 days) | LOW | Quick Win |
+| 34 | Supervisor Adaptive Sampling Rate | HIGH | MODERATE (3-4 days) | LOW-MEDIUM | High Value |
+| 35 | Decision Cycle Concurrency Guard | HIGH | HIGH (4-6 days) | HIGH | Critical Fix |
+| 36 | Drive Tick-Loop Observability Instrumentation | HIGH | LOW-MODERATE (2-3 days) | LOW | Observability |
+| 37 | Richer Semantic Extraction in Consolidation | NEEDS INFO | MODERATE-HIGH (4-6 days) | MEDIUM | High Value |
+| 38 | Configurable LLM Pricing Rates in Cost Tracker | HIGH | LOW (< 1 day) | VERY LOW | Quick Win |
+| 39 | Simulation Parallel Category Evaluation | HIGH | LOW (1-2 days) | LOW | Quick Win |
+| 40 | Deduplicate Perception Embedding Init | BLOCKED | UNKNOWN | UNKNOWN | Blocked — File Not Found |
+| 41 | Fix Guilt Repair Behavioral Change Dead Path | HIGH | MODERATE (2-3 days) | LOW | Critical Bug Fix |
+| 42 | Live ageWeight Decay for Episodic Memory | HIGH | MODERATE (2-3 days) | MEDIUM | Correctness Critical |
+| 43 | Bootstrap Category Normalization Consistency | HIGH | LOW (< 1 day) | LOW | Quick Win |
+| 44 | Circuit Breaker for SidecarControlService | HIGH | MODERATE-HIGH (4-5 days) | MEDIUM | Production Resilience |
+
+### New Ideas (2026-04-13)
+
+| # | Idea | Feasibility | Effort | Risk | Priority |
+|---|------|-------------|--------|------|----------|
+| 45 | Pre-computed Assistant Pairing in getSplitHistory() | HIGH | LOW (< 1 day) | VERY LOW | Quick Win |
+| 46 | Mood-Congruent Episodic Retrieval | HIGH | MODERATE (3-4 days) | MEDIUM | Intelligence Quality |
 
 ---
 
@@ -840,3 +883,964 @@ Close this idea as already implemented. If future enhancement is desired (e.g., 
 
 **No Action:**
 15. Rule-Based Cross-Modulation Engine — already implemented
+
+---
+
+# New Ideas Research (2026-04-12)
+
+---
+
+## 16. Clean Up Stale Stub Comments in ActionHandlerRegistryService
+
+### Verdict: PROCEED - Low-Effort Documentation Cleanup
+
+### Current State
+- **File:** `packages/decision-making/src/action-handlers/action-handler-registry.service.ts`
+- Class-level JSDoc (lines 2-29) claims handlers are "stubs that log intent" and "will be replaced with wired implementations"
+- Actual implementations are fully wired: LLM_GENERATE calls `this.llmService.complete()`, WKG_QUERY calls `this.wkgContext` methods, TTS_SPEAK returns text for delivery, LOG_EVENT is functional, RESEARCH_ENTITY searches SearXNG and writes to WKG
+
+### Key Findings
+- All handlers ARE fully implemented with real service calls
+- `@Optional` decorators on `llmService` and `wkgContext` are justified for graceful degradation but comments claiming "stubs" are misleading
+- New contributors reading lines 14-26 would believe the system is non-functional
+
+### Recommended Implementation
+1. Update class-level JSDoc to reflect actual wired state
+2. Clarify `@Optional` decorators enable graceful fallback, not incomplete implementation
+3. Remove "will be replaced" language
+
+### Risks
+- None — documentation-only change
+
+### Answers to Open Questions
+- **Are there genuinely incomplete handlers?** No. All are fully implemented
+- **Should `@Optional` injections become required?** No. Keep for test/partial-deployment resilience
+
+---
+
+## 17. Wire HALLUCINATED_KNOWLEDGE and DEPRESSIVE_ATTRACTOR Detectors
+
+### Verdict: NO ACTION - Already Implemented
+
+### Current State
+- **File:** `packages/decision-making/src/monitoring/attractor-monitor.service.ts`
+- HALLUCINATED_KNOWLEDGE detector (lines 342-427): Fully implemented. Queries WORLD Neo4j for provenance distribution with 30s TTL cache
+- DEPRESSIVE_ATTRACTOR detector (lines 456-522): Fully implemented. Composite signal from SHRUG rate, MAE, and elevated negative drives via `driveStateReader.getCurrentState()`
+
+### Key Findings
+- Both detectors are production-ready and active in `runDetectors()`
+- Neo4jService and IDriveStateReader are properly injected and used
+- No null-casting issue exists in current code
+- Alerts emit through DECISION_EVENT_LOGGER
+
+---
+
+## 18. Forward Drive Events to TimescaleDB Event Backbone
+
+### Verdict: PROCEED - Medium Effort, Medium Value
+
+### Current State
+- **File:** `packages/drive-engine/src/drive-process/drive-process-manager.service.ts`
+- DRIVE_EVENT handler (lines 193-202) only logs to NestJS logger
+- TODO comment states "Forward to event backbone (TimescaleDB)"
+- TimescaleService is already injected; OPPORTUNITY_CREATED uses the working pattern
+
+### Key Findings
+- Infrastructure for writing to TimescaleDB is present and operational
+- DRIVE_EVENT payload contains `driveEventType` and `drive` properties
+- No decision on batching vs. individual writes exists
+
+### Recommended Implementation
+1. Implement `writeDriveEvent()` mirroring `writeOpportunityEvent()` pattern
+2. Schema: event timestamp, driveEventType, drive name, tick number, session ID
+3. Individual writes initially (current pattern), batch if performance requires
+
+### Risks
+- Backpressure if drive events fire >100/sec — consider batching
+- Timestamp accuracy depends on payload including computed tick time
+
+---
+
+## 19. Implement DrivesController Stub Endpoints
+
+### Verdict: PROCEED - Quick Win, Medium Value
+
+### Current State
+- **File:** `apps/sylphie/src/controllers/drives.controller.ts`
+- Three POST endpoints defined (`/drives/override`, `/drives/drift`, `/drives/reset`) that accept requests but return empty `{}`
+- `driveReader` injected but only used for GET endpoint
+
+### Key Findings
+- No IPC message types for OVERRIDE_SET, DRIFT_SET, OVERRIDE_RESET exist yet
+- WsChannelService.send() is available for outbound IPC
+- No write path exists from main process to drive child
+
+### Recommended Implementation
+1. Create IPC message types in shared drive-engine types
+2. Wire DriveProcessManagerService into controller
+3. Each endpoint: validate input → construct IPC message → send → return result
+4. Add logging for audit trail
+
+### Risks
+- Safety constraints unclear — should overrides be dev-mode only?
+- Range validation needed (drives typically [0, 1])
+- No feedback mechanism for whether override was applied
+
+---
+
+## 20. Wire IPCSelfKgReader for Real KG(Self) Access in Drive Process
+
+### Verdict: NEEDS MORE INFO - High Effort, High Value
+
+### Current State
+- **File:** `packages/drive-engine/src/drive-process/database-clients.ts`
+- FallbackSelfKgReader (lines 36-104) returns empty arrays for all queries
+- IPCSelfKgReader (lines 114-141) is entirely unimplemented — constructor sets `ready: false`
+- Phase 2 TODO confirms switch to IPCSelfKgReader needed
+
+### Key Findings
+- WsChannelService supports fire-and-forget only — no request/response pattern
+- IPC request/response requires: message ID tracking, promise map, handler that resolves by ID
+- Self-evaluation loop runs without actual baseline data — no adjustment occurs
+
+### Recommended Implementation
+1. Implement `IPCSelfKgReader._queryViaIPC()` with Promise-based request/response
+2. Wire WsChannelService for bidirectional communication
+3. Main process handlers to query Grafeo and respond
+4. 5-minute TTL cache to reduce IPC volume
+
+### Risks
+- IPC protocol design incomplete (request/response not yet established)
+- Circular module dependency risk
+- 10-tick interval with RPC latency could impact drive tick timing
+
+---
+
+## 21. Support 'call' Step Type in MorphologyExecutor
+
+### Verdict: PROCEED - Medium Effort, Medium Value
+
+### Current State
+- **File:** `packages/perception-service/cobeing/layer3_knowledge/morphology_executor.py`
+- `_execute_string_ast()` raises NotImplementedError for step_type='call'
+- ProcedureExecutor fully implements 'call' with recursion depth limiting and cycle detection
+
+### Key Findings
+- MorphologyExecutor already handles 'operation' and 'conditional' step types
+- ProcedureExecutor works with ValueNode IDs; MorphologyExecutor with Python strings
+- Cycle detection and recursion limiting are essential patterns to replicate
+
+### Recommended Implementation
+1. Add 'call' branch to `_execute_string_ast()` with target procedure resolution
+2. Add cycle detection via active procedure stack
+3. Add recursion depth limit (recommend 10)
+4. Implement own version rather than delegating to ProcedureExecutor (different semantics)
+
+### Risks
+- Infinite recursion without cycle detection
+- "Executor unification" mentioned as future epic — may duplicate code
+
+---
+
+## 22. Remove SensoryLoggerService After Executor Engine Wiring
+
+### Verdict: PROCEED - Medium Effort, Requires Pre-work
+
+### Current State
+- **File:** `apps/sylphie/src/services/sensory-logger.service.ts` (54 lines)
+- Runs `setInterval` at 2000ms to sample sensory pipeline via `tickSampler.sample()`
+- Explicitly documented as "temporary stand-in for executor engine's tick loop"
+
+### Key Findings
+- Executor engine IS wired and running cycles through 8 states
+- However, executor engine does NOT call `tickSampler.sample()` — no sampling integration
+- SensoryLoggerService is the ONLY active sampler of the sensory pipeline
+- Removing it without wiring executor engine sampling will break telemetry
+
+### Recommended Implementation
+1. Add `tickSampler.sample()` to `ExecutorEngineService.onCycleComplete()`
+2. Emit telemetry broadcast from executor engine
+3. Remove SensoryLoggerService from providers and delete file
+4. Verify telemetry panel still receives frame data
+
+### Risks
+- **HIGH**: Removing service without wiring executor sampling loses all sensory telemetry
+
+---
+
+## 23. Simulation Cross-Drive Effect Aggregation
+
+### Verdict: PROCEED - High Value, Medium Effort
+
+### Current State
+- **File:** `packages/planning/src/pipeline/simulation.service.ts`
+- `evaluateCategory()` aggregates only the `affectedDrive` from historical events; full `driveEffects` map exists in payloads but is discarded (line 188)
+- `SimulatedOutcome.estimatedDriveEffect` already supports `Partial<Record<DriveName, number>>`
+
+### Key Findings
+- Loop extracts only `effect = driveEffects[affectedDrive]`, ignoring secondary effects
+- No cross-drive ranking exists — sorting by single-drive relief only
+- Guardian teaching fallback already sets two drives (affectedDrive + CognitiveAwareness)
+
+### Recommended Implementation
+1. Aggregate all drives from `driveEffects` in `evaluateCategory()`
+2. Update ranking to consider secondary effects
+3. Viability threshold applies to primary drive only; ranking considers both
+
+### Risks
+- Ranking redesign needed to fairly weight primary vs secondary effects
+- Could surface outcomes that relieve collateral drives but worsen target
+
+---
+
+## 24. Implement Real Theater Prohibition Validation
+
+### Verdict: PROCEED - High Value, Medium Effort
+
+### Current State
+- **File:** `apps/sylphie/src/services/communication.service.ts` line 778
+- Only checks `anxiety > 0.7 && response.text.length > 0`, logs debug, returns `true` (no blocking)
+- TODO requests "real theater validation — compare response sentiment against drive state"
+
+### Key Findings
+- No sentiment analysis performed; heuristic is incomplete
+- Method is called but return value only used for logging/metadata, not filtering
+- CycleResponse contains text, driveSnapshot, and arbitrationType — all needed for validation
+
+### Recommended Implementation
+1. Define drive-to-sentiment mappings (anxiety→cautious, curiosity→inquisitive, etc.)
+2. Start with lightweight sentiment analysis (VADER or similar)
+3. Compare detected sentiment against drive state vector
+4. Flag-only initially (no blocking); escalate in Phase 2
+
+### Risks
+- Sentiment accuracy on short responses can be unreliable
+- Drive-to-sentiment mappings are subjective
+- False positives could suppress genuine communication
+
+---
+
+## 25. Add Timeout Guards to LLM Calls in Learning Pipeline
+
+### Verdict: PROCEED - Quick Win, High Reliability Impact
+
+### Current State
+- **Files:** `packages/learning/src/pipeline/refine-edges.service.ts`, `conversation-reflection.service.ts`, `cross-session-synthesis.service.ts`
+- All use `await this.llm.complete()` with no timeout wrapper
+- `LlmRequest` interface has no `timeout` or `AbortSignal` field
+- `inFlight` guards prevent concurrent cycles but a hung LLM call permanently blocks that cycle type
+
+### Key Findings
+- Consistent pattern: bare `await this.llm.complete()` across all three services
+- A single hung LLM call permanently blocks its cycle type (maintenance/reflection/synthesis)
+- No error handling for timeout in any service
+
+### Recommended Implementation
+1. Wrap each LLM call in `Promise.race()` with configurable timeout
+2. Per-service timeouts: refine-edges 15-20s, reflection 30-45s, synthesis 30-45s
+3. Emit `LEARNING_TIMEOUT` event for observability
+4. No immediate retry — wait for next interval
+
+### Risks
+- Low: non-breaking addition caught by try-catch
+- Too-aggressive timeouts may fail legitimate slow requests
+
+---
+
+## 26. Per-Row Error Isolation in Planning Opportunity Ingestion
+
+### Verdict: PROCEED - Quick Win, High Reliability
+
+### Current State
+- **File:** `packages/planning/src/planning.service.ts` line ~232
+- `JSON.parse()` NOT wrapped in per-row try-catch in `ingestOpportunities()`
+- By contrast, `pollAndEvaluateOutcomes()` correctly wraps each parse in try-catch
+
+### Key Findings
+- Inconsistency confirmed: ingestOpportunities lacks per-row isolation while pollAndEvaluateOutcomes has it
+- Single bad row aborts entire opportunity intake loop
+- Affected rows retry infinitely until aged out
+
+### Recommended Implementation
+1. Wrap parse + processing in per-row try-catch with `continue` on error
+2. Extract shared `safeParsePayload()` utility
+3. Mark failed rows as processed to prevent infinite retry
+4. Emit `OPPORTUNITY_INTAKE_ERROR` event
+
+### Risks
+- Low: improves resilience with no change for valid rows
+
+---
+
+## 27. Add Jitter and Iterative Retry in Recovery Mechanism
+
+### Verdict: PROCEED - Low Effort, Medium Value
+
+### Current State
+- **File:** `packages/drive-engine/src/ipc-channel/recovery.ts`
+- Uses recursive `return this.attemptRecovery()` on failure (bounded by maxRetries=3)
+- Deterministic exponential backoff: 1s → 2s → 4s → 8s, capped at 60s
+- No jitter — all instances reconnect simultaneously (thundering herd risk)
+- `pendingMessageCount` hardcoded to 0
+
+### Key Findings
+- Recursive retry confirmed at line 158; bounded but fragile
+- No jitter creates thundering herd on reconnect
+- `incrementReconnectCount()` exists and works properly
+- Structure is sound — just needs jitter and iteration
+
+### Recommended Implementation
+1. Replace recursion with while loop
+2. Add ±25% jitter to backoff delays
+3. Fix `pendingMessageCount` to read actual queue size
+4. Make jitter configurable in `RecoveryOptions`
+
+### Risks
+- Low-medium: iterative loop is safer than recursion
+- Test edge case: maxRetries=0
+
+---
+
+## 28. Adaptive Candidate Scoring Weights
+
+### Verdict: PROCEED - High Value, Medium Effort
+
+### Current State
+- **File:** `packages/decision-making/src/deliberation/deliberation.service.ts` (lines 799-880)
+- Hardcoded scoring weights: GROUNDED +1.0, LLM_ASSISTED +0.5, chatbot -0.5, etc.
+- ConfidenceUpdaterService emits outcome signals but doesn't feed back into deliberation weights
+
+### Key Findings
+- Weight discovery mechanism exists but is disconnected from scoring
+- No per-intent weight tuning currently exists
+- Guardian feedback system (confirmation=2x, correction=3x multipliers) proves selective reinforcement infrastructure exists
+- Supervisor verdict data doesn't persist or influence future scoring
+
+### Recommended Implementation
+1. Create CandidateScoringWeightsService with per-intent adaptive weights
+2. Implement EMA weight update rule (α=0.05) correlated with outcome confidence
+3. Persist weights to TimescaleDB for cross-restart continuity
+4. Guard against collapse: clamp weights to [0.0, 2.0], diversity checks
+
+### Risks
+- Weight collapse without diversity guards
+- Slow convergence with conservative EMA
+- Observational bias from early sessions
+
+---
+
+## 29. Perception Frame Source Timeout Guards
+
+### Verdict: PROCEED - Quick Win, Medium Risk
+
+### Current State
+- **File:** `packages/perception-service/cobeing/layer2_perception/frame_sources.py`
+- `CameraFrameSource.get_frame()` uses `run_in_executor()` for blocking `cv2.VideoCapture.read()` with no timeout
+- Deprecated `asyncio.get_event_loop()` used (should be `get_running_loop()`)
+
+### Key Findings
+- No timeout on blocking I/O — hung USB/RTSP stream blocks forever
+- CaptureError exception exists and should be raised on timeout
+- Sequence counter handles dropped frames robustly
+
+### Recommended Implementation
+1. Add `capture_timeout_seconds` to CameraConfig (default 5.0s)
+2. Wrap executor call in `asyncio.wait_for()`
+3. Migrate to `asyncio.get_running_loop()`
+4. Optional: exponential backoff retry (1s delay, max 3 timeouts)
+
+### Risks
+- 5s timeout may be too aggressive for RTSP streams (use 10s for network cameras)
+- Timeout detects hang but doesn't recover device
+
+---
+
+## 30. Supervisor Verdict Audit Trail
+
+### Verdict: PROCEED - High Value, Medium Effort
+
+### Current State
+- **File:** `packages/supervisor/src/supervisor.service.ts`
+- `recentVerdicts` buffer capped at 100 entries, in-memory only
+- `pendingInterventions` array grows unbounded (never consumed — memory leak)
+- No persistence to TimescaleDB
+
+### Key Findings
+- Verdicts lost on restart — no historical analysis possible
+- pendingInterventions queue is a memory leak
+- Cost tracking is ephemeral with no audit trail
+- Reasoning traces from DeepSeek are currently discarded
+
+### Recommended Implementation
+1. Create `supervisor_verdicts` hypertable in TimescaleDB
+2. Emit `SUPERVISOR_VERDICT` events after verdict parsing
+3. Persist interventions immediately with status tracking
+4. Capture reasoning traces (truncate to 2KB for storage)
+5. Clear pendingInterventions after dispatch
+
+### Risks
+- Large reasoning traces could bloat storage — truncate or compress
+- Event emission overhead — use fire-and-forget pattern
+
+---
+
+## 31. Ungrounded Insight Re-grounding Sweep
+
+### Verdict: NEEDS MORE INFO - High Value, Clarification Needed
+
+### Current State
+- **File:** `packages/learning/src/pipeline/conversation-reflection.service.ts` (lines 430-567)
+- `persistInsight()` creates Insight nodes with `grounded` boolean and penalized confidence
+- Once persisted with `grounded=false`, insights remain ungrounded forever — no re-evaluation
+
+### Key Findings
+- Insight grounding computed once at creation; no upgrade path
+- No re-grounding infrastructure or timer-driven cycle exists
+- LearningService has timer patterns that could host a re-grounding cycle
+
+### Recommended Implementation
+1. Create InsightRegroundingService with `regroundInsights()` method
+2. Query for ungrounded insights, re-attempt REVEALS edge creation
+3. Add 30-minute timer to LearningService
+4. Add TTL: mark insights as `confabulated` after 5 failed sweeps
+
+### Risks
+- Confidence recomputation semantics need clarification
+- Could emit events in bulk — use batched event emission
+
+---
+
+## 32. Windowed Sampling for Long Session Reflection
+
+### Verdict: PROCEED - High Value, Medium Complexity
+
+### Current State
+- **File:** `packages/learning/src/pipeline/conversation-reflection.service.ts` (lines 695-737)
+- `buildReflectionPrompt()` stops at `MAX_CONVERSATION_CHARS = 8000` — only first ~3-5 minutes of a 30-minute conversation sent to LLM
+- System prompt calls for TONAL_SHIFT and DELAYED_REALIZATION insights but truncation makes them impossible to detect
+
+### Key Findings
+- Hard truncation discards conversation tail
+- TONAL_SHIFT and DELAYED_REALIZATION require comparing early and late parts
+- MAX_CONVERSATION_CHARS is non-adaptive (fixed 8000)
+
+### Recommended Implementation
+Head + Tail + Sampled Middle strategy:
+1. Reserve HEAD_CHARS=2000, TAIL_CHARS=2000, MIDDLE_CHARS=4000
+2. Sample middle uniformly (one event per bucket)
+3. Scale budget by session length (8k→12k→16k)
+4. Optional two-pass: fast summarization → detailed insight extraction
+
+### Risks
+- Sampling introduces blind spots in middle section
+- Two-pass approach doubles LLM cost
+- Head/tail overlap for very short conversations
+
+---
+
+## 33. Learning Pipeline Neo4j Session Batching
+
+### Verdict: PROCEED - Quick Win, Low Risk
+
+### Current State
+- **File:** `packages/learning/src/pipeline/upsert-entities.service.ts` (lines 86-163)
+- Each entity label opens a fresh Neo4j WRITE session, runs MERGE, closes session
+- Up to 20 sessions per event, 100 per maintenance cycle
+- ExtractEdgesService already uses the efficient UNWIND+MERGE batched pattern
+
+### Key Findings
+- Per-entity session pattern exists across two services (upsert-entities, can-produce-edges)
+- Extract-edges demonstrates the target state (single session, UNWIND+MERGE)
+- Session overhead adds ~5-10ms per open/close
+
+### Recommended Implementation
+1. Replace per-entity loop with batched UNWIND+MERGE (one session, one Cypher statement)
+2. Remove private `mergeEntityNode()` method
+3. Apply same pattern to can-produce-edges.service.ts
+4. Check result.records.length for error isolation
+
+### Risks
+- Batch failure loses all items (mitigate with idempotent MERGE)
+- Performance improvement modest (~100-200ms per cycle) but code is cleaner
+
+---
+
+## 34. Supervisor Adaptive Sampling Based on Verdict Trends
+
+### Verdict: PROCEED - High Value, Medium Effort
+
+### Current State
+- **File:** `packages/supervisor/src/supervisor.service.ts`
+- Static modulo sampling: `cycleCount % sampleRate === 0`
+- `recentVerdicts` buffer provides signal for adaptive rate
+- Binary `burstMode` is the only current adaptive mechanism
+- Cost tracking via `CostTrackerService` with `budgetRemaining()` and `hasBudget()`
+
+### Key Findings
+- Infrastructure 95% ready: recentVerdicts buffer maintained, VerdictRating types exist
+- No observable/metric showing adaptive rate in real-time
+- `alwaysEvaluate` events noted as TODO but not wired
+
+### Recommended Implementation
+1. Add `AdaptiveSamplingConfig` to SamplingPolicy (minRate, maxRate, windowSize, thresholds)
+2. Extend `shouldEvaluate()` to compute trend from recent verdicts
+3. Update rate dynamically based on verdict distribution
+4. Factor budget remaining into tightening decisions
+
+### Risks
+- Too aggressive tightening could exhaust budget during problem periods
+- Window size requires empirical tuning
+- burstMode and adaptive mode interaction needs definition
+
+---
+
+## 35. Decision Cycle Concurrency Guard
+
+### Verdict: PROCEED - Critical Fix, High Effort
+
+### Current State
+- **File:** `packages/decision-making/src/decision-making.service.ts`
+- Pre-cycle guard checks `executorEngine.getState() !== IDLE` (lines 413-419) — synchronous only
+- `tickInFlight` boolean flag exists but is not a proper mutex
+- No bounded queue for incoming frames
+
+### Key Findings
+- Race window between IDLE check and state transition is real vulnerability
+- Concurrent `processInput()` calls could interleave state transitions, double-flush event buffers, corrupt cycle IDs
+- No backpressure signal to upstream
+
+### Recommended Implementation
+1. Replace `tickInFlight` with proper semaphore (async-lock or RxJS concatMap)
+2. Queue incoming frames FIFO with max depth 5-10
+3. Add queue depth metric and warnings at depth >2
+4. Emit `QUEUE_BACKLOG_WARNING` IPC message if sustained
+
+### Risks
+- Queue increases latency for rapid frame arrival
+- Queued frames may age and become stale
+- Complex error handling for mid-cycle failures
+
+---
+
+## 36. Drive Tick-Loop Observability Instrumentation
+
+### Verdict: PROCEED - Quick Win, Medium Value
+
+### Current State
+- **File:** `packages/drive-engine/src/drive-process/drive-engine.ts`
+- 100Hz tick loop with drift compensation; `tickStartMs = Date.now()` captured
+- Only logs checkpoint every 100 ticks — no per-tick latency or histogram
+- Outcome queue depth warned but not metered
+- No budget-exceeded alert or `/drives/health` endpoint
+
+### Key Findings
+- Infrastructure mostly there: tickStartMs captured, lastTickCompletedAt tracked
+- Duration computable at tick end but not collected
+- No systematic sampling or histogram
+
+### Recommended Implementation
+1. Sample every 100th tick: collect min/p50/p99/max latency
+2. Track outcome queue depth at drain time
+3. Log warning on tick >10ms (once per contiguous overrun)
+4. Emit `TICK_PERFORMANCE_SAMPLE` IPC message periodically
+5. Create optional `/drives/health` endpoint
+
+### Risks
+- Instrumentation overhead could itself cause budget exceedance — use sampling
+
+---
+
+## 37. Richer Semantic Extraction in Episodic Memory Consolidation
+
+### Verdict: NEEDS MORE INFO - High Value, Unresolved Dependencies
+
+### Current State
+- **File:** `packages/decision-making/src/episodic-memory/consolidation.service.ts`
+- Entity extraction (lines 312-335): title-cased token split — misses multi-word entities and lowercase domain terms
+- Relationship extraction (lines 346-371): always produces exactly 2 triples, second object is always literal `"observed_outcome"` regardless of actual outcome
+
+### Key Findings
+- Extractions are heavily heuristic-based and underspecified
+- `contextFingerprint` is available but underutilized
+- Outcome data (`driveEffectsObserved`) not persisted to Episode — prevents rich triple generation
+- LLM call could add ~500ms per episode (acceptable for 2-hour-old episodes)
+
+### Recommended Implementation
+1. Multi-word entity extraction via regex patterns and domain vocabulary
+2. Variable-count triples (1-5) based on context with actual outcome data
+3. Hybrid approach: regex for entities, lightweight LLM for relationships
+4. **Prerequisite:** verify outcome data flows to Episode records
+
+### Risks
+- More triples = more noise in WKG without confidence calibration
+- LLM coupling: Ollama unavailability blocks consolidation
+- Outcome data may not be available at consolidation time
+
+---
+
+## 38. Configurable LLM Pricing Rates in Cost Tracker
+
+### Verdict: PROCEED - Quick Win, Minimal Risk
+
+### Current State
+- **File:** `packages/supervisor/src/cost-tracker.service.ts`
+- Hardcoded DeepSeek pricing: $0.28/M input, $0.42/M output (lines 44-46)
+- ConfigService already injected
+
+### Key Findings
+- Trivial change: replace two magic numbers with ConfigService lookups
+- No historical dependence on exact rate values
+
+### Recommended Implementation
+1. Add `DEEPSEEK_INPUT_PRICE_PER_M` and `DEEPSEEK_OUTPUT_PRICE_PER_M` env vars
+2. Replace hardcoded values with `parseFloat(this.config.get(...))`
+3. Log active rates at startup
+4. Optional: `PRICING_LAST_VERIFIED` date with staleness warning
+
+### Risks
+- Minimal: config-driven, no logic changes
+- Validate against negative/zero values
+
+---
+
+## 39. Simulation Parallel Category Evaluation
+
+### Verdict: PROCEED - Quick Win, Medium Value
+
+### Current State
+- **File:** `packages/planning/src/pipeline/simulation.service.ts`
+- `simulate()` iterates 5 CANDIDATE_CATEGORIES with sequential `await`
+- Each `evaluateCategory()` runs independent TimescaleDB query — no data dependencies
+- `Promise.allSettled` pattern already used elsewhere in codebase
+
+### Key Findings
+- Queries are truly independent (different actionType filters)
+- Sequential: ~5x single query time; parallel: ~1x (bound by slowest)
+- Results sorted after completion — no ordering requirement
+
+### Recommended Implementation
+1. Replace `for...of` with `Promise.allSettled` mapping over categories
+2. Inspect status of each result for partial success handling
+3. Optional: concurrency limit if TimescaleDB pool is small
+
+### Risks
+- Connection pool contention if pool size <5 (likely fine with default 10-20)
+- One slow query delays all results (but still faster than sequential)
+
+---
+
+## 40. Deduplicate Perception Embedding Init
+
+### Verdict: BLOCKED - File Not Found
+
+### Current State
+- References `packages/perception-service/main.py` with duplicated `OnnxEmbeddingExtractor` lazy-init
+- File and class not found in current codebase mount
+
+### Key Findings
+- Perception service may be in a separate repository or unmounted location
+- Cannot verify claims or assess feasibility
+
+### Recommended Action
+- Verify perception-service codebase location before proceeding
+
+---
+
+## 41. Fix Guilt Repair Behavioral Change Detection (Dead Code Path)
+
+### Verdict: PROCEED - Critical Bug Fix, High Value
+
+### Current State
+- **File:** `packages/drive-engine/src/drive-process/behavioral-contingencies/contingency-coordinator.ts` (lines 100-108)
+- Bug confirmed: passes `outcome.actionType` for BOTH current action and previous error action type
+- `detectBehavioralChange()` always returns false (compares value to itself)
+
+### Key Findings
+- 0.15 relief (behavioral change only) is unreachable
+- 0.30 relief (both acknowledgment + behavioral change) is unreachable
+- Only 0.10 acknowledgment relief can fire — severely limiting guilt repair
+- `GuiltyRepair.getRecentErrors()` exists but coordinator never uses it
+
+### Recommended Implementation
+1. Add `getLastErrorActionType()` helper to GuiltyRepair
+2. Update coordinator to pass actual previous error action type:
+   ```typescript
+   previousErrorActionType: this.guiltyRepair.getLastErrorActionType(),
+   ```
+3. Add tests covering all three relief paths
+
+### Risks
+- "Any different action = behavioral change" may be too broad — consider semantic similarity
+- 15-minute error history timeout may need tuning
+
+---
+
+## 42. Live ageWeight Decay for Episodic Memory
+
+### Verdict: PROCEED - Correctness Critical, Medium Effort
+
+### Current State
+- **File:** `packages/decision-making/src/episodic-memory/episodic-memory.service.ts` (line 200)
+- `ageWeight = input.attention` set at encode time, NEVER recalculated
+- Docstring says formula should be `attention * exp(-0.1 * hoursSinceEncoding)` but exponential term never applied
+
+### Key Findings
+- Consolidation candidates sorted by frozen ageWeight — not decayed
+- 3-hour-old episode with attention 0.70 should have weight ~0.23 but retains 0.70
+- MIN_CONFIDENCE_THRESHOLD (0.65) is miscalibrated — high-attention episodes always pass regardless of age
+- queryByContext also uses frozen weight for relevance sorting
+
+### Recommended Implementation
+1. Store `initialAttention` separately, compute ageWeight on read
+2. Create `computeAgeWeight(initialAttention, timestamp, decayConstant=0.1)` helper
+3. Update ConsolidationService and queryByContext to use live-computed weight
+4. Backward compat: initialize `initialAttention = ageWeight` for old checkpoints
+5. Recalibrate MIN_CONFIDENCE_THRESHOLD (suggest 0.60 initially)
+
+### Risks
+- Old never-consolidated episodes may suddenly qualify (brief spike in consolidation)
+- Checkpoint compatibility requires migration handling
+- Decay constant 0.1 may not be optimal — make configurable
+
+---
+
+## 43. Bootstrap Category Normalization Consistency
+
+### Verdict: PROCEED - Quick Win, Important for Correctness
+
+### Current State
+- **bootstrap.py** `record_comparison()`: normalizes with `.lower()` only
+- **trainer.py** `ActionVocabulary`: normalizes with `.strip().lower()`
+- Asymmetry causes false disagreements when categories have leading/trailing whitespace
+
+### Key Findings
+- Whitespace-sensitive categories are realistic from LLM outputs
+- False disagreements affect graduation velocity (shadow → audit → partial → full)
+- Even one false disagreement per session accumulates tracking errors
+
+### Recommended Implementation
+1. Create shared `normalizeCategoryName(category)` → `category.strip().lower()`
+2. Use consistently in all comparison sites
+3. Audit all normalization sites for consistency
+
+### Risks
+- Historical bootstrap logs with old normalization cannot be retroactively corrected
+- Check if any code intentionally preserves case
+
+---
+
+## 44. Circuit Breaker and Health-Aware Retry for SidecarControlService
+
+### Verdict: PROCEED - High Value, Medium-High Effort
+
+### Current State
+- **File:** `packages/supervisor/src/sidecar-control.service.ts`
+- No circuit breaker, retry logic, or health tracking for HTTP calls to cognition sidecar
+- Failed interventions silently lost (no retry mechanism)
+- Fixed 10-second timeout with no backoff or jitter
+
+### Key Findings
+- Lost interventions during sidecar restarts means model doesn't learn from identified mistakes
+- No health awareness: all calls fire even when sidecar is known to be down
+- No backoff: simultaneous failures during outage create unnecessary load
+
+### Recommended Implementation
+1. Implement circuit breaker (CLOSED → OPEN → HALF_OPEN) with 3-failure threshold
+2. Queue critical interventions (correct, reinforce) with 5-minute TTL
+3. Retry loop processes queue when circuit closes
+4. Expose health state via `getModelState()` for dashboard
+5. Corrections get higher retry priority than reinforcements
+
+### Risks
+- Queued interventions have TTL — extend to 15-30 min if sidecar restarts take longer
+- Queue memory pressure for long outages
+- Half-open probes during partial recovery could add load
+
+---
+
+## 45. Pre-computed Assistant Pairing in getSplitHistory()
+
+### Verdict: PROCEED - Quick Win
+
+### Current State
+- **File:** `apps/sylphie/src/services/conversation-history.service.ts`, lines 181-222
+- `getSplitHistory()` walks the history array (outer `while` loop, lines 188-215) and for every answered user message performs a nested forward scan (lines 200-206) to find the corresponding assistant response
+- Inner loop scans forward from each user message until it finds an `assistant` role or another `user` role
+- Called on **every decision cycle** from `conversation.gateway.ts` line 189, feeding results into `TickSampler`
+- History capped at `MAX_MESSAGES = 50` (line 44), so worst-case is bounded at ~2,500 iterations per call, but this compounds across cycles within a session
+
+### Key Findings
+- **O(n²) pattern confirmed:** Outer loop iterates all entries; inner loop scans forward per answered user message. With 50 entries and many answered messages, the nested scan adds measurable overhead across frequent calls
+- **No caching exists:** The service has no index, map, or cache for user-to-assistant pairing. Each `getSplitHistory()` call re-scans from scratch
+- **Four mutation points** would need to maintain/invalidate any index:
+  - `addUserMessage()` (line 137) — appends user entry
+  - `addAssistantMessage()` (line 148) — appends assistant entry + marks preceding user messages as `answered: true`
+  - `trim()` (line 258) — uses `this.history.shift()` to evict from front (shifts all indices)
+  - `clear()` (line 248) — empties the array
+- **No other lookahead patterns** found in this service. The backward scan in `addAssistantMessage()` (lines 151-159) is a single-pass O(n) operation
+- **`trim()` uses `shift()`** which invalidates positional indices — a lazy-cache approach (build on first call, invalidate on mutation) is simpler than maintaining an eager `Map<number, number>`
+
+### Recommended Implementation
+
+**Lazy-cache approach** (simplest, lowest risk):
+
+```typescript
+private _splitCache: { pending: string[]; summary: string[] } | null = null;
+
+private invalidateSplitCache(): void {
+  this._splitCache = null;
+}
+
+getSplitHistory(): { pending: string[]; summary: string[] } {
+  if (this._splitCache) return this._splitCache;
+  // ... existing logic ...
+  this._splitCache = { pending, summary };
+  return this._splitCache;
+}
+```
+
+Add `this.invalidateSplitCache()` calls to `addUserMessage()`, `addAssistantMessage()`, `trim()`, and `clear()`.
+
+Alternatively, a **single-pass index approach** within `getSplitHistory()` itself: build a `Map<number, number>` (user index → next assistant index) in one forward pass, then use direct lookups when constructing pairs. This avoids any external state management while still achieving O(n) per call.
+
+### Answers to Open Questions
+- **Incremental map vs lazy cache:** Lazy cache is preferable. The `trim()` method uses `shift()` which would invalidate positional indices, making an incremental `Map<number, number>` fragile. A simple dirty flag is cleaner
+- **Other methods with similar patterns:** None found — this is the only nested scan in the service
+- **Measurable at 50-message cap?** Individually marginal, but `getSplitHistory()` runs every decision cycle. The optimization is primarily a code-clarity improvement that establishes a pattern for hot-path methods
+
+### Risks
+- **Stale cache bug:** If a mutation path misses the `invalidateSplitCache()` call, stale data could be served. Mitigate by adding cache invalidation in a single private `_mutateHistory()` wrapper
+- **Negligible:** With 50-message cap, the actual performance gain is small per call. Value is primarily in code hygiene and establishing a pattern
+
+---
+
+## 46. Mood-Congruent Episodic Retrieval
+
+### Verdict: PROCEED - Intelligence Quality Enhancement
+
+### Current State
+- **File:** `packages/decision-making/src/episodic-memory/episodic-memory.service.ts`, lines 289-320
+- `queryByContext()` tokenizes context fingerprints, computes Jaccard similarity on token sets, filters at threshold 0.70 (`CONTEXT_SIMILARITY_THRESHOLD`, line 64), sorts by ageWeight descending
+- **DriveSnapshot is stored with every episode** (line 205, `driveSnapshot` property on Episode type) but is **never consulted during retrieval** — purely semantic matching today
+- `IEpisodicMemoryService` interface at `packages/decision-making/src/interfaces/decision-making.interfaces.ts` line 205 defines: `queryByContext(contextFingerprint: string, limit?: number): readonly Episode[]`
+
+### Key Findings
+- **`pressureVector` exists and is populated:** `DriveSnapshot.pressureVector` (type `PressureVector`, `packages/shared/src/types/drive.types.ts` lines 113-126) contains 12 named drives (systemHealth, moralValence, integrity, cognitiveAwareness, guilt, curiosity, boredom, anxiety, satisfaction, sadness, focus, social) with values in range **[-10.0, 1.0]**
+- **Cosine similarity utility already exists:** `cosineSimilarity(a: number[], b: number[]): number` at `packages/decision-making/src/latent-space/vector-math.ts` lines 5-20. Returns [-1, 1], handles negative values correctly. Ready to import
+- **Drive modulation pattern exists in working memory:** `computeDriveModulation()` at `packages/decision-making/src/working-memory/activation.ts` lines 239-254 shows the established pattern for accessing drive pressures by string name from PressureVector
+- **WorkingMemoryService already extracts episode drive snapshots:** Line 287 of `working-memory.service.ts` reads `episode.driveSnapshot.pressureVector` for associated-drives inference — confirms the data path is live
+- **Interface change is breaking but contained:** `queryByContext` is defined in `IEpisodicMemoryService` interface. Adding an optional `currentDriveSnapshot?: DriveSnapshot` parameter preserves backward compatibility while enabling the new behavior
+- **Documentation/implementation discrepancy:** Interface JSDoc (line 196) claims "cosine similarity > 0.7" but implementation uses Jaccard on token sets. This is a pre-existing doc bug, not related to this idea
+
+### Recommended Implementation
+
+1. **Extract pressure vector to number array** — helper function:
+```typescript
+function pressureVectorToArray(pv: PressureVector): number[] {
+  return [
+    pv.systemHealth, pv.moralValence, pv.integrity,
+    pv.cognitiveAwareness, pv.guilt, pv.curiosity,
+    pv.boredom, pv.anxiety, pv.satisfaction,
+    pv.sadness, pv.focus, pv.social,
+  ];
+}
+```
+
+2. **Update `queryByContext` signature** (backward-compatible):
+```typescript
+queryByContext(
+  contextFingerprint: string,
+  limit?: number,
+  currentDriveSnapshot?: DriveSnapshot,
+): readonly Episode[];
+```
+
+3. **Blend scores in retrieval** (inside existing filter/sort logic):
+```typescript
+const DRIVE_BLEND_ALPHA = 0.25;
+const jaccardScore = jaccardSimilarity(queryTokens, episodeTokens);
+let compositeScore = jaccardScore;
+if (currentDriveSnapshot) {
+  const currentVec = pressureVectorToArray(currentDriveSnapshot.pressureVector);
+  const episodeVec = pressureVectorToArray(episode.driveSnapshot.pressureVector);
+  const driveSim = (cosineSimilarity(currentVec, episodeVec) + 1) / 2; // normalize to [0, 1]
+  compositeScore = (1 - DRIVE_BLEND_ALPHA) * jaccardScore + DRIVE_BLEND_ALPHA * driveSim;
+}
+// filter: compositeScore >= CONTEXT_SIMILARITY_THRESHOLD
+// sort: by compositeScore descending (not ageWeight)
+```
+
+4. **Thread drive snapshot from callers** — identify all `queryByContext` call sites and pass the current drive snapshot where available
+
+### Answers to Open Questions
+- **What alpha value?** Start at 0.25 as proposed. The semantic signal should dominate; drive similarity acts as a tiebreaker and retrieval-cue. Tune empirically via supervisor audit trail (#30) once implemented
+- **Should low-pressure drives contribute?** Yes — cosine similarity naturally handles this. Low-magnitude drives contribute proportionally less to the dot product. No explicit thresholding needed on individual drives
+- **Interaction with ageWeight decay (#42)?** Complementary. If #42 (live ageWeight decay) is implemented, the sort order could become a three-factor blend: composite similarity + decayed ageWeight. Recommend implementing #42 first, then layering drive similarity on top
+- **Threshold recalibration?** The cosine similarity component is normalized to [0, 1] before blending (via `(cos + 1) / 2`), so the composite score remains in [0, 1] and the existing 0.70 threshold applies without change. Monitor false-negative rate after deployment
+
+### Risks
+- **Over-retrieval of emotionally similar but semantically irrelevant episodes:** With alpha=0.25, an episode with perfect drive match (1.0) but low semantic match (0.60) would score `0.75 * 0.60 + 0.25 * 1.0 = 0.70` — exactly at threshold. This is acceptable but worth monitoring
+- **PressureVector range asymmetry:** Values span [-10.0, 1.0], heavily skewed negative. Cosine similarity handles direction well but two vectors deep in negative territory (e.g., both at -8.0 across all drives) will show high similarity even though they represent baseline unhappiness rather than a meaningful shared state. Consider normalizing to zero-mean before cosine computation if this proves problematic
+- **Interface change propagation:** All callers of `queryByContext` must be updated. Since the new parameter is optional, existing callers continue to work but don't benefit from the feature until updated
+
+---
+
+## Updated Cross-Cutting Observations
+
+### New Idea Clusters
+
+1. **Reliability Quick Wins (1-2 days each):** #25 LLM Timeout Guards + #26 Per-Row Error Isolation + #27 Jitter/Iterative Retry + #29 Perception Timeout Guards + #33 Neo4j Session Batching + #38 Configurable Pricing + #39 Parallel Simulation + #43 Bootstrap Normalization + #45 getSplitHistory() Cache
+2. **Critical Bug Fixes:** #41 Guilt Repair Dead Path + #42 ageWeight Decay — both are correctness issues that silently degrade system behavior
+3. **Observability:** #30 Supervisor Audit Trail + #34 Adaptive Sampling + #36 Tick Loop Observability + #38 Configurable Pricing
+4. **Architecture:** #20 IPCSelfKgReader + #35 Concurrency Guard + #44 Sidecar Circuit Breaker
+5. **Intelligence Quality:** #23 Cross-Drive Aggregation + #28 Adaptive Scoring + #32 Windowed Sampling + #37 Semantic Extraction + #46 Mood-Congruent Retrieval
+6. **Already Done / No Action:** #17 Attractor Detectors + #40 Embedding Init (blocked)
+
+### Updated Recommended Implementation Order
+
+**Wave 1 — Critical Fixes & Quick Wins (1-2 days each):**
+1. #41 Fix Guilt Repair Dead Path — critical bug, high impact
+2. #42 Live ageWeight Decay — correctness critical
+3. #26 Per-Row Error Isolation — prevents data loss
+4. #25 LLM Timeout Guards — prevents permanent cycle blocking
+5. #38 Configurable Pricing — 30 min, zero risk
+6. #43 Bootstrap Normalization — quick correctness fix
+7. #16 Stale Comment Cleanup — documentation hygiene
+
+**Wave 2 — Reliability & Performance (2-3 days each):**
+8. #27 Jitter/Iterative Retry — resilience improvement
+9. #29 Perception Timeout Guards — prevents hangs
+10. #33 Neo4j Session Batching — performance + code cleanliness
+11. #39 Parallel Simulation — direct latency improvement
+12. #36 Tick Loop Observability — enables diagnosis
+
+**Wave 3 — Observability & Operations (3-4 days each):**
+13. #30 Supervisor Audit Trail — enables historical analysis
+14. #34 Adaptive Sampling — cost optimization
+15. #18 Drive Events to TimescaleDB — completes event backbone
+16. #19 Drives Controller Endpoints — enables external control
+
+**Wave 4 — Intelligence Quality (3-5 days each):**
+17. #32 Windowed Sampling — fixes reflection blind spots
+18. #23 Cross-Drive Aggregation — richer simulation
+19. #28 Adaptive Scoring — learning from outcomes
+20. #24 Theater Prohibition — authenticity validation
+21. #31 Insight Re-grounding — knowledge quality
+
+**Wave 5 — Architecture (5+ days each):**
+22. #35 Decision Cycle Concurrency Guard — critical but complex
+23. #44 Sidecar Circuit Breaker — production resilience
+24. #20 IPCSelfKgReader — core architecture
+25. #21 Morphology 'call' Step — feature completion
+26. #22 SensoryLogger Removal — cleanup after executor wiring
+27. #37 Semantic Extraction — after outcome data flow verified
+
+**Wave 1 Additions (2026-04-13):**
+28. #45 getSplitHistory() Cache — trivial quick win, < 1 day, no dependencies
+
+**Wave 4 Additions (2026-04-13):**
+29. #46 Mood-Congruent Episodic Retrieval — 3-4 days, benefits from #42 (ageWeight decay) being done first; pairs naturally with #23 (Cross-Drive Aggregation) and #28 (Adaptive Scoring)
+
+**No Action:**
+- #17 Attractor Detectors — already implemented
+- #40 Embedding Init — blocked on file access

@@ -17,7 +17,7 @@ BOOTSTRAP_MODE = os.getenv("COGNITION_BOOTSTRAP_MODE", "shadow")  # shadow|audit
 # --- Training ---
 TRAINING_ENABLED = os.getenv("COGNITION_TRAINING_ENABLED", "true").lower() == "true"
 CHECKPOINT_INTERVAL = int(os.getenv("COGNITION_CHECKPOINT_INTERVAL", "1000"))
-REPLAY_BUFFER_SIZE = int(os.getenv("COGNITION_REPLAY_BUFFER_SIZE", "10000"))
+REPLAY_BUFFER_SIZE = int(os.getenv("COGNITION_REPLAY_BUFFER_SIZE", "100000"))
 
 # --- Weights ---
 WEIGHTS_DIR = os.getenv("COGNITION_WEIGHTS_DIR", os.path.join(os.path.dirname(__file__), "weights"))

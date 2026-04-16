@@ -184,54 +184,41 @@ export class ActionHandlerRegistryService {
       const rawText = cycleCtx.frame.raw['text'] as string | undefined;
       const inputText = rawText ?? cycleCtx.inputSummary;
 
-      // Build recent episode context for the system prompt.
-      const recentEpisodeSummaries = cycleCtx.cognitiveContext.recentEpisodes
-        .slice(0, 5)
-        .map((ep) => ep.inputSummary)
-        .filter((s) => s.length > 0)
-        .join('\n');
-
-      // Build the drive state summary for authentic expression (Theater Prohibition).
+      // Build the system prompt — identity, drive state, person model.
+      // No conversation history (causes the LLM to reference old exchanges).
       const drives = cycleCtx.cognitiveContext.driveSnapshot.pressureVector;
       const driveLines = Object.entries(drives)
         .filter(([, v]) => v > 0.2)
         .map(([name, v]) => `${name}: ${(v as number).toFixed(2)}`)
         .join(', ');
 
-      // Read person model from the fused stream (Other Evaluation per architecture).
       const personModel = cycleCtx.frame.raw['person_model'] as
         { personId?: string; knownFacts?: string[]; interactionSummary?: string } | null | undefined;
-
       const personContext = personModel?.knownFacts?.length
-        ? `About the person I'm talking to (${personModel.personId}): ${personModel.knownFacts.join('; ')}`
+        ? `About the person I'm talking to: ${personModel.knownFacts.join('; ')}`
         : '';
 
-      // conversation_history now contains ONLY pending (unanswered) messages.
-      // Answered exchanges are in conversation_summary as compact text.
-      const conversationSummary = cycleCtx.frame.raw['conversation_summary'] as string | undefined ?? '';
-
       const systemPrompt = [
-        'You are Sylphie, a developing cognitive being. Respond authentically and concisely.',
-        'Only respond to the latest user message. The conversation summary is background context.',
+        'You are Sylphie. Respond authentically and concisely.',
         instruction ? `Task: ${instruction}` : '',
         personContext,
-        conversationSummary,
-        driveLines ? `Current internal state: ${driveLines}` : '',
-        recentEpisodeSummaries ? `Recent context:\n${recentEpisodeSummaries}` : '',
+        driveLines ? `How I feel: ${driveLines}` : '',
       ].filter(Boolean).join('\n\n');
 
-      // Build messages array — only pending (unanswered) messages + current input.
+      // Build messages: recent conversation turns + current input.
+      // Conversation history is passed as normal multi-turn chat messages
+      // (not injected into the system prompt, which caused re-referencing).
       const conversationHistory = cycleCtx.frame.raw['conversation_history'] as
         Array<{ role: 'user' | 'assistant'; content: string }> | undefined;
 
       const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
       if (conversationHistory && conversationHistory.length > 0) {
-        messages.push(...conversationHistory);
+        // Keep only the last few turns to prevent context bloat.
+        const recentTurns = conversationHistory.slice(-10);
+        messages.push(...recentTurns);
       }
-      // Append the current input as the latest user message.
       const currentInput = inputText || instruction;
       if (currentInput) {
-        // Avoid duplicating if conversation history already ends with this text.
         const lastMsg = messages[messages.length - 1];
         if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== currentInput) {
           messages.push({ role: 'user', content: currentInput });

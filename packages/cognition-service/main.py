@@ -27,7 +27,7 @@ Environment variables (COGNITION_ prefix):
     COGNITION_TRAINING_ENABLED     (default true)
     COGNITION_CHECKPOINT_INTERVAL  (default 1000 training steps)
     COGNITION_WEIGHTS_DIR          (default ./weights)
-    COGNITION_REPLAY_BUFFER_SIZE   (default 10000)
+    COGNITION_REPLAY_BUFFER_SIZE   (default 100000)
     COGNITION_INFERENCE_TIMEOUT_MS (default 50)
 """
 

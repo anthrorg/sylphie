@@ -195,6 +195,12 @@ export class ConversationGateway
           'conversation_summary',
           splitHistory.summary,
         );
+        // Full history for the conversation_history tool (deliberation can
+        // search it on demand without polluting the system prompt).
+        this.tickSampler.update(
+          'full_conversation_history',
+          this.conversationHistory.getHistory(),
+        );
         this.tickSampler.update(
           'person_model',
           this.personModel.getActivePersonModel(),

@@ -56,6 +56,16 @@ export interface DebateResult {
   readonly againstArgument: string;
 }
 
+/** A structured action request parsed from a COMMAND intent. */
+export interface ActionRequest {
+  /** The action step type to execute (e.g., 'RESEARCH_ENTITY'). */
+  readonly stepType: string;
+  /** Target entity or subject for the action. */
+  readonly target: string;
+  /** Verbal response to accompany the action (e.g., "Let me look that up!"). */
+  readonly verbalResponse: string;
+}
+
 /** Final output of the deliberation pipeline. */
 export interface DeliberationResult {
   /** The chosen response text. */
@@ -84,6 +94,13 @@ export interface DeliberationResult {
 
   /** Total latency across all LLM calls. */
   readonly totalLatencyMs: number;
+
+  /**
+   * If the LLM detected a COMMAND intent, this contains the structured
+   * action request to dispatch (e.g., RESEARCH_ENTITY on a target entity).
+   * Null if no action was requested.
+   */
+  readonly actionRequest: ActionRequest | null;
 }
 
 /** Complete trace of the deliberation for audit and introspection. */
@@ -199,61 +216,41 @@ export class DeliberationService {
     // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');
 
+    // Read person model from the fused stream.
+    const personModel = frame.raw['person_model'] as
+      { personId?: string; knownFacts?: string[]; interactionSummary?: string } | null | undefined;
+    const personContext = personModel?.knownFacts?.length
+      ? `About ${speakerName}: ${personModel.knownFacts.join('; ')}`
+      : '';
+
+    // Drive state for authentic expression.
+    const driveLines = Object.entries(driveSnapshot.pressureVector)
+      .filter(([, v]) => v > 0.2)
+      .map(([name, v]) => `${name}: ${(v as number).toFixed(2)}`)
+      .join(', ');
+
     const monologueCtx = this.contextWindow.assemble({
       step: 'INNER_MONOLOGUE',
       reservedForGeneration: STEP_MAX_TOKENS,
       systemParts: [
-        `You are Sylphie, a developing cognitive being. The person talking to you is ${speakerName}.`,
-        `IMPORTANT: Your name is Sylphie. The OTHER person's name is ${speakerName}. Do NOT confuse these.`,
-        `When you greet or address them, use THEIR name (${speakerName}), never your own name (Sylphie).`,
+        `You are Sylphie. The person talking to you is ${speakerName}.`,
         '',
-        'Classify the input and respond. Use EXACTLY this format:',
+        'Classify the input and respond. Format:',
+        '[INTENT: GREETING|EMOTION|QUESTION|FACT|COMMAND|UNKNOWN]',
+        '[ENTITY: name or none]',
+        '[THOUGHT: your reasoning]',
+        '[RESPONSE: your reply]',
         '',
-        '[INTENT: GREETING]',
-        '[ENTITY: none]',
-        `[THOUGHT: ${speakerName} is saying hello]`,
-        `[RESPONSE: Hi ${speakerName}!]`,
+        'COMMAND: When asked to do something (learn, research, look up). Write NEEDS_DELIBERATION — you have tools to handle these.',
+        'QUESTION: If you need to think or look something up, write NEEDS_DELIBERATION.',
         '',
-        'Intent types: GREETING, EMOTION, QUESTION, FACT, COMMAND, UNKNOWN',
-        '',
-        'Rules:',
-        '- Only respond to the latest user message. The conversation summary below is context only — do not re-answer it.',
-        '- GREETING/EMOTION: Always respond naturally. You can always do this.',
-        `- FACT (someone telling you something): Acknowledge it. "My name is X" means THEIR name is X.`,
-        '- QUESTION about something said in this conversation: Answer from the conversation.',
-        '- QUESTION about world knowledge: Check "What I know" below. If not there, say you don\'t know.',
-        '- Things said in this conversation are things you know. You do not need world knowledge for them.',
-        '- If this needs complex reasoning, write NEEDS_DELIBERATION as the response.',
-        '',
-        conversationSummary ? conversationSummary : '',
+        personContext,
+        driveLines ? `How I feel: ${driveLines}` : '',
         wmSummary,
-        '',
-        'MORE EXAMPLES:',
-        '',
-        `User: "My name is ${speakerName}."`,
-        '[INTENT: FACT]',
-        `[ENTITY: ${speakerName}]`,
-        `[THOUGHT: They are telling me their name is ${speakerName}]`,
-        `[RESPONSE: Nice to meet you, ${speakerName}!]`,
-        '',
-        'User: "What is my name?"',
-        '[INTENT: QUESTION]',
-        `[ENTITY: ${speakerName}]`,
-        `[THOUGHT: They asked their name. I know it is ${speakerName}]`,
-        `[RESPONSE: Your name is ${speakerName}!]`,
-        '',
-        'User: "What is the capital of France?"',
-        '[INTENT: QUESTION]',
-        '[ENTITY: France]',
-        '[THOUGHT: A world knowledge question. I need to check what I know]',
-        '[RESPONSE: NEEDS_DELIBERATION]',
       ],
       currentMessages: [
         { role: 'user', content: rawText || 'No specific input — drive pressure triggered this cycle.' },
       ],
-      // No conversationHistory here — answered exchanges are in the system
-      // prompt summary, and the current message is in currentMessages.
-      // This ensures the LLM only sees one user turn to respond to.
     });
 
     const monologueResponse = await this.llm.complete({
@@ -327,6 +324,16 @@ export class DeliberationService {
           `${totalLatencyMs}ms, ${totalPromptTokens + totalCompletionTokens} tokens`,
       );
 
+      // Build action request if this was a COMMAND with a recognized action type.
+      const actionRequest: ActionRequest | null =
+        monologueParsed.intent === 'COMMAND' && monologueParsed.actionType && monologueParsed.entity
+          ? {
+              stepType: monologueParsed.actionType,
+              target: monologueParsed.entity,
+              verbalResponse: monologueParsed.response,
+            }
+          : null;
+
       return {
         responseText: monologueParsed.response,
         confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
@@ -338,7 +345,9 @@ export class DeliberationService {
           candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
           selectedCandidate: monologueParsed.response,
           debate: null,
-          arbiterRationale: 'Short-circuited — no deliberation needed',
+          arbiterRationale: actionRequest
+            ? `Short-circuited — COMMAND dispatching ${actionRequest.stepType} on "${actionRequest.target}"`
+            : 'Short-circuited — no deliberation needed',
           confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
           stepsExecuted: 1,
         },
@@ -346,6 +355,7 @@ export class DeliberationService {
           ? [monologueParsed.entity] : [],
         totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
         totalLatencyMs,
+        actionRequest,
       };
     }
 
@@ -384,7 +394,6 @@ export class DeliberationService {
         'IMPORTANT: "I don\'t know" is ONLY for world knowledge questions.',
         'You should NEVER say "I don\'t know" in response to greetings, introductions, or conversation.',
         '',
-        conversationSummary ? conversationSummary : '',
         `My inner thoughts: ${innerMonologue}`,
         `\n${wmSummary}`,
       ],
@@ -392,6 +401,14 @@ export class DeliberationService {
         { role: 'user' as const, content: rawText || innerMonologue },
       ],
     });
+
+    // Provide conversation history to the tool registry so the
+    // conversation_history tool can access it during candidate generation.
+    const fullHistory = frame.raw['full_conversation_history'] as
+      Array<{ role: string; content: string }> | undefined;
+    if (fullHistory) {
+      this.toolRegistry.setConversationHistory(fullHistory);
+    }
 
     const candidateRequest = {
       messages: candidateCtx.messages,
@@ -648,6 +665,7 @@ export class DeliberationService {
       discoveredEntities,
       totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
       totalLatencyMs,
+      actionRequest: null,
     };
 
     vlog('deliberation complete', {
@@ -718,6 +736,7 @@ export class DeliberationService {
       discoveredEntities: [],
       totalTokens: { prompt: 0, completion: 0 },
       totalLatencyMs: 0,
+      actionRequest: null,
     };
   }
 }
@@ -951,6 +970,8 @@ interface MonologueClassification {
   readonly thought: string | null;
   readonly response: string | null;
   readonly needsDeliberation: boolean;
+  /** For COMMAND intents: the action type requested (e.g., 'RESEARCH_ENTITY'). */
+  readonly actionType: string | null;
 }
 
 /**
@@ -970,11 +991,13 @@ function parseMonologueClassification(text: string): MonologueClassification {
   const entityMatch = text.match(/\[ENTITY:\s*(.+?)\s*\]/i);
   const thoughtMatch = text.match(/\[THOUGHT:\s*(.+?)\s*\]/i);
   const responseMatch = text.match(/\[RESPONSE:\s*([\s\S]+?)(?:\]|$)/i);
+  const actionMatch = text.match(/\[ACTION:\s*(\w+)\s*\]/i);
 
   let intent = (intentMatch?.[1]?.toUpperCase() ?? 'UNKNOWN') as MonologueClassification['intent'];
   const entity = entityMatch?.[1]?.trim() ?? null;
   const thought = thoughtMatch?.[1]?.trim() ?? null;
   let response = responseMatch?.[1]?.trim() ?? null;
+  const actionType = actionMatch?.[1]?.toUpperCase() ?? null;
 
   // Clean up the response — strip trailing bracket if captured
   if (response) {
@@ -1026,23 +1049,18 @@ function parseMonologueClassification(text: string): MonologueClassification {
 
   // Check if the monologue signaled it needs further deliberation.
   //
-  // Short-circuit is only valid for simple conversational intents where a
-  // one-step monologue response is architecturally sufficient:
+  // Short-circuit is valid for:
   //   GREETING, EMOTION, FACT — no reasoning required, direct response is fine.
   //
-  // QUESTION always proceeds to full deliberation even when the monologue
-  // produced a plausible-looking response. The monologue's response text is
-  // still used as inner-thought context in step 2 candidate generation, so it
-  // is not wasted — it just does not short-circuit the pipeline.
-  //
-  // UNKNOWN and COMMAND already force deliberation; QUESTION is added here.
+  // QUESTION and COMMAND always proceed to full deliberation. COMMAND needs
+  // the tool-calling step to invoke real actions (research_entity, etc.).
   const needsDeliberation = !response
     || response.toUpperCase().includes('NEEDS_DELIBERATION')
     || intent === 'UNKNOWN'
     || intent === 'COMMAND'
     || intent === 'QUESTION';
 
-  return { intent, entity, thought, response, needsDeliberation };
+  return { intent, entity, thought, response, needsDeliberation, actionType };
 }
 
 /**

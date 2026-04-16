@@ -40,6 +40,8 @@ import type {
   IConsolidationService,
   IDecisionEventLogger,
   IActionRetrieverService,
+  ITensorInferenceService,
+  TensorInferenceResult,
 } from './interfaces/decision-making.interfaces';
 import {
   EXECUTOR_ENGINE,
@@ -53,6 +55,7 @@ import {
   PROCESS_INPUT_SERVICE,
   ACTION_HANDLER_REGISTRY,
   ATTRACTOR_MONITOR_SERVICE,
+  TENSOR_INFERENCE_SERVICE,
 } from './decision-making.tokens';
 import { ProcessInputService } from './process-input/process-input.service';
 import { ActionHandlerRegistryService, type ActionCycleContext } from './action-handlers/action-handler-registry.service';
@@ -141,6 +144,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     @Optional()
     @Inject(ACTION_OUTCOME_REPORTER)
     private readonly actionOutcomeReporter: IActionOutcomeReporter | null,
+
+    @Optional()
+    @Inject(TENSOR_INFERENCE_SERVICE)
+    private readonly tensorInference: ITensorInferenceService | null,
 
     @Inject(ATTRACTOR_MONITOR_SERVICE)
     private readonly attractorMonitor: AttractorMonitorService,
@@ -275,6 +282,27 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       return;
     }
 
+    // ── Tensor training on EVERY tick ────────────────────────────────────
+    // Every moment is training data. Even when the decision loop filters
+    // this tick out (low pressure, no input), the tensor model needs to
+    // learn: "in this state, the correct action is NO_ACTION." Without
+    // this, the model only sees conversation turns and never learns when
+    // to stay quiet.
+    if (this.tensorInference?.isAvailable()) {
+      try {
+        const frame = await this.tickSampler.peek();
+        const snapshot = this.driveStateReader.getCurrentState();
+        this.tensorInference.submitTraining(
+          frame,
+          snapshot,
+          'NO_ACTION',
+          'IDLE',
+        );
+      } catch {
+        // Silent — tensor training is never critical path
+      }
+    }
+
     // Timer ticks: only run if there's new input OR drive pressure is high enough.
     if (!eventDriven) {
       if (this.tickSampler.hasNewInput()) {
@@ -296,7 +324,34 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           return;
         }
         this.lastSelfInitiatedAt = now;
-        vlog('self-initiated tick', { pressure: +snapshot.totalPressure.toFixed(3), msSinceLastInput });
+
+        // ── Autonomous boredom research ─────────────────────────────────
+        // When boredom is high and there's no user input, pick a low-confidence
+        // entity from the WKG and inject a synthetic research request. This
+        // gives Sylphie something to do — she autonomously learns about topics
+        // she knows little about, relieving boredom and curiosity.
+        const boredom = snapshot.pressureVector[DriveName.Boredom] ?? 0;
+        const curiosity = snapshot.pressureVector[DriveName.Curiosity] ?? 0;
+        if (boredom > 0.6 || curiosity > 0.7) {
+          const researchTarget = await this.pickResearchTarget();
+          if (researchTarget) {
+            vlog('autonomous research triggered', {
+              boredom: +boredom.toFixed(3),
+              curiosity: +curiosity.toFixed(3),
+              target: researchTarget,
+            });
+            this.logger.log(
+              `Autonomous research: boredom=${boredom.toFixed(2)}, curiosity=${curiosity.toFixed(2)} → researching "${researchTarget}"`,
+            );
+            // Inject synthetic text that will trigger the RESEARCH_ENTITY procedure
+            // via the deliberation pipeline's COMMAND intent detection.
+            this.tickSampler.injectSyntheticText(
+              `I want to learn about ${researchTarget}`,
+            );
+          }
+        }
+
+        vlog('self-initiated tick', { pressure: +snapshot.totalPressure.toFixed(3), msSinceLastInput, boredom: +boredom.toFixed(3) });
         this.logger.debug(
           `Self-initiated tick: pressure=${snapshot.totalPressure.toFixed(3)}`,
         );
@@ -460,6 +515,113 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.logger.debug('Latent space MISS (all modalities) — proceeding to normal arbitration.');
       }
 
+      // ── Step 3.5: Tensor Inference ────────────────────────────────────────
+      // Call the cognition sidecar with the real SensoryFrame. The 50ms timeout
+      // in the gateway ensures this never blocks the loop. Returns null if
+      // sidecar is unavailable or times out — graceful degradation to LLM-only.
+      //
+      // Panel context: assemble domain-specific slices for the 4 panel models.
+      // Drive history is maintained by the adapter; the other 3 are built here
+      // where the data sources are available.
+      let tensorResult: TensorInferenceResult | null = null;
+      if (this.tensorInference) {
+        try {
+          // Latent match scores (Decision Panel) — top 5 similarities, padded
+          const latentScores = multiModalMatch
+            ? multiModalMatch.matches
+                .map((m) => m.similarity)
+                .sort((a, b) => b - a)
+                .slice(0, 5)
+            : [];
+          const latentMatchScores = [
+            ...latentScores,
+            ...new Array(Math.max(0, 5 - latentScores.length)).fill(0),
+          ];
+
+          // MAE values + novelty indicators (Learning Panel) — 10 MAE + 4 flags
+          const recentMAE = this.attractorMonitor.getRecentMAEValues(10);
+          const paddedMAE = [
+            ...new Array(Math.max(0, 10 - recentMAE.length)).fill(0),
+            ...recentMAE,
+          ];
+          // Novelty indicators from attractor detector states
+          const detectorResults = await this.attractorMonitor.runDetectors();
+          const detectorNames = new Set(
+            detectorResults.filter((d) => d.triggered).map((d) => d.name),
+          );
+          const noveltyIndicators = [
+            recentMAE.length >= 2
+              ? recentMAE.slice(-3).reduce((s, v) => s + v, 0) / 3 -
+                recentMAE.slice(0, 3).reduce((s, v) => s + v, 0) / Math.max(1, Math.min(3, recentMAE.length))
+              : 0, // MAE trend
+            detectorNames.has('PREDICTION_PESSIMIST') ? 1.0 : 0.0,
+            detectorNames.has('PLANNING_RUNAWAY') ? 1.0 : 0.0,
+            detectorNames.has('DEPRESSIVE_ATTRACTOR') ? 1.0 : 0.0,
+          ];
+          const recentMaeValues = [...paddedMAE, ...noveltyIndicators];
+
+          tensorResult = await this.tensorInference.infer(
+            frame,
+            driveSnapshot,
+            undefined, // episodicContext
+            {
+              latentMatchScores,
+              recentMaeValues,
+              // driveHistory is maintained by the adapter internally
+              // opportunityFeatures requires drive engine exposure — omitted for now
+            },
+          );
+        } catch (err) {
+          this.logger.warn(`Tensor inference failed: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      // ── Step 3.6: Tensor → Candidate Injection ───────────────────────────
+      if (tensorResult) {
+        vlog('tensor inference result', {
+          mode: tensorResult.bootstrapMode,
+          consensus: tensorResult.consensus,
+          divergence: +tensorResult.divergenceScore.toFixed(3),
+          topCategory: tensorResult.tensorTopCategory,
+          urgency: +tensorResult.urgency.toFixed(3),
+          novelty: +tensorResult.noveltyScore.toFixed(3),
+          inferenceMs: +tensorResult.inferenceMs.toFixed(1),
+        });
+
+        // In partial/full mode, inject tensor-derived candidate for graduated categories
+        if (
+          tensorResult.tensorTopCategory &&
+          tensorResult.shouldUseTensor(tensorResult.tensorTopCategory)
+        ) {
+          const tensorCandidate = this.buildTensorCandidate(
+            tensorResult,
+            contextFingerprint,
+            dominantDrive,
+          );
+          if (tensorCandidate) {
+            candidates.unshift(tensorCandidate);
+            vlog('tensor candidate injected', {
+              category: tensorResult.tensorTopCategory,
+              confidence: +tensorCandidate.confidence.toFixed(3),
+              mode: tensorResult.bootstrapMode,
+            });
+          }
+        }
+
+        // Panel divergence → force Type 2 deliberation.
+        // If panels disagree, cap all candidate confidences below the graduation
+        // threshold (0.80) so ArbitrationService routes to TYPE_2.
+        if (!tensorResult.consensus && tensorResult.divergenceScore > 0.3) {
+          vlog('tensor divergence — escalating to Type 2', {
+            divergence: +tensorResult.divergenceScore.toFixed(3),
+          });
+          candidates = candidates.map((c) => ({
+            ...c,
+            confidence: Math.min(c.confidence, 0.79),
+          }));
+        }
+      }
+
       // ── Step 4: RETRIEVING -> PREDICTING ──────────────────────────────────
       this.executorEngine.transition(ExecutorState.PREDICTING);
 
@@ -581,15 +743,48 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           vlog('executing Type 2 deliberation (novel)', { inputSummary: inputSummary.substring(0, 80) });
           this.logger.debug('Type 2 novel: running deliberation pipeline');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
-          executionResults.push({
-            content: deliberationResult.responseText,
-            tokensUsed: deliberationResult.totalTokens,
-            latencyMs: deliberationResult.totalLatencyMs,
-            model: 'deliberation-pipeline',
-            deliberationTrace: deliberationResult.trace,
-            confidence: deliberationResult.confidence,
-            knowledgeGrounding: deliberationResult.knowledgeGrounding,
-          });
+
+          // ── Action dispatch: if the LLM detected a COMMAND and requested
+          // an action (e.g. RESEARCH_ENTITY), dispatch it to the handler
+          // registry. The verbal response is used as the response text.
+          if (deliberationResult.actionRequest) {
+            const { actionRequest } = deliberationResult;
+            vlog('dispatching action request from deliberation', {
+              stepType: actionRequest.stepType,
+              target: actionRequest.target,
+            });
+            this.logger.log(
+              `Action request: ${actionRequest.stepType} on "${actionRequest.target}"`,
+            );
+
+            const actionStep = {
+              index: 0,
+              stepType: actionRequest.stepType,
+              params: { entity: actionRequest.target, query: actionRequest.target },
+            };
+            const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+
+            executionResults.push({
+              content: actionRequest.verbalResponse,
+              tokensUsed: deliberationResult.totalTokens,
+              latencyMs: deliberationResult.totalLatencyMs,
+              model: 'deliberation-pipeline+action',
+              deliberationTrace: deliberationResult.trace,
+              confidence: deliberationResult.confidence,
+              knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              actionResult,
+            });
+          } else {
+            executionResults.push({
+              content: deliberationResult.responseText,
+              tokensUsed: deliberationResult.totalTokens,
+              latencyMs: deliberationResult.totalLatencyMs,
+              model: 'deliberation-pipeline',
+              deliberationTrace: deliberationResult.trace,
+              confidence: deliberationResult.confidence,
+              knowledgeGrounding: deliberationResult.knowledgeGrounding,
+            });
+          }
         }
       } else {
         // SHRUG — no candidate exceeded threshold. However, if there's actual
@@ -613,15 +808,38 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // No latent match — run the full deliberation pipeline.
           this.logger.debug('SHRUG with text input — running deliberation pipeline.');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
-          executionResults.push({
-            content: deliberationResult.responseText,
-            tokensUsed: deliberationResult.totalTokens,
-            latencyMs: deliberationResult.totalLatencyMs,
-            model: 'deliberation-pipeline',
-            deliberationTrace: deliberationResult.trace,
-            knowledgeGrounding: deliberationResult.knowledgeGrounding,
-            confidence: deliberationResult.confidence,
-          });
+
+          // Handle action requests from SHRUG+deliberation path too.
+          if (deliberationResult.actionRequest) {
+            const { actionRequest } = deliberationResult;
+            this.logger.log(`SHRUG action request: ${actionRequest.stepType} on "${actionRequest.target}"`);
+            const actionStep = {
+              index: 0,
+              stepType: actionRequest.stepType,
+              params: { entity: actionRequest.target, query: actionRequest.target },
+            };
+            const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+            executionResults.push({
+              content: actionRequest.verbalResponse,
+              tokensUsed: deliberationResult.totalTokens,
+              latencyMs: deliberationResult.totalLatencyMs,
+              model: 'deliberation-pipeline+action',
+              deliberationTrace: deliberationResult.trace,
+              knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              confidence: deliberationResult.confidence,
+              actionResult,
+            });
+          } else {
+            executionResults.push({
+              content: deliberationResult.responseText,
+              tokensUsed: deliberationResult.totalTokens,
+              latencyMs: deliberationResult.totalLatencyMs,
+              model: 'deliberation-pipeline',
+              deliberationTrace: deliberationResult.trace,
+              knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              confidence: deliberationResult.confidence,
+            });
+          }
         } else {
           this.logger.debug(
             `SHRUG result — no text input, skipping action dispatch. Reason: ${arbitrationResult.reason}`,
@@ -827,10 +1045,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           knowledgeGrounding: responseGrounding,
           preExecutionDriveSnapshot: driveSnapshot.pressureVector,
           latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
+          // Tensor metadata — populated when sidecar was available this cycle
+          ...(tensorResult ? {
+            tensorTopCategory: tensorResult.tensorTopCategory ?? undefined,
+            tensorUrgency: tensorResult.urgency,
+            tensorConsensus: tensorResult.consensus,
+            bootstrapMode: tensorResult.bootstrapMode,
+          } : {}),
         });
       } else {
         this.logger.debug(
           `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
+        );
+      }
+
+      // ── Tensor training with real frame data ──────────────────────────────
+      if (this.tensorInference && this.tensorInference.isAvailable()) {
+        // Derive the action category from the arbitration result (same logic
+        // as the old CognitionBridgeService, but with real frame data).
+        let trainCategory = 'SHRUG';
+        if (arbitrationResult.type !== 'SHRUG') {
+          trainCategory = arbitrationResult.candidate.procedureData?.category
+            ?? 'ConversationalResponse';
+        }
+        this.tensorInference.submitTraining(
+          frame,
+          driveSnapshot,
+          trainCategory,
+          arbitrationResult.type,
+          tensorResult?.tensorTopCategory,
         );
       }
 
@@ -1107,6 +1350,62 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   private static readonly SENSORY_AUDIO_THRESHOLD = 0.1;
   private static readonly SENSORY_VIDEO_THRESHOLD = 0.2;
 
+  // ---------------------------------------------------------------------------
+  // Tensor Candidate Construction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build an ActionCandidate from tensor inference results.
+   *
+   * The tensor's action_bias softmax gives a probability per category.
+   * The argmax category becomes the candidate's category; the argmax
+   * probability becomes its confidence score.
+   *
+   * In partial mode, confidence is capped below 0.80 (forces Type 2).
+   * In full mode, confidence can exceed 0.80 (allows Type 1 reflex).
+   */
+  private buildTensorCandidate(
+    tensorResult: TensorInferenceResult,
+    contextFingerprint: string,
+    dominantDrive: DriveName,
+  ): ActionCandidate | null {
+    const topCategory = tensorResult.tensorTopCategory;
+    if (!topCategory) return null;
+
+    // Argmax probability from the action_bias softmax
+    const maxProb = Math.max(...tensorResult.actionBias);
+    if (maxProb < 0.30) return null; // Tensor too uncertain
+
+    // Confidence gating by bootstrap mode
+    const isFullMode = tensorResult.bootstrapMode === 'full';
+    const mappedConfidence = isFullMode
+      ? Math.min(0.95, maxProb)       // Allow Type 1 in full mode
+      : Math.min(0.79, maxProb);      // Force Type 2 in partial mode
+
+    return {
+      procedureData: {
+        id: `tensor-${topCategory}-${Date.now()}`,
+        name: `tensor-${topCategory}`,
+        category: topCategory,
+        triggerContext: contextFingerprint,
+        actionSequence: [{
+          index: 0,
+          stepType: 'LLM_GENERATE',
+          params: {
+            instruction: `Respond as ${topCategory} (tensor-guided)`,
+            tensorUrgency: tensorResult.urgency,
+            tensorNovelty: tensorResult.noveltyScore,
+          },
+        }],
+        provenance: 'INFERENCE' as any,
+        confidence: mappedConfidence,
+      },
+      confidence: mappedConfidence,
+      motivatingDrive: dominantDrive,
+      contextMatchScore: maxProb,
+    };
+  }
+
   /**
    * Route per-modality sensory prediction errors to drives.
    *
@@ -1177,6 +1476,46 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       } catch (err) {
         this.logger.warn(`Scene prediction error routing failed: ${err}`);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Autonomous research target selection
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pick a low-confidence Entity from the WKG that would benefit from research.
+   *
+   * Strategy: query entities with few relationships and moderate confidence
+   * (enough to exist but not well-understood). Picks randomly from the top
+   * candidates to avoid always researching the same thing.
+   *
+   * Returns null if no suitable target is found.
+   */
+  private async pickResearchTarget(): Promise<string | null> {
+    try {
+      const entities = await this.wkgContext.queryEntities('*');
+      if (entities.length === 0) return null;
+
+      // Prefer entities with lower confidence (less well-known).
+      // Filter out very generic labels and structural nodes.
+      const candidates = entities
+        .filter((e) =>
+          e.nodeType === 'Entity' &&
+          e.label.length > 2 &&
+          e.confidence < 0.60,
+        )
+        .sort((a, b) => a.confidence - b.confidence)
+        .slice(0, 10);
+
+      if (candidates.length === 0) return null;
+
+      // Pick randomly from top candidates.
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      return pick.label;
+    } catch (err) {
+      this.logger.warn(`pickResearchTarget failed: ${err}`);
+      return null;
     }
   }
 }

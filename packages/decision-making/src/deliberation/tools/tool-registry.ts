@@ -23,6 +23,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   DriveName,
   type DriveSnapshot,
+  type ActionStep,
 } from '@sylphie/shared';
 import {
   DRIVE_STATE_READER,
@@ -30,8 +31,9 @@ import {
 } from '@sylphie/drive-engine';
 import { WkgContextService } from '../../wkg/wkg-context.service';
 import type { IEpisodicMemoryService } from '../../interfaces/decision-making.interfaces';
-import { EPISODIC_MEMORY_SERVICE } from '../../decision-making.tokens';
+import { EPISODIC_MEMORY_SERVICE, ACTION_HANDLER_REGISTRY } from '../../decision-making.tokens';
 import type { ToolDefinition, ToolExecutor } from '../../llm/ollama-llm.service';
+import type { ActionHandlerRegistryService } from '../../action-handlers/action-handler-registry.service';
 
 // ---------------------------------------------------------------------------
 // High-fidelity domains for search filtering
@@ -145,6 +147,45 @@ export const DELIBERATION_TOOLS: ToolDefinition[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'conversation_history',
+    description:
+      'Search my recent conversation history for what was said earlier in this chat. ' +
+      'Use when someone refers to something said previously ("what did I say about...", ' +
+      '"tell me more about that", "earlier you mentioned..."). Returns recent messages.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to search for in recent conversation (keyword or topic)',
+        },
+        last_n: {
+          type: 'number',
+          description: 'Number of recent messages to return (default: 10, max: 30)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'research_entity',
+    description:
+      'Research a topic in depth: searches the web, extracts structured knowledge, ' +
+      'and writes new entities and relationships to my knowledge graph. ' +
+      'Use when asked to "learn about", "research", "look up", or "find out about" something. ' +
+      'This is an ACTION — it permanently adds knowledge to my graph.',
+    parameters: {
+      type: 'object',
+      properties: {
+        entity: {
+          type: 'string',
+          description: 'The topic or entity to research (e.g., "dolphins", "quantum computing")',
+        },
+      },
+      required: ['entity'],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -158,6 +199,9 @@ export class ToolRegistryService {
   /** SearXNG instance URL for web searches. */
   private searxngUrl: string;
 
+  /** Current conversation history, set at the start of each deliberation cycle. */
+  private currentConversationHistory: Array<{ role: string; content: string }> = [];
+
   constructor(
     private readonly wkgContext: WkgContextService,
 
@@ -168,9 +212,21 @@ export class ToolRegistryService {
     @Inject(DRIVE_STATE_READER)
     private readonly driveStateReader: IDriveStateReader,
 
+    @Optional()
+    @Inject(ACTION_HANDLER_REGISTRY)
+    private readonly actionHandlerRegistry: ActionHandlerRegistryService | null,
+
     private readonly config: ConfigService,
   ) {
     this.searxngUrl = this.config.get<string>('ollama.searxngUrl', 'http://localhost:8888');
+  }
+
+  /**
+   * Set the current conversation history for the conversation_history tool.
+   * Called at the start of each deliberation cycle.
+   */
+  setConversationHistory(history: Array<{ role: string; content: string }>): void {
+    this.currentConversationHistory = history;
   }
 
   /** Get all tool definitions for passing to the LLM. */
@@ -204,6 +260,12 @@ export class ToolRegistryService {
         case 'web_search':
         case 'google_search': // backward compat
           return this.executeGoogleSearch(args);
+
+        case 'conversation_history':
+          return this.executeConversationHistory(args);
+
+        case 'research_entity':
+          return this.executeResearchEntity(args);
 
         default:
           return { error: `Unknown tool: ${toolName}` };
@@ -425,6 +487,104 @@ export class ToolRegistryService {
         warning: 'Search results are consensus signals, NOT ground truth.',
       };
     }
+  }
+
+  /**
+   * Search recent conversation history for relevant messages.
+   */
+  private executeConversationHistory(args: Record<string, unknown>): unknown {
+    const query = ((args['query'] as string) ?? '').toLowerCase();
+    const lastN = Math.min(30, Math.max(1, (args['last_n'] as number) ?? 10));
+
+    const history = this.currentConversationHistory;
+    if (history.length === 0) {
+      return {
+        source: 'conversation_history',
+        messages: [],
+        note: 'No conversation history available yet.',
+      };
+    }
+
+    let messages = history.slice(-lastN);
+
+    // If a query was provided, filter to messages containing the query.
+    if (query) {
+      const filtered = history.filter((m) =>
+        m.content.toLowerCase().includes(query),
+      );
+      messages = filtered.length > 0 ? filtered.slice(-lastN) : messages;
+    }
+
+    return {
+      source: 'conversation_history',
+      totalMessages: history.length,
+      returned: messages.length,
+      messages: messages.map((m, i) => ({
+        index: i,
+        role: m.role,
+        content: m.content.substring(0, 500),
+      })),
+    };
+  }
+
+  /**
+   * Execute the RESEARCH_ENTITY action as a real tool call.
+   *
+   * Dispatches to the ActionHandlerRegistry's RESEARCH_ENTITY handler,
+   * which does web search + LLM extraction + WKG writes. Returns the
+   * research results so the LLM can incorporate them into its response.
+   */
+  private async executeResearchEntity(args: Record<string, unknown>): Promise<unknown> {
+    const entity = (args['entity'] as string) ?? '';
+    if (!entity) {
+      return { source: 'research', error: 'No entity specified to research.' };
+    }
+
+    if (!this.actionHandlerRegistry) {
+      return { source: 'research', error: 'Action handler registry unavailable.' };
+    }
+
+    this.logger.log(`Tool: research_entity("${entity}") — dispatching to action handler`);
+
+    const step: ActionStep = {
+      index: 0,
+      stepType: 'RESEARCH_ENTITY',
+      params: { entity },
+    };
+
+    // Create a minimal cycle context for the handler.
+    // The RESEARCH_ENTITY handler only uses step.params.entity,
+    // so the rest of the context can be minimal.
+    const result = await this.actionHandlerRegistry.execute(step, {
+      frame: { raw: {}, fused_embedding: [], active_modalities: [], timestamp: new Date() } as any,
+      cognitiveContext: {
+        driveSnapshot: this.driveStateReader.getCurrentState(),
+        recentEpisodes: [],
+        gapTypes: [],
+      } as any,
+      inputSummary: `Research: ${entity}`,
+    });
+
+    if (!result) {
+      return {
+        source: 'research',
+        entity,
+        success: false,
+        note: `Research on "${entity}" failed or returned no results.`,
+      };
+    }
+
+    return {
+      source: 'research',
+      provenance: 'web_research_inference',
+      entity,
+      success: true,
+      nodesCreated: result['nodesCreated'] ?? 0,
+      edgesCreated: result['edgesCreated'] ?? 0,
+      nodes: result['nodes'] ?? [],
+      edges: result['edges'] ?? [],
+      note: `Successfully researched "${entity}" and added knowledge to my graph.`,
+    };
   }
 }
 

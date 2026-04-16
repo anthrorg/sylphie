@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { Module } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { Pool } from 'pg';
@@ -15,7 +15,7 @@ import {
   ollamaConfig,
   voiceConfig,
 } from '@sylphie/shared';
-import { DecisionMakingModule } from '@sylphie/decision-making';
+import { DecisionMakingModule, TENSOR_INFERENCE_SERVICE } from '@sylphie/decision-making';
 import { LearningModule } from '@sylphie/learning';
 import { PlanningModule } from '@sylphie/planning';
 import { DriveEngineModule } from '@sylphie/drive-engine';
@@ -30,6 +30,7 @@ import { DebugController } from './controllers/debug.controller';
 import { AuthController } from './controllers/auth.controller';
 import { SupervisorController } from './controllers/supervisor.controller';
 import { RulesController } from './controllers/rules.controller';
+import { CognitionController } from './controllers/cognition.controller';
 import { GraphGateway } from './gateways/graph.gateway';
 import { ConversationGateway } from './gateways/conversation.gateway';
 import { TelemetryGateway } from './gateways/telemetry.gateway';
@@ -54,7 +55,31 @@ import { TelemetryBroadcastService } from './services/telemetry-broadcast.servic
 import { SupervisorBroadcastService } from './services/supervisor-broadcast.service';
 import { CognitionGatewayService } from './services/cognition-gateway.service';
 import { CognitionBridgeService } from './services/cognition-bridge.service';
+import { TensorInferenceAdapter } from './services/tensor-inference-adapter.service';
 import { GuardianRulesService } from './services/guardian-rules.service';
+
+/**
+ * @Global() CognitionModule — makes TENSOR_INFERENCE_SERVICE available to
+ * DecisionMakingService without DecisionMakingModule importing an app-level
+ * module (which would violate the packages/ → apps/ layering constraint).
+ *
+ * Follows the same pattern as TimescaleModule (also @Global()).
+ */
+@Global()
+@Module({
+  providers: [
+    CognitionGatewayService,
+    {
+      provide: TENSOR_INFERENCE_SERVICE,
+      useClass: TensorInferenceAdapter,
+    },
+  ],
+  exports: [
+    CognitionGatewayService,
+    TENSOR_INFERENCE_SERVICE,
+  ],
+})
+class CognitionModule {}
 
 @Module({
   imports: [
@@ -79,6 +104,7 @@ import { GuardianRulesService } from './services/guardian-rules.service';
     LearningModule,
     PlanningModule,
     SupervisorModule,
+    CognitionModule,
     Neo4jModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -141,6 +167,7 @@ import { GuardianRulesService } from './services/guardian-rules.service';
     DebugController,
     SupervisorController,
     RulesController,
+    CognitionController,
   ],
   providers: [
     // PostgreSQL runtime pool for guardian rule management
@@ -179,7 +206,6 @@ import { GuardianRulesService } from './services/guardian-rules.service';
     VisualWorkingMemoryService,
     TelemetryBroadcastService,
     SupervisorBroadcastService,
-    CognitionGatewayService,
     CognitionBridgeService,
     // Gateways
     GraphGateway,

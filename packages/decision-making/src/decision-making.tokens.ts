@@ -173,3 +173,16 @@ export const CONTRADICTION_SCANNER = Symbol('CONTRADICTION_SCANNER');
  * spreading activation from WKG graph connections.
  */
 export const WORKING_MEMORY_SERVICE = Symbol('WORKING_MEMORY_SERVICE');
+
+/**
+ * Injection token for ITensorInferenceService.
+ * EXPORTED — provided externally by @Global() CognitionModule in AppModule.
+ *
+ * Wraps the HTTP client to the Python cognition sidecar (port 8431).
+ * Called during processInput() between RETRIEVING and PREDICTING states
+ * to inject tensor-derived action candidates into arbitration.
+ *
+ * Bootstrap-mode-aware: shadow/audit = training only, partial = graduated
+ * categories only, full = tensor primary.
+ */
+export const TENSOR_INFERENCE_SERVICE = Symbol('TENSOR_INFERENCE_SERVICE');

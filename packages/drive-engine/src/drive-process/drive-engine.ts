@@ -129,6 +129,10 @@ export class DriveEngine {
   private nextEmissionAt: number = EMISSION_INTERVAL_TICKS;
   private nextDecayCheckAt: number = DECAY_CHECK_INTERVAL_TICKS;
 
+  /** Auto-save checkpoint interval in ticks (60s at 1Hz). */
+  private static readonly AUTO_SAVE_INTERVAL = 60;
+  private nextAutoSaveAt: number = DriveEngine.AUTO_SAVE_INTERVAL;
+
   constructor(transport: IMessageTransport) {
     this.transport = transport;
 
@@ -457,7 +461,22 @@ export class DriveEngine {
         this.nextEmissionAt = this.tickNumber + EMISSION_INTERVAL_TICKS;
       }
 
-      // 11. Advance state for next tick
+      // 11. Auto-save checkpoint every 60s so state survives hard kills.
+      // On Windows, Ctrl+C often kills the process group without delivering
+      // SIGINT/SIGTERM, so the graceful shutdown handler never fires.
+      // Periodic saves ensure at most 60s of state is lost.
+      if (this.tickNumber >= this.nextAutoSaveAt && this.timescaleWriter) {
+        this.nextAutoSaveAt = this.tickNumber + DriveEngine.AUTO_SAVE_INTERVAL;
+        // Fire-and-forget — don't block the tick loop
+        this.timescaleWriter.saveState(
+          frozen as unknown as Record<string, number>,
+          this.tickNumber,
+        ).catch((err) => {
+          console.error(`[DriveEngine] Auto-save failed: ${err}`);
+        });
+      }
+
+      // 12. Advance state for next tick
       this.stateManager.advanceTick();
       this.tickNumber++;
       this.lastTickCompletedAt = Date.now();

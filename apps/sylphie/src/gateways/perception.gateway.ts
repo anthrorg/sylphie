@@ -7,7 +7,7 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
 import { TickSamplerService } from '@sylphie/decision-making';
-import { verboseFor, type TrackedObjectDTO, type SceneSummary, type FaceDetection } from '@sylphie/shared';
+import { verboseFor, SceneEventType, type TrackedObjectDTO, type SceneSummary, type FaceDetection } from '@sylphie/shared';
 
 const vlog = verboseFor('Perception');
 import { PersonModelService } from '../services/person-model.service';
@@ -18,6 +18,11 @@ import { VisualWorkingMemoryService } from '../services/visual-working-memory.se
 const MAX_FPS = 15;
 const MIN_FRAME_INTERVAL_MS = 1000 / MAX_FPS;
 
+/** Minimum time between VLM caption requests (prevents stacking). */
+const CAPTION_COOLDOWN_MS = 5_000;
+/** If no scene-change trigger fires, request a periodic caption after this. */
+const CAPTION_PERIODIC_MS = 30_000;
+
 @WebSocketGateway({ path: '/ws/perception' })
 export class PerceptionGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -26,6 +31,13 @@ export class PerceptionGateway
   private readonly perceptionHost: string;
   private processing = false;
   private lastFrameTime = 0;
+
+  /** Last VLM caption text (persists between frames). */
+  private lastVlmCaption = '';
+  /** Timestamp of last completed VLM caption. */
+  private lastCaptionAt = 0;
+  /** True while a caption request is in-flight (prevents stacking). */
+  private captionInFlight = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -150,22 +162,51 @@ export class PerceptionGateway
         // Update Visual Working Memory (stabilization + WKG resolution)
         this.vwm.updateScene(sceneSnapshot);
 
-        // Inject VWM scene description and undiscovered count for deliberation
-        const sceneDesc = this.vwm.getSceneDescription();
-        if (sceneDesc) {
-          this.tickSampler.updateSceneDescription(sceneDesc);
+        // --- VLM caption triggering ---
+        // Fire a caption request on scene changes or periodically.
+        const hasSceneChange = sceneSnapshot.events.some(
+          (e) =>
+            e.type === SceneEventType.OBJECT_APPEARED ||
+            e.type === SceneEventType.PERSON_ARRIVED ||
+            e.type === SceneEventType.OBJECT_DISAPPEARED ||
+            e.type === SceneEventType.PERSON_LEFT,
+        );
+        const timeSinceCaption = now - this.lastCaptionAt;
+        const shouldCaption =
+          !this.captionInFlight &&
+          timeSinceCaption >= CAPTION_COOLDOWN_MS &&
+          (hasSceneChange || timeSinceCaption >= CAPTION_PERIODIC_MS);
+
+        if (shouldCaption) {
+          this.captionInFlight = true;
+          this.requestVlmCaption(jpegData).catch(() => {});
+        }
+
+        // Compose scene description from VLM caption + VWM entity list
+        const vwmDesc = this.vwm.getSceneDescription();
+        const parts: string[] = [];
+        if (this.lastVlmCaption) {
+          parts.push(`Scene: ${this.lastVlmCaption}`);
+        }
+        if (vwmDesc) {
+          parts.push(`Tracked entities:\n${vwmDesc}`);
+        }
+        const composedDescription = parts.join('\n');
+        if (composedDescription) {
+          this.tickSampler.updateSceneDescription(composedDescription);
         }
         const undiscovered = this.vwm.getUndiscoveredEntities();
         const unknownPersons = this.vwm.getUnknownPersons();
         this.tickSampler.updateUndiscoveredCount(undiscovered.length);
         this.tickSampler.updateUnknownPersonCount(unknownPersons.length);
 
-        // Send enriched result to browser (tracked objects + scene events + VWM entities)
+        // Send enriched result to browser (tracked objects + scene events + VWM entities + VLM caption)
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({
             ...result,
             scene_events: sceneSnapshot.events,
             vwm_entities: this.vwm.getVisibleEntities(),
+            vlm_caption: this.lastVlmCaption || null,
           }));
         }
       } else {
@@ -178,6 +219,35 @@ export class PerceptionGateway
       // Perception service unavailable
     } finally {
       this.processing = false;
+    }
+  }
+
+  /**
+   * Fire-and-forget VLM caption request. Sends the current JPEG frame to
+   * the perception service's /caption endpoint and stores the result.
+   * Never blocks the main detection pipeline.
+   */
+  private async requestVlmCaption(jpegData: Buffer): Promise<void> {
+    try {
+      const response = await fetch(
+        `${this.perceptionHost}/perception/caption`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'image/jpeg' },
+          body: new Uint8Array(jpegData),
+        },
+      );
+      if (!response.ok) return;
+      const result = (await response.json()) as { caption: string };
+      this.lastVlmCaption = result.caption;
+      this.lastCaptionAt = Date.now();
+      vlog('vlm caption received', {
+        captionLength: result.caption.length,
+      });
+    } catch {
+      // VLM unavailable — no-op, fall back to VWM-only description
+    } finally {
+      this.captionInFlight = false;
     }
   }
 }

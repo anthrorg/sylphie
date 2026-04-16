@@ -45,12 +45,32 @@ export interface CognitionCycleResult {
 }
 
 /** Health response from GET /cognition/health */
-interface CognitionHealthResult {
+export interface CognitionHealthResult {
   status: string;
   models_loaded: boolean;
   bootstrap_mode: string;
   training_enabled: boolean;
   total_parameters: number;
+}
+
+/** Metrics from GET /cognition/metrics */
+export interface CognitionMetrics {
+  training_steps: number;
+  training_loss: number | null;
+  inference_latency_ms: number;
+  samples_in_buffer: number;
+  checkpoint_count: number;
+  per_category_confidence: Record<string, number>;
+}
+
+/** Bootstrap status from GET /cognition/bootstrap */
+export interface BootstrapStatusResult {
+  mode: string;
+  agreement_rate: number;
+  per_category_agreement: Record<string, number>;
+  categories_graduated: string[];
+  total_shadow_samples: number;
+  total_audit_samples: number;
 }
 
 /** Training sample submitted to POST /cognition/train */
@@ -76,6 +96,7 @@ export class CognitionGatewayService implements OnModuleInit {
   private readonly logger = new Logger(CognitionGatewayService.name);
   private readonly host: string;
   private available = false;
+  private bootstrapMode = 'shadow';
 
   constructor(private readonly config: ConfigService) {
     this.host = this.config.get<string>(
@@ -97,6 +118,11 @@ export class CognitionGatewayService implements OnModuleInit {
     return this.available;
   }
 
+  /** Current bootstrap mode from the last health check. */
+  getBootstrapMode(): string {
+    return this.bootstrapMode;
+  }
+
   /**
    * Run a cognitive cycle through the sidecar.
    *
@@ -109,6 +135,12 @@ export class CognitionGatewayService implements OnModuleInit {
     frame: SensoryFrame,
     driveSnapshot: DriveSnapshot,
     episodicContext?: number[],
+    panelContext?: {
+      driveHistory?: readonly number[];
+      latentMatchScores?: readonly number[];
+      recentMaeValues?: readonly number[];
+      opportunityFeatures?: readonly number[];
+    },
   ): Promise<CognitionCycleResult | null> {
     if (!this.available) return null;
 
@@ -120,13 +152,18 @@ export class CognitionGatewayService implements OnModuleInit {
       (name) => driveSnapshot.driveDeltas[name] ?? 0,
     );
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       fused_embedding: frame.fused_embedding,
       drive_vector: driveVector,
       drive_deltas: driveDeltas,
       total_pressure: driveSnapshot.totalPressure,
       episodic_context: episodicContext ?? new Array(768).fill(0),
       modality_embeddings: frame.modality_embeddings,
+      // Panel domain slices — Python side zero-pads if absent
+      ...(panelContext?.driveHistory ? { drive_history: panelContext.driveHistory } : {}),
+      ...(panelContext?.latentMatchScores ? { latent_match_scores: panelContext.latentMatchScores } : {}),
+      ...(panelContext?.recentMaeValues ? { recent_mae_values: panelContext.recentMaeValues } : {}),
+      ...(panelContext?.opportunityFeatures ? { opportunity_features: panelContext.opportunityFeatures } : {}),
     };
 
     try {
@@ -186,6 +223,78 @@ export class CognitionGatewayService implements OnModuleInit {
   }
 
   /**
+   * Fetch bootstrap status from the sidecar.
+   * Returns graduated categories, agreement rates, and current mode.
+   */
+  async fetchBootstrapStatus(): Promise<BootstrapStatusResult | null> {
+    if (!this.available) return null;
+
+    try {
+      const response = await fetch(`${this.host}/cognition/bootstrap`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+      const status = (await response.json()) as BootstrapStatusResult;
+      this.bootstrapMode = status.mode;
+      return status;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch training metrics from the sidecar.
+   */
+  async fetchMetrics(): Promise<CognitionMetrics | null> {
+    if (!this.available) return null;
+
+    try {
+      const response = await fetch(`${this.host}/cognition/metrics`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as CognitionMetrics;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch full model state from the sidecar (per-submodel param counts, weight stats).
+   */
+  async fetchModelState(): Promise<Record<string, unknown> | null> {
+    if (!this.available) return null;
+
+    try {
+      const response = await fetch(`${this.host}/cognition/control/state`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch health status (public version of checkHealth for the dashboard).
+   */
+  async fetchHealth(): Promise<CognitionHealthResult | null> {
+    try {
+      const response = await fetch(`${this.host}/cognition/health`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+      const health = (await response.json()) as CognitionHealthResult;
+      this.available = health.models_loaded;
+      this.bootstrapMode = health.bootstrap_mode ?? 'shadow';
+      return health;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Check if the sidecar is healthy and update availability.
    */
   private async checkHealth(): Promise<void> {
@@ -197,6 +306,7 @@ export class CognitionGatewayService implements OnModuleInit {
       if (response.ok) {
         const health = (await response.json()) as CognitionHealthResult;
         this.available = health.models_loaded;
+        this.bootstrapMode = health.bootstrap_mode ?? 'shadow';
         if (this.available) {
           this.logger.log(
             `Cognition sidecar connected (${health.total_parameters} params, mode=${health.bootstrap_mode})`,

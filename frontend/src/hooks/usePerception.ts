@@ -109,6 +109,7 @@ export function usePerception(): UsePerceptionReturn {
   const trackedObjectsRef = useRef<TrackedObject[]>([])
   const sceneEventsRef = useRef<SceneEvent[]>([])
   const vwmEntitiesRef = useRef<VwmEntity[]>([])
+  const vlmCaptionRef = useRef<string>('')
   const recentTrackIdsRef = useRef<Set<number>>(new Set())
   const rafRef = useRef<number | null>(null)
   const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
@@ -224,6 +225,11 @@ export function usePerception(): UsePerceptionReturn {
 
             // Store VWM entities for overlay rendering
             vwmEntitiesRef.current = (data.vwm_entities ?? []) as VwmEntity[]
+
+            // Store VLM caption for overlay
+            if (data.vlm_caption) {
+              vlmCaptionRef.current = data.vlm_caption
+            }
 
             // Build recognized items from VWM entities (stabilized, WKG-resolved)
             const vwmEntities = data.vwm_entities as Array<{
@@ -492,6 +498,43 @@ export function usePerception(): UsePerceptionReturn {
 
             // No labels on face layers — just visual overlays (mesh, dots, contour, bbox).
             // Identity labels belong in the tracking layer, driven by VWM knowledge.
+          }
+        }
+
+        // --- VLM caption overlay: translucent bar at bottom of canvas ---
+        const caption = vlmCaptionRef.current
+        if (caption) {
+          const padding = 8
+          const fontSize = 11
+          ctx.font = `${fontSize}px monospace`
+
+          // Word-wrap caption to fit canvas width
+          const maxWidth = canvas.width - padding * 2
+          const words = caption.split(' ')
+          const lines: string[] = []
+          let currentLine = ''
+          for (const word of words) {
+            const test = currentLine ? `${currentLine} ${word}` : word
+            if (ctx.measureText(test).width > maxWidth && currentLine) {
+              lines.push(currentLine)
+              currentLine = word
+            } else {
+              currentLine = test
+            }
+          }
+          if (currentLine) lines.push(currentLine)
+
+          const lineHeight = fontSize + 3
+          const barHeight = lines.length * lineHeight + padding * 2
+
+          // Translucent background
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
+          ctx.fillRect(0, canvas.height - barHeight, canvas.width, barHeight)
+
+          // Caption text
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+          for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], padding, canvas.height - barHeight + padding + (i + 1) * lineHeight - 3)
           }
         }
 

@@ -838,3 +838,115 @@ export interface IWorkingMemoryService {
    */
   getLastSnapshot(): WorkingMemorySnapshot | null;
 }
+
+// ===========================================================================
+// Tensor Inference (Cognition Sidecar Integration)
+// ===========================================================================
+
+/**
+ * Result from the tensor cognition sidecar's inference cycle.
+ *
+ * The sidecar runs a global model (1561-dim input → 32-dim action softmax)
+ * plus 4 panel models (drive, decision, learning, planning). When panels
+ * disagree (consensus=false), the decision loop should escalate to Type 2
+ * deliberation rather than trusting any single prediction.
+ *
+ * Bootstrap mode gates how much influence tensor results have:
+ *   shadow/audit — tensor runs for training/comparison only, no influence
+ *   partial      — tensor decides for graduated categories, LLM for rest
+ *   full         — tensor is primary decision-maker
+ */
+export interface TensorInferenceResult {
+  /** 32-dim softmax distribution over action categories. */
+  readonly actionBias: readonly number[];
+  /** Learned urgency signal [0,1]. */
+  readonly urgency: number;
+  /** Learned novelty assessment [0,1]. */
+  readonly noveltyScore: number;
+  /** Whether the 4 panel models reached consensus. */
+  readonly consensus: boolean;
+  /** Magnitude of panel disagreement [0,1]. */
+  readonly divergenceScore: number;
+  /** Per-panel cosine similarity to the global prior. */
+  readonly panelAgreement: Record<string, number>;
+  /** Argmax category name from the action vocabulary. */
+  readonly tensorTopCategory: string | null;
+  /** Current bootstrap mode: shadow | audit | partial | full. */
+  readonly bootstrapMode: string;
+  /** Categories that have graduated (≥85% agreement with LLM). */
+  readonly graduatedCategories: readonly string[];
+  /** Whether tensor should decide for the given action category. */
+  shouldUseTensor(category: string): boolean;
+  /** Sidecar inference wall-clock time in ms. */
+  readonly inferenceMs: number;
+}
+
+/**
+ * Domain-specific context slices for the 4 cognition sidecar panel models.
+ *
+ * Each panel receives the global 1561-dim input PLUS its domain-specific slice.
+ * When a slice is unavailable (cold start, filtered tick), it defaults to zeros
+ * on the Python side.
+ */
+export interface PanelContext {
+  /** Last 10 drive pressure vectors, flattened (10 x 12 = 120 floats). */
+  readonly driveHistory?: readonly number[];
+  /** Top-5 latent space similarity scores [0,1]. Padded with zeros if < 5. */
+  readonly latentMatchScores?: readonly number[];
+  /** Last 10 prediction MAE values + 4 novelty indicators (14 floats). */
+  readonly recentMaeValues?: readonly number[];
+  /** Top opportunity features (8 floats). */
+  readonly opportunityFeatures?: readonly number[];
+}
+
+/**
+ * Interface for tensor cognition sidecar integration.
+ *
+ * The implementation wraps the HTTP client to the Python FastAPI sidecar
+ * (port 8431). It lives in apps/sylphie/ and is injected via @Global() DI.
+ *
+ * CANON §Dual-Process Cognition: The tensor model is the eventual Type 1
+ * reflex system. During bootstrap, it learns from the LLM's Type 2 decisions.
+ * Once graduated, it replaces the LLM for fast, sub-50ms action selection.
+ */
+export interface ITensorInferenceService {
+  /**
+   * Run tensor inference on the current sensory frame.
+   *
+   * Called between RETRIEVING and PREDICTING states in the decision loop.
+   * Returns null if the sidecar is unavailable or times out (50ms).
+   * Graceful degradation: null means the existing LLM-only path continues.
+   *
+   * @param frame         - Real SensoryFrame with fused_embedding (768-dim).
+   * @param driveSnapshot - Current drive state (12 drives + deltas).
+   * @param episodicContext - Optional 768-dim episodic memory tensor.
+   * @param panelContext  - Optional domain slices for the 4 panel models.
+   */
+  infer(
+    frame: SensoryFrame,
+    driveSnapshot: DriveSnapshot,
+    episodicContext?: number[],
+    panelContext?: PanelContext,
+  ): Promise<TensorInferenceResult | null>;
+
+  /**
+   * Submit a training sample with real frame data after the decision cycle.
+   * Fire-and-forget — never blocks the cognitive loop.
+   *
+   * @param frame            - Real SensoryFrame used during this cycle.
+   * @param driveSnapshot    - Drive state from this cycle.
+   * @param actionCategory   - LLM's actual action category (ground truth).
+   * @param arbitrationType  - TYPE_1, TYPE_2, or SHRUG.
+   * @param tensorTopCategory - Tensor's prediction (for bootstrap comparison).
+   */
+  submitTraining(
+    frame: SensoryFrame,
+    driveSnapshot: DriveSnapshot,
+    actionCategory: string,
+    arbitrationType: string,
+    tensorTopCategory?: string | null,
+  ): void;
+
+  /** Whether the cognition sidecar is currently reachable. */
+  isAvailable(): boolean;
+}

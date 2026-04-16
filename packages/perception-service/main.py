@@ -102,6 +102,12 @@ class _AppState:
     # read-modify-write atomic within the event loop.
     frame_sequence_lock: asyncio.Lock = None  # type: ignore[assignment]
 
+    # VLM (Vision-Language Model) state
+    vlm_model: Any | None = None
+    vlm_tokenizer: Any | None = None
+    vlm_loaded: bool = False
+    vlm_enabled: bool = True
+
 
 _state = _AppState()
 # Initialise the asyncio.Lock lazily (must be created inside an event loop
@@ -121,6 +127,10 @@ _state.frame_sequence_lock = asyncio.Lock()
 # executor threads, not on the event loop thread.
 _embedding_init_lock = threading.Lock()
 
+# threading.Lock protecting lazy-init of the VLM model. Same pattern as
+# _embedding_init_lock -- caption generation runs in run_in_executor.
+_vlm_init_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Lifespan: build the pipeline on startup, stop on shutdown
 # ---------------------------------------------------------------------------
@@ -132,8 +142,11 @@ async def lifespan(app: FastAPI):  # noqa: ANN001
     await _startup()
 
     # Register SIGTERM handler so Docker/Kubernetes terminates gracefully.
-    loop = asyncio.get_event_loop()
-    loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(_shutdown()))
+    # add_signal_handler is not supported on Windows — skip gracefully.
+    import sys  # noqa: PLC0415
+    if sys.platform != 'win32':
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(_shutdown()))
 
     try:
         yield
@@ -182,6 +195,19 @@ async def _startup() -> None:
         logger.info("perception_service_tracker_ok")
 
         logger.info("perception_service_startup_ok model=%s", cfg.detection.model_path)
+
+        # VLM: store enabled flag from config. Model is lazy-loaded on first
+        # caption request to avoid blocking startup with a multi-GB download.
+        _state.vlm_enabled = cfg.vlm.enabled
+        if cfg.vlm.enabled:
+            logger.info(
+                "perception_service_vlm_enabled model=%s dtype=%s device=%s",
+                cfg.vlm.model_name,
+                cfg.vlm.dtype,
+                cfg.vlm.device,
+            )
+        else:
+            logger.info("perception_service_vlm_disabled")
 
         # Face detector: MediaPipe face detection as a second layer.
         try:
@@ -267,6 +293,8 @@ async def health() -> JSONResponse:
         "status": "ok",
         "model_loaded": _state.model_loaded,
         "face_model_loaded": _state.face_model_loaded,
+        "vlm_enabled": _state.vlm_enabled,
+        "vlm_loaded": _state.vlm_loaded,
     })
 
 
@@ -673,6 +701,165 @@ async def crop_face(request: Request) -> JSONResponse:
         "face_crop_b64": crop_b64,
         "embedding": embedding,
     })
+
+
+# ---------------------------------------------------------------------------
+# POST /perception/caption
+# ---------------------------------------------------------------------------
+
+
+@app.post("/perception/caption")
+async def caption(request: Request) -> JSONResponse:
+    """Generate a natural-language caption for a submitted JPEG frame.
+
+    Uses Moondream2 (or the configured VLM) to produce a rich scene
+    description including clothing, colors, text, spatial relationships,
+    and activities -- details that YOLO cannot provide.
+
+    The model is lazy-loaded on the first request. Subsequent requests
+    reuse the loaded model.
+
+    Request body: raw JPEG bytes (Content-Type: image/jpeg).
+    Optional query param:
+        prompt: Custom prompt for the VLM (default from config).
+
+    Returns:
+        {
+          "caption": "A person in a white Adidas t-shirt sits at a desk...",
+          "model": "vikhyatk/moondream2",
+          "inference_ms": 1823
+        }
+
+    Returns HTTP 503 if VLM is disabled or failed to load.
+    """
+    if not _state.vlm_enabled:
+        raise HTTPException(status_code=503, detail="VLM is disabled")
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Request body is empty")
+
+    prompt = request.query_params.get("prompt")
+    if not prompt and _state.config is not None:
+        prompt = _state.config.vlm.default_prompt
+    if not prompt:
+        prompt = "Describe what you see in this image."
+
+    loop = asyncio.get_event_loop()
+    import time  # noqa: PLC0415
+
+    t0 = time.monotonic()
+
+    try:
+        result_caption = await loop.run_in_executor(
+            None, _generate_vlm_caption, body, prompt,
+        )
+    except Exception as exc:
+        logger.error("caption_endpoint_error error=%s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Caption generation failed") from exc
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    model_name = _state.config.vlm.model_name if _state.config else "moondream2"
+
+    return JSONResponse({
+        "caption": result_caption,
+        "model": model_name,
+        "inference_ms": elapsed_ms,
+    })
+
+
+def _init_vlm() -> bool:
+    """Lazy-load the VLM model. Returns True if model is ready.
+
+    Thread-safe via double-checked locking on _vlm_init_lock.
+    Called from _generate_vlm_caption inside run_in_executor.
+    """
+    if _state.vlm_loaded:
+        return True
+
+    with _vlm_init_lock:
+        if _state.vlm_loaded:
+            return True
+
+        try:
+            import torch  # noqa: PLC0415
+            from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
+
+            cfg = _state.config
+            model_name = cfg.vlm.model_name if cfg else "vikhyatk/moondream2"
+            revision = cfg.vlm.revision if cfg else None
+            dtype_str = cfg.vlm.dtype if cfg else "float32"
+            device_str = cfg.vlm.device if cfg else "auto"
+
+            dtype = torch.float16 if dtype_str == "float16" else torch.float32
+
+            if device_str == "auto":
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            else:
+                device = device_str
+
+            # Force float32 on CPU (float16 is not well-supported on CPU)
+            if device == "cpu":
+                dtype = torch.float32
+
+            logger.info(
+                "vlm_loading model=%s revision=%s dtype=%s device=%s",
+                model_name, revision, dtype, device,
+            )
+
+            _state.vlm_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                revision=revision,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+                device_map={"": device},
+            )
+            _state.vlm_tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                revision=revision,
+                trust_remote_code=True,
+            )
+            _state.vlm_loaded = True
+            logger.info("vlm_loaded model=%s device=%s", model_name, device)
+            return True
+
+        except Exception as exc:
+            logger.error("vlm_init_failed error=%s", exc, exc_info=True)
+            return False
+
+
+def _generate_vlm_caption(jpeg_bytes: bytes, prompt: str) -> str:
+    """Generate a caption from JPEG bytes using the VLM.
+
+    Runs on an executor thread (not the event loop). Handles lazy model
+    init via _init_vlm().
+
+    Args:
+        jpeg_bytes: Raw JPEG image bytes.
+        prompt: The question/prompt to send to the VLM.
+
+    Returns:
+        The generated caption string.
+
+    Raises:
+        RuntimeError: If the VLM cannot be initialised.
+    """
+    from io import BytesIO  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415
+
+    if not _init_vlm():
+        raise RuntimeError("VLM model failed to load")
+
+    image = Image.open(BytesIO(jpeg_bytes)).convert("RGB")
+
+    result = _state.vlm_model.answer_question(
+        _state.vlm_model.encode_image(image),
+        prompt,
+        _state.vlm_tokenizer,
+    )
+
+    return result.strip()
 
 
 _embedding_init_failed: bool = False

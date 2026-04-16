@@ -329,6 +329,65 @@ class ValidationConfig(BaseModel):
     )
 
 
+class VlmConfig(BaseModel):
+    """Vision-Language Model configuration.
+
+    Controls the optional VLM used for rich scene captioning. The VLM
+    produces natural-language descriptions of the camera feed (clothing,
+    colors, text, spatial relationships) that complement YOLO's structured
+    object detections.
+
+    The model is lazy-loaded on first caption request. Set ``enabled = False``
+    to skip VLM entirely (e.g. on machines without enough RAM).
+
+    Environment variable overrides (nested under ``COBEING_PERCEPTION_``)::
+
+        COBEING_PERCEPTION_VLM__ENABLED=true
+        COBEING_PERCEPTION_VLM__MODEL_NAME=vikhyatk/moondream2
+        COBEING_PERCEPTION_VLM__DTYPE=float16
+
+    Attributes:
+        enabled: Master switch. When False, the /perception/caption endpoint
+            returns 503 and the model is never loaded.
+        model_name: HuggingFace model identifier. Default is Moondream2
+            (~1.86B params, runs on consumer hardware).
+        revision: Model revision/commit to pin. Use None for latest.
+        dtype: Torch dtype for model weights. "float16" halves VRAM usage;
+            "float32" for CPU-only machines without float16 support.
+        device: Torch device. "auto" selects CUDA if available, else CPU.
+        default_prompt: The prompt sent to the VLM when captioning a frame.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Master switch. False disables VLM loading and captioning.",
+    )
+    model_name: str = Field(
+        default="vikhyatk/moondream2",
+        min_length=1,
+        description="HuggingFace model identifier for the VLM",
+    )
+    revision: str | None = Field(
+        default=None,
+        description="Model revision/commit to pin (None = latest)",
+    )
+    dtype: str = Field(
+        default="float32",
+        description="Torch dtype: float16 (GPU), float32 (CPU fallback)",
+    )
+    device: str = Field(
+        default="auto",
+        description="Torch device: auto, cpu, or cuda",
+    )
+    default_prompt: str = Field(
+        default=(
+            "Describe what you see in this image in detail, including people's"
+            " appearance, clothing, objects, colors, text, and spatial layout."
+        ),
+        description="Default prompt for scene captioning",
+    )
+
+
 class PerceptionConfig(BaseSettings):
     """Top-level configuration for the perception pipeline.
 
@@ -365,6 +424,7 @@ class PerceptionConfig(BaseSettings):
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     persistence: PersistenceCheckConfig = Field(default_factory=PersistenceCheckConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    vlm: VlmConfig = Field(default_factory=VlmConfig)
 
 
 __all__ = [
@@ -375,4 +435,5 @@ __all__ = [
     "PersistenceCheckConfig",
     "TrackingConfig",
     "ValidationConfig",
+    "VlmConfig",
 ]
