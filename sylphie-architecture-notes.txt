@@ -1,0 +1,1941 @@
+SYLPHIE ARCHITECTURE - DEEP CODE DIVE NOTES
+=============================================
+Date: 2026-04-29
+Method: Reading every TypeScript/JavaScript/Python source file in the repo,
+        plus PostgreSQL/TimescaleDB init SQL and Docker compose configuration.
+Strict rule: NO markdown files were read. Every claim is grounded in source code.
+
+==================================================================
+SECTION 0 — TOP-LEVEL TOPOLOGY
+==================================================================
+
+REPO LAYOUT (yarn workspaces monorepo, root package.json)
+- frontend/                        — Vite + React 18 + Zustand single-page app
+- apps/sylphie/                    — @sylphie/app NestJS backend (main process)
+- apps/drive-server/               — @sylphie/drive-server, plain Node WebSocket server
+- packages/shared/                 — @sylphie/shared, dependency-free foundation
+- packages/decision-making/        — @sylphie/decision-making, Cortex
+- packages/drive-engine/           — @sylphie/drive-engine, motivational substrate
+- packages/learning/               — @sylphie/learning, consolidation pipeline
+- packages/planning/               — @sylphie/planning, opportunity processing
+- packages/perception-service/     — Python FastAPI sidecar (YOLO + MediaPipe + VLM)
+- packages/cognition-service/      — Python FastAPI sidecar (TF + NumPy cognition)
+- packages/supervisor/             — @sylphie/supervisor, DeepSeek meta-evaluator
+- packages/sylphie-pkg/            — @sylphie/sylphie-pkg, codebase-as-graph + MCP server
+- infra/postgres/, infra/timescaledb/  — DB init SQL
+- infra/searxng/                   — privacy search engine config
+- test/e2e/                        — diagnostic E2E scripts (TypeScript via tsx)
+
+ROOT package.json scripts:
+- yarn dev            — frontend dev server (vite)
+- yarn build:shared / build:pkg / build:backend / build:drive-server
+- yarn dev:backend    — apps/sylphie via dotenv + ts-node (loads ../../.env)
+- yarn dev:drive-server — apps/drive-server, same pattern
+- yarn prisma:generate / prisma:migrate
+- yarn test:e2e       — test/e2e/full-system.e2e.ts
+- yarn test:arch      — test/e2e/architecture-verification.e2e.ts
+- yarn test:agi       — test/e2e/agi-verification.e2e.ts
+
+DOCKERFILE (root, single multi-stage):
+- Build order: shared → prisma generate → drive-engine → decision-making →
+  learning + planning (parallel) → @sylphie/app → vite frontend
+- Production stage installs --production deps, copies dist and frontend/dist,
+  exposes 3000, CMD ["node","apps/sylphie/dist/main.js"].
+- Note: drive-server is NOT included in the image. Production deployment runs
+  only the main NestJS app + WebSocket-served frontend on a single port.
+  This is a Railway-style single-process deployment; the dual-process
+  drive-isolation only applies in development.
+
+==================================================================
+SECTION 1 — INFRASTRUCTURE (docker-compose.yml + infra/*)
+==================================================================
+
+SEVEN containerized services (development):
+
+NEO4J (4 separate instances, each port-mapped):
+  neo4j-world  (7687/7474, password sylphie_world)            — WKG
+  neo4j-self   (7690/7475, password sylphie_self)             — SKG
+  neo4j-other  (7689/7476, password sylphie_other)            — OKG
+  neo4j-pkg    (7691/7477, password sylphie-pkg-local)        — PKG
+  All neo4j:5-community + APOC, 30s txn timeout.
+
+POSTGRES (port 5434):
+  user sylphie_admin / pass sylphie_admin_dev / db sylphie_system
+  Init SQL (infra/postgres/init/):
+    001-runtime-user.sql: CREATE USER sylphie_app WITH PASSWORD 'sylphie_app_dev'.
+      Grants CONNECT/USAGE + DEFAULT PRIVILEGES SELECT/INSERT/UPDATE/DELETE
+      on tables, USAGE/SELECT on sequences, EXECUTE on functions.
+    002-drive-rules-indexes.sql: idempotent partial index on
+      drive_rules WHERE enabled=true; status index on proposed_drive_rules.
+  Used by: PrismaService (User table), GuardianRulesService (drive_rules
+  approval workflow), drive-engine (RLS-verified rule lookup).
+
+TIMESCALEDB (port 5433):
+  user sylphie / pass sylphie_events_dev / db sylphie_events
+  Init SQL (infra/timescaledb/init/):
+    001-extensions.sql: CREATE EXTENSION IF NOT EXISTS timescaledb
+    002-events.sql: events table (id UUID, type TEXT, timestamp TIMESTAMPTZ,
+      subsystem TEXT, session_id TEXT, drive_snapshot JSONB, payload JSONB,
+      correlation_id TEXT, schema_version INT). hypertable on timestamp,
+      chunk 1 hour. Indexes: (session_id, type, timestamp DESC) and partial
+      (correlation_id, timestamp DESC) WHERE correlation_id IS NOT NULL.
+  pgvector ext used at runtime by app code (face_embeddings, voice_patterns,
+  visual_object_embeddings, sensory_ticks).
+
+PERCEPTION SIDECAR (port 8430):
+  Python 3.11-slim, FastAPI + uvicorn, NVIDIA GPU passthrough configured
+  but actually defaults to CPU torch wheels. YOLO yolov8n-seg.pt downloaded
+  at runtime by ultralytics on first inference. Camera env: device=0,
+  1280x720, 15fps. Detection conf threshold 0.25.
+
+COGNITION SIDECAR (port 8431):
+  Python 3.11-slim, FastAPI + uvicorn, TensorFlow >=2.15 + NumPy.
+  Volume: cognition_weights:/app/weights for checkpoint persistence.
+  Env: COGNITION_TRAINING_ENABLED=true, COGNITION_BOOTSTRAP_MODE=shadow,
+  COGNITION_CHECKPOINT_INTERVAL=1000.
+
+SEARXNG (port 8888): searxng/searxng:latest, /etc/searxng config volume.
+  Ollama config carries searxngUrl. Currently unused by Learning/Planning
+  research paths — those query TimescaleDB only.
+
+==================================================================
+SECTION 2 — @sylphie/shared (FOUNDATION)
+==================================================================
+
+PURPOSE: dependency-free DI substrate. Provides all DB drivers, cross-package
+type contracts, config loaders, exception hierarchy, verbose logging.
+
+PUBLIC EXPORTS (packages/shared/src/index.ts):
+- Configs: neo4jConfig, timescaleConfig, postgresConfig, ollamaConfig, voiceConfig
+- Storage: PrismaService/Module, TimescaleService/Module, Neo4jService/Module,
+  Neo4jInstanceName enum, NEO4J_INSTANCE_CONFIG token, raw pool symbols
+  POSTGRES_ADMIN_POOL / POSTGRES_RUNTIME_POOL (consumers register their own pools)
+- All types via 'export * from ./types'
+- All exceptions via 'export * from ./exceptions'
+- Verbose helpers verbose, verboseFor, isVerbose, reconfigureVerbose
+
+PRISMA SCHEMA (packages/shared/prisma/schema.prisma):
+  ONE model, User: id (uuid PK), username (unique), passwordHash @map(password_hash),
+  approved (default false), isGuardian @map(is_guardian) (default false),
+  createdAt @map(created_at) default now(). Table: users.
+  Migrations: add_user_approved_column, add_user_is_guardian_column.
+  Everything else (drives, rules, events) lives outside Prisma; Prisma is auth-only.
+
+NESTJS MODULES (all @Global()):
+- PrismaModule  → PrismaService (extends PrismaClient; URL synthesized from
+  postgres config runtimeUser/runtimePassword; 5×3s connect retries).
+- TimescaleModule → TimescaleService wraps pg.Pool; methods query<T>, getClient,
+  withTransaction(BEGIN/COMMIT/ROLLBACK), 5×3s connect retries.
+- Neo4jModule.forRoot/forRootAsync registers NEO4J_INSTANCE_CONFIG +
+  Neo4jService. Neo4jService manages Map<Neo4jInstanceName,Driver>; methods
+  getDriver, getSession(name, mode='WRITE'); verifyConnectivity()
+  with 5×3s retries.
+
+INJECTION TOKENS (no module registers):
+- POSTGRES_ADMIN_POOL / POSTGRES_RUNTIME_POOL — the two-pool architecture
+  enforces drive isolation. Runtime user has no UPDATE/DELETE rights on drive_rules
+  (verified by RLS at startup, see Section 5).
+
+CRITICAL TYPES (types/*.ts):
+DriveSnapshot {pressureVector, timestamp, tickNumber (monotonic), driveDeltas,
+  ruleMatchResult, totalPressure (sum of POSITIVE values, [0,12]), sessionId}
+PressureVector / PressureDelta — readonly Record<DriveName,number>
+RuleMatchResult {ruleId, eventType, matched}
+
+CycleResponse {turnId, text, arbitrationType:'TYPE_1'|'TYPE_2'|'SHRUG', actionId,
+  driveSnapshot, arbitrationResult, latencyMs, model?, tokensUsed?,
+  knowledgeGrounding, preExecutionDriveSnapshot?, latentPatternIds?,
+  tensorTopCategory?, tensorUrgency?, tensorConsensus?, bootstrapMode?}
+
+DeliveryPayload {type:'cb_speech', text, turnId, audioBase64?, audioFormat?,
+  isGrounded, arbitrationType, latencyMs, llmCalled, costUsd?, knowledgeGrounding}
+
+InputParseResult {inputType:'GREETING'|'QUESTION'|'STATEMENT'|'COMMAND'|
+  'EMOTIONAL_EXPRESSION'|'GUARDIAN_FEEDBACK'|'UNKNOWN', content, entities,
+  guardianFeedbackType, sessionId, parsedAt}
+
+KnowledgeGrounding = 'GROUNDED' | 'LLM_ASSISTED' | 'UNKNOWN'
+
+DRIVE NAMES (12, types/drive.types.ts):
+  CORE (idx 0-3): SystemHealth, MoralValence, Integrity, CognitiveAwareness
+  COMPLEMENT (4-11): Guilt, Curiosity, Boredom, Anxiety, Satisfaction, Sadness,
+                     Focus, Social
+  DRIVE_RANGE = {min: -10.0, max: 1.0}  ASYMMETRIC: positive=unmet need,
+    negative=extended relief reservoir, capped at 1.0 max.
+  INITIAL_DRIVE_STATE: all 12 at 0.0
+  totalPressure = sum of POSITIVE components only, range [0,12]
+
+PROVENANCE (types/provenance.types.ts):
+  Core: SENSOR | GUARDIAN | LLM_GENERATED | INFERENCE
+  Extended: GUARDIAN_APPROVED_INFERENCE | TAUGHT_PROCEDURE |
+            BEHAVIORAL_INFERENCE | SYSTEM_BOOTSTRAP
+  PROVENANCE_BASE_CONFIDENCE: SENSOR=0.40, GUARDIAN=0.60,
+    LLM_GENERATED=0.35, INFERENCE=0.30
+  resolveBaseConfidence: SYSTEM_BOOTSTRAP→SENSOR (0.40);
+    GUARDIAN_APPROVED_INFERENCE/TAUGHT_PROCEDURE→GUARDIAN;
+    BEHAVIORAL_INFERENCE→INFERENCE.
+
+ACT-R CONFIDENCE (types/confidence.types.ts):
+  CONFIDENCE_THRESHOLDS = {
+    retrieval: 0.50, ceiling: 0.60, graduation: 0.80,
+    demotionMAE: 0.15, graduationMAE: 0.10
+  }
+  DEFAULT_DECAY_RATES: SENSOR=0.05, GUARDIAN=0.03 (slowest), LLM_GENERATED=0.08
+    (fastest), INFERENCE=0.06.
+  computeConfidence: min(1.0, base + 0.12*ln(count) - d*ln(hours+1));
+    count===0 ceiling clamp at min(0.60, base).
+  applyGuardianWeight: confirmation=*2, correction=*3.
+  qualifiesForGraduation: conf > 0.80 AND MAE < 0.10
+  qualifiesForDemotion: MAE > 0.15
+
+SENSORY FRAME:
+  EMBEDDING_DIM = 768
+  SensoryFrame {timestamp, fused_embedding (768), modality_embeddings (per-modality 768),
+    active_modalities, raw}
+  ModalityEncoder<TRaw>{modalityName, eventDriven, encode(raw): Promise<number[]>}
+    eventDriven=true means consumed-and-cleared (text, audio); false means
+    persistent value (drives).
+
+DRIVE IPC CONTRACT (types/ipc.types.ts):
+  DriveIPCMessage<T> {type: DriveIPCMessageType, payload, timestamp}
+  Inbound (main → engine): ACTION_OUTCOME, SOFTWARE_METRICS, SESSION_START, SESSION_END
+  Outbound (engine → main): DRIVE_SNAPSHOT, OPPORTUNITY_CREATED, DRIVE_EVENT, HEALTH_STATUS
+
+  ActionOutcomePayload {actionId, actionType, success, feedbackSource: ProvenanceSource,
+    theaterCheck{expressionType:'pressure'|'relief'|'none', correspondingDrive,
+                 driveValue, isTheatrical}, metadata{undiscoveredObjectCount, etc.},
+    predictionData?{predictionId, predictedValue, actualValue},
+    informationGainMetrics?{newNodes, confidenceDeltas, resolvedErrors},
+    socialCommentTimestamp?, anxietyAtExecution}
+    CANON Standard 2 enforces actionId; Standard 1 enforces theaterCheck.
+
+  SoftwareMetricsPayload {llmCallCount, llmLatencyMs, tokenCount, estimatedCostUsd,
+    cognitiveEffortPressure, windowStartAt, windowEndAt}
+  OpportunityClassification: PREDICTION_FAILURE_PATTERN | HIGH_IMPACT_ONE_OFF |
+    BEHAVIORAL_NARROWING | GUARDIAN_TEACHING
+  OpportunityPriority: HIGH | MEDIUM | LOW
+
+CONFIG LOADERS (registerAs):
+- 'neo4j': sub-configs world/self/other/pkg with uri/user/password/db/maxPool/timeout
+  (PKG defaults bolt://localhost:7691, password 'sylphie-pkg-local').
+- 'timescale': port 5433, db sylphie_events, retentionDays 90, compressionDays 7.
+- 'postgres': port 5434, db sylphie_system, splits adminUser/runtimeUser.
+- 'ollama': host http://localhost:11434, embedModel=nomic-embed-text,
+  modelQuick=qwen2.5:3b, modelMedium=qwen2.5:7b, modelDeep=gpt-oss:20b,
+  deepseekApiKey, deepseekBaseUrl=https://api.deepseek.com,
+  deepseekModel=deepseek-reasoner.
+- 'voice': deepgramApiKey, elevenlabsApiKey, elevenlabsVoiceId=21m00Tcm4TlvDq8ikWAM,
+  elevenlabsModelId=eleven_turbo_v2_5.
+
+LLM_SERVICE (types/llm.types.ts):
+  LLM_SERVICE = Symbol('LLM_SERVICE')
+  LlmTier = 'quick' | 'medium' | 'deep' (deep routes to DeepSeek when key set)
+  ILlmService.complete(LlmRequest{messages, systemPrompt, maxTokens, temperature,
+    metadata{callerSubsystem, purpose, sessionId, correlationId?}, tier?}):
+      Promise<LlmResponse>
+  ILlmService.estimateCost(req): Type2CostEstimate (pure)
+  ILlmService.isAvailable(): boolean (false during Lesion Test, missing key,
+    breaker tripped, budget cap)
+
+EVENT BACKBONE (types/event.types.ts):
+  ~70 EventType strings (e.g., INPUT_RECEIVED, ARBITRATION_COMPLETE,
+    PREDICTION_EVALUATED, GUARDIAN_TEACHING_DETECTED, OPPORTUNITY_DETECTED).
+  EVENT_BOUNDARY_MAP: 'as const satisfies Record<EventType, SubsystemSource>'
+    so each event type has a compile-time-checked owning subsystem
+    (COMMUNICATION, LEARNING, PLANNING, DECISION_MAKING, DRIVE_ENGINE,
+     KNOWLEDGE, WEB).
+  validateEventBoundary at runtime.
+  All SylphieEvent carry mandatory driveSnapshot — Theater Prohibition
+  enforced at TYPE LEVEL.
+
+EXCEPTIONS:
+  SylphieException base (subsystem, code, context, ES2022 cause).
+  Six domain bases pin subsystem: KnowledgeException, DriveException,
+  CommunicationException, LearningException, PlanningException,
+  DecisionMakingException.
+  Specific: ProvenanceMissingError (CANON §7), ConfidenceCeilingViolation
+  (Standard 3), ContradictionDetectedError, DriveUnavailableError,
+  DriveCoherenceError, TestEnvironmentError, LesionModeError, MetricsComputationError.
+
+VERBOSE LOGGING (verbose.ts):
+  VERBOSE env: 0/false=off, 1/true/*=all, comma list=specific subsystems.
+  Writes to stderr + ./logs/verbose.log via process.cwd() (no hardcoded paths).
+  reconfigureVerbose() re-reads after late dotenv load (called from main.ts).
+
+==================================================================
+SECTION 3 — apps/sylphie (NestJS MAIN BACKEND)
+==================================================================
+
+main.ts BOOTSTRAP:
+- reconfigureVerbose() (from @sylphie/shared)
+- Custom WebSocketLoggerService (extends ConsoleLogger; tee to terminal +
+  TelemetryBroadcastService + logs/sylphie.log file stream)
+- WsAdapter from @nestjs/platform-ws, shutdown hooks enabled
+- CORS allows http://localhost:5173 (Vite dev)
+- Listens on PORT (Railway) or APP_PORT (local) or 3000
+- Global prefix: /api
+
+APP MODULE (app.module.ts):
+- ConfigModule loads .env via path.resolve(process.cwd(), '.env'); registers
+  neo4jConfig, timescaleConfig, postgresConfig, ollamaConfig, voiceConfig
+- ServeStaticModule (only when NODE_ENV=production) serves frontend/dist
+  with exclude:['/api/(.*)','/ws/(.*)']
+- Imports: PrismaModule, TimescaleModule, DriveEngineModule, DecisionMakingModule,
+  LearningModule, PlanningModule, SupervisorModule, custom CognitionModule (@Global),
+  Neo4jModule.forRootAsync (4 instances WORLD/SELF/OTHER/PKG; PKG optional)
+
+CUSTOM @Global() CognitionModule (inline in app.module.ts):
+  Provides CognitionGatewayService + TENSOR_INFERENCE_SERVICE -> TensorInferenceAdapter.
+  Exports both. Avoids violating packages/ → apps/ layering by NOT importing
+  DecisionMakingModule into an app-level module. Same pattern as TimescaleModule.
+
+POSTGRES_RUNTIME_POOL provider (from @sylphie/shared token):
+  pg.Pool max=3, host/port/db from postgres config, runtimeUser/runtimePassword
+  defaults sylphie_app/sylphie_app_dev. Used by GuardianRulesService.
+
+CONTROLLERS (HTTP REST under /api):
+  AuthController:    /auth/register, /login, /me. JWT (jsonwebtoken),
+                      bcrypt rounds=10. Users have approved/isGuardian flags.
+                      JWT payload {sub, username, isGuardian}, 7d expiry.
+  GraphController:   /graph/{snapshot|okg|skg|pkg}, paginated /graph/:instance/{count|nodes|edges},
+                      /graph/wkg/search, /graph/wkg/neighborhood
+  PkgController:     /graph/pkg/{search|function/:name|dataflow/:name}
+  SkillsController:  POST /skills/reset {confirm:true}, /skills/reset-world {confirm:true}
+  DrivesController:  POST /drives/{override|drift|reset} (currently stubs returning {})
+  PressureController: GET /pressure -> reads DRIVE_STATE_READER, computes
+                      is_connected = tickNumber>0 && (now-timestamp)<2000
+  VoiceController:   /voice/status (stt+tts available), POST /voice/transcribe
+                      (legacy stub returns empty), /voice/audio/:turnId (404 stub)
+  MetricsController: detailed below
+  DebugController:   /debug/camera/{status|stream} (stubs for legacy compat)
+  SupervisorController: /supervisor/{status|verdicts|policy|intervene|enable|disable}
+  RulesController:   /rules/{proposed|active|:id/approve|:id/reject} — all
+                      AuthGuard-protected; approve/reject require isGuardian
+  CognitionController: /cognition/dashboard — aggregates health + bootstrap +
+                       metrics + model state from cognition sidecar in parallel
+                       with 5s timeouts; sections null on miss.
+
+GUARDS:
+  AuthGuard: Bearer token, jwt.verify with JWT_SECRET, throws 401 on missing/invalid
+
+GATEWAYS (WebSockets via WsAdapter):
+  /ws/conversation (ConversationGateway): 268 lines.
+    - In onModuleInit subscribes to communication.delivery$; broadcasts thinking_indicator:false then full DeliveryPayload
+    - handleConnection extracts user from ?token=<JWT> query param. JWT verify via JWT_SECRET. Evicts stale connection from same userId (close 1012 'replaced'). PersonModelService.ensurePersonNode (forces isGuardian=true for all logged-in users — note: not gated by claim). setActivePerson.
+    - @SubscribeMessage('message'): sends input_ack, broadcasts thinking_indicator:true. sessionId = `session-${userId}-${Date.now()}`.
+      First: communication.handleTriggerPhrase (Who am I, etc) — short-circuits if matched.
+      Else: communication.parseInput → tickSampler.updateText, then updates 'conversation_history' (only unanswered pending), 'conversation_summary' (compact text of answered exchanges), 'full_conversation_history', 'person_model', 'speaker_name'.
+    - @SubscribeMessage('guardian_feedback') {turnId, feedbackType}: communication.reportGuardianFeedback.
+
+  /ws/perception (PerceptionGateway): 253 lines.
+    - Receives raw JPEG buffers; MAX_FPS=15, processing single-flight flag.
+    - POSTs to perception sidecar /perception/detect.
+    - result.detections → tickSampler.updateVideoDetections
+    - result.faces → mappedFaces FaceDetection[] → tickSampler.updateFaces; faceSnapshot.processFaceFrame fire-and-forget
+    - result.tracked_objects + scene_summary → SceneEventDetectorService.detectEvents → tickSampler.updateScene + vwm.updateScene
+    - VLM caption trigger: CAPTION_COOLDOWN_MS=5000, CAPTION_PERIODIC_MS=30000. POST /perception/caption on scene change events or 30s elapsed.
+    - Composes "Scene: <vlm_caption>\nTracked entities:\n<vwm description>" → tickSampler.updateSceneDescription + updateUndiscoveredCount/UnknownPersonCount.
+    - Sends to client: {...rawResult, scene_events, vwm_entities, vlm_caption}.
+
+  /ws/audio (AudioGateway): 246 lines.
+    - Per-client state (mimeType, totalBytes, chunkCount, interimBuffer)
+    - Creates Deepgram session immediately (need WebM header from first chunks)
+    - Forwards ALL chunks to Deepgram (don't break WebM container) AND to tickSampler.updateAudio
+    - speech_final triggers utterance_complete back to client; frontend relays via 'sylphie:voice_text' event.
+    - On Deepgram close: code 1006=abnormal (no auto-reconnect), else send 'restart_audio' + new session.
+
+  /ws/graph (GraphGateway): trivial. Sends initial WkgQueryService.getSnapshot() on connection. broadcast() for delta pushes.
+  /ws/telemetry (TelemetryGateway): trivial. addClient/removeClient on TelemetryBroadcastService.
+  /ws/supervisor (SupervisorGateway): trivial. SupervisorBroadcastService subscribes to ISupervisorService.verdict$ and broadcasts {type:'supervisor_verdict', verdict}.
+  /ws/webrtc (WebRTCGateway): 13 lines (boilerplate; WebRTC session handling described in frontend useWebRTC).
+
+SERVICES (apps/sylphie/src/services/) — 21 services total. Highlights:
+
+WebSocketLoggerService (75L):
+  Custom NestJS logger. Writes to terminal (ConsoleLogger), then forwards
+  to TelemetryBroadcastService.sendLog(level, text), then appends to
+  logs/sylphie.log via fs.WriteStream (process.cwd()-based dir creation).
+
+SensoryLoggerService (53L):
+  setInterval 2000ms calls tickSampler.sample() and sends a system_log to
+  TelemetryBroadcastService. "Temporary stand-in for the executor engine's tick loop."
+
+DrivePublisherService (130L):
+  Subscribes to driveReader.driveState$ throttled to 500ms (2Hz; engine ticks at 1Hz).
+  Transforms camelCase pressureVector to snake_case (DRIVE_KEY_MAP) and broadcasts
+  executor_cycle telemetry messages with pressure, drive_velocity, drive_entropy:0,
+  dominant_drive (highest positive), state:'idle', cycle_count, etc.
+
+WkgQueryService (816L):
+  Manages all four KG instances (WORLD/SELF/OTHER/PKG).
+  onModuleInit creates indexes for WORLD/SELF/OTHER:
+    CONSTRAINT ap_id_unique on ActionProcedure.id
+    INDEX ap_node_id, ap_confidence, conversation_session, insight_node_id,
+          drive_name, cobeing_label, entity_label, entity_node_id
+    FULLTEXT INDEX kg_label_fulltext on (Entity|ActionProcedure|CoBeing|Drive|
+                                         Insight|Conversation|Attribute) ON EACH [n.label]
+  Migration: SET n:Entity for unlabeled nodes with non-null label property.
+  PKG snapshot cached 60s, EXCLUDES :CodeBlock nodes (heavy bodyText) and
+  strips bodyText/args/properties props, capped 8000 nodes / 15000 edges.
+  Search uses kg_label_fulltext with prefix wildcard.
+  Neighborhood: N-hop ego-graph capped at 500 nodes, hops clamped 1-3.
+
+WkgBootstrapService (398L):
+  bootstrap() (idempotent):
+    1. CoBeing anchor {node_id:'cobeing-self', label:'Sylphie',
+       description:'A young mind learning about the world through direct
+       experience', phase:'1.5', version:'0.1.0', provenance:INFERENCE, conf:1.0}
+    2. 12 :Drive nodes (one per DriveName), category=core|complement,
+       provenance:INFERENCE, conf:1.0
+    3. Self KG bootstrap: same CoBeing anchor in SELF + 3 Attribute facts
+       name='Sylphie', identity='a developing cognitive being',
+       phase='1.5 — early development'
+  resetWorldOnly:
+    DETACH DELETE all WORLD nodes; UPDATE events SET has_learned=false
+    WHERE type IN ('INPUT_RECEIVED','INPUT_PARSED'); TRUNCATE
+    reflected_sessions, synthesized_insight_pairs CASCADE; re-bootstrap.
+    SELF/OTHER/tensor pipeline preserved.
+  resetAndBootstrap (full):
+    DETACH DELETE all 3 KGs; TRUNCATE learned_patterns, voice_patterns,
+    sensory_ticks, events, reflected_sessions; opens own pg.Pool to
+    TRUNCATE proposed_drive_rules CASCADE; outcomeReporter.resetDriveState();
+    clears in-memory: latentSpace, sensoryPrediction, voiceLatentSpace,
+    conversationHistory, personModel, tickSampler, episodicMemory; re-bootstrap.
+
+CommunicationService (1166L):
+  Sits between Decision Making executor and ConversationGateway. In onModuleInit
+  subscribes to decisionMaking.response$.
+
+  Pipeline per response:
+    1. sanitizeResponseText: strips [GROUNDED]/[ASSISTED]/[UNKNOWN] tags,
+       [INTENT:]/[ENTITY:]/[THOUGHT:] tags, tool-call leakage like
+       [person_query …], leading dashes/em-dashes.
+    2. Log RESPONSE_GENERATED to TimescaleDB.
+    3. checkTheaterProhibition (FLAG-ONLY currently — anxiety>0.7 + non-empty
+       text triggers debug log; does not block).
+    4. Voice cache lookup via VoiceLatentSpaceService:
+       valence = 0.5 + (positive - negative) * 0.25 where
+         positive = satisfaction + curiosity*0.5
+         negative = anxiety + sadness + guilt*0.5
+       HIT: serve cached audioBase64. MISS: call TtsService and store result.
+    5. Emit DeliveryPayload {type:'cb_speech', text, turnId, audio?, isGrounded,
+       arbitrationType, latencyMs, llmCalled (=type2), costUsd:0 ('Local Ollama'),
+       knowledgeGrounding}
+    6. Log RESPONSE_DELIVERED.
+    7. addAssistantMessage to ConversationHistoryService.
+    8. Store in pendingTurns Map (cap 50) for guardian feedback correlation.
+    9. reportBasicOutcome → decisionMaking.reportOutcome with computed
+       driveEffectsObserved (delta between preExecutionDriveSnapshot and postSnapshot).
+
+  parseInput: classifies (GREETING|QUESTION|COMMAND|EMOTIONAL_EXPRESSION|
+    GUARDIAN_FEEDBACK|STATEMENT) via regex. extractEntities = capitalized words >1.
+    detectGuardianFeedback: yes/correct/exactly/good=confirmation, no/wrong=correction.
+    Logs INPUT_RECEIVED + INPUT_PARSED. addUserMessage to ConversationHistory.
+    setActivePerson + recordInteraction.
+    Fast Fact Extraction: extractFactsFromText returns ExtractedFact[] with
+      target='speaker'|'sylphie'. writeFastFacts in parallel:
+        speaker → personModel.writeFact(OKG) + writeFactToWkg(WORLD)
+        sylphie → writeFactToSelfKg(SELF) + writeFactToWkgCoBeing(WORLD)
+    factKeyToRelType: name→HAS_NAME, identity→IDENTIFIES_AS, likes→LIKES,
+      occupation→WORKS_AS, location→LIVES_IN, age→HAS_AGE, else HAS_<KEY>.
+    detectGuardianTeaching: regex patterns ("you should learn", "I want you to",
+      "learn how to", "practice", "work on", "you need to", "plan how to",
+      "figure out how to", "get better at"). Writes
+      GUARDIAN_TEACHING_DETECTED event with OpportunityCreatedPayload (HIGH
+      priority); calls outcomeReporter.reportOutcome to create motivational
+      pressure (CognitiveAwareness + inferred drive).
+
+  handleTriggerPhrase: "Who am I" / "what do you know about me" / "tell me what
+    you know about me" / "what do you remember about me" → handleWhoAmI:
+    loads OKG facts, sends to LLM with warm-personal systemPrompt, max 300
+    tokens, temperature 0.4, tier='quick'. Falls back to plain fact list if
+    LLM unavailable. Bypasses normal pipeline; emits delivery directly with
+    arbitrationType=TYPE_2.
+
+  reportGuardianFeedback (turnId, feedbackType): logs GUARDIAN_CONFIRMATION/
+    GUARDIAN_CORRECTION; calls decisionMaking.reportOutcome with
+    predictionAccurate=true(conf)/false(corr), predictionError=0.1 vs 0.8.
+
+ConversationHistoryService (286L):
+  TimescaleDB-persisted (table conversation_history with role, content,
+  answered, added_at). onModuleInit CREATE TABLE + restore last 50.
+  onModuleDestroy TRUNCATE + reinsert (full snapshot).
+  MAX_MESSAGES=50, MAX_BUFFER_TOKENS=4096, CHARS_PER_TOKEN=3.5,
+  MESSAGE_OVERHEAD_TOKENS=4.
+  ConversationEntry {role, content, answered, addedAt}.
+  addUserMessage: starts answered=false.
+  addAssistantMessage: marks all preceding unanswered user messages as answered
+    (until previous assistant message).
+  getSplitHistory: returns {summary:'Previous conversation:\n1. <user> →
+    <assistant>...', pending: [unanswered user turns]} — answered exchanges
+    go to system prompt as background; unanswered are real user turns.
+  getAnnotatedHistory: prepends [answered]/[unanswered] tags to user messages.
+
+PersonModelService (576L):
+  Constraints on Neo4jInstanceName.OTHER: person_node_id_unique,
+  attribute_id_unique. Backfill SET p.label = p.username.
+  ensurePersonNode(userId, username, isGuardian): MERGE Person {node_id},
+    sets username/label/is_guardian/created_at|updated_at.
+  writeFact: creates/updates Attribute {attr_id:'attr-<userId>-<key>'} linked
+    HAS_FACT to Person. Confidence: self_reported=0.90, else 0.60. ON MATCH
+    confidence stays max of new/existing.
+  loadFacts: cache or OKG query, ordered by confidence DESC.
+  setActivePerson, getActivePersonId, recordInteraction (counters).
+
+  extractFactsFromText (pure function, ~200L) with patterns:
+    SPEAKER (target='speaker'):
+      "my name is X" → name (Capitalized)
+      "my favorite X is Y" → favorite_<X>
+      "my X is Y" (excluding name/favorite) → X = Y
+      "I have a/an X named/called Y" → X = Y
+      "I'm from X" → origin
+      "I am/'m X" → identity (filters not/very/so/just/also/really/doing/going/feeling)
+      "I like/love/enjoy X" → likes
+      "I work at/as/for X" → occupation
+      "I live in X" → location
+      "I'm N years old" → age
+    SYLPHIE (target='sylphie'):
+      "Your name is X" / "you're/are called X" → name
+      "You're/are X" → identity
+      "You like/love/enjoy X" → likes
+      "You live in X" → location
+
+FaceSnapshotService (670L):
+  Two-layer face latent space:
+    Hot layer: in-memory Map<personId, FaceCentroid {personId, embedding[1280], snapshotCount}>
+    Warm layer: TimescaleDB face_embeddings (id PK, person_id, angle, embedding vector(1280))
+  Constants: CROP_INTERVAL_MS=1500, MIN_CONFIDENCE=0.65, IDENTIFICATION_THRESHOLD=0.55,
+    FACE_EMBEDDING_DIM=1280 (EfficientNet-B0).
+  Five angle categories: frontal/left/right/up/down. classifyAngle uses
+    MediaPipe landmarks 1 (nose tip), 234/454 (cheeks), 159/386 (eye tops);
+    yaw via L/R cheek asymmetry, pitch via nose vs eye-line vertical offset.
+  needsSnapshots: true until all 5 angles captured.
+  identifyFace: cosine similarity ≥0.55 against centroids → personId.
+  matchFace: same but returns {personId, similarity} including unknown-person-* IDs.
+  updateCentroid: incremental mean (centroid*n + new)/(n+1).
+  hydrate: SELECT all from face_embeddings, build centroids per person,
+    set collection state.
+  saveSnapshot: writes :FaceSnapshot {snapshot_id:'fsnap-<personId>-<angle>',
+    angle, image_b64, captured_at} linked HAS_FACE_SNAPSHOT to :Person in OKG;
+    pgvector insert into face_embeddings.
+
+VoiceLatentSpaceService (374L):
+  Three-layer (mirrors semantic latent space):
+    Hot: in-memory Map<textHash, HotVoiceEntry {id, textHash, textContent,
+      audioBase64, audioFormat, emotionalValence, usageCount}>, MAX_HOT_ENTRIES=500
+    Warm: TimescaleDB voice_patterns (id UUID PK, text_hash UNIQUE,
+      text_content, audio_data, audio_format, emotional_valence,
+      usage_count, granularity, source, created_at, last_used_at)
+    Cold: future archival
+  hashText: SHA256 first 16 chars of normalized (trim+lowercase+collapse-whitespace).
+  VALENCE_TOLERANCE=0.3 — same words at very different valence trigger MISS.
+  lookup: hot Map → if entry's valence within tolerance of current valence → HIT
+    (increment usageCount + UPDATE warm).
+  store: insert hot + ON CONFLICT(text_hash) UPDATE warm. Evict LRU when over capacity.
+  hydrate on init: load top MAX_HOT_ENTRIES by usage DESC, last_used DESC.
+
+SceneEventDetectorService (213L):
+  Diffs tracked-object state across frames. SceneEventType enum: OBJECT_APPEARED,
+  OBJECT_DISAPPEARED, PERSON_ARRIVED, PERSON_LEFT, FACE_IDENTIFIED, FACE_OCCLUDED.
+  detectEvents:
+    Builds currentConfirmed Map; detects face-overlapping tracks via bboxOverlaps.
+    Appearances: new track in current. Person tracks with embedding → faceSnapshot.identifyFace
+      → optional FACE_IDENTIFIED then PERSON_ARRIVED. Else OBJECT_APPEARED.
+    Disappearances: PERSON_LEFT or OBJECT_DISAPPEARED.
+    Face occlusion: previous face track persists but face gone in current → FACE_OCCLUDED.
+    Re-identify existing person tracks without personId.
+
+VisualWorkingMemoryService (812L):
+  Stabilizes noisy tracker output. PRESENCE_WINDOW_SIZE=30 (2s @ 15fps).
+  ENTER_RATIO=0.70, EXIT_RATIO=0.20, GONE_RATIO=0.0, LEAVING_TIMEOUT_MS=2000.
+  OBJECT_MATCH_THRESHOLD=0.75 cosine.
+  REASSOCIATION_IOU_THRESHOLD=0.3.
+  MAX_SCENE_ENTITIES=100.
+  TimescaleDB schema: visual_object_embeddings (id PK, node_id, label,
+    display_name, embedding vector(1280), confidence FLOAT, discovered BOOL,
+    created_at, last_seen_at, sighting_count). Tries to create ivfflat index
+    on cosine_ops with lists=100; deferred if not enough rows.
+  SceneEntity {id (UUID), trackIds[], label, displayName?, nodeId?, personId?,
+    discovered, bbox, enteredAt, lastSeenAt, confidence,
+    state:'entering'|'present'|'leaving'|'gone', presenceHistory: bool[30],
+    presenceRatio, leavingAt, embedding}.
+  updateScene: per-frame rolling window update. State transitions:
+    entering → present at ratio>=0.70, then resolveEntityIdentity (async).
+    present → leaving at ratio<0.20.
+    leaving → gone after timeout AND ratio==0.0; or → present on recovery.
+  resolveEntityIdentity:
+    Persons: prefer faceSnapshot.identifyFace; else matchFace (incl
+    unknown-person-*); else createUnknownPersonNode (creates
+    :Person {node_id:'unknown-person-<8>'} in OKG + face embedding;
+    updates faceSnapshot centroid).
+    Objects: pgvector cosine kNN against visual_object_embeddings;
+    if similarity >= 0.75 reuse node; else createUndiscoveredNode
+    (:Entity:VisualObject {node_id:'vobj-<8>', provenance:SENSOR, conf:0.40,
+    discovered:false}) + insert pgvector embedding.
+  discoverEntity (guardian names an object): SET label, discovered:true,
+    confidence max(0.60, current), provenance:GUARDIAN, updated_at.
+  discoverPerson similar for Person nodes.
+  getSceneDescription: text bullet list of 'present' entities with duration.
+  getVisibleEntities, getUndiscoveredEntities, getUnknownPersons (used by
+    PerceptionGateway → tickSampler updateUndiscoveredCount/UnknownPersonCount).
+
+SttService (215L):
+  Per-client Deepgram WebSocket (api.deepgram.com/v1/listen). Params:
+    model=nova-2, language=en-US, smart_format, interim_results,
+    utterance_end_ms=1200, vad_events, endpointing=300.
+  KeepAlive every 5000ms. Buffers chunks until WS open (WebM header critical).
+  TranscriptResult {text, isFinal, confidence, speechFinal}.
+  apiKey from voice.deepgramApiKey config.
+
+TtsService (100L):
+  ElevenLabs streaming POST /v1/text-to-speech/<voiceId>/stream with
+  voice_settings {stability:0.5, similarity_boost:0.75}.
+  Default voiceId=21m00Tcm4TlvDq8ikWAM, modelId=eleven_turbo_v2_5.
+  Returns Buffer (MP3) or null.
+
+PkgQueryService (388L):
+  REST replication of MCP sylphie-pkg tools.
+  search: Cypher (parent)-[:HAS_CODE]->(cb:CodeBlock) WHERE cb.bodyText =~ regex,
+    fallback to f.name OR f.bodyText match. Limit 50.
+  getFunctionDetail: full function with body, types USES_TYPE, callers CALLS,
+    callees CALLS, recent CHANGED_IN.
+  getDataFlow: variable-length [:CALLS|USES_TYPE|INJECTS|EXTENDS|IMPLEMENTS*1..depth]
+    direction upstream/downstream/both, depth clamped 1-6, limit 50 per direction.
+
+GuardianRulesService (178L):
+  Uses POSTGRES_RUNTIME_POOL.
+  getProposedRules(status='pending'): SELECT from proposed_drive_rules.
+  getActiveRules: SELECT from drive_rules WHERE enabled=true.
+  approveRule (transactional BEGIN/COMMIT/ROLLBACK):
+    INSERT INTO drive_rules (trigger_pattern, effect, confidence, enabled=true);
+    UPDATE proposed_drive_rules SET status='approved'.
+    NOTE: This INSERT requires UPDATE/DELETE on drive_rules, but RLS in
+    drive-engine forbids that for sylphie_app. The runtime user used by the
+    main app for guardian approvals MUST therefore be different from the one
+    the drive-engine verifies (or RLS scope only covers UPDATE/DELETE not
+    INSERT). The /api/rules/* paths are also AuthGuard+isGuardian gated.
+  rejectRule: UPDATE proposed_drive_rules SET status='rejected'.
+
+CognitionGatewayService (323L):
+  HTTP client to Python sidecar at COGNITION_HOST default http://localhost:8431.
+  Endpoints used:
+    GET /cognition/health → CognitionHealthResult {status, models_loaded,
+      bootstrap_mode, training_enabled, total_parameters}
+    POST /cognition/cycle (50ms timeout) → CognitionCycleResult {global_prior:
+      {action_bias[32], urgency, novelty_score}, panel_opinions:[{panel_name,
+      action_bias, confidence, domain_signal}], convergence:{consensus,
+      divergence_score, panel_agreement}, inference_ms, deliberation_*?,
+      tensor_top_category?}
+    POST /cognition/train (5s timeout, fire-and-forget) → CognitionTrainingSample
+    GET /cognition/bootstrap → BootstrapStatusResult {mode, agreement_rate,
+      per_category_agreement, categories_graduated, total_shadow_samples,
+      total_audit_samples}
+    GET /cognition/metrics → CognitionMetrics {training_steps, training_loss,
+      inference_latency_ms, samples_in_buffer, checkpoint_count, per_category_confidence}
+    GET /cognition/control/state → arbitrary model state
+  runCycle assembles 1561-float input: fused_embedding(768) + drive_vector(12)
+    + drive_deltas(12) + total_pressure(1) + episodic_context(768).
+  30s reconnect cooldown after connection failure.
+
+TensorInferenceAdapter (222L):
+  Implements ITensorInferenceService for decision-making.
+  driveHistoryBuffer size 10 (each entry = 12 floats = flatten 120).
+  Refresh bootstrap status every 100 cycles (BOOTSTRAP_REFRESH_INTERVAL).
+  Maps CognitionCycleResult → TensorInferenceResult.
+  shouldUseTensor: shadow=false, partial=graduatedCategories.has(cat),
+    full=true.
+
+CognitionBridgeService (67L):
+  Subscribes to response$ for diagnostic logging only.
+  Logs tensorTopCategory, tensorConsensus, bootstrapMode of completed cycles.
+  Does NOT call sidecar — TensorInferenceAdapter is the writer.
+
+TelemetryBroadcastService (58L):
+  WebSocket client management for /ws/telemetry. sendLog(level, text) broadcasts
+  {type:'system_log', text, timestamp, level}. broadcast(message) sends raw JSON.
+
+SupervisorBroadcastService (53L):
+  In onModuleInit subscribes to supervisorService.verdict$ → broadcasts
+  {type:'supervisor_verdict', verdict} to /ws/supervisor clients.
+
+==================================================================
+SECTION 4 — METRICS CONTROLLER (CANON §Development Metrics)
+==================================================================
+
+7 PRIMARY HEALTH METRICS (types in @sylphie/shared):
+  GET /api/metrics/health returns HealthMetrics aggregate {computedAt, sessionId,
+    type1Type2Ratio, predictionMAE, provenanceRatio, behavioralDiversityIndex,
+    guardianResponseRate, interoceptiveAccuracy, meanDriveResolutionTimes}
+
+  1. Type1Type2Ratio: ArbitrationService.getMetrics() in-process counters
+     {type1Count, type2Count, shrugCount}. ratio=type1/(type1+type2).
+     "Increasing over time = autonomy from LLM."
+
+  2. PredictionMAE: AttractorMonitorService.getPredictionMAESummary() rolling
+     window of 50 prediction evaluations. Unreliable if sampleCount < 10.
+
+  3. ProvenanceRatio: Cypher MATCH (n) RETURN n.provenance_type, count(*)
+     against Neo4j WORLD. experientialRatio = (sensor+guardian+inference)/total.
+
+  4. BehavioralDiversityIndex: TimescaleDB SELECT COUNT(DISTINCT payload->>'type')
+     FROM (last 20 ARBITRATION_COMPLETE events).
+
+  5. GuardianResponseRate: TimescaleDB count of SOCIAL_COMMENT_INITIATED
+     followed by GUARDIAN_CONFIRMATION/GUARDIAN_INPUT_RECEIVED within 30s,
+     divided by total initiations in 24h.
+
+  6. InteroceptiveAccuracy: Compares actual = totalPressure/12.0 vs selfReported
+     = (cognitiveAwareness + 1)/2. accuracy = 1 - |selfReported - actual|.
+     Healthy > 0.6 per CANON.
+
+  7. MeanDriveResolutionTime per drive: TimescaleDB join on
+     DRIVE_PRESSURE_ELEVATED ↔ DRIVE_PRESSURE_RESOLVED within 5min, requires
+     >=5 samples per drive.
+
+OBSERVATORY ENDPOINTS (per-session historical for charts):
+  /metrics/observatory/vocabulary-growth: Neo4j WORLD count(n) GROUP BY date(created_at)
+  /metrics/observatory/drive-evolution: AVG(drive_snapshot->>totalPressure) GROUP BY session
+  /metrics/observatory/action-diversity: distinct payload->>type / COUNT GROUP BY session
+  /metrics/observatory/developmental-stage: Type1 percent per session
+    Stages: pre-autonomy <0.20, emerging 0.20-0.50, consolidating 0.50-0.80,
+            autonomous >=0.80
+  /metrics/observatory/session-comparison: COUNT(*), per-type counts per session
+  /metrics/observatory/comprehension-accuracy: AVG(payload->>mae) per session
+  /metrics/observatory/phrase-recognition: count(:Utterance) by provenance_type;
+    SENSOR/GUARDIAN counted as recognized.
+
+CANON §Theater Prohibition: metrics endpoint is read-only.
+CANON §Drive Isolation: DriveStateReader is read-only IDriveStateReader interface.
+
+==================================================================
+SECTION 5 — apps/drive-server (DRIVE ENGINE PROCESS)
+==================================================================
+
+Architecture: drive engine is a STANDALONE NODE PROCESS — not NestJS.
+
+apps/drive-server/src/main.ts (180L) imports from @sylphie/drive-engine
+DEEP PATHS:
+  '@sylphie/drive-engine/drive-process/drive-engine' (getOrCreateEngine)
+  '@sylphie/drive-engine/drive-process/timescale-writer'
+  '@sylphie/drive-engine/drive-process/message-transport'
+  '@sylphie/drive-engine/ipc-channel/ipc-message-validator'
+
+(These deep imports exist precisely because drive-server is a separate
+executable that needs the engine class without NestJS DI.)
+
+MAIN STARTUP:
+  1. WebSocketServerTransport instantiated.
+  2. getOrCreateEngine(transport) — engine bound to transport.
+  3. TimescaleWriter (max 2 connections, port default 5432).
+  4. initPersistence: tsWriter.init + ensureCheckpointTable; engine.setTimescaleWriter;
+     engine.restoreState() reads drive_state_checkpoint; cold start fallback.
+  5. Rule engine pg.Pool: separate pool (max 2) using POSTGRES_RUNTIME_USER/PASSWORD
+     env. engine.initializeRuleEngine(rulePool).
+  6. WebSocketServer on DRIVE_ENGINE_HOST:PORT (defaults 127.0.0.1:3001).
+  7. Engine NOT started until first WS client connects (engineStarted bool).
+     "Cogs in a wheel — drive engine and backend start ticking in sync."
+  8. SINGLE-CLIENT POLICY: subsequent connections rejected with WS code 1013
+     "Only one client allowed."
+
+apps/drive-server/src/ws-transport.ts (93L):
+  WebSocketServerTransport: thin wrapper. send/onMessage hooks. Inbound
+  validated via safeValidateMessage(raw, 'inbound'). Drops sends silently
+  if client null or readyState != 1. Logs every 50 messages.
+
+GRACEFUL SHUTDOWN:
+  SIGTERM/SIGINT → onShutdown(signal) → engine.stop() (the critical
+  persistence step) → tsWriter.close() → wss.close(). 5-second forced-exit
+  timer via .unref() if hang. Fatal errors process.exit(1). NO internal
+  restart-on-crash — process supervision is external.
+
+DRIVE ISOLATION ENFORCEMENT:
+  Architectural, not just convention:
+  - Drive process owns all rule/accumulation logic; main app cannot import it
+  - The transport only ships DriveIPCMessage envelopes that pass Zod validation
+  - Postgres pools (engine + rules) are LOCAL to drive-server process
+  - No exposed RPC surface for "tell me your rules"
+  - Header docstring: "Sylphie cannot introspect her own drive rules,
+    accumulation rates, or evaluation function. She only sees the resulting
+    drive snapshots." (CANON §Drive Isolation)
+
+==================================================================
+SECTION 6 — @sylphie/drive-engine (THE 12-DRIVE SUBSTRATE)
+==================================================================
+
+PUBLIC EXPORTS (packages/drive-engine/src/index.ts):
+  ONLY: DriveEngineModule, DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER,
+  RULE_PROPOSER tokens, IDriveStateReader, IActionOutcomeReporter, IRuleProposer
+  interfaces. DRIVE_PROCESS_MANAGER token is INTENTIONALLY OMITTED (internal).
+
+DriveEngineModule providers:
+  POSTGRES_RUNTIME_POOL factory (RLS-enforced runtimeUser/runtimePassword)
+  PostgresRulesClient
+  WsChannelService
+  DriveReaderService → DRIVE_STATE_READER (useExisting)
+  ActionOutcomeReporterService → ACTION_OUTCOME_REPORTER
+  RuleProposerService → RULE_PROPOSER
+  DriveProcessManagerService → DRIVE_PROCESS_MANAGER (internal)
+  In onModuleInit: processManager.start(). In onModuleDestroy: stop().
+
+THE 12 DRIVES (packages/shared/src/types/drive.types.ts):
+  DRIVE_INDEX_ORDER 0-11 (strictly canonical):
+    0: SystemHealth     - composite of 1+2+3 / 3
+    1: MoralValence     - ethical alignment, action-driven via SelfCorrection + guardian
+    2: Integrity        - prediction reliability, anxiety cross-modulation
+    3: CognitiveAwareness - LLM cost pressure (Type 2 cost)
+    4: Guilt            - event-only via guardian correction outcomes
+    5: Curiosity        - exploratory, satisfied by information gain
+    6: Boredom          - engagement deficit, primary conversation relief
+    7: Anxiety          - stress, suppresses curiosity, amplifies failures
+    8: Satisfaction     - relief reservoir from successful outcomes
+    9: Sadness          - decaying negative affect
+   10: Focus            - attention, relieved through structured action
+   11: Social           - engagement need, primary conversation relief
+  CORE_DRIVES = [0,1,2,3]; COMPLEMENT_DRIVES = [4..11]
+
+  PER-DRIVE ACCUMULATION RATES (per tick):
+    SystemHealth, MoralValence, Integrity, CognitiveAwareness, Guilt: 0.0 (event/composite-driven)
+    Curiosity:    0.0012 (~10 min to fill from 0.3)
+    Boredom:      0.0015 (~7 min from 0.4)
+    Anxiety:      0.0003 (~44 min from 0.2)
+    Satisfaction: 0.0    decay -0.0009 (~18 min)
+    Sadness:      0.0    decay -0.0006 (~28 min)
+    Focus:        0.0    decay -0.0006 (~28 min)
+    Social:       0.0009 (~9 min from 0.5)
+  Decay only applies when current > 0 (drive should not be pushed below equilibrium).
+
+TICK RATE: DRIVE_ENGINE_TICK_INTERVAL_MS = 1000 (1Hz)
+  (Many comments still reference an aspirational 100Hz; actual is 1Hz,
+   "appropriate for a motivational system where drives change over minutes,
+   not milliseconds".)
+  Drift compensation via setTimeout, MAX_TICK_DRIFT_MS=100.
+  Auto-save checkpoint every 60 ticks → drive_state_checkpoint UPSERT.
+
+TICK SEQUENCE (DriveEngine.tick):
+  1. Drain outcome queue
+  2. Self-evaluation if due (every 10 ticks, SELF_EVALUATION_INTERVAL_TICKS)
+  3. Apply accumulation/decay
+  4. Apply queued outcomes
+  5. Cross-modulation
+  6. Clamp all drives
+  7. Compute totalPressure (sum of positives only)
+  8. Update opportunity detector
+  9. Build snapshot, publish to transport (WS)
+  10. Decay opportunities every tick
+  11. Emit top opportunities (max 5/cycle)
+  12. Auto-save checkpoint (every 60 ticks)
+  13. Advance tick counter
+
+RULE ENGINE (rule-engine.ts):
+  Loads drive_rules from Postgres at startup; reloads every RULE_RELOAD_INTERVAL_MS=60000.
+  Trigger pattern DSL: "action_success AND anxiety > 0.7" or "prediction_hit OR prediction_miss".
+    Operators: > < = >= <= !=
+  Effect DSL: += -= *= = (multi-effect via ;)
+  RULE_CONFIDENCE_THRESHOLD = 0.3 (rules below ignored).
+  LRU cache size 500, key = eventType|drive_state_hash (only Anxiety/Satisfaction/
+    Guilt/CognitiveAwareness hashed for compactness).
+  When no rule matches, falls back to ACTION_TYPE_DEFAULTS (constants/rules.ts):
+    Categories: ConversationalResponse, GuardianEngagement, SocialComment,
+                LearnedResponse, KnowledgeQuery, SocialInquiry, VisualInquiry,
+                SelfCorrection, GuardianTeaching, plus four metadata-scaled
+                sensory types (UndiscoveredObjectPressure, UnknownPersonPressure,
+                SensoryPrediction, ScenePrediction).
+    PRIMARY_RELIEF = -0.367, SECONDARY_RELIEF = -0.183 (tuned so ~30 conversation
+                                                       responses move primary
+                                                       drives 1.0 → -10.0).
+    OUTCOME_DEFAULTS: guardian_confirmation→Satisfaction+0.15, MoralValence-0.10,
+                                            Anxiety-0.05.
+                     guardian_correction→Guilt+0.15, Satisfaction-0.10.
+  When defaults are used, INSERT into proposed_drive_rules with proposed_by='DRIVE_ENGINE_DEFAULT'
+    for guardian to debate (deduplicated).
+
+GUARDIAN WEIGHTING (after rule effects, before contingencies):
+  guardian_confirmation × 2.0
+  guardian_correction × 3.0
+  algorithmic × 1.0  (CANON Standard 5)
+
+CROSS-MODULATION (5 typed rules, ordered):
+  1. satisfaction-suppresses-boredom (multiplicative, threshold 0.6, coef 0.03)
+  2. anxiety-amplifies-integrity (additive, threshold 0.7, coef 0.0012)
+  3. system-health-amplifies-anxiety (additive_gap, threshold 0.7, coef 0.003)
+     uses PREVIOUS tick's SystemHealth (no feedback loop)
+  4. boredom-amplifies-curiosity (additive_gap, threshold 0.6, coef 0.003)
+  5. guilt-suppresses-satisfaction (multiplicative, threshold 0.4, coef 0.03)
+  THEN: SystemHealth = mean(MoralValence, Integrity, CognitiveAwareness)
+
+5 BEHAVIORAL CONTINGENCIES (applied after theater check passes):
+  1. Satisfaction Habituation: per-actionType consecutive-success curve
+     1st=+0.05, 2nd=+0.04, 3rd=+0.03, 4th=+0.02, 5th-10th=+0.01, 11th+=+0.005.
+     Failure resets counter.
+  2. Anxiety Amplification: when anxiety > 0.7 + negative outcome → 1.5×
+     positive deltas. + positive outcome → anxiety -= 0.10 relief.
+  3. Guilt Repair: keyword + behavioral-change detection. Schedule:
+     ack+change=-0.30, change-only=-0.15, ack-only=-0.10. Tracks last 10
+     errors with 15-min timeout.
+  4. Social Comment Quality: socialCommentTimestamp + guardian response
+     within 30s → social-=0.15, satisfaction+=0.10. Comments buffered 60s.
+  5. Curiosity Information Gain: relief = newNodes*0.05 + confidenceDeltas*0.10
+     + resolvedErrors*0.15 (returned negative).
+
+THEATER PROHIBITION (theater-prohibition.ts):
+  Pre-flight check before applying outcome.
+  Pressure expressions: drive > 0.2 required.
+  Relief expressions: drive < 0.3 required.
+  If theatrical: applyOutcome returns early, ZERO reinforcement applied.
+  CANON Standard 1.
+
+IDriveStateReader (read-only):
+  getCurrentState(): DriveSnapshot — defensive JSON copy; cold-start synthesizes
+    from INITIAL_DRIVE_STATE.
+  driveState$: Observable<DriveSnapshot> — RxJS BehaviorSubject.
+  getTotalPressure(): number — sum of positive values [0,12].
+
+IActionOutcomeReporter (fire-and-forget writes):
+  reportOutcome(outcome) — required actionId, actionType, success, feedbackSource,
+    theaterCheck. CANON Standards 1+2 enforced at type level.
+  reportMetrics(SoftwareMetrics) — sends LLM cost pressure for CognitiveAwareness.
+  resetDriveState() — sends SESSION_START with INITIAL_DRIVE_STATE.
+  Implementation OutcomeQueue: FIFO max 1000, setImmediate flush, exponential
+    backoff retry max 3×10ms×2^attempt, oldest-message-drops on overflow.
+
+DATABASE TABLES (drive-engine):
+  drive_rules: id, trigger_pattern, effect, enabled, confidence, created_at,
+    updated_at. RLS: sylphie_app cannot UPDATE/DELETE; only SELECT.
+  proposed_drive_rules: id, trigger_pattern, effect, confidence, proposed_by
+    {SYSTEM|GUARDIAN|DRIVE_ENGINE_DEFAULT}, reasoning, status {pending|approved|
+    rejected}, created_at. INSERTed at confidence 0.5.
+  drive_state_checkpoint: single-row UPSERT id='latest', pressure_vector JSONB,
+    tick_number INT, saved_at.
+
+RLS VERIFICATION (RlsVerificationService):
+  In onModuleInit, runs in rolled-back transactions:
+  - VERIFY sylphie_app CANNOT UPDATE drive_rules
+  - VERIFY sylphie_app CANNOT DELETE drive_rules
+  - VERIFY sylphie_app CAN SELECT drive_rules
+  - VERIFY sylphie_app CAN INSERT INTO proposed_drive_rules
+  Startup ABORTED on failure.
+
+OPPORTUNITY DETECTION:
+  PredictionEvaluator: per-actionType MAE rolling window size 10.
+    Thresholds: ACCURATE <0.10, MODERATE 0.10-0.20, POOR >=0.20.
+  generatePredictionOpportunitySignal: emits if MAE >= 0.20.
+    Severity: low <0.30, medium <0.40, high >=0.40. Only medium+high
+    propagated to Planning.
+  OpportunityDetector classifies as RECURRING (failure count >=3),
+    HIGH_IMPACT (MAE > 0.40 OR totalPressure > 0.8), or LOW_PRIORITY.
+    Registry capped at 200, dedup'd by predictionType.
+  OpportunityQueue: priority-sorted, max 50, tail-priority eviction.
+  computePriority: log(frequency+1) * magnitude × coldStartFactor ×
+    guardianMultiplier (cold-start session 1-10 dampens; guardian gets 2×).
+  Decay: when MAE < 0.10, priority * 0.5; after 100 consecutive good preds, removed.
+  PlanningPublisher: emits up to 5 opportunities per cycle to transport.
+  Main app's DriveProcessManagerService receives them and writes
+    OPPORTUNITY_DETECTED events to TimescaleDB for Planning to poll.
+
+GRADUATION:
+  Type 1 graduation: confidence > 0.80 AND MAE < 0.10
+  Type 1 demotion: MAE > 0.15
+
+WS-CHANNEL (main app side):
+  packages/drive-engine/src/ipc-channel/ws-channel.service.ts (60-289L) —
+  WebSocket client. Connects to ws://localhost:3001 via DriveProcessManagerService.
+  Validates each message via Zod schemas. Single-handler-per-type discipline.
+  HealthMonitor polls every 2000ms; unhealthy after 5000ms without snapshot.
+  RecoveryMechanism: exponential backoff 1→2→4→8s, max 60s, max 3 retries
+    before "safe mode alert" (manual intervention).
+
+==================================================================
+SECTION 7 — @sylphie/decision-making (CORTEX)
+==================================================================
+
+PUBLIC EXPORTS (index.ts): DECISION_MAKING_SERVICE, ARBITRATION_SERVICE,
+  ATTRACTOR_MONITOR_SERVICE, EPISODIC_MEMORY_SERVICE, TENSOR_INFERENCE_SERVICE,
+  LatentSpaceService, ScenePredictionService, SensoryPredictionService,
+  TickSamplerService and the 5 sensory pipeline classes.
+
+DecisionMakingModule imports DriveEngineModule + TimescaleModule.
+
+IDecisionMakingService:
+  response$: Observable<CycleResponse> — backed by Subject; emit only when
+    responseText.trim().length > 0.
+  processInput(frame: SensoryFrame): Promise<void>
+  getCognitiveContext(): CognitiveContext
+  reportOutcome(actionId, ActionOutcome): Promise<void>
+
+ARBITRATION (arbitration/arbitration.service.ts):
+  arbitrate(candidates):
+    1. Empty candidates → SHRUG, gapTypes:['MISSING_CONTEXT']
+    2. Threshold computation (THRESHOLD_COMPUTATION_SERVICE; fallback CONFIDENCE_THRESHOLDS.retrieval = 0.50)
+    3. Filter candidates >= threshold, sort by confidence desc + contextMatchScore tiebreaker
+    4. None qualified → SHRUG, gapTypes:['LOW_CONFIDENCE']
+    5. Type 1: first qualified with procedureData!==null AND confidence > 0.80
+    6. Pre-commit contradiction scan (CONTRADICTION → SHRUG)
+    7. TYPE_1: emit TYPE_1_SELECTED + ARBITRATION_COMPLETE events
+    8. TYPE_2 fallback when qualified exist but no Type 1 graduate
+       (emits with placeholder llmRationale; actual LLM call is later)
+  Counters: type1Count, type2Count, shrugCount → consumed by AttractorMonitor + metrics.
+
+ATTRACTOR MONITOR (monitoring/attractor-monitor.service.ts):
+  Five detector thresholds:
+    TYPE_2_ADDICT_RATIO_THRESHOLD = 0.90
+    HALLUCINATED_KNOWLEDGE_RATIO_THRESHOLD = 0.20
+    DEPRESSIVE: shrug 0.50, MAE 0.25, drive 0.60, composite 0.60
+    PLANNING_RUNAWAY_FAILURE_RATIO = 0.70
+    PREDICTION_PESSIMIST_MAE = 0.30, MIN_TOTAL = 100
+  Window sizes: arbitration=50, prediction=50, pessimist sub-window=10.
+  WKG provenance cache TTL 30s.
+  detectHallucinatedKnowledge: Cypher counting Entity by provenance, ratio of
+    non-experiential nodes.
+  detectDepressiveAttractor: composite of normalized shrug+MAE+max(sadness,anxiety) > 0.60.
+  Etc.
+
+TICK SAMPLER (inputs/sampling/tick-sampler.ts):
+  Window size 30, EWMA alpha 0.3.
+  sample():
+    1. Snapshot current values
+    2. fusion.fuse(snapshot) — point-in-time frame
+    3. EWMA blending: alpha*current + (1-alpha)*previous
+    4. Push 30-entry rolling window
+    5. Clear event-driven modalities (text, audio)
+  Event-driven update() triggers inputCallback immediately ("nudge").
+  injectSyntheticText bypasses lastInputAt rate-limit.
+
+SENSORY PIPELINE (5 modality encoders, all 768-dim output):
+  TextEncoder: event-driven. Calls Ollama nomic-embed-text. Falls back to zeros.
+  DriveEncoder: not event-driven. Z-score normalizes 12-dim, projects via Xavier
+    [768×12] seed 0xd41e.
+  VideoEncoder: hand-crafted 26-dim feature (20 COCO classes histogram + count
+    + mean center XY + mean area + mean/max conf). Projection seed 0xa1de0.
+  AudioEncoder: 16-dim feature on raw bytes (presence + 8-bin histogram +
+    energy/peak/variance/entropy + ZCR proxy). Seed 0xa0d10.
+  FaceEncoder: 20-dim (count + primary bbox + 6 blendshape group means
+    jaw/brows/eyes/mouth/cheeks/nose + landmark stats + yaw/pitch/roll proxies +
+    expression intensity). Seed 0xface0.
+  SceneEncoder: 35-dim (class hist + primary-person bbox + scene stability +
+    identified-faces count + quadrant density). Seed 0x5ce0e.
+
+  SensoryFusionService: lazy projection W:[768 × N*768] (Xavier seed 0xf05e).
+  Iterates registered encoders, encodes each, fills missing with zeros,
+  concatenates in deterministic alphabetical order, projects to 768.
+
+  All seeds use Mulberry32 PRNG (linear-algebra.ts) — deterministic across restarts.
+
+ACTION RETRIEVAL (action-retrieval/action-retriever.service.ts):
+  Confidence threshold 0.50 (retrieval).
+  Composite ranking weights: W_CONFIDENCE=0.50, W_CONTEXT=0.30, W_DRIVE=0.20.
+  driveRelevanceScore hardwired 0.0 (prescribed effects removed).
+  LRU cache 50 entries, 5-min TTL.
+  Bootstrap procedures: greet, acknowledge, ask_clarification, express_curiosity,
+    shrug, ask_about_object, ask_about_person, research_entity (provenance
+    SYSTEM_BOOTSTRAP, conf 0.60).
+  Jaccard similarity for context matching.
+
+DELIBERATION (deliberation/deliberation.service.ts):
+  CANDIDATE_COUNT=3, DEBATE_THRESHOLD=0.7, STEP_MAX_TOKENS=200,
+  DELIBERATION_TEMPERATURE=0.4, CANDIDATE_TEMPERATURE=0.7.
+  Pipeline:
+  1. Inner monologue (tier='medium', temp 0.4, format
+     "[INTENT: ...] [ENTITY: ...] [THOUGHT: ...] [RESPONSE: ...]"). Returns
+     direct response or 'NEEDS_DELIBERATION'.
+  2. Early exit if not deliberating: GREETING/EMOTION → LLM_ASSISTED, WKG entities
+     present → GROUNDED, ignorance response → UNKNOWN.
+  3. Candidate generation (3, temp 0.7). Tools: WKG, episodic, person model,
+     conversation history. Format "1. [GROUNDED|ASSISTED|UNKNOWN] response —
+     reasoning".
+  4. Deterministic selection: scoreCandidates(grounding +1.0/+0.5/+0.7,
+     chatbot-language -0.5, "I don't know" -0.7, question-ending -0.15,
+     entity-mention +0.15, verbosity -0.1).
+  5. For/Against debate (when conf<0.7 OR no entities OR anxiety>0.5).
+     Two parallel deep-tier LLM calls.
+  6. Arbiter: APPROVE=0.7, MODIFY=0.5, REJECT=0.3-0.4.
+
+KNOWLEDGE GROUNDING:
+  inferGrounding: ignorance→UNKNOWN, entities/facts→GROUNDED, else LLM_ASSISTED.
+  parseGroundingTag strips leading [GROUNDED|ASSISTED|UNKNOWN].
+
+EPISODIC MEMORY (episodic-memory/episodic-memory.service.ts):
+  Ring buffer capacity 50.
+  Encoding gate: attention <= 0.15 AND arousal <= 0.15.
+  attention = clamp((cognitiveAwareness + focus)/2, 0, 1)
+  arousal = clamp((anxiety + curiosity)/2, 0, 1)
+  Persistence: episodic_memory_checkpoint table (created in onModuleInit, saved on destroy).
+  queryByContext: Jaccard > 0.70.
+
+PREDICT-ACT-EVALUATE:
+  PredictionService: up to 3 predictions per cycle, conf = candidate.conf * 0.8.
+  predictDriveEffects: average past episode driveDeltas (NOT pressureVector)
+    matching actionTaken; if no history, random core-drive [-0.1, 0.1].
+  Active predictions in Map<predictionId, StoredPrediction>. Pruned at start
+    of each cycle (60_000 ms).
+  evaluatePrediction: MAE = sum(|predicted - actual|) / keyCount. accurate < 0.10.
+  Per-action MAE history capped at 10.
+  Evaluation deferred to reportOutcome (not OBSERVING phase) — driveEffectsObserved
+    available only post-cycle.
+
+TENSOR INFERENCE INTEGRATION (3 points):
+  1. Training on every tick (even when filtered): submitTraining(frame, snapshot,
+     'NO_ACTION', 'IDLE') — teaches model when to stay quiet.
+  2. Inference between RETRIEVING and PREDICTING. Builds panel context:
+       latentMatchScores (top 5 cosine, padded to 5)
+       recentMaeValues (10 MAE + 4 novelty indicators)
+       driveHistory (last 10 ticks × 12 floats)
+       opportunityFeatures
+  3. Tensor → Candidate injection. shouldUseTensor gate. Confidence cap:
+     full mode min(0.95, maxProb); partial mode min(0.79, maxProb) — forces Type 2.
+     Panel divergence > 0.3 caps ALL candidate confidences below 0.80 (forces Type 2).
+  Training write-back at end of cycle with actual arbitration outcome.
+
+CYCLE LATENCY logging in two places:
+  Total cycle latency in decision-making.service.ts
+  Per-state metrics in executor-engine.service.ts: 500ms timeout per state
+  except EXECUTING which gets 30s.
+
+LATENT SPACE (latent-space.service.ts):
+  Three-layer (mirrors voice latent space):
+    Hot: in-memory (pattern map)
+    Warm: pgvector in TimescaleDB
+    Cold: full deliberation traces in WKG
+  Hydration on boot up to 6000 patterns by usage frequency.
+  searchMultiModal requires text match for any composite hit (prevents stable
+    visual/audio modalities from replaying stale text patterns).
+
+SENSORY STREAM LOGGER (logging/sensory-stream-logger.service.ts):
+  sensory_ticks hypertable: time, session_id, fused_embedding vector(768),
+  active_modalities TEXT[], raw_summary JSONB, drive_snapshot JSONB,
+  cycle_id, tick_number. ivfflat cosine index lists=100. Strips audio
+  buffers/video bitmaps but retains text and detection counts.
+
+DECISION EVENT LOGGER (logging/decision-event-logger.service.ts):
+  Buffers up to 10 events with 100ms timeout, multi-row INSERT into events.
+  Events: TYPE_1_SELECTED, TYPE_2_SELECTED, SHRUG_SELECTED, ARBITRATION_COMPLETE,
+    PREDICTION_CREATED, PREDICTION_EVALUATED, EPISODE_ENCODED,
+    ATTRACTOR_STATE_ALERT, DECISION_CYCLE_STARTED, TYPE_1_GRADUATION,
+    TYPE_1_DEMOTION, PREDICTION_MAE_SAMPLE.
+
+WORKING MEMORY (working-memory/working-memory.service.ts):
+  Activation-driven selection (not storage). Five signals: relevance (Jaccard
+  + entity overlap), source confidence, recency (ACT-R decay), drive modulation,
+  spreading activation.
+  Hot residual layer: RESIDUAL_DECAY=0.80/cycle, RESIDUAL_TTL_MS=30_000.
+  Minimum source guarantees: WKG_FACT 2, EPISODE 1, DRIVE 1, SCENE 1.
+  formatSummary: wraps items between sentinels:
+    "=== YOUR COMPLETE KNOWLEDGE ON THIS TOPIC (nothing beyond this) ==="
+    items prefixed [FACT]/[ENTITY]/[RECENT]/[FEELING]/[SCENE]/[PROCEDURE]
+    "=== END OF KNOWLEDGE ==="
+  Used by deliberation as system-prompt context.
+
+ANSWERED-STATE TAGGING IS NOT IN THIS PACKAGE — Decision Making consumes a
+  precomputed conversation_summary from frame.raw, populated by ConversationGateway
+  using ConversationHistoryService.getSplitHistory(). The "answered/unanswered"
+  separation is structural: answered exchanges go to system prompt as background;
+  unanswered are real user turns.
+
+==================================================================
+SECTION 8 — @sylphie/learning (CONSOLIDATION)
+==================================================================
+
+PUBLIC EXPORTS: only LEARNING_SERVICE token. All other tokens private.
+
+LearningModule imports DecisionMakingModule (LLM_SERVICE, WkgContextService) +
+  TimescaleModule. Does NOT import Communication or Planning (no circular deps).
+
+CYCLE TIMERS (CANON cognitive constraint, not performance):
+  Maintenance cycle:    CYCLE_INTERVAL_MS = 60_000        (60s)
+  Reflection cycle:     REFLECTION_INTERVAL_MS = 300_000  (5min)
+  Cross-session synth:  SYNTHESIS_INTERVAL_MS = 1_800_000 (30min)
+  Confidence decay:     DECAY_INTERVAL_MS = 600_000       (10min)
+  All guarded by in-flight booleans.
+  Pressure-driven triggering is documented as future phase but NOT IMPLEMENTED:
+    "In a future phase, the Cognitive Awareness drive should trigger cycles
+    when pressure exceeds a threshold."
+
+CONSOLIDATION PIPELINE (per event, MAX_EVENTS_PER_CYCLE=5):
+
+  Step 2: fetchUnlearnedEvents — SELECT WHERE has_learned=false AND type IN
+    ('INPUT_RECEIVED', 'INPUT_PARSED'). Partial index idx_events_unlearned ON
+    events (timestamp ASC) WHERE has_learned=false.
+
+  Step 3 (Upsert Entities): extractTitleCasedTokens (regex, no LLM). Two-pass scan:
+    distinguishes proper nouns from sentence-initial title-casing. Filters
+    STOPWORDS (~95 words) and TEMPORAL_WORDS. Compound entities ("New York City"
+    → 1 entity). Cap 20 per event. INPUT_PARSED bypasses regex and uses
+    payload.entities directly. MERGE :Entity {label} with provenance per event
+    type (SENSOR for INPUT_*, GUARDIAN for guardian events). ON MATCH only RAISES
+    confidence.
+
+  Step 3b (Typed Edges): parseTriples runs 10 regex patterns ("I like X",
+    "I work at Y", etc). resolveEdgeType maps key to FACT_KEY_TO_EDGE_TYPE
+    or generic HAS_<KEY>; favorite_* → HAS_FAVORITE. Each writes via MATCH...
+    MERGE (a)-[r:${type}]->(b) with r.refined_from='STRUCTURED'. Returns
+    typedPairs Set so co-occurrence skips them.
+
+  Step 4 (RELATED_TO): buildSentencePairs restricts pairing to entities in
+    same sentence (split on /(?<=[.!?])\s+/). Skips already-typed pairs.
+    Cap 10 pairs. UNWIND batch INSERT MERGE :RELATED_TO. Provenance LLM_GENERATED.
+
+  Step 5 (Conversation Entry): :Conversation {node_id:'conv-<8>'}, content
+    truncated 500 chars, provenance SENSOR conf 0.40. MENTIONS edges to entities.
+
+  Step 6 (CAN_PRODUCE Edges): extractSignificantPhrases — bigram + trigram
+    sliding window (MIN_TOKEN_LENGTH=3), MAX_PHRASES=15. Each phrase →
+    :Word node (LLM_GENERATED 0.35). (:Conversation)-[:CAN_PRODUCE]->(:Word)
+    edges (INFERENCE 0.30).
+
+  Step 7 (LLM Edge Refinement, RefineEdgesService):
+    Phase 1 — Heuristic (deterministic): classifyByHeuristic against verb
+      patterns DISLIKES (intentionally before LIKES), LIKES, KNOWS, WORKS_AT,
+      LIVES_AT, CREATED, OWNS. (USES intentionally omitted to avoid "uses
+      the bathroom" false positive.) Confident → updateEdgeType refined_from='HEURISTIC'.
+    Phase 2 — LLM: only edges where heuristic !confident. If LLM null/unavailable
+      (Lesion Test) → skip; edges remain RELATED_TO. gatherPersonContext queries
+      last 5 INPUT_PARSED with title-cased single-word labels. Tier 'medium', temp 0.3.
+      parseRefinements validates VALID_TYPE_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/,
+      length cap 40. ANY well-formed UPPER_SNAKE_CASE accepted.
+    Update mechanics: Neo4j cannot rename rel types in place — MERGE new typed
+      rel with refined_from='LLM', then DELETE original RELATED_TO.
+
+  Step 7b (Contradiction Detection): ANTONYM_MAP currently only LIKES↔DISLIKES.
+    Cypher MATCH (a)-[:antonym]-(b) bidirectional. If found, MERGE :CONTRADICTS
+    edge with claim, existingFact, claimConfidence, existingConfidence, conf:0.50,
+    event_id, session_id. Consumed by ContradictionScannerService in decision-making.
+
+  Step 2b: markAsLearned UPDATE has_learned=true. Always called even on
+    exception (poison-event safeguard).
+
+CONFIDENCE DECAY (confidence-decay.service.ts):
+  ACT-R style: new_conf = old_conf - decayRate * log(hoursSince + 1)
+  Per-provenance rates: SENSOR 0.05, GUARDIAN 0.03, LLM_GENERATED 0.08, INFERENCE 0.06
+  MIN_HOURS_BEFORE_DECAY = 1.0
+  pruneOrphanedNodes: only :Entity nodes below 0.10 with NO edges. Excludes
+    Drive, CoBeing, ActionProcedure, Conversation, Insight, Word.
+
+CATASTROPHIC INTERFERENCE PREVENTION:
+  No EWC, no replay buffer in Learning. Protection model:
+  - MERGE upsert only RAISES confidence on match
+  - ACT-R decay penalizes old facts; per-provenance rates protect GUARDIAN
+  - Pruning only removes orphaned low-confidence non-structural nodes
+  (wiki/researchedIdeas/2026-04-27-ewc-real-fisher-computation.md exists in
+  git status — research roadmap; not in this package.)
+
+CONVERSATION REFLECTION (conversation-reflection.service.ts):
+  Every 5 min. Eligibility: not in reflected_sessions, MAX(timestamp) <
+    NOW - 10min, COUNT >= 4 events. Oldest first, LIMIT 1.
+  reflected_sessions table: session_id PK, reflected_at, insights_created,
+    edges_created.
+  Sets up :Insight nodes (provenance INFERENCE base 0.30) with DERIVED_FROM
+    (Conversation) and REVEALS (Entity) edges. discovered_by='REFLECTION' on
+    new entity edges.
+  6 insight types: DELAYED_REALIZATION, MISSED_CONNECTION, IMPLICIT_INSTRUCTION,
+    CONTRADICTION, THEMATIC_THREAD, TONAL_SHIFT.
+  Tier 'medium', temp 0.3, max 1536 tokens.
+  computeGroundedConfidence: scales by revealsCreated/attemptedReveals,
+    floor 0.05, grounded=ratio>0. No entities → base preserved.
+
+CROSS-SESSION SYNTHESIS (cross-session-synthesis.service.ts):
+  Every 30 min. Cypher matches insights from different sessions REVEALing same Entity.
+  CONFABULATION GUARD: parseSynthesisResponse verifies CITES field contains both
+    source IDs; discarded otherwise.
+  Synthesis :Insight {is_synthesis:true, source_sessions[]} with SYNTHESIZES
+    edges to source insights.
+  Confidence: mean(source confs) + (sharedCount-1)*0.02 capped 0.10, floored 0.30,
+    capped SYNTHESIS_CONFIDENCE_CAP=0.45.
+  synthesized_insight_pairs tracking table.
+
+==================================================================
+SECTION 9 — @sylphie/planning (OPPORTUNITY PROCESSING)
+==================================================================
+
+PUBLIC EXPORTS: only PLANNING_SERVICE token.
+
+TIMERS:
+  Processing: PROCESSING_INTERVAL_MS = 30_000
+  Decay:      DECAY_INTERVAL_MS = 60_000
+  pipelineInFlight bool prevents overlap.
+
+OPPORTUNITY INGESTION (every 30s):
+  SELECT id, payload FROM events WHERE type IN ('OPPORTUNITY_DETECTED',
+    'GUARDIAN_TEACHING_DETECTED') AND (payload->>'has_planned')::boolean IS NOT TRUE
+    ORDER BY timestamp ASC LIMIT 10.
+  Each parsed as OpportunityCreatedPayload, enqueued.
+  GUARDIAN_TEACHING priority = 1.5 (exceeds normal HIGH=1.0).
+  GUARDIAN_TEACHING bypasses 30s wait via setImmediate.
+  GUARDIAN_TEACHING bypasses rate limit (3 plans/hour).
+
+OpportunityQueue:
+  In-memory array, sorted by currentPriority DESC.
+  HIGH=1.0, MEDIUM=0.6, LOW=0.3, GUARDIAN_TEACHING=1.5.
+  Decay: currentPriority = initialPriority * exp(-0.1 * hoursElapsed).
+    Below DROP_THRESHOLD=0.1 → filtered out, OPPORTUNITY_DROPPED event.
+  Hard cap MAX_QUEUE_SIZE=50, tail-priority eviction.
+  Dedup by contextFingerprint.
+  Rate limit: MAX_PLANS_PER_WINDOW=3 per RATE_LIMIT_WINDOW_MS=3_600_000 (1h).
+
+RESEARCH (research.service.ts) — TIMESCALEDB ONLY, NOT SEARXNG:
+  3 SQL queries:
+  1. 7-day frequency by contextFingerprint
+  2. Last 24h occurrences
+  3. Related event payloads (cap 20)
+  extractPatterns: dedup strings from actionType/predictionType/affectedDrive
+  GUARDIAN_TEACHING: appends guardian-instruction:<text> as pattern.
+  Sufficiency thresholds:
+    PREDICTION_FAILURE_PATTERN: 3
+    HIGH_IMPACT_ONE_OFF: 1
+    BEHAVIORAL_NARROWING: 3
+    GUARDIAN_TEACHING: 0
+  On exception: sufficient:false (fail safe).
+
+SIMULATION (simulation.service.ts):
+  CANDIDATE_CATEGORIES: ConversationalResponse, InformationSeeking,
+    SocialEngagement, TaskExecution, SelfRegulation.
+  Per category: SELECT ACTION_OUTCOME_EVALUATED last 14 days, GROUP BY payload.
+  No history → conservative (-0.02 effect, conf 0.2, risk 0.5).
+  With history: weighted avg driveEffects, successRate = success/total.
+    confidenceEstimate = min(0.8, successRate). riskScore = 1 - successRate.
+  Sort ascending by drive effect (most negative = most relief).
+  Viability: effect <= MIN_RELIEF_THRESHOLD=-0.05.
+  GUARDIAN_TEACHING: synthetic GuardianTeaching outcome (-0.15 affected drive,
+    -0.10 CognitiveAwareness) if no normal viable.
+
+PROPOSAL:
+  LLM path: tier 'medium', temp 0.3, max 1024.
+  Template fallback: fixed 2-step (WKG_QUERY + LLM_GENERATE).
+  parseLlmProposal: extracts JSON from optional ```(json)``` blocks.
+
+CONSTRAINT VALIDATION (deterministic, no LLM):
+  5 checks per validation:
+  1. checkStepTypeValidity: VALID_STEP_TYPES = {LLM_GENERATE, WKG_QUERY,
+     TTS_SPEAK, LOG_EVENT}. Fixes prior EMIT_EVENT bug.
+  2. checkAddressesOpportunity: searchable text must contain classification,
+     affectedDrive, or contextFingerprint.
+  3. checkProcedureConflict: trigger_context not exact match (currently always
+     empty Set — TODO to wire WKG).
+  4. checkNoTheatricalBehavior: if any expressive step (LLM_GENERATE/TTS_SPEAK),
+     at least one predictedDriveEffects entry must be non-zero. Pure WKG_QUERY/
+     LOG_EVENT plans auto-pass. CANON Standard 1.
+  5. checkContingencyTracing: every step requires non-empty params; WKG_QUERY
+     needs 'query'; LLM_GENERATE needs 'purpose' or 'instruction'. CANON Standard 2.
+  Retry MAX_RETRIES=3 with proposalService.refine (LLM-driven revision).
+
+PROCEDURE CREATION (procedure-creation.service.ts):
+  Writes :ActionProcedure to Neo4j WORLD with:
+    node_id (UUID), name, category, trigger_context, action_sequence (JSON),
+    provenance_type: TAUGHT_PROCEDURE for guardian-teaching, else INFERENCE
+    confidence: 0.50 for guardian-teaching (immediate retrieval), else 0.30
+    actr_base = confidence, actr_count = 0, actr_decay_rate = 0.06, actr_last_retrieval_at: null
+    source_opportunity_id, source_classification, rationale,
+    predicted_drive_effects (JSON), guardian_instruction
+  "Subject to confidence ceiling of 0.60 until guardian confirmation."
+
+PLAN EVALUATION (plan-evaluation.service.ts):
+  Joins PREDICTION_EVALUATED (mae, accurate, actualEffects) with PREDICTION_CREATED
+  (predictionId, actionId), filtered to those with PLAN_CREATED procedureNodeId.
+  Cap 20 outcomes/cycle. Marks has_plan_evaluated=true.
+  isFailed: !success OR mae > 0.15.
+  Rolling MAE window per procedure (size 10).
+  consecutiveFailures >= 5 → PLAN_FAILURE event reason='persistent_failure'.
+
+==================================================================
+SECTION 10 — @sylphie/supervisor (DEEPSEEK META-EVALUATOR)
+==================================================================
+
+PUBLIC EXPORT: only SUPERVISOR_SERVICE + SidecarControlService + types.
+
+ISupervisorService:
+  verdict$: Observable<SupervisorVerdict>
+  getStatus(): SupervisorStatus
+  updatePolicy(Partial<SamplingPolicy>): void
+  submitIntervention(SupervisorIntervention): void
+  setEnabled(bool): void
+
+SamplingPolicy:
+  sampleRate (default 10) — evaluate every Nth cycle
+  alwaysEvaluate: ['guardian_feedback', 'attractor_alert'] (default)
+    (model_freeze/model_rollback in type union but not yet wired)
+  burstMode: bool
+  dailyBudgetUsd: 5.00 default
+
+SupervisorVerdict:
+  cycleId, timestamp, rating: 'good'|'acceptable'|'questionable'|'wrong',
+  confidence [0,1], reasoning, reasoningTrace? (DeepSeek CoT — currently
+  always undefined per TODO), flagForGuardian, flagReason?, suggestedCorrection?,
+  inputTokens, outputTokens, costUsd.
+
+EVALUATION AXES (system prompt):
+  1. Drive alignment — was dominant drive addressed?
+  2. Response quality — non-sequiturs, repetition, chatbot-speak
+  3. Escalation — Type 1 for familiar, Type 2 for novel
+  4. Consistency — matches established patterns?
+
+SAMPLING (subscribes to decisionMaking.response$):
+  shouldEvaluate: enabled + (burstMode OR cycleCount % sampleRate == 0)
+  Budget gate: costTracker.hasBudget() — false → skip
+  Build narration via NarrationBuilderService (cycle metadata + dominant drive
+    + input summary + action name; sidecar fields placeholder undefined).
+  evaluate via LLM_SERVICE tier='deep' (routes to DeepSeek-reasoner per OllamaLlmService).
+  Max 300 tokens, temp 0.2.
+
+COST TRACKING (CostTrackerService):
+  DeepSeek pricing: $0.28/M input + $0.42/M output (as of 2026-04).
+  recordCost returns false when budget exhausted → self-shutdown for the day.
+  UTC date rollover resets.
+
+VERDICT BUFFER:
+  100 internal capacity (recentVerdicts).
+  getStatus returns slice(-20) only.
+
+GUARDIAN ASYMMETRY:
+  SupervisorIntervention.source: 'supervisor'|'guardian' tags every intervention.
+  Header docstring: "supervisor's weight (0.5x) is always below the guardian's
+    (2x/3x). Jim can override any supervisor verdict."
+  6 intervention types: reinforce, correct, freeze_model, unfreeze_model,
+    rollback_checkpoint, boost_salience.
+
+SIDECAR CONTROL (SidecarControlService):
+  Bridge to Python cognition-service at COGNITION_HOST.
+  HTTP POST endpoints:
+    /cognition/control/reinforce  (weight: 1.0)
+    /cognition/control/correct
+    /cognition/control/freeze?model_name=...
+    /cognition/control/unfreeze?model_name=...
+    /cognition/control/rollback?checkpoint_id=...
+    boost_salience: stub (not yet implemented)
+  getModelState: GET /cognition/control/state — params per model.
+  forceCheckpoint(foundation: bool).
+
+==================================================================
+SECTION 11 — @sylphie/sylphie-pkg (CODEBASE-AS-GRAPH + MCP SERVER)
+==================================================================
+
+PURPOSE: ts-morph parses TypeScript across 5 watched packages, indexes structure
+into Neo4j PKG instance (port 7691), exposes 7 tools to Claude Code via MCP.
+
+NEO4J PKG INSTANCE (separate from runtime WKG/SKG/OKG):
+  bolt://localhost:7691, password sylphie-pkg-local.
+  Singleton driver, 10 conn pool, 5s timeout.
+  WATCHED_PACKAGES: apps/sylphie/src, packages/shared/src, packages/decision-making/src,
+                    packages/drive-engine/src, frontend/src.
+  Excludes: node_modules, dist, .git, .cache, *.d.ts, *.spec.ts, *.test.ts.
+
+NODE LABELS:
+  Service (top-level package, name unique)
+  Module (directory, filePath unique, has packageName)
+  File (filePath unique, fileName, extension, lineCount)
+  Function (filePath+name, lineNumber, endLine, returnType, jsDoc, isExported,
+    isAsync, args(JSON), decorators(JSON), httpMethod, routePath, contentHash, domain)
+  Type (filePath+name, kind:interface|type|enum|class, properties, comment,
+    decorators, extendsType, implementsTypes, contentHash)
+  CodeBlock (filePath+functionName, bodyText capped 8000 chars) — separate so
+    structural queries don't drag bodies
+  Change (hash UNIQUE, shortHash, author, date, message, fileCount, recordedAt)
+  Constraint (id, description, scope, scopeType, source, severity, tags)
+  TestFile (filePath, description) — referenced via TESTED_BY but no creation here
+
+EDGE TYPES:
+  BELONGS_TO: Module → Service
+  CONTAINS_FILE: Module → File
+  CONTAINS: Module → Function/Type
+  DEFINES: File → Function/Type
+  HAS_CODE: Function/Type → CodeBlock
+  IMPORTS: Module → Module (with moduleSpecifier, importedNames)
+  CALLS: Function → Function
+  USES_TYPE: Function → Type
+  EXTENDS: Type → Type
+  IMPLEMENTS: Type → Type
+  INJECTS: Type → Type (with paramName)
+  CHANGED_IN: Function/Type/Module → Change
+  CONSTRAINED_BY: Service/Module/Function → Constraint
+  TESTED_BY: Function → TestFile
+
+INITIAL SEED PIPELINE (initial-seed.ts):
+  Schema: 4 uniqueness constraints (Service.name, Module.filePath, File.filePath,
+    Change.hash), 10 indexes.
+  Walk WATCHED_PACKAGES, collect .ts files (BATCH_SIZE=50).
+  Per batch: parse + write transaction (each File/Function/Type/IMPORTS/HAS_CODE).
+  Project cache cleared every 5 batches (memory bound).
+  Relationship pass: CALLS, USES_TYPE, EXTENDS, IMPLEMENTS, INJECTS edges
+    (each individual edge attempt try/catch).
+  Integrity check: 6 parallel checks (duplicates, missing props, orphaned IMPORTS,
+    wrong-label CONTAINS, missing BELONGS_TO chain, duplicate Types).
+  Sync cursor: writes git rev-parse HEAD to .last-sync-commit.
+
+SYNC PIPELINE (sync-pipeline.ts):
+  getChangedFiles diff against .last-sync-commit; getDeletedFiles.
+  Parse + computeChangeset + buildMutations + applyMutations (one transaction).
+  logChange records :Change. Integrity check gates cursor advancement —
+  if checks fail, cursor stays in place for retry.
+
+AST PARSER (sync/ast-parser.ts):
+  ts-morph project cached per tsconfig.json. skipAddingFilesFromTsConfig +
+    skipFileDependencyResolution.
+  Function extraction: 3 passes (named decls, arrow/expr assigned to vars,
+    class methods named ClassName.methodName). Captures @Controller +
+    HTTP_DECORATORS for endpoint info. extractCallees walks CallExpressions,
+    strips this., filters builtins. extractTypeRefs regex-greps capitalized
+    identifiers, filters BUILTIN_TYPES.
+  Type extraction: interfaces, type aliases, enums, classes (with extends
+    clause, implements list, constructorParams including @Inject(TOKEN) →
+    injectToken).
+
+7 MCP TOOLS (all mcp__sylphie-pkg__*):
+  searchContent: pattern + fileFilter on CodeBlock.bodyText, fallback to
+    Function.bodyText. Returns up to 5 matching lines per result.
+  getFunctionDetail: name + filePath. Body, USES_TYPE related types,
+    TESTED_BY tests, CHANGED_IN recent changes, callers, callees.
+  getDataFlow: name + direction (upstream/downstream/both) + depth (1-6).
+    Variable-length CALLS|USES_TYPE|IMPORTS|CONTAINS|INJECTS|EXTENDS|IMPLEMENTS path.
+  getModuleContext: 3-way UNION matching (Module name/domain/desc/pkgName,
+    Service name, Function name). Follow-up queries fetch up to 60 functions,
+    40 types, 20 constraints. First-call entry tool.
+  getConstraints: search Constraint nodes via CONSTRAINED_BY + direct match.
+    Severity ordering. Footer references docs/CANON.md.
+  getLogContext: reads ./logs/*.log files (NOT Neo4j!). NestJS winston format.
+    Filters by query/service/severity. Last 20 matches.
+  getRecentChanges: Change nodes by message/hash regex, default 30 days.
+    Up to 15 changes. Affected functions (limit 100), affected types (limit 50).
+
+==================================================================
+SECTION 12 — perception-service (PYTHON SIDECAR, port 8430)
+==================================================================
+
+FastAPI + uvicorn. python:3.11-slim Dockerfile. Installs OpenGL/EGL libs
+for OpenCV/MediaPipe. requirements: torch CPU, mediapipe, onnxruntime,
+opencv-python-headless, ultralytics, transformers, einops.
+
+CAMERA: NOT OPENED IN PROCESS. Comment: "No camera pipeline — frames come
+from the browser via NestJS." JPEG bytes arrive on request body via
+_decode_jpeg_to_frame (cv2.imdecode + BGR→RGB cvtColor).
+
+ENDPOINTS:
+  GET  /perception/health — pure liveness, returns models_loaded flags.
+  POST /perception/detect — workhorse. Body: raw JPEG. Response:
+    detections (label_raw, confidence, bbox, mask_polygon, frame_id),
+    faces (478-landmark mesh + blendshapes), face_connections, face_oval,
+    tracked_objects (track_id, state, label, confidence, bbox, frames_seen,
+      frames_lost, first_seen_at, last_seen_at, embedding),
+    scene_summary (total_tracks, confirmed/lost/new counts, frame_sequence).
+  POST /perception/detect-annotated — annotated JPEG (base64).
+  POST /perception/crop-face — face crop + 1280D EfficientNet-B0 embedding.
+  POST /perception/caption — VLM scene caption (Moondream2 vikhyatk/moondream2).
+  GET  /perception/status — pipeline active, tracked count, fps.
+  GET  /perception/stream + /stream/raw — MJPEG (DEAD CODE — debug_frame_store
+    never populated since camera pipeline disabled; returns 503).
+
+YOLO LOADING:
+  Default model_path: yolov8n-seg.pt (segmentation variant, 8000 nodes / 15000
+    edges per snapshot in PKG). .pt files in package root NOT copied into Docker
+    image — downloaded by ultralytics on first inference.
+
+TRACKING — IoU ONLY, NOT DeepSORT/Kalman:
+  IoUTracker (tracker.py): pure-Python, no numpy, no scipy. Greedy assignment
+    replaces Hungarian algorithm. State machine:
+      TENTATIVE → CONFIRMED after min_confirm_frames (3) consecutive matches
+      CONFIRMED → LOST on miss
+      LOST → CONFIRMED on recovery
+      LOST → DELETED after max_lost_frames (15) misses
+    iou_threshold=0.3.
+
+EMBEDDING:
+  OnnxEmbeddingExtractor: tries CUDAExecutionProvider, falls back to CPU.
+  Mask applied: zeroes non-mask pixels for instance-segmented embeddings.
+  1280D EfficientNet-B0 features.
+
+FACE DETECTION: MediaPipe face_landmarker.task (478 mesh landmarks + 52
+  blendshapes). Confidence threshold 0.5.
+
+VLM: Moondream2, lazy-loaded, CPU float32 by default. Auto-downloaded from
+  HuggingFace on first /caption call. transformers AutoModelForCausalLM
+  + trust_remote_code.
+
+CONFIG (env COBEING_PERCEPTION_*):
+  CAMERA__DEVICE/WIDTH/HEIGHT/FPS/BUFFER_SIZE
+  DETECTION__MODEL_PATH/CONFIDENCE_THRESHOLD/NMS_THRESHOLD
+  FACE_DETECTION__CONFIDENCE_THRESHOLD/MODEL_SELECTION
+  TRACKING__IOU_THRESHOLD/MAX_LOST_FRAMES/MIN_CONFIRM_FRAMES
+  PERSISTENCE__*, VALIDATION__*
+  VLM__ENABLED/MODEL_NAME/REVISION/DTYPE/DEVICE/DEFAULT_PROMPT
+
+==================================================================
+SECTION 13 — cognition-service (PYTHON SIDECAR, port 8431)
+==================================================================
+
+FastAPI + uvicorn. PYTORCH-FREE: only TensorFlow >=2.15 + NumPy.
+Volume cognition_weights:/app/weights for checkpoints (NOT in image).
+
+LOGGING: Custom _VerboseFormatter matches NestJS verbose log format:
+  "2026-04-09T23:43:22.774Z VERBOSE [Subsystem] message"
+  File handler appends to <repo>/logs/verbose.log.
+
+ENDPOINTS:
+  GET  /cognition/health — HealthResponse (status, models_loaded, bootstrap_mode,
+    training_enabled, total_parameters, weight_checkpoint).
+  POST /cognition/cycle — main inference. Input 1561 floats. CognitionCycleResponse.
+  POST /cognition/train — fire-and-forget training sample submission.
+  POST /cognition/checkpoint?foundation=bool
+  GET  /cognition/metrics — MetricsResponse.
+  GET  /cognition/bootstrap — BootstrapStatus.
+  POST /cognition/control/{reinforce|correct|freeze|unfreeze|rollback}
+  GET  /cognition/control/state — per-model param counts + nested model dict.
+
+MODELS:
+  GlobalModel ("Brainstem"):
+    Input dim 1561 = EMBEDDING_DIM(768) + DRIVE_VECTOR(12) + DRIVE_DELTAS(12)
+                   + 1 + EMBEDDING_DIM(768).
+    Architecture: Dense 1561→512 ReLU → 256 ReLU → [32 softmax action_bias,
+                   2 sigmoid urgency+novelty]. ~450K params.
+    TF Keras path + NumPy fallback (Xavier seed 0xBEEF).
+  PanelModel (4 instances): NumPy-only ~100K each.
+    Input → 256 ReLU → 128 ReLU → [32 softmax action_bias, 1 sigmoid confidence,
+    8 tanh domain_signal]. Per-panel seed = hash(name) & 0xFFFFFFFF.
+    Panels:
+      drive (input 1681) — extra: drive history 10×12=120
+      decision (input 1566) — extra: top-5 latent match scores
+      learning (input 1575) — extra: 14 features (10 MAE + 4 novelty)
+      planning (input 1569) — extra: 8 opportunity-queue features
+  ConvergenceModel: NumPy ~10K. Input 160 = 5×32 (1 global + 4 panels).
+    Dense 160→64 ReLU → [1 sigmoid divergence, 4 sigmoid panel adjustments].
+    use_learned flag defaults False; heuristic path = pure cosine similarity
+    averaged across panels.
+  DeliberationSystem: 3 DeliberationPipeline clones (pragmatist, conservative,
+    advocate, seeds 0xD1A6/0xC0A5/0xAD10), same arch as global. SynthesisModel:
+    96→64→[32 softmax bias, 3 softmax pipeline_weights, 1 sigmoid confidence].
+    Total ~1.36M params.
+  Total cognition params dynamically computed (~2.22M actual; comment says 5.5M).
+
+BOOTSTRAP MODES (BootstrapTracker):
+  shadow → audit: total comparisons across categories >= 100
+  audit → partial: at least one category graduated (>=20 samples in window AND
+                   agreement >= 0.85)
+  partial → full: overall agreement >= 0.90 AND >= 3 graduated categories
+
+ACTION VOCABULARY (ActionVocabulary, training/trainer.py):
+  32-slot action space. Index 0 = "unknown", index 31 = "shrug" reserved.
+  Indices 1-30 filled in arrival order. When full, new categories collapse to
+  "unknown" rather than evict shrug.
+  Categories normalized to lowercase before comparison.
+  NestJS sends PascalCase like "ConversationalResponse".
+
+TRAINING (online, daemon thread):
+  _MIN_BUFFER_SIZE=10, _BATCH_SIZE=32, replay_fraction=0.5.
+  Loop:
+    1. Wait until buffer >= 10
+    2. Sample batch (mixed: 50% random + 50% recent)
+    3. _train_step: forward + cross-entropy on action head + Adam update
+    4. Increment _training_steps; log every 100
+    5. Checkpoint when steps % CHECKPOINT_INTERVAL=1000 AND >=60s since last
+    6. _stop_event.wait(0.01) between iterations
+  TRAINER ONLY UPDATES NUMPY GLOBAL MODEL — skips TF and other panels.
+  Aux head (urgency/novelty) has zero gradient (not supervised during bootstrap).
+  EWC penalty added but currently zero (uniform Fisher, never set_reference'd).
+
+DataBuffer ring buffer:
+  Capacity REPLAY_BUFFER_SIZE=100,000 (env-configurable).
+  threading.Lock. List fields converted to np.float32 on insertion.
+  sample_batch returns mixed batch.
+
+CHECKPOINTING:
+  Each model serializes independently. Atomic save (.tmp → os.replace).
+  GlobalModel.save: .h5 (TF) or global_model_np.npz (NumPy).
+  Other models: panel_<name>.npz, convergence_model.npz, delib_<name>.npz,
+    synthesis_model.npz.
+  Loaders tolerate corruption (try/except, keeps initialized weights).
+  Foundation snapshots at WEIGHTS_DIR/foundation/ for "Society of Mind forking."
+
+EWC / FISHER (training/replay.py):
+  EWCRegularizer is a STUB. _compute_uniform_fisher returns all-ones
+  (= L2 weight anchoring). set_reference NEVER CALLED → EWC is currently a no-op.
+  Catastrophic interference prevention is declared (intent) but not realized.
+
+NOTABLE STUBS / NON-FUNCTIONAL:
+  - per_category_confidence dict initialized empty, never written.
+  - MAX_INFERENCE_TIMEOUT_MS=50 defined but not enforced (no watchdog).
+  - boost_salience intervention: not implemented on sidecar.
+  - reinforce/correct endpoints are TODO stubs.
+  - per-model freeze "not yet implemented".
+  - ConvergenceModel.use_learned defaults False; flip happens nowhere
+    automatically — same trapdoor as EWC.
+
+==================================================================
+SECTION 14 — frontend (Vite + React + Zustand)
+==================================================================
+
+STACK: Vite, React 18, react-router-dom v7, MUI 5 dark mode (primary #64B5F6),
+@anthropic-ai/sdk (FE Agent only), chart.js, cytoscape (+fcose), three (force-graph-3d),
+zustand. TS strict.
+
+ENTRY: main.tsx → ReactDOM.createRoot + StrictMode + <App/>.
+
+App.tsx:
+  ThemeProvider → CssBaseline → BrowserRouter → AuthGate → Routes.
+  AuthGate: reads authToken/authChecked from store. On mount with token,
+    fetches /api/auth/me; on success setAuth(token,user), on failure clearAuth.
+  Token stored in localStorage['sylphie_token'].
+
+ROUTES (all under /dashboard, parent DashboardLayout):
+  /dashboard/graphs        → GraphsView (WKG hero + OKG/SKG mini graphs)
+  /dashboard/analytics     → AnalyticsView (telemetry panels)
+  /dashboard/chat          → ChatView (conversation + camera column)
+  /dashboard/codebase      → CodebaseView (PKG explorer)
+  /dashboard/guardian      → GuardianView (rules + tensor cognition dashboard)
+  /legacy                  → original single-page Dashboard
+  /*                       → /dashboard
+
+DashboardLayout: left Sidebar + Outlet. Mounts SkillManager, NodeInspector,
+  FEAgentPanel, SupervisorPanel overlays. Initializes useGraphWebSocket +
+  useTelemetryWebSocket.
+
+ZUSTAND STORES:
+  useAppStore (store/index.ts):
+    Auth: authToken, authUser{id, username, isGuardian}, authChecked
+    WS state per channel
+    Graph data (WKG, OKG, SKG, PKG)
+    Conversation messages
+    Session stats
+    Telemetry: pressure (12 drive keys snake_case), executor state, action/
+      prediction histories, inner monologue, system logs
+    Voice/camera/WebRTC state
+    UI flags
+    Auto-derives stasis (10+ turns without graph changes)
+    Builds verbatim inner-monologue entries from executor_cycle events.
+  useSupervisorStore (store/supervisorSlice.ts):
+    enabled, sampleRate, burstMode, budgetRemaining, budgetUsedToday,
+    flaggedCount, recentVerdicts (cap 100).
+
+WEBSOCKET HOOKS (URL = `${ws|wss}://${window.location.host}${path}`):
+  useGraphWebSocket → /ws/graph?protocol=cobeing-v1
+    On reconnect: refetch /api/graph/snapshot (debounced 1.5s)
+  useConversationWebSocket → /ws/conversation?token=&lt;JWT&gt;
+    Sends {event:'message', data:{text, type:'message'}} per NestJS WS adapter
+    On code 1012 (server eviction) stops reconnecting
+    Handles input_ack, thinking_indicator, system_status, response, cb_speech
+  useTelemetryWebSocket → /ws/telemetry
+    executor_cycle, prediction_result, maintenance_cycle, state_transition, system_log
+  useAudioStream → /ws/audio
+    Streams Opus/WebM chunks every 250ms; receives transcription, utterance_complete,
+    restart_audio
+  usePerception → /ws/perception
+    Streams JPEG @ 15fps; receives YOLO + face landmarks + tracked + scene events
+    + vwm_entities + vlm_caption
+  useWebRTC → /ws/webrtc — STUN stun.l.google.com:19302
+  useSupervisorWebSocket → /ws/supervisor
+
+  All hooks: backoff 1000*2^attempt clamped to 30000 with 0.8-1.2× jitter.
+
+REST API CALLS (catalog from frontend code):
+  Auth: POST /api/auth/{login|register}, GET /api/auth/me
+  Graph: GET /api/graph/{snapshot|okg|skg|pkg}, /:instance/{count|nodes|edges},
+         /wkg/search, /wkg/neighborhood, /pkg/{search|function/:name|dataflow/:name}
+  Drives: POST /api/drives/{override|drift|reset}
+  Pressure: GET /api/pressure
+  Voice: GET /api/voice/status, POST /api/voice/transcribe, GET /api/voice/audio/:turnId
+  Skills: POST /api/skills/reset {confirm:true}
+  Rules: GET /api/rules/{proposed|active}, POST /api/rules/:id/{approve|reject}
+  Cognition: GET /api/cognition/dashboard
+  Metrics: GET /api/metrics/health, /metrics/observatory/{vocabulary-growth|
+    drive-evolution|action-diversity|developmental-stage|session-comparison|
+    comprehension-accuracy|phrase-recognition}, /metrics/observatory/alerts
+  Supervisor: GET /api/supervisor/status, POST /api/supervisor/{enable|disable|policy}
+
+GRAPH VISUALIZATION:
+  AmbientView (3D, react-force-graph-3d, three.js):
+    SphereGeometry(0.5,8,8) shared, material cache by color.
+    Per-node scale = typeScale*(1 + sqrt(degree)*0.25).
+    CoBeing 4×, PrimitiveSymbol 2.5×, DriveCategory 2×.
+    Auto-orbit 0.0015 rad/frame (paused on hover). WASD + Q/E controls.
+    d3 forces: charge=-15, link distance=20.
+  ExplorerView (2D, fcose):
+    Neighborhood drill-down, hop count 1-3.
+    Center node pinned at origin. Double-tap drills.
+    Breadcrumb history capped 10. "500 cap" warning when truncated.
+  Legacy GraphPanel (2D Cytoscape): anchors layout on CoBeing, dims nodes
+    below conf 0.5, applies provenance/schema_level/search filters.
+
+KEY UI COMPONENTS:
+  ConversationPanel: messages with optimistic UI. Knowledge grounding colors:
+    GROUNDED green, LLM_ASSISTED amber italic, UNKNOWN dim grey. Theater check
+    warning when is_grounded===false. WordRatingDrawer lets guardian rate
+    individual words → {type:'phrase_word_rating', phrase_node_id, word, position,
+    rating:'bad'}.
+  DriveRadarChart: 12-axis radar, core/complement overlay, "Stale" if data > 5s.
+  DrivesPanel: bidirectional bars over CANON range [-10, 1], zero marker at 90.9%.
+    Color thresholds: blue<0, green<0.3, amber<0.6, orange<0.8, red>=0.8.
+  MetricsPanel: ExecutorState, DriveEngine, RecentActions, PredictionAccuracy panels.
+  InnerMonologuePanel: VERBATIM TimescaleDB events (no LLM summarization);
+    expand for raw JSON.
+  SystemLogsPanel: terminal-style, 200-entry cap, all/warn+/error filters.
+  AttractorAlertBanner: 6 alerts (Type 2 Addict, Rule Drift, Hallucinated
+    Knowledge, Depressive Attractor, Planning Runaway, Prediction Pessimist).
+  ObservatoryDashboard: custom SVG BarChart, DriveHeatmap (12×N diverging
+    blue→white→red), StageIndicator chips.
+
+GUARDIAN VIEW (right column, polled every 30s):
+  Bootstrap Progress: 4-step shadow→audit→partial→full + overall agreement bar.
+  Category Agreement: per-category progress bars colored by rate.
+  Training Metrics: steps, loss, latency, buffer, checkpoints, training on/off.
+  Model Architecture: total params + per-model breakdown.
+
+VOICE:
+  useVoiceRecording: PRESS-TO-TALK MediaRecorder (audio/webm;opus).
+    POSTs to /api/voice/transcribe. Auto-send if confidence >=0.5; below
+    holds for guardian confirmation. Plays returned base64 audio.
+    Guardian mute toggle persists localStorage 'sylphie_voice_muted'.
+  useAudioStream: ALWAYS-ON streaming for /ws/audio. AudioPanel uses
+    AnalyserNode (fftSize=64) on the same MediaStream. Listens for
+    'sylphie:audio_response' CustomEvents to animate output bars on TTS playback.
+
+FE AGENT (feAgent.ts):
+  ONLY frontend Claude usage. Model claude-haiku-4-5-20251001.
+  dangerouslyAllowBrowser:true. Read-only system prompt.
+  Hidden if VITE_ANTHROPIC_API_KEY unset.
+
+==================================================================
+SECTION 15 — TEST E2E
+==================================================================
+
+Three diagnostic scripts (test:e2e, test:arch, test:agi):
+
+architecture-verification.e2e.ts (512L):
+  Manual workflow that maps to sylphie2.png subsystem boxes.
+  Section 0: INFRASTRUCTURE — checks /api/health for 5 databases
+  Section 1: DECISION MAKING — drives, type-ratio, predictions, history, health
+  Section 2: COMMUNICATION — /ws/conversation, voice endpoints
+  Section 3: LEARNING — /api/graph/stats, snapshot, provenance
+  Section 4: DRIVE ENGINE — drive process ticking (compares tick counts after
+    1.5s sleep)
+  Reports PASS/FAIL/SKIP per check.
+
+agi-verification.e2e.ts (457L):
+  6 capabilities Phase 1 must prove (from CLAUDE.md):
+  AGI-1: Prediction-Evaluation loop produces genuine learning (MAE thresholds
+    >0.3 random, 0.15-0.3 early, 0.10-0.15 solid, <0.10 strong)
+  AGI-2: Type 1/Type 2 ratio shifts over time
+  AGI-3: Graph grows in ways reflecting real understanding
+  AGI-4: Personality emerges from contingencies
+  AGI-5: Planning subsystem creates useful procedures
+  AGI-6: Drive dynamics produce recognizable behavioral patterns
+
+full-system.e2e.ts (581L):
+  Comprehensive diagnostic for Claude to analyze. Exercises every subsystem
+  via real interactions. Captures verbose log per phase. Hands logs/verbose.log
+  to Claude for deep analysis.
+
+==================================================================
+SECTION 16 — CROSS-CUTTING ARCHITECTURAL OBSERVATIONS
+==================================================================
+
+1. PRINCIPLE: Drive Isolation as Process Boundary
+   Drive engine is a separate WebSocket-served process. Main app cannot
+   introspect rules. RLS verification at startup ABORTS if sylphie_app can
+   UPDATE/DELETE drive_rules. The single-client lock + no-RPC-for-rules
+   architectural enforcement implements CANON Standard 6 (No Self-Modification
+   of Evaluation).
+
+2. PRINCIPLE: Theater Prohibition at the Type Level
+   All SylphieEvent carry mandatory driveSnapshot. ActionOutcomePayload requires
+   theaterCheck. If theatrical, drive engine applies ZERO reinforcement.
+   Communication's checkTheaterProhibition is currently FLAG-ONLY (logs but
+   doesn't block) — full enforcement is in the drive engine.
+
+3. PRINCIPLE: Lesion Test as First-Class Architectural Constraint
+   Every LLM-dependent code path checks isAvailable() and degrades gracefully:
+   - Learning Phase 2 edge refinement: edges remain RELATED_TO
+   - Communication WHO_AM_I trigger: falls back to plain fact list
+   - Planning proposal: template fallback (2-step WKG_QUERY + LLM_GENERATE)
+   - Tensor inference: returns null → LLM-only path
+
+4. PRINCIPLE: Provenance + Confidence Discipline
+   Every node/edge carries provenance_type. ON MATCH only RAISES confidence.
+   ACT-R decay penalizes old facts; per-provenance rates protect GUARDIAN-taught
+   most strongly. Confidence ceiling 0.60 until guardian confirms;
+   Type 1 graduation requires 0.80 + MAE<0.10.
+
+5. PRINCIPLE: Event Backbone (TimescaleDB) for Cross-Subsystem Communication
+   Subsystems do not directly inject each other. Communication writes
+   GUARDIAN_TEACHING_DETECTED → Planning polls → Planning writes PLAN_CREATED
+   → Decision Making outcome evaluator picks up → Drive Engine receives
+   ACTION_OUTCOME. EVENT_BOUNDARY_MAP enforces compile-time ownership.
+
+6. PRINCIPLE: Three-Layer Latent Spaces (Hot/Warm/Cold)
+   Pattern repeated 3 times:
+   - VoiceLatentSpaceService: in-memory 500 / pgvector / archival
+   - FaceSnapshotService: centroids / face_embeddings / OKG snapshots
+   - LatentSpaceService (decision-making): hot/warm/cold deliberation traces
+   "Bootstrap dependency" model: ElevenLabs/EfficientNet/LLM seed the cache,
+   then Type 1 retrieval replaces the slow path.
+
+7. PRINCIPLE: Determinism via Seeded Mulberry32
+   All Xavier projections use named hex seeds (0xf05e fusion, 0xd41e drives,
+   0xa1de0 video, 0xa0d10 audio, 0xface0 face, 0x5ce0e scene) so embeddings
+   are reproducible across restarts despite no training.
+
+8. PRINCIPLE: Verbatim Telemetry (No LLM Summarization)
+   InnerMonologuePanel + MaintenanceLogsPanel + SystemLogsPanel all show raw
+   TimescaleDB events. The store builds entries from event fields directly.
+   Frontend never re-paraphrases through LLM.
+
+9. PRINCIPLE: Guardian Asymmetry
+   Guardian feedback weighting (×2 confirmation, ×3 correction) is hardcoded
+   in drive-engine + applyGuardianWeight pure function in shared.
+   Supervisor verdicts can flag for guardian, but guardian-source interventions
+   are first-class. Only guardian (via dashboard) can promote proposed_drive_rules
+   to active drive_rules.
+
+10. PRINCIPLE: Working Memory as Activation Selection (Not Storage)
+    WorkingMemoryService doesn't store; it selects from existing knowledge
+    using 5-signal activation (relevance + source confidence + recency +
+    drive modulation + spreading). Hot residual layer 30s TTL.
+
+11. PRINCIPLE: Cognitive Cycle as Two-Track (Tensor Shadow + LLM Reality)
+    Shadow mode: tensor model receives every cycle's data + sees its argmax
+    compared against the LLM's choice for agreement scoring.
+    Audit: still LLM-driven but agreement tracked.
+    Partial: tensor takes over for graduated categories (max conf 0.79 → forces Type 2).
+    Full: tensor decides everything (max conf 0.95).
+    Panel divergence > 0.3 caps ALL candidates < 0.80 → forces Type 2 for
+    sanity check.
+
+12. PRINCIPLE: 12-Dimensional Affective Substrate
+    Not configurable, not extensible at runtime — DriveName enum is fixed.
+    SystemHealth is a derived composite. Each drive has hand-tuned accumulation
+    rate calibrated to minutes-not-seconds dynamics. Cross-modulation is 5
+    typed rules in fixed priority order.
+
+13. PRINCIPLE: Three Knowledge Graphs in Strict Separation
+    WKG (world facts, large), SKG (Sylphie's self-model, small), OKG (person
+    models per User.id). NO cross-instance queries. Bootstrap creates parallel
+    CoBeing anchors in WKG + SKG.
+
+14. PRINCIPLE: PKG (Codebase Graph) is Separate from Cognition
+    Fourth Neo4j instance, separate port. Used by Claude Code via 7 MCP tools.
+    Has its own seed/sync pipelines, different from Learning's KG writers.
+
+15. PRINCIPLE: Cycle Cadence as Cognitive Constraint
+    Drive tick: 1Hz (1000ms). Learning maintenance: 60s. Reflection: 5min.
+    Cross-session synthesis: 30min. Confidence decay: 10min. Planning: 30s.
+    Telemetry broadcast: 2Hz. Sensory log: 2Hz. These are deliberate "minutes
+    not milliseconds" pacing for a motivational system, not perf concessions.
+
+16. EMPTY SHELLS / FUTURE WORK (revealed by code reading):
+    - EWC in cognition: stub (uniform Fisher, never anchored)
+    - per_category_confidence dict: never written
+    - MAX_INFERENCE_TIMEOUT_MS: not enforced
+    - Pressure-driven learning trigger: TODO comment only, not implemented
+    - Cognition reinforce/correct/freeze HTTP endpoints: TODO stubs
+    - boost_salience intervention: not implemented on sidecar
+    - SearXNG: container runs but no Learning/Planning code uses it
+    - Camera streaming endpoints: dead code (debug_frame_store never populated)
+    - Theater check in CommunicationService: flag-only (logs, doesn't block)
+      — full enforcement is in drive-engine via theaterCheck IPC payload
+    - RLS scope: verifies UPDATE/DELETE are blocked but INSERT is allowed,
+      so GuardianRulesService.approveRule's INSERT can succeed for guardian
+    - alwaysEvaluate categories model_freeze/model_rollback: in type union
+      but not wired into supervisor's shouldEvaluate
+    - ConvergenceModel.use_learned: defaults False, no path flips it
+
+17. THE BUILD GRAPH (apps/sylphie/src/main.ts → final docker image):
+    main.ts → app.module.ts → 8 packages → 4 Neo4j + Postgres + Timescale
+    + 2 Python sidecars + ws://localhost:3001 drive-server → frontend dist
+    served by ServeStaticModule (production) → single Railway port.
+
+==================================================================
+END OF NOTES
+==================================================================
