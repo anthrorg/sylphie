@@ -19,6 +19,7 @@ COPY packages/decision-making/package.json ./packages/decision-making/
 COPY packages/drive-engine/package.json ./packages/drive-engine/
 COPY packages/learning/package.json     ./packages/learning/
 COPY packages/planning/package.json     ./packages/planning/
+COPY packages/supervisor/package.json   ./packages/supervisor/
 COPY frontend/package.json              ./frontend/
 
 RUN yarn install --frozen-lockfile
@@ -46,7 +47,8 @@ RUN cd packages/shared && npx prisma generate
 RUN yarn workspace @sylphie/drive-engine build
 RUN yarn workspace @sylphie/decision-making build
 RUN yarn workspace @sylphie/learning build && \
-    yarn workspace @sylphie/planning build
+    yarn workspace @sylphie/planning build && \
+    yarn workspace @sylphie/supervisor build
 
 # 4. Build the NestJS backend
 RUN yarn workspace @sylphie/app build
@@ -71,6 +73,7 @@ COPY --from=build /app/packages/decision-making/package.json ./packages/decision
 COPY --from=build /app/packages/drive-engine/package.json ./packages/drive-engine/
 COPY --from=build /app/packages/learning/package.json     ./packages/learning/
 COPY --from=build /app/packages/planning/package.json     ./packages/planning/
+COPY --from=build /app/packages/supervisor/package.json   ./packages/supervisor/
 COPY --from=build /app/frontend/package.json              ./frontend/
 
 # Install production-only dependencies (preserves workspace symlinks)
@@ -87,6 +90,18 @@ COPY --from=build /app/packages/decision-making/dist         ./packages/decision
 COPY --from=build /app/packages/drive-engine/dist            ./packages/drive-engine/dist
 COPY --from=build /app/packages/learning/dist                ./packages/learning/dist
 COPY --from=build /app/packages/planning/dist                ./packages/planning/dist
+COPY --from=build /app/packages/supervisor/dist              ./packages/supervisor/dist
+
+# The Sylphie app and drive-server both import @sylphie/drive-engine subpaths
+# (e.g. /ipc-channel/ipc-message-validator). The drive-engine package has no
+# `exports` field, so Node resolves subpaths from the package root, not dist.
+# Mirror dist contents to each package root so the lookups land.
+RUN cp -r /app/packages/drive-engine/dist/.    /app/packages/drive-engine/    \
+ && cp -r /app/packages/shared/dist/.          /app/packages/shared/          \
+ && cp -r /app/packages/decision-making/dist/. /app/packages/decision-making/ \
+ && cp -r /app/packages/learning/dist/.        /app/packages/learning/        \
+ && cp -r /app/packages/planning/dist/.        /app/packages/planning/        \
+ && cp -r /app/packages/supervisor/dist/.      /app/packages/supervisor/
 
 # Copy NestJS backend compiled output
 COPY --from=build /app/apps/sylphie/dist                     ./apps/sylphie/dist
@@ -97,7 +112,11 @@ COPY --from=build /app/frontend/dist                         ./frontend/dist
 # Copy database init scripts (for reference / manual migrations)
 COPY --from=build /app/infra                                 ./infra
 
+# Entrypoint: applies Prisma migrations, then launches the NestJS backend.
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
+
 EXPOSE 3000
 
 # Railway sets PORT; the app reads process.env.PORT || process.env.APP_PORT || 3000
-CMD ["node", "apps/sylphie/dist/main.js"]
+CMD ["./docker-entrypoint.sh"]
