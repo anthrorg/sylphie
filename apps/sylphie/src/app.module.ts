@@ -93,7 +93,7 @@ class CognitionModule {}
       ? [
           ServeStaticModule.forRoot({
             rootPath: path.resolve(process.cwd(), 'frontend', 'dist'),
-            exclude: ['/api/(.*)', '/ws/(.*)'],
+            exclude: ['/api/*splat', '/ws/*splat'],
           }),
         ]
       : []),
