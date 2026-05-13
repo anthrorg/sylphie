@@ -16,12 +16,12 @@
     "@prisma/client": "^6.0.0",
     "neo4j-driver": "^5.0.0",
     "pg": "^8.0.0",
+    "prisma": "^6.0.0",
     "rxjs": "^7.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.0.0",
     "dotenv-cli": "^7.0.0",
-    "prisma": "^6.0.0",
     "typescript": "^5.3.3"
   },
   "peerDependencies": {
