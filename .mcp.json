@@ -12,6 +12,10 @@
         "SYLPHIE_PKG_NEO4J_USER": "neo4j",
         "SYLPHIE_PKG_NEO4J_PASSWORD": "sylphie-pkg-local"
       }
+    },
+    "railway-mcp-server": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@railway/mcp-server"]
     }
   }
 }
