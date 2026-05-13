@@ -4,6 +4,20 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./drive-process/*": {
+      "types": "./dist/drive-process/*.d.ts",
+      "default": "./dist/drive-process/*.js"
+    },
+    "./ipc-channel/*": {
+      "types": "./dist/ipc-channel/*.d.ts",
+      "default": "./dist/ipc-channel/*.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
