@@ -2,7 +2,14 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "baseUrl": "../..",
+    "paths": {
+      "@sylphie/shared": ["packages/shared/src"],
+      "@sylphie/shared/*": ["packages/shared/src/*"],
+      "@sylphie/drive-engine": ["packages/drive-engine/src"],
+      "@sylphie/drive-engine/*": ["packages/drive-engine/src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
