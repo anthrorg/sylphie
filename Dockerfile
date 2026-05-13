@@ -79,10 +79,14 @@ COPY --from=build /app/frontend/package.json              ./frontend/
 # Install production-only dependencies (preserves workspace symlinks)
 RUN yarn install --production --frozen-lockfile
 
-# Copy Prisma schema + generated client
+# Copy Prisma schema + generated client + CLI (CLI is dev-dep, but the
+# docker-entrypoint.sh runs `prisma migrate deploy` at startup).
 COPY --from=build /app/packages/shared/prisma               ./packages/shared/prisma
 COPY --from=build /app/node_modules/.prisma                  ./node_modules/.prisma
 COPY --from=build /app/node_modules/@prisma/client           ./node_modules/@prisma/client
+COPY --from=build /app/node_modules/prisma                   ./node_modules/prisma
+COPY --from=build /app/node_modules/@prisma/engines          ./node_modules/@prisma/engines
+COPY --from=build /app/node_modules/.bin/prisma              ./node_modules/.bin/prisma
 
 # Copy compiled output for each package
 COPY --from=build /app/packages/shared/dist                  ./packages/shared/dist
