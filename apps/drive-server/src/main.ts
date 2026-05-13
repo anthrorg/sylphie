@@ -25,6 +25,7 @@
  *   POSTGRES_DB            — Database name
  */
 
+import 'reflect-metadata';
 import { WebSocketServer } from 'ws';
 import { Pool } from 'pg';
 import { getOrCreateEngine } from '@sylphie/drive-engine/drive-process/drive-engine';
