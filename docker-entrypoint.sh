@@ -9,7 +9,7 @@ if [ -z "$DATABASE_URL" ]; then
 else
   echo "[entrypoint] Applying Prisma migrations..."
   cd /app/packages/shared
-  /app/node_modules/.bin/prisma migrate deploy
+  node /app/node_modules/prisma/build/index.js migrate deploy
   cd /app
 fi
 

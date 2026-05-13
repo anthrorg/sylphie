@@ -87,7 +87,6 @@ COPY --from=build /app/packages/shared/prisma               ./packages/shared/pr
 COPY --from=build /app/node_modules/.prisma                  ./node_modules/.prisma
 COPY --from=build /app/node_modules/@prisma                  ./node_modules/@prisma
 COPY --from=build /app/node_modules/prisma                   ./node_modules/prisma
-COPY --from=build /app/node_modules/.bin/prisma              ./node_modules/.bin/prisma
 
 # Copy compiled output for each package
 COPY --from=build /app/packages/shared/dist                  ./packages/shared/dist
