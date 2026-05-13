@@ -81,11 +81,12 @@ RUN yarn install --production --frozen-lockfile
 
 # Copy Prisma schema + generated client + CLI (CLI is dev-dep, but the
 # docker-entrypoint.sh runs `prisma migrate deploy` at startup).
+# Copy the entire @prisma/ namespace so all of CLI's transitive deps
+# (@prisma/debug, @prisma/internals, @prisma/fetch-engine, etc.) come along.
 COPY --from=build /app/packages/shared/prisma               ./packages/shared/prisma
 COPY --from=build /app/node_modules/.prisma                  ./node_modules/.prisma
-COPY --from=build /app/node_modules/@prisma/client           ./node_modules/@prisma/client
+COPY --from=build /app/node_modules/@prisma                  ./node_modules/@prisma
 COPY --from=build /app/node_modules/prisma                   ./node_modules/prisma
-COPY --from=build /app/node_modules/@prisma/engines          ./node_modules/@prisma/engines
 COPY --from=build /app/node_modules/.bin/prisma              ./node_modules/.bin/prisma
 
 # Copy compiled output for each package
