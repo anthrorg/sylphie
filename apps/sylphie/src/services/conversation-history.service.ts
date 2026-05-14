@@ -19,11 +19,24 @@
  * coherent multi-turn responses. Without history, each turn is isolated.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { Injectable, Logger, Optional, Inject, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import type { LlmMessage } from '@sylphie/shared';
 import { TimescaleService, verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('Communication');
+
+/**
+ * One-line JSON transcript event emitted to stdout per turn.
+ * Always-on (not gated on VERBOSE) so it flows through Railway's log
+ * stream and onward to any configured log drain (Axiom/Better Stack/etc.).
+ * Filter expression: `evt:conversation_turn` (or `evt:conversation_session_start`).
+ */
+function emitTranscriptEvent(payload: Record<string, unknown>): void {
+  // Direct stdout write keeps the line as pure JSON — no Nest log prefix to strip.
+  process.stdout.write(JSON.stringify(payload) + '\n');
+}
 
 /**
  * Internal representation with answered state tracking.
@@ -71,12 +84,21 @@ export class ConversationHistoryService implements OnModuleInit, OnModuleDestroy
   /** Running estimate of total tokens in the buffer. */
   private estimatedTokens = 0;
 
+  /** Session ID tagged onto every transcript event for this process lifetime. */
+  private readonly sessionId = randomUUID();
+
   constructor(
     @Optional() @Inject(TimescaleService)
     private readonly timescale: TimescaleService | null,
   ) {}
 
   async onModuleInit(): Promise<void> {
+    emitTranscriptEvent({
+      evt: 'conversation_session_start',
+      session_id: this.sessionId,
+      ts: new Date().toISOString(),
+    });
+
     if (!this.timescale) return;
     try {
       await this.timescale.query(`
@@ -135,9 +157,18 @@ export class ConversationHistoryService implements OnModuleInit, OnModuleDestroy
 
   /** Add a user message to the conversation history (starts as unanswered). */
   addUserMessage(text: string): void {
-    this.history.push({ role: 'user', content: text, answered: false, addedAt: Date.now() });
+    const addedAt = Date.now();
+    this.history.push({ role: 'user', content: text, answered: false, addedAt });
     this.estimatedTokens += this.estimateMessageTokens(text);
     this.trim();
+    emitTranscriptEvent({
+      evt: 'conversation_turn',
+      session_id: this.sessionId,
+      role: 'user',
+      content: text,
+      answered: false,
+      ts: new Date(addedAt).toISOString(),
+    });
     vlog('history: user message added', { length: text.length, historySize: this.history.length, estimatedTokens: this.estimatedTokens });
   }
 
@@ -158,9 +189,18 @@ export class ConversationHistoryService implements OnModuleInit, OnModuleDestroy
       if (entry.role === 'assistant') break;
     }
 
-    this.history.push({ role: 'assistant', content: text, answered: true, addedAt: Date.now() });
+    const addedAt = Date.now();
+    this.history.push({ role: 'assistant', content: text, answered: true, addedAt });
     this.estimatedTokens += this.estimateMessageTokens(text);
     this.trim();
+    emitTranscriptEvent({
+      evt: 'conversation_turn',
+      session_id: this.sessionId,
+      role: 'assistant',
+      content: text,
+      answered: true,
+      ts: new Date(addedAt).toISOString(),
+    });
     vlog('history: assistant message added', { length: text.length, historySize: this.history.length, estimatedTokens: this.estimatedTokens });
   }
 

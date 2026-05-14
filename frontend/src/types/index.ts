@@ -88,6 +88,9 @@ export interface ConversationMessage {
     | 'ping'
     | 'guardian'
     | 'cb_speech'
+  // Client-side stable identity used as React key; stamped by the store on add.
+  // Survives slice-capping; server messages don't always carry an id.
+  clientId?: string
   turn_id?: string
   phrase_node_id?: string
   text: string

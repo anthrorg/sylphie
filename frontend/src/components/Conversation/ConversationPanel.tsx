@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Box,
   Paper,
@@ -24,7 +24,7 @@ import { WordRatingDrawer } from './WordRatingDrawer'
 
 // Message types: guardian=user input, response=Sylphie reply, cb_speech=Sylphie initiated speech,
 // thinking=processing indicator, error=system error
-const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => void }> = ({ message, onClick }) => {
+const MessageBubbleImpl: React.FC<{ message: ConversationMessage; onClick?: () => void }> = ({ message, onClick }) => {
   const isGuardian = message.type === 'guardian'
   const isTranscription = message.type === 'transcription'
   const isThinking = message.type === 'thinking'
@@ -209,12 +209,122 @@ const MessageBubble: React.FC<{ message: ConversationMessage; onClick?: () => vo
   )
 }
 
-export const ConversationPanel: React.FC = () => {
+// Memoised — addMessage stamps a stable clientId, so referentially-equal messages
+// (the common case during parent re-renders) skip re-render entirely.
+const MessageBubble = React.memo(MessageBubbleImpl)
+
+// Extracted input component. Owns its own `input` state so typing does NOT
+// re-render the message feed. Receives sendTextMessage via prop so it does
+// not call useConversationWebSocket() — that would open a second WS.
+const ConversationInput: React.FC<{ sendTextMessage: (text: string) => boolean }> = ({
+  sendTextMessage,
+}) => {
   const [input, setInput] = useState('')
+  const isConnected = useAppStore((s) => s.wsState.conversation === 'connected')
+  const muted = useAppStore((s) => s.voiceState.muted)
+  const addMessage = useAppStore((s) => s.addMessage)
+  const toggleMute = useAppStore((s) => s.toggleMute)
+
+  const handleSendMessage = useCallback(() => {
+    if (!input.trim() || !isConnected) return
+
+    const trimmed = input.trim()
+    addMessage({ type: 'guardian', text: trimmed })
+
+    // sendTextMessage wraps text in the NestJS ws adapter envelope
+    // { event: 'message', data: { text, type: 'message' } } as required by
+    // @SubscribeMessage('message') on ConversationGateway.
+    if (sendTextMessage(trimmed)) {
+      setInput('')
+    }
+  }, [input, isConnected, addMessage, sendTextMessage])
+
+  const handleKeyPress = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault()
+        handleSendMessage()
+      }
+    },
+    [handleSendMessage],
+  )
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        p: 2,
+        bgcolor: 'transparent',
+        borderTop: 'none',
+      }}
+    >
+      <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
+        <TextField
+          fullWidth
+          multiline
+          maxRows={4}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyPress={handleKeyPress}
+          placeholder="Teach me something or ask a question"
+          disabled={!isConnected}
+          variant="outlined"
+          size="small"
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              color: 'rgba(255,255,255,0.85)',
+              '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' },
+              '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' },
+              '&.Mui-focused fieldset': { borderColor: 'rgba(184,217,198,0.5)' },
+              '&.Mui-disabled': { color: 'rgba(255,255,255,0.3)' },
+            },
+            '& .MuiInputBase-input::placeholder': { color: 'rgba(255,255,255,0.3)', opacity: 1 },
+          }}
+        />
+
+        <IconButton
+          onClick={handleSendMessage}
+          disabled={!input.trim() || !isConnected}
+          sx={{
+            bgcolor: 'rgba(184,217,198,0.2)',
+            color: 'rgba(184,217,198,0.9)',
+            border: '1px solid rgba(184,217,198,0.3)',
+            '&:hover': { bgcolor: 'rgba(184,217,198,0.3)' },
+            '&:disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.1)' },
+          }}
+        >
+          <SendIcon />
+        </IconButton>
+
+        {/* Mute/unmute speaker toggle */}
+        <Tooltip title={muted ? 'Unmute audio' : 'Mute audio'}>
+          <IconButton
+            onClick={toggleMute}
+            sx={{
+              color: muted ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.5)',
+              border: '1px solid',
+              borderColor: muted ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.15)',
+              '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
+            }}
+          >
+            {muted ? <VolumeOffIcon /> : <VolumeUpIcon />}
+          </IconButton>
+        </Tooltip>
+      </Box>
+    </Paper>
+  )
+}
+
+export const ConversationPanel: React.FC = () => {
   const [ratingTarget, setRatingTarget] = useState<ConversationMessage | null>(null)
   const feedRef = useRef<HTMLDivElement>(null)
 
-  const { messages, isThinking, voiceState, wsState, addMessage, toggleMute } = useAppStore()
+  // Per-field selectors — full-store subscription was re-rendering the entire
+  // feed on every telemetry tick.
+  const messages = useAppStore((s) => s.messages)
+  const isThinking = useAppStore((s) => s.isThinking)
+  const wsConnectionState = useAppStore((s) => s.wsState.conversation)
+  const addMessage = useAppStore((s) => s.addMessage)
   const { sendMessage, sendTextMessage } = useConversationWebSocket()
 
   // Auto-scroll chat to bottom when new messages arrive
@@ -225,7 +335,7 @@ export const ConversationPanel: React.FC = () => {
   useEffect(() => {
     const handleVoiceText = (e: Event) => {
       const { text } = (e as CustomEvent<{ text: string }>).detail
-      if (!text.trim() || wsState.conversation !== 'connected') return
+      if (!text.trim() || wsConnectionState !== 'connected') return
 
       addMessage({ type: 'guardian', text })
       sendTextMessage(text)
@@ -233,41 +343,13 @@ export const ConversationPanel: React.FC = () => {
 
     window.addEventListener('sylphie:voice_text', handleVoiceText)
     return () => window.removeEventListener('sylphie:voice_text', handleVoiceText)
-  }, [wsState.conversation, addMessage, sendTextMessage])
-
-  const handleSendMessage = () => {
-    if (!input.trim() || wsState.conversation !== 'connected') return
-
-    const trimmed = input.trim()
-
-    // Optimistic UI: show the message immediately, don't wait for server ack
-    addMessage({
-      type: 'guardian',
-      text: trimmed,
-    })
-
-    // sendTextMessage wraps text in the NestJS ws adapter envelope
-    // { event: 'message', data: { text, type: 'message' } } as required by
-    // @SubscribeMessage('message') on ConversationGateway.
-    const success = sendTextMessage(trimmed)
-
-    if (success) {
-      setInput('')
-    }
-  }
+  }, [wsConnectionState, addMessage, sendTextMessage])
 
   const handleWordMarked = (phraseNodeId: string, word: string, position: number) => {
     sendMessage({ type: 'phrase_word_rating', phrase_node_id: phraseNodeId, word, position, rating: 'bad' })
   }
 
-  const handleKeyPress = (event: React.KeyboardEvent) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      handleSendMessage()
-    }
-  }
-
-  const isConnected = wsState.conversation === 'connected'
+  const isConnected = wsConnectionState === 'connected'
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
@@ -283,7 +365,7 @@ export const ConversationPanel: React.FC = () => {
             '& .MuiAlert-icon': { color: 'rgba(255, 152, 0, 0.8)' },
           }}
         >
-          Conversation WebSocket is {wsState.conversation}
+          Conversation WebSocket is {wsConnectionState}
         </Alert>
       )}
 
@@ -311,7 +393,7 @@ export const ConversationPanel: React.FC = () => {
 
         {messages.map((message, index) => (
           <MessageBubble
-            key={index}
+            key={message.clientId ?? index}
             message={message}
             onClick={message.type === 'cb_speech' ? () => setRatingTarget(message) : undefined}
           />
@@ -375,69 +457,8 @@ export const ConversationPanel: React.FC = () => {
 
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />
 
-      {/* Input area */}
-      <Paper
-        elevation={0}
-        sx={{
-          p: 2,
-          bgcolor: 'transparent',
-          borderTop: 'none',
-        }}
-      >
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
-          <TextField
-            fullWidth
-            multiline
-            maxRows={4}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Teach me something or ask a question"
-            disabled={!isConnected}
-            variant="outlined"
-            size="small"
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                color: 'rgba(255,255,255,0.85)',
-                '& fieldset': { borderColor: 'rgba(255,255,255,0.15)' },
-                '&:hover fieldset': { borderColor: 'rgba(255,255,255,0.3)' },
-                '&.Mui-focused fieldset': { borderColor: 'rgba(184,217,198,0.5)' },
-                '&.Mui-disabled': { color: 'rgba(255,255,255,0.3)' },
-              },
-              '& .MuiInputBase-input::placeholder': { color: 'rgba(255,255,255,0.3)', opacity: 1 },
-            }}
-          />
-
-          <IconButton
-            onClick={handleSendMessage}
-            disabled={!input.trim() || !isConnected}
-            sx={{
-              bgcolor: 'rgba(184,217,198,0.2)',
-              color: 'rgba(184,217,198,0.9)',
-              border: '1px solid rgba(184,217,198,0.3)',
-              '&:hover': { bgcolor: 'rgba(184,217,198,0.3)' },
-              '&:disabled': { bgcolor: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.1)' },
-            }}
-          >
-            <SendIcon />
-          </IconButton>
-
-          {/* Mute/unmute speaker toggle */}
-          <Tooltip title={voiceState.muted ? 'Unmute audio' : 'Mute audio'}>
-            <IconButton
-              onClick={toggleMute}
-              sx={{
-                color: voiceState.muted ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.5)',
-                border: '1px solid',
-                borderColor: voiceState.muted ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.15)',
-                '&:hover': { bgcolor: 'rgba(255,255,255,0.08)' },
-              }}
-            >
-              {voiceState.muted ? <VolumeOffIcon /> : <VolumeUpIcon />}
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Paper>
+      {/* Input owns its own state so typing doesn't re-render the message feed */}
+      <ConversationInput sendTextMessage={sendTextMessage} />
     </Box>
   )
 }

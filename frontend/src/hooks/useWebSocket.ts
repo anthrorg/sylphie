@@ -17,8 +17,14 @@ export function useGraphWebSocket() {
   const reconnectAttemptRef = useRef(0)
   const refetchTimerRef = useRef<number | null>(null)
 
-  const { setWsState, setGraphData, setGraphStats, resetStasisCount, setSessionStats } =
-    useAppStore()
+  // Per-field selectors — store actions have stable identity in Zustand, so
+  // subscribing field-by-field avoids re-running this hook on unrelated state
+  // changes (e.g. telemetry ticks).
+  const setWsState = useAppStore((s) => s.setWsState)
+  const setGraphData = useAppStore((s) => s.setGraphData)
+  const setGraphStats = useAppStore((s) => s.setGraphStats)
+  const resetStasisCount = useAppStore((s) => s.resetStasisCount)
+  const setSessionStats = useAppStore((s) => s.setSessionStats)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -184,7 +190,10 @@ export function useConversationWebSocket() {
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
 
-  const { setWsState, addMessage, incrementTurns, setThinking } = useAppStore()
+  const setWsState = useAppStore((s) => s.setWsState)
+  const addMessage = useAppStore((s) => s.addMessage)
+  const incrementTurns = useAppStore((s) => s.incrementTurns)
+  const setThinking = useAppStore((s) => s.setThinking)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -193,17 +202,8 @@ export function useConversationWebSocket() {
   }, [])
 
   const sendMessage = useCallback((message: unknown) => {
-    console.info('[Conversation] sendMessage called', {
-      readyState: wsRef.current?.readyState,
-      readyStateLabel: wsRef.current
-        ? ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][wsRef.current.readyState]
-        : 'null',
-      payload: message,
-    })
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const serialized = JSON.stringify(message)
-      console.info('[Conversation] >>> SENDING:', serialized)
-      wsRef.current.send(serialized)
+      wsRef.current.send(JSON.stringify(message))
       return true
     }
     console.warn('[Conversation] sendMessage FAILED -- socket not open')
@@ -254,14 +254,8 @@ export function useConversationWebSocket() {
       }
 
       ws.onmessage = (event) => {
-        console.info('[Conversation] <<< RECEIVED:', event.data)
         try {
           const message = JSON.parse(event.data)
-          console.info('[Conversation] Parsed message:', {
-            type: message.type,
-            hasContent: !!message.content,
-            keys: Object.keys(message),
-          })
 
           // Server echoes back an ack for guardian inputs; skip since we already
           // optimistically rendered the user's message in ConversationPanel.
@@ -371,8 +365,11 @@ export function useTelemetryWebSocket() {
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
 
-  const { setWsState, updateTelemetry, addPredictionToHistory, addInnerMonologue, addSystemLog } =
-    useAppStore()
+  const setWsState = useAppStore((s) => s.setWsState)
+  const updateTelemetry = useAppStore((s) => s.updateTelemetry)
+  const addPredictionToHistory = useAppStore((s) => s.addPredictionToHistory)
+  const addInnerMonologue = useAppStore((s) => s.addInnerMonologue)
+  const addSystemLog = useAppStore((s) => s.addSystemLog)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)

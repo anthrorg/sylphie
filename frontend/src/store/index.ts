@@ -190,6 +190,14 @@ const ZERO_PRESSURE: TelemetryPressure = {
 // Cap for action history, prediction history, and inner monologue arrays
 const MAX_HISTORY = 50
 
+// Cap for the conversation message feed. Prevents the messages array from
+// growing unbounded across a long session — every render of ConversationPanel
+// re-evaluates each MessageBubble's MUI sx, so unbounded growth is fatal.
+const MAX_MESSAGES = 500
+
+// Monotonic counter for stable React keys on appended messages. Survives slice-capping.
+let messageCounter = 0
+
 export const useAppStore = create<AppState>((set, get) => ({
   // Auth
   authToken: localStorage.getItem('sylphie_token'),
@@ -312,9 +320,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPkgStats: (stats) => set({ pkgStats: stats }),
 
   addMessage: (message) =>
-    set((prev) => ({
-      messages: [...prev.messages, message],
-    })),
+    set((prev) => {
+      const stamped: ConversationMessage = message.clientId
+        ? message
+        : { ...message, clientId: `m${++messageCounter}` }
+      const next = [...prev.messages, stamped]
+      return {
+        messages: next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next,
+      }
+    }),
 
   setThinking: (thinking) => set({ isThinking: thinking }),
 
