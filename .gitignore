@@ -32,8 +32,9 @@ npm-debug.log*
 # TypeScript cache
 *.tsbuildinfo
 
-# Claude Code
-.claude/
+# Claude Code (config is versioned; machine-local state is not)
+.claude/settings.local.json
+.claude/worktrees/
 logs/
 
 # PKG sync cursor
