@@ -2,7 +2,7 @@
 
 Date: 2026-04-29
 Source: Direct code reading (no markdown-derived claims)
-Companion to: `sylphie-architecture-notes.txt`
+Companion to: `archive/sylphie-architecture-notes.txt`, `sylphie-assessment.md`
 
 Each entry: **what** (the stub), **where** (file:line), **why it matters** (concrete behavioral impact), **fix complexity**.
 
