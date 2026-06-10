@@ -4,8 +4,8 @@
  * Per the architecture diagram, this gateway is the I/O boundary between the
  * frontend and the Communication subsystem. It does NOT contain business logic.
  *
- * Input path:
- *   WebSocket message → CommunicationService.parseInput() → TickSampler.updateText()
+ * Input path (WS4 Ticket 2):
+ *   WebSocket message → CommunicationService.intakeTurn() → CycleGuard queue
  *
  * Output path:
  *   CommunicationService.delivery$ → broadcast to WebSocket clients
@@ -26,10 +26,8 @@ import { Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebSocket } from 'ws';
 import * as jwt from 'jsonwebtoken';
-import { TickSamplerService } from '@sylphie/decision-making';
 import { verboseFor } from '@sylphie/shared';
 import { CommunicationService } from '../services/communication.service';
-import { ConversationHistoryService } from '../services/conversation-history.service';
 import { PersonModelService } from '../services/person-model.service';
 
 const vlog = verboseFor('Communication');
@@ -53,9 +51,7 @@ export class ConversationGateway
   private readonly clientUsers = new Map<WebSocket, ConnectedUser>();
 
   constructor(
-    private readonly tickSampler: TickSamplerService,
     private readonly communication: CommunicationService,
-    private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
     private readonly configService: ConfigService,
   ) {}
@@ -152,6 +148,7 @@ export class ConversationGateway
     const preview = data.text.substring(0, 80);
     const user = this.clientUsers.get(client);
     const userId = user?.userId ?? 'guardian';
+    const username = user?.username ?? 'someone';
     vlog('message received', { userId, textPreview: preview, textLength: data.text.length });
 
     // Acknowledge receipt immediately
@@ -178,37 +175,21 @@ export class ConversationGateway
 
         vlog('trigger phrase check: not a trigger, routing to normal pipeline', { userId });
 
-        // Normal pipeline: parse input, feed into sensory pipeline
-        this.communication.parseInput(data.text, sessionId, userId);
-
-        this.tickSampler.updateText(data.text);
-
-        // Pass split history: summary (answered exchanges as text) + pending
-        // (unanswered user messages as real turns). This structurally prevents
-        // the LLM from re-answering already-addressed messages.
-        const splitHistory = this.conversationHistory.getSplitHistory();
-        this.tickSampler.update(
-          'conversation_history',
-          splitHistory.pending,
-        );
-        this.tickSampler.update(
-          'conversation_summary',
-          splitHistory.summary,
-        );
-        // Full history for the conversation_history tool (deliberation can
-        // search it on demand without polluting the system prompt).
-        this.tickSampler.update(
-          'full_conversation_history',
-          this.conversationHistory.getHistory(),
-        );
-        this.tickSampler.update(
-          'person_model',
-          this.personModel.getActivePersonModel(),
-        );
-        this.tickSampler.update(
-          'speaker_name',
-          user?.username ?? 'someone',
-        );
+        // WS4 Ticket 2 — IntakeTurn path.
+        //
+        // intakeTurn() replaces the previous pattern of:
+        //   communication.parseInput() + tickSampler.updateText() + tickSampler.update(...)
+        //
+        // It mints a stable turnId at this boundary, runs parseInput (entity extraction,
+        // fast-fact writes, history), updates all context slots (history, speaker,
+        // person model), then enqueues an InboundTurn with the text attached onto the
+        // CycleGuard queue — so each burst turn carries ITS OWN text and the cycle runner
+        // injects it at drain time rather than sampling the shared global slot.
+        //
+        // The turnId returned is the same id that will appear on the CycleResponse,
+        // making guardian feedback and log correlation possible.
+        const turnId = this.communication.intakeTurn(data.text, sessionId, userId, username);
+        vlog('turn enqueued via intakeTurn', { turnId, userId });
       });
   }
 

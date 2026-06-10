@@ -42,6 +42,7 @@ function makeTurn(overrides: Partial<InboundTurn> = {}): InboundTurn {
     isGuardian: false,
     receivedAt: now,
     enqueuedAt: now,
+    text: `test turn ${turnCounter}`,
     ...overrides,
   };
 }

@@ -86,6 +86,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   }
 
   /**
+   * WS4 Ticket 2 — turnId threading.
+   *
+   * Holds the turnId minted at gateway intake for the cycle currently in flight.
+   * Set by runCycleForTurn() before calling processInput(); cleared after emit.
+   * Self-initiated ticks (no originator) leave this null, and processInput()
+   * generates a fresh randomUUID() for them (no correlation needed).
+   *
+   * CANON Theater Prohibition: one CycleResponse per admitted turn, carrying the
+   * intake turnId so Communication can correlate guardian feedback correctly.
+   */
+  private currentQueueTurnId: string | null = null;
+
+  /**
    * Gap types accumulated from SHRUG arbitration results across recent cycles.
    *
    * Populated every time arbitration returns SHRUG and a shrugDetail is present.
@@ -237,6 +250,31 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    */
   private async runCycleForTurn(turn: InboundTurn, myEpoch: number): Promise<boolean> {
     try {
+      // WS4 Ticket 2 — per-turn text injection.
+      //
+      // Inject this turn's text into the tick-sampler BEFORE sampling.
+      // We use injectSyntheticText() (not updateText()) so the injection does NOT
+      // fire the onNewInput callback — that would re-enqueue a new turn and create
+      // a recursive storm. injectSyntheticText() writes latestValues['text'] silently.
+      //
+      // This is the fix for the text-smear defect: without this, all burst turns
+      // share the single global text slot and sample() reads whichever text was
+      // last written by updateText() (second writer wins). With this, each cycle
+      // samples its own turn's text regardless of how many other turns arrived
+      // since intake.
+      //
+      // If the turn has no text (empty string — self-tick synthetic or probe),
+      // skip injection so the existing slot (if any) is used.
+      if (turn.text) {
+        this.tickSampler.injectSyntheticText(turn.text);
+      }
+
+      // WS4 Ticket 2 — turnId threading.
+      //
+      // Store the intake turnId so processInput() can emit it on responseSubject.next
+      // instead of minting a fresh randomUUID(). Cleared in the finally block below.
+      this.currentQueueTurnId = turn.turnId;
+
       const frame = await this.tickSampler.sample();
 
       const rawText = frame.raw['text'] as string | undefined;
@@ -257,6 +295,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // processInput already calls forceIdle() on error and re-throws.
       // Re-catch here so CycleGuard's finally always runs.
       return false;
+    } finally {
+      // Always clear so a subsequent self-tick doesn't pick up a stale turnId.
+      this.currentQueueTurnId = null;
     }
   }
 
@@ -305,6 +346,29 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     } catch (err) {
       this.logger.warn(`emitWatchdogShrug failed for turn ${turnId}: ${err}`);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // IDecisionMakingService — enqueueTurn (WS4 Ticket 2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Enqueue an inbound turn from the Communication boundary.
+   *
+   * Called by CommunicationService.intakeTurn() after it has:
+   *  - Minted the turnId (at the gateway boundary)
+   *  - Run parseInput (entity extraction, fast-fact writes, history accumulation)
+   *  - Updated all tickSampler context slots (conversation_history, person_model, etc.)
+   *
+   * The turn carries its own text so runCycleForTurn() can inject it into the
+   * tick-sampler slot immediately before sample() — preventing the text-smear
+   * defect where burst turns clobber each other's text in the shared global slot.
+   *
+   * CANON Theater Prohibition: every enqueued turn receives exactly one honest
+   * outcome (the CycleGuard's back-pressure and watchdog machinery ensures this).
+   */
+  enqueueTurn(turn: InboundTurn): void {
+    this.cycleGuard.enqueue(turn);
   }
 
   // ---------------------------------------------------------------------------
@@ -393,14 +457,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // call onTick(false) directly — they have no originator and bypass the queue
     // per spec §5 N4.
     this.tickSampler.onNewInput(() => {
-      // Mint turnId at intake (gateway boundary), not at :1249 inside the cycle.
-      // Ticket 2/3 will carry real userId/socketId; for now use defaults.
+      // NOTE (WS4 Ticket 2): this callback is now a safety net for non-text
+      // event-driven modalities (currently none — only 'text' is event-driven).
+      // Normal chat text no longer reaches here: it is enqueued by
+      // CommunicationService.intakeTurn() via enqueueTurn(), which carries the
+      // per-turn text on the InboundTurn. If a future modality is event-driven,
+      // this callback should be updated to carry appropriate per-turn data.
+      //
+      // For now, if this fires, use the tickSampler's current text slot (if any)
+      // as a fallback so legacy behavior is preserved.
       const turn: InboundTurn = {
         turnId: randomUUID(),
-        isGuardian: false, // Ticket 3 will populate from JWT isGuardian claim
+        isGuardian: false,
         receivedAt: Date.now(),
         enqueuedAt: Date.now(),
-        // text: populated by Ticket 2 once identity threading carries the raw text
+        text: '', // No per-turn text — this path is a fallback for future modalities
       };
       this.cycleGuard.enqueue(turn);
     });
@@ -1430,8 +1501,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           knowledgeGrounding: responseGrounding,
           ...(responseTokens ? { tokens: responseTokens } : {}),
         });
+        // WS4 Ticket 2 — use the intake turnId (minted at the gateway boundary)
+        // so Communication can correlate guardian feedback to the originating turn.
+        // Self-initiated ticks have no originator and keep a generated UUID.
         this.responseSubject.next({
-          turnId: randomUUID(),
+          turnId: this.currentQueueTurnId ?? randomUUID(),
           text: responseText,
           arbitrationType: emittedArbitrationType,
           actionId: emittedActionId,

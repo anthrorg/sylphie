@@ -5,6 +5,13 @@
 /** The NestJS module — import this in AppModule. */
 export { DecisionMakingModule } from './decision-making.module';
 
+/**
+ * InboundTurn — the queue entry type for per-turn text threading (WS4 Ticket 2).
+ * Exported so CommunicationService (in apps/sylphie) can construct and enqueue
+ * turns via IDecisionMakingService.enqueueTurn().
+ */
+export type { InboundTurn } from './concurrency/inbound-turn';
+
 /** The sole public injection token for this subsystem. */
 export { DECISION_MAKING_SERVICE } from './decision-making.tokens';
 

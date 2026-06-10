@@ -36,14 +36,21 @@ export interface InboundTurn {
   enqueuedAt: number;
 
   /**
-   * Opaque text payload. Tickets 2/3 will replace this with a typed field
-   * on the InboundTurn itself. For Ticket 1 the field is required so the
-   * watchdog SHRUG can be emitted with useful context even without full
-   * identity threading.
+   * The raw text of this turn, as received at the gateway boundary.
+   *
+   * Minted at intake alongside turnId (WS4 Ticket 2). Every queued turn carries
+   * its own text so that when the cycle drains and calls tickSampler.sample(),
+   * it gets THIS turn's text — not whatever was last written to the global slot.
+   * This is the fix for the text-smear defect: cycle N sampled the real text,
+   * cycles N+1..N+K sampled null and re-answered stale history.
+   *
+   * Self-initiated ticks (no originator) carry an empty string; synthetic-text
+   * turns use the injected text. The cycle runner writes this into the tick-sampler's
+   * text slot via injectSyntheticText() (no-callback path) before sampling.
    */
-  text?: string;
+  text: string;
 
-  // ----- Extension slots for Tickets 2/3 ------------------------------------
+  // ----- Extension slots for Ticket 3 ---------------------------------------
   // userId?: string;
   // username?: string;
   // socketId?: string;

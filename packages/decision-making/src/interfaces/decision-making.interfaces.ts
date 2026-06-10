@@ -53,6 +53,7 @@ import type {
   WorkingMemorySnapshot,
 } from '@sylphie/shared';
 import type { WkgContext } from '../wkg/wkg-context.service';
+import type { InboundTurn } from '../concurrency/inbound-turn';
 
 // ---------------------------------------------------------------------------
 // IDecisionMakingService — main facade
@@ -141,6 +142,19 @@ export interface IDecisionMakingService {
    *         action in the current or most recent decision cycle.
    */
   reportOutcome(actionId: string, outcome: ActionOutcome): Promise<void>;
+
+  /**
+   * Enqueue an inbound turn from the Communication boundary.
+   *
+   * WS4 Ticket 2: CommunicationService calls this at intake (after parseInput and
+   * tickSampler slot updates) to hand the turn to the concurrency guard's queue.
+   * turnId and text are minted at the gateway boundary and travel on the turn so
+   * the cycle runner can inject the correct text into the tick-sampler slot before
+   * sampling — preventing the text-smear defect where burst turns share one slot.
+   *
+   * @param turn - The fully-constructed InboundTurn with turnId and text set.
+   */
+  enqueueTurn(turn: InboundTurn): void;
 }
 
 // ---------------------------------------------------------------------------

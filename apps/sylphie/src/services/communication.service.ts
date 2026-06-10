@@ -47,7 +47,9 @@ import {
 const vlog = verboseFor('Communication');
 import {
   DECISION_MAKING_SERVICE,
+  TickSamplerService,
   type IDecisionMakingService,
+  type InboundTurn,
 } from '@sylphie/decision-making';
 import {
   DRIVE_STATE_READER,
@@ -107,6 +109,12 @@ export class CommunicationService implements OnModuleInit {
     private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
     private readonly voiceCache: VoiceLatentSpaceService,
+
+    // WS4 Ticket 2: needed to update conversation-context slots (history, speaker)
+    // and to call recordInputArrival() for the self-tick 30s suppression guard.
+    // TickSamplerService is exported from DecisionMakingModule and resolved by
+    // NestJS DI from the global provider set.
+    private readonly tickSampler: TickSamplerService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -208,6 +216,91 @@ export class CommunicationService implements OnModuleInit {
       sessionId,
       parsedAt,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS4 Ticket 2 — InboundTurn intake
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Receive and enqueue an inbound turn from the ConversationGateway.
+   *
+   * This is the single entry point for a new chat message into the
+   * decision-making pipeline. It replaces the gateway's previous pattern of
+   * calling parseInput() + tickSampler.updateText() separately, which left a
+   * text-smear window where burst turns clobbered each other's text slot.
+   *
+   * Steps:
+   *  1. Mint a stable turnId at this boundary (not inside processInput()).
+   *  2. Run parseInput() — entity extraction, fast-fact writes, history add.
+   *  3. Update all tickSampler context slots (history, speaker, person model).
+   *  4. Call tickSampler.recordInputArrival() so the self-tick 30s guard fires.
+   *  5. Construct the InboundTurn with turnId + text.
+   *  6. Enqueue via decisionMaking.enqueueTurn() → CycleGuard.enqueue().
+   *
+   * The text is NOT written to the tickSampler text slot here — it travels on
+   * the InboundTurn and is injected by runCycleForTurn() at drain time, so each
+   * cycle gets its own text regardless of burst ordering.
+   *
+   * Returns the minted turnId so the gateway can send it back in input_ack if needed.
+   *
+   * Ticket 3 extension point: add userId, username, socketId, isGuardian to the
+   * turn once identity threading lands. The commented fields on InboundTurn are
+   * the seams.
+   *
+   * @param text      Raw text from the user.
+   * @param sessionId Session identifier for event correlation.
+   * @param userId    PostgreSQL User.id (defaults to 'guardian' until Ticket 3).
+   * @param username  Display name of the speaker (defaults to 'someone').
+   * @returns The minted turnId.
+   */
+  intakeTurn(text: string, sessionId: string, userId = 'guardian', username = 'someone'): string {
+    const turnId = randomUUID();
+    const now = Date.now();
+
+    // Step 2: parse input (entity extraction, fast-fact writes, history, etc.)
+    this.parseInput(text, sessionId, userId);
+
+    // Step 3: update tickSampler context slots so the cycle has fresh context.
+    // These are additive slots (history accumulates); the last-written value before
+    // the cycle drains is what the cycle uses — which is correct: we want the
+    // current conversation state, not a snapshot from intake time.
+    const splitHistory = this.conversationHistory.getSplitHistory();
+    this.tickSampler.update('conversation_history', splitHistory.pending);
+    this.tickSampler.update('conversation_summary', splitHistory.summary);
+    this.tickSampler.update(
+      'full_conversation_history',
+      this.conversationHistory.getHistory(),
+    );
+    this.tickSampler.update(
+      'person_model',
+      this.personModel.getActivePersonModel(),
+    );
+    this.tickSampler.update('speaker_name', username);
+
+    // Step 4: record arrival so self-tick 30s suppression guard stays accurate.
+    this.tickSampler.recordInputArrival();
+
+    // Step 5: construct the turn. Text travels here — NOT in the global slot.
+    const turn: InboundTurn = {
+      turnId,
+      isGuardian: false, // Ticket 3 will populate from JWT isGuardian claim
+      receivedAt: now,
+      enqueuedAt: now,
+      text,
+      // userId, username, socketId — Ticket 3 extension slots (leave commented)
+    };
+
+    // Step 6: enqueue through the concurrency guard.
+    this.decisionMaking.enqueueTurn(turn);
+
+    vlog('turn enqueued', {
+      turnId,
+      textPreview: text.substring(0, 80),
+      userId,
+    });
+
+    return turnId;
   }
 
   // ---------------------------------------------------------------------------

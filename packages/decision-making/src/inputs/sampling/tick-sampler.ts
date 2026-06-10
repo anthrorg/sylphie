@@ -156,6 +156,18 @@ export class TickSamplerService {
   }
 
   /**
+   * WS4 Ticket 2 — record that user input arrived without setting text.
+   *
+   * Updates `lastInputAt` so the self-tick 30s suppression guard remains accurate
+   * when the gateway uses `intakeTurn` (which bypasses `updateText`). Does NOT
+   * write text to the slot or fire the event-driven callback — the text travels
+   * on the `InboundTurn` and is injected by `runCycleForTurn` at drain time.
+   */
+  recordInputArrival(): void {
+    this.lastInputAt = Date.now();
+  }
+
+  /**
    * Inject synthetic text for autonomous processing (e.g., boredom research).
    * Unlike updateText, this does NOT update lastInputAt or trigger the
    * event-driven callback — it just makes the text available for the next
