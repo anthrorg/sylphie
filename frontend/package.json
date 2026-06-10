@@ -23,6 +23,7 @@
     "chart.js": "^4.5.1",
     "cytoscape": "^3.29.2",
     "cytoscape-fcose": "^2.2.0",
+    "posthog-js": "^1.373.3",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^18.2.0",

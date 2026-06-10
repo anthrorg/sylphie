@@ -11,8 +11,13 @@ import { ChatView } from './pages/dashboard/ChatView'
 import { CodebaseView } from './pages/dashboard/CodebaseView'
 import { GuardianView } from './pages/dashboard/GuardianView'
 import { useAppStore } from './store'
+import { useAnalyticsPageviews } from './lib/analytics'
 
 function AuthGate() {
+  // Must run inside <BrowserRouter> so it can call useLocation().
+  useAnalyticsPageviews()
+
+
   const authToken = useAppStore((s) => s.authToken)
   const authChecked = useAppStore((s) => s.authChecked)
   const setAuth = useAppStore((s) => s.setAuth)
