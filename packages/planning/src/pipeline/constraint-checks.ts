@@ -147,6 +147,22 @@ export function checkProcedureConflict(
   proposal: PlanProposal,
   existingTriggerContexts: ReadonlySet<string>,
 ): ConstraintCheckResult {
+  // An empty/whitespace trigger context is NOT a valid dedup key. If we treated
+  // it as one, the first empty-trigger procedure would poison the set: every
+  // later empty-trigger proposal would spuriously "conflict" with it, and '' would
+  // become a permanent phantom key. Empty triggers are a separate validity problem
+  // (the proposal pipeline is responsible for never emitting one); the conflict
+  // check simply abstains rather than dedup on emptiness.
+  if (proposal.triggerContext.trim().length === 0) {
+    return {
+      constraint: 'PROCEDURE_CONFLICT',
+      passed: true,
+      message:
+        'Trigger context is empty; skipping exact-match conflict check ' +
+        '(an empty trigger is not a valid deduplication key).',
+    };
+  }
+
   if (existingTriggerContexts.has(proposal.triggerContext)) {
     return {
       constraint: 'PROCEDURE_CONFLICT',

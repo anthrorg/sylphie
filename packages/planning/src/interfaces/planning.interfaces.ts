@@ -86,6 +86,13 @@ export interface QueuedOpportunity {
   readonly enqueuedAt: Date;
   readonly initialPriority: number;
   currentPriority: number;
+  /**
+   * Number of times this opportunity has been re-enqueued after a deferral
+   * (e.g. transient Neo4j unavailability during constraint validation).
+   * Bounds the fail-closed retry loop so a permanent WORLD outage cannot spin
+   * an opportunity forever. Absent/0 on first intake.
+   */
+  deferralCount?: number;
 }
 
 export interface OpportunityQueueStatus {
@@ -176,7 +183,24 @@ export interface IProposalService {
 export interface PlanProposal {
   readonly name: string;
   readonly category: string;
+  /**
+   * Stable dedup + retrieval key for the procedure.
+   *
+   * Derived deterministically from the opportunity's contextFingerprint for ALL
+   * proposal paths (template and LLM), so two proposals for the SAME underlying
+   * pattern produce a byte-identical key and the PROCEDURE_CONFLICT exact-match
+   * dedup actually fires. Decision Making retrieves procedures by Jaccard
+   * similarity against this same fingerprint format, so deriving it here keeps
+   * retrieval semantics intact (see action-retriever.service.ts).
+   */
   readonly triggerContext: string;
+  /**
+   * Optional human-/LLM-authored description of when this procedure should
+   * activate. Carries the LLM's semantic intent for observability and future
+   * semantic matching WITHOUT being used as the dedup key (which must stay
+   * stable). Undefined for template-generated proposals.
+   */
+  readonly triggerDescription?: string;
   readonly actionSequence: readonly ActionStep[];
   readonly rationale: string;
   /**
@@ -203,7 +227,16 @@ export interface ValidationResult {
   readonly reasoning: string;
   readonly violations: readonly string[];
   readonly attemptsUsed: number;
-  /** If true, the LLM was unavailable and the opportunity should be re-queued. */
+  /**
+   * If true, validation could not be completed safely (e.g. the WORLD graph was
+   * unreachable, so the procedure-conflict check could not run) and the
+   * opportunity should be re-queued and retried later rather than written now.
+   *
+   * This is a FAIL-CLOSED signal: a deferred opportunity is recoverable, whereas
+   * a duplicate ActionProcedure node written while the conflict check was blind
+   * is not. PlanningService re-enqueues deferred opportunities up to a bounded
+   * number of times.
+   */
   readonly deferred: boolean;
 }
 

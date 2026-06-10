@@ -287,6 +287,32 @@ describe('checkProcedureConflict', () => {
     const result = checkProcedureConflict(proposal, existing);
     assert.equal(result.passed, true);
   });
+
+  it('passes (skips dedup) when triggerContext is the empty string', () => {
+    // An empty trigger must NOT be used as a dedup key: otherwise the first
+    // empty-trigger proposal poisons the set and every later one false-conflicts.
+    const existing = new Set(['']); // '' already poisoned into the set
+    const proposal = makeProposal({ triggerContext: '' });
+    const result = checkProcedureConflict(proposal, existing);
+    assert.equal(result.passed, true);
+    assert.ok(result.message.toLowerCase().includes('empty'));
+  });
+
+  it('passes (skips dedup) when triggerContext is only whitespace', () => {
+    const existing = new Set(['   ']);
+    const proposal = makeProposal({ triggerContext: '   ' });
+    const result = checkProcedureConflict(proposal, existing);
+    assert.equal(result.passed, true);
+  });
+
+  it('still fails on an exact NON-empty conflict (dedup remains active)', () => {
+    const triggerContext = 'prediction_failure_visual_mae_0.45';
+    const existing = new Set([triggerContext]);
+    const proposal = makeProposal({ triggerContext });
+    const result = checkProcedureConflict(proposal, existing);
+    assert.equal(result.passed, false);
+    assert.ok(result.message.includes(triggerContext));
+  });
 });
 
 // ---------------------------------------------------------------------------

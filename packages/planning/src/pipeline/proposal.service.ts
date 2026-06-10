@@ -64,17 +64,18 @@ export class ProposalService implements IProposalService {
       proposal = this.proposeTemplate(opportunity, simulation);
     }
 
-    // Attach predicted drive effects from simulation's best outcome.
-    const final = {
-      ...proposal,
+    // Attach predicted drive effects from simulation's best outcome, and pin the
+    // dedup/retrieval key to the deterministic opportunity fingerprint.
+    const final = this.withStableTrigger(proposal, opportunity, {
       predictedDriveEffects: simulation.bestOutcome?.estimatedDriveEffect ?? {},
-    };
+    });
 
     vlog('proposal generated', {
       opportunityId: opportunity.payload.id,
       name: final.name,
       category: final.category,
       triggerContext: final.triggerContext,
+      triggerDescription: final.triggerDescription,
       stepCount: final.actionSequence.length,
       steps: final.actionSequence.map((s) => s.stepType),
       rationale: final.rationale.substring(0, 100),
@@ -90,7 +91,11 @@ export class ProposalService implements IProposalService {
   ): Promise<PlanProposal> {
     if (this.llm && this.llm.isAvailable()) {
       try {
-        return await this.refineLlm(original, violations, opportunity);
+        const refined = await this.refineLlm(original, violations, opportunity);
+        // Keep the dedup/retrieval key pinned to the opportunity fingerprint even
+        // across refinement -- refinement may legitimately reword the descriptive
+        // trigger, but the stable key must not drift.
+        return this.withStableTrigger(refined, opportunity);
       } catch (err) {
         this.logger.warn(
           `LLM refinement failed, returning original: ${
@@ -240,6 +245,69 @@ export class ProposalService implements IProposalService {
       rationale: `Template-based response to ${classification} ` +
         `affecting ${opportunity.payload.affectedDrive}`,
       predictedDriveEffects: {}, // Populated by the caller from simulation
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: stable trigger derivation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pin the proposal's triggerContext to the opportunity's deterministic
+   * contextFingerprint (the stable dedup + retrieval key) for ALL paths, while
+   * preserving any meaningful LLM-/template-authored trigger text in
+   * triggerDescription for observability and future semantic matching.
+   *
+   * Why this is necessary (H-1):
+   *  - The template path already used contextFingerprint, so dedup worked there.
+   *  - The LLM path used a free-form string the model authored; two proposals for
+   *    the SAME pattern would not produce byte-identical strings, so the exact-match
+   *    PROCEDURE_CONFLICT check could not fire and duplicate procedures slipped
+   *    through. Deriving the key from the (stable, per-opportunity) fingerprint
+   *    closes that gap.
+   *  - triggerContext remains the stable dedup key; semantic retrieval now matches
+   *    on a separate triggerPhrase/triggerEmbedding (set at procedure creation from
+   *    the authored trigger text preserved here), so retrieval no longer depends on
+   *    this key being natural language.
+   *  - CANON: guardian-taught opportunities each carry a distinct contextFingerprint,
+   *    so distinct teachings still get distinct keys and do not false-collide.
+   */
+  private withStableTrigger(
+    proposal: PlanProposal,
+    opportunity: QueuedOpportunity,
+    extra: Partial<PlanProposal> = {},
+  ): PlanProposal {
+    const stableKey = opportunity.payload.contextFingerprint;
+
+    // Preserve any meaningful authored trigger text so it can flow through to the
+    // procedure node's triggerPhrase (the operand for semantic context matching).
+    //
+    // Sources, in priority order:
+    //   1. An explicit triggerDescription already on the proposal (e.g. carried
+    //      across a refinement) that is not itself the fingerprint.
+    //   2. The proposal's triggerContext when the LLM/template authored real text
+    //      there (non-empty and not already equal to the stable fingerprint key).
+    //
+    // We must NOT null out authored text just because triggerContext happens to
+    // equal the fingerprint on the template path -- any prior triggerDescription
+    // is retained. A sha256 fingerprint is never preserved as descriptive text.
+    const priorDescription = proposal.triggerDescription?.trim();
+    const authoredContext = proposal.triggerContext.trim();
+
+    let triggerDescription: string | undefined;
+    if (priorDescription && priorDescription.length > 0 && priorDescription !== stableKey) {
+      triggerDescription = proposal.triggerDescription;
+    } else if (authoredContext.length > 0 && authoredContext !== stableKey) {
+      triggerDescription = proposal.triggerContext;
+    } else {
+      triggerDescription = undefined;
+    }
+
+    return {
+      ...proposal,
+      triggerContext: stableKey,
+      triggerDescription,
+      ...extra,
     };
   }
 

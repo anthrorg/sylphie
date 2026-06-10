@@ -72,6 +72,15 @@ const DECAY_INTERVAL_MS = 60_000;
 const MAX_INGEST_PER_CYCLE = 10;
 
 /**
+ * Maximum number of times a single opportunity may be re-enqueued after a
+ * deferral (e.g. transient WORLD-graph unavailability during constraint
+ * validation). Bounds the fail-closed retry loop so a permanent Neo4j outage
+ * cannot spin an opportunity forever. After this many deferrals the opportunity
+ * is dropped and logged loudly rather than retried again.
+ */
+const MAX_DEFERRALS = 5;
+
+/**
  * Maximum PREDICTION_EVALUATED outcomes to process per outcome-polling cycle.
  * Each evaluation involves a TimescaleDB UPDATE, so we cap the batch to prevent
  * the evaluation loop from dominating the I/O budget.
@@ -549,9 +558,39 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
     );
 
     if (validationResult.deferred) {
-      // LLM unavailable -- re-enqueue the opportunity for later.
-      this.logger.warn(`LLM unavailable -- deferring opportunity ${oppId}`);
-      this.queue.enqueue(opportunity);
+      // Validation could not complete safely (e.g. WORLD graph unreachable, so the
+      // procedure-conflict guard could not run). FAIL CLOSED: re-enqueue and retry
+      // later rather than write a possibly-duplicate procedure now -- but bound the
+      // retries so a permanent outage cannot spin this opportunity forever.
+      const priorDeferrals = opportunity.deferralCount ?? 0;
+
+      if (priorDeferrals >= MAX_DEFERRALS) {
+        this.logger.error(
+          `Opportunity ${oppId} deferred ${priorDeferrals} times and still cannot be ` +
+            `validated (${validationResult.reasoning}); dropping to avoid an unbounded ` +
+            `retry loop. The WORLD graph is likely persistently unavailable.`,
+        );
+        this.eventLogger.log('OPPORTUNITY_DROPPED', {
+          opportunityId: oppId,
+          reason: 'deferral_cap_exceeded',
+          deferralCount: priorDeferrals,
+          lastReasoning: validationResult.reasoning,
+        });
+        return { wasNoop: false, opportunityId: oppId, stage: 'VALIDATION', procedureNodeId: null };
+      }
+
+      opportunity.deferralCount = priorDeferrals + 1;
+      this.logger.error(
+        `Deferring opportunity ${oppId} (attempt ${opportunity.deferralCount}/${MAX_DEFERRALS}): ` +
+          `${validationResult.reasoning}`,
+      );
+      const reEnqueued = this.queue.enqueue(opportunity);
+      if (!reEnqueued) {
+        this.logger.warn(
+          `Re-enqueue of deferred opportunity ${oppId} was rejected by the queue ` +
+            `(duplicate, rate limit, or capacity); it will not be retried this cycle.`,
+        );
+      }
       return { wasNoop: false, opportunityId: oppId, stage: 'VALIDATION', procedureNodeId: null };
     }
 

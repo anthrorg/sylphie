@@ -20,19 +20,26 @@
  * at temperature 0.1 for purely structural checks, and (b) listed EMIT_EVENT as a
  * valid step type, which does not exist in ActionHandlerRegistryService.
  *
- * The deferred field is always false -- deterministic validation is always available.
+ * FAIL-CLOSED on degraded WORLD: the PROCEDURE_CONFLICT check depends on the set
+ * of existing trigger contexts fetched from Neo4j WORLD. If that fetch fails, the
+ * conflict check would be blind -- silently writing a possibly-duplicate node and
+ * resuming the exact graph corruption it exists to prevent. Instead, a fetch
+ * failure returns a DEFERRED result so PlanningService re-enqueues the opportunity
+ * and retries later. A deferred opportunity is recoverable; a phantom-twin
+ * procedure is not.
  */
 
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import { verboseFor } from '@sylphie/shared';
+import { verboseFor, Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
 import type {
   IConstraintValidationService,
   ValidationResult,
   PlanProposal,
   QueuedOpportunity,
   IProposalService,
+  IPlanningEventLogger,
 } from '../interfaces/planning.interfaces';
-import { PROPOSAL_SERVICE } from '../planning.tokens';
+import { PROPOSAL_SERVICE, PLANNING_EVENT_LOGGER } from '../planning.tokens';
 import {
   checkStepTypeValidity,
   checkAddressesOpportunity,
@@ -62,6 +69,9 @@ export class ConstraintValidationService implements IConstraintValidationService
   constructor(
     @Inject(PROPOSAL_SERVICE)
     private readonly proposalService: IProposalService,
+    @Inject(PLANNING_EVENT_LOGGER)
+    private readonly eventLogger: IPlanningEventLogger,
+    private readonly neo4j: Neo4jService,
   ) {}
 
   async validate(
@@ -76,10 +86,36 @@ export class ConstraintValidationService implements IConstraintValidationService
     });
 
     // Fetch the set of existing trigger contexts once, before the retry loop.
-    // Currently returns an empty set (no WKG query implemented yet).
-    // When WKG integration is available, inject the WKG service here and
-    // call it to populate this set.
-    const existingTriggerContexts = this.fetchExistingTriggerContexts();
+    // FAIL CLOSED: if the WORLD graph is unreachable we cannot run the
+    // PROCEDURE_CONFLICT check, so we DEFER rather than write a possibly-duplicate
+    // procedure. Returning an empty set here would silently re-open the
+    // duplicate-procedure corruption on any transient DB blip.
+    const fetch = await this.fetchExistingTriggerContexts();
+    if (!fetch.ok) {
+      const reasoning =
+        'Procedure-conflict check could not run: WORLD graph unreachable while ' +
+        `fetching existing trigger contexts (${fetch.error}). Deferring opportunity ` +
+        `${opportunity.payload.id} to avoid writing a possibly-duplicate procedure.`;
+
+      // Louder than warn: this is a degradation that suppresses a corruption guard.
+      this.logger.error(reasoning);
+      this.eventLogger.log('PLAN_VALIDATION_FAILED', {
+        opportunityId: opportunity.payload.id,
+        deferred: true,
+        reason: 'world_unreachable_conflict_check_skipped',
+        error: fetch.error,
+      });
+
+      return {
+        passed: false,
+        reasoning,
+        violations: [],
+        attemptsUsed: 0,
+        deferred: true,
+      };
+    }
+
+    const existingTriggerContexts = fetch.contexts;
 
     let currentProposal = proposal;
 
@@ -194,13 +230,39 @@ export class ConstraintValidationService implements IConstraintValidationService
   }
 
   /**
-   * Returns the set of trigger contexts that already exist in the WKG.
+   * Queries Neo4j WORLD for all existing ActionProcedure trigger contexts.
+   * Prevents planning from writing duplicate procedures with the same trigger,
+   * which would fragment confidence updates across phantom twin nodes.
    *
-   * TODO: Inject IWkgService and query for existing ActionProcedure trigger
-   * contexts. For now returns an empty set so constraint 3 never fires a false
-   * positive during the bootstrap phase. The WKG integration task will wire this.
+   * Returns a discriminated result so the caller can distinguish "no existing
+   * procedures" (ok, empty set) from "could not check" (error). Those must NOT
+   * be conflated: the latter requires deferral, not a blind pass.
    */
-  private fetchExistingTriggerContexts(): ReadonlySet<string> {
-    return new Set<string>();
+  private async fetchExistingTriggerContexts(): Promise<FetchTriggerContextsResult> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      const result = await session.run(
+        'MATCH (p:ActionProcedure) WHERE p.trigger_context IS NOT NULL RETURN p.trigger_context AS ctx',
+      );
+      return {
+        ok: true,
+        contexts: new Set(result.records.map((r) => r.get('ctx') as string)),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      await session.close();
+    }
   }
 }
+
+/**
+ * Result of fetching existing trigger contexts from the WORLD graph.
+ * `ok: false` means the check could not be performed and the caller must defer.
+ */
+type FetchTriggerContextsResult =
+  | { readonly ok: true; readonly contexts: ReadonlySet<string> }
+  | { readonly ok: false; readonly error: string };
