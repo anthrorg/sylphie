@@ -27,6 +27,8 @@ import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } f
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
+import { CycleGuardService } from './concurrency/cycle-guard.service';
+import type { InboundTurn } from './concurrency/inbound-turn';
 
 const vlog = verboseFor('Cortex');
 import { DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, type IDriveStateReader, type IActionOutcomeReporter } from '@sylphie/drive-engine';
@@ -176,6 +178,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // (`search_document:`), the asymmetric counterpart to the per-turn QUERY
     // embedding the fusion layer produces. See the write-back block.
     private readonly modalityRegistry: ModalityRegistryService,
+
+    // WS4 Ticket 1: Concurrency guard — queue, mutex, watchdog, epoch fence.
+    // Extracted into a focused service; DecisionMakingService wires the seams.
+    private readonly cycleGuard: CycleGuardService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -184,12 +190,121 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
   async onModuleInit(): Promise<void> {
     this.logger.log('DecisionMakingService initializing — starting tick loop.');
+
+    // WS4 Ticket 1: Register cycle runner and SHRUG emitter with the CycleGuard.
+    // The cycle runner wraps the processInput seam (acquiring tickInFlight
+    // at :376, releasing in the finally at :406 — managed by CycleGuard for
+    // queue-admitted turns). The SHRUG emitter delivers watchdog/degraded
+    // honest SHRUGs via the existing degraded-SHRUG plumbing.
+    this.cycleGuard.register(
+      // Cycle runner — called by CycleGuard for each admitted turn.
+      // Returns true on success (for circuit breaker accounting).
+      async (turn: InboundTurn, myEpoch: number): Promise<boolean> => {
+        return this.runCycleForTurn(turn, myEpoch);
+      },
+      // SHRUG emitter — delivers watchdog/degraded SHRUG with epoch guard.
+      (turnId: string, message: string, epoch: number): void => {
+        this.emitWatchdogShrug(turnId, message, epoch);
+      },
+      this.executorEngine,
+    );
+
     this.startTickLoop();
   }
 
   async onModuleDestroy(): Promise<void> {
     this.stopTickLoop();
+    this.cycleGuard.destroy();
     this.logger.log('DecisionMakingService destroyed — tick loop stopped.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS4 Ticket 1 — CycleGuard integration seams
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Run a full decision cycle for a queue-admitted InboundTurn.
+   *
+   * Called by CycleGuard as the `cycleRunner` callback. CycleGuard has already:
+   *  - Acquired the mutex (tickInFlight = true)
+   *  - Captured the epoch (myEpoch)
+   *  - Armed the watchdog
+   *
+   * This method samples the sensory frame and delegates to processInput(),
+   * passing the epoch for zombie fencing.
+   *
+   * Returns true on successful completion (for circuit breaker accounting).
+   */
+  private async runCycleForTurn(turn: InboundTurn, myEpoch: number): Promise<boolean> {
+    try {
+      const frame = await this.tickSampler.sample();
+
+      const rawText = frame.raw['text'] as string | undefined;
+      vlog('queue cycle sampled frame', {
+        turnId: turn.turnId,
+        modalities: frame.active_modalities,
+        textContent: rawText ? rawText.substring(0, 120) : null,
+        epoch: myEpoch,
+      });
+
+      const snapshot = this.driveStateReader.getCurrentState();
+      this.streamLogger.logFrame(frame, snapshot, snapshot.sessionId);
+
+      await this.processInput(frame, myEpoch);
+      return true;
+    } catch (err) {
+      this.logger.error(`Queue cycle failed for turn ${turn.turnId}: ${err}`);
+      // processInput already calls forceIdle() on error and re-throws.
+      // Re-catch here so CycleGuard's finally always runs.
+      return false;
+    }
+  }
+
+  /**
+   * Emit a watchdog or degraded-mode SHRUG for a specific turnId.
+   *
+   * Called by CycleGuard's watchdog handler and degraded-mode drain.
+   * The epoch is the NEW epoch (post-increment) so the emit passes
+   * the isEpochCurrent check if this is called from the watchdog recovery.
+   *
+   * Reuses the degraded-SHRUG plumbing (spec §3.4 step 4, :1098–:1119).
+   */
+  private emitWatchdogShrug(turnId: string, message: string, _epoch: number): void {
+    // Emit a CycleResponse with the SHRUG arbitration type and the watchdog message.
+    // Use the current drive state as context. This mirrors the degraded-SHRUG path
+    // at :1098–:1119 for LLM-unavailability — same honest label, same path.
+    try {
+      const driveSnapshot = this.driveStateReader.getCurrentState();
+      const shrugArbitrationResult: ArbitrationResult = {
+        type: 'SHRUG',
+        reason: message,
+        shrugDetail: {
+          gapTypes: ['LOW_CONFIDENCE'],
+          candidateConfidences: [],
+          threshold: 0.5,
+          reason: message,
+        },
+      };
+
+      this.responseSubject.next({
+        turnId,
+        text: message,
+        arbitrationType: 'SHRUG',
+        actionId: 'WATCHDOG_SHRUG',
+        driveSnapshot,
+        arbitrationResult: shrugArbitrationResult,
+        latencyMs: 0,
+        model: undefined,
+        tokensUsed: undefined,
+        knowledgeGrounding: 'UNKNOWN',
+        groundingProvenance: undefined,
+        preExecutionDriveSnapshot: driveSnapshot.pressureVector,
+        latentPatternIds: undefined,
+        inputCategory: 'question',
+      });
+    } catch (err) {
+      this.logger.warn(`emitWatchdogShrug failed for turn ${turnId}: ${err}`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -199,8 +314,18 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   /** Handle for the background timer tick. null when not running. */
   private tickInterval: ReturnType<typeof setInterval> | null = null;
 
-  /** Whether a tick cycle is currently in-flight (prevents overlapping). */
-  private tickInFlight = false;
+  /**
+   * Whether a tick cycle is currently in-flight (prevents overlapping).
+   *
+   * WS4 Ticket 1: for queue-admitted turns, CycleGuard manages this flag.
+   * For self-initiated ticks (timer path), onTick manages it directly.
+   * The self-tick check reads from CycleGuard to avoid split-brain: both
+   * the queue path and self-tick path must see the same mutex state.
+   *
+   * @deprecated Direct field reads from onTick() use cycleGuard instead.
+   *   Kept as a local flag only for the self-tick path (set at :426, reset at :406).
+   */
+  private selfTickInFlight = false;
 
   /** Default background timer interval in milliseconds. */
   private static readonly DEFAULT_TICK_MS = 200;
@@ -262,9 +387,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     }, intervalMs);
 
     // Subscribe to event-driven input notifications from the TickSampler.
-    // When new event-driven data arrives (text, audio), nudge immediately.
+    // WS4 Ticket 1: route event-driven inputs through the CycleGuard queue
+    // instead of directly calling onTick(). This replaces the silent drop at
+    // :290 with an ordered, bounded FIFO queue. Self-initiated 200ms ticks still
+    // call onTick(false) directly — they have no originator and bypass the queue
+    // per spec §5 N4.
     this.tickSampler.onNewInput(() => {
-      void this.onTick(true);
+      // Mint turnId at intake (gateway boundary), not at :1249 inside the cycle.
+      // Ticket 2/3 will carry real userId/socketId; for now use defaults.
+      const turn: InboundTurn = {
+        turnId: randomUUID(),
+        isGuardian: false, // Ticket 3 will populate from JWT isGuardian claim
+        receivedAt: Date.now(),
+        enqueuedAt: Date.now(),
+        // text: populated by Ticket 2 once identity threading carries the raw text
+      };
+      this.cycleGuard.enqueue(turn);
     });
   }
 
@@ -281,13 +419,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   }
 
   /**
-   * Single tick — shared by both timer and event-driven paths.
+   * Single tick — used for self-initiated (timer) ticks only.
    *
-   * @param eventDriven - true if triggered by input arrival, false if by timer.
+   * WS4 Ticket 1: event-driven ticks no longer call this method. They are
+   * intercepted by the tickSampler.onNewInput callback, which routes to
+   * CycleGuard.enqueue(). Self-initiated (timer) ticks remain on this path
+   * per spec §5 N4 — they bypass the inbound queue (no originator).
+   *
+   * @param eventDriven - always false in the current call path (kept for compat).
    */
   private async onTick(eventDriven: boolean): Promise<void> {
-    // Non-overlapping guard.
-    if (this.tickInFlight) {
+    // Non-overlapping guard. CycleGuard manages tickInFlight for queue-admitted
+    // turns; for self-ticks we read the combined flag (CycleGuard OR selfTickInFlight)
+    // to stay out of the way of both queue cycles and other self-ticks.
+    const isAnyTickInFlight = this.selfTickInFlight || this.cycleGuard.getQueueStats().tickInFlight;
+    if (isAnyTickInFlight) {
       vlog('tick skipped (in-flight guard)', { eventDriven });
       return;
     }
@@ -319,9 +465,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     }
 
     // Timer ticks: only run if there's new input OR drive pressure is high enough.
+    // WS4 Ticket 1: if there's new input it was already handled by CycleGuard
+    // (the onNewInput callback enqueued it). A self-tick must NOT re-process
+    // already-queued input or it would run a second cycle for the same text.
     if (!eventDriven) {
       if (this.tickSampler.hasNewInput()) {
-        // New input arrived between timer ticks — process it.
+        // Input is already queued in CycleGuard — skip the self-tick.
+        vlog('self-tick skipped (input already queued by CycleGuard)', {});
+        return;
       } else {
         const snapshot = this.driveStateReader.getCurrentState();
         if (snapshot.totalPressure < DecisionMakingService.IDLE_PRESSURE_THRESHOLD) {
@@ -373,7 +524,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       }
     }
 
-    this.tickInFlight = true;
+    // Self-initiated tick: acquire the local selfTickInFlight mutex.
+    // This does NOT touch CycleGuard's tickInFlight — they are independent
+    // but both are checked by the in-flight guard above.
+    this.selfTickInFlight = true;
     try {
       // ── Sensory frame sampling ──────────────────────────────────────────────
       // The text encoder has its own timeout guard (DEFAULT_EMBED_TIMEOUT_MS =
@@ -399,11 +553,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const snapshot = this.driveStateReader.getCurrentState();
       this.streamLogger.logFrame(frame, snapshot, snapshot.sessionId);
 
+      // Self-ticks pass no epoch — they bypass CycleGuard and are never zombied.
       await this.processInput(frame);
     } catch (err) {
       this.logger.error(`Tick cycle failed: ${err}`);
     } finally {
-      this.tickInFlight = false;
+      this.selfTickInFlight = false;
     }
   }
 
@@ -426,12 +581,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * CANON Standard 4 (Shrug Imperative): SHRUG results do not invoke the
    * action handler registry — gap types are accumulated for Communication.
    *
+   * WS4 Ticket 1 (epoch parameter): when called from a queue-admitted cycle,
+   * `cycleEpoch` carries the epoch snapshot so the :1058–:1377 tail can fence
+   * against zombie double-emit. Self-initiated ticks pass undefined — they bypass
+   * the queue and are never zombied by the watchdog.
+   *
    * @param frame - Fused sensory frame from the multimodal pipeline.
+   * @param cycleEpoch - (WS4 T1) Epoch snapshot for zombie fencing; undefined = self-tick.
    * @throws If the executor is not in IDLE state at call time, or if a
    *         non-recoverable error occurs during the cycle.
    */
-  async processInput(frame: SensoryFrame): Promise<void> {
+  async processInput(frame: SensoryFrame, cycleEpoch?: number): Promise<void> {
     const cycleStartTime = Date.now();
+    // Capture myEpoch from parameter (queue turns) or from guard (self-ticks).
+    // Self-ticks pass undefined; they are not managed by CycleGuard and are
+    // never zombied, so fencing is a no-op for them.
+    const myEpoch = cycleEpoch;
 
     // --- Pre-cycle guard ---
     const priorState = this.executorEngine.getState();
@@ -1218,7 +1383,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Track latent pattern IDs for outcome-based confidence updates.
       // reportOutcome() will look these up to adjust pattern confidence
       // based on real results (guardian feedback, drive deltas).
-      if (latentPatternIds.length > 0) {
+      //
+      // WS4 Ticket 1 — epoch fence (spec §3.6): a watchdog-killed cycle whose
+      // promise resolves late must NOT mutate pendingLatentPatterns. Check epoch
+      // before the write. This is fence site :1222 from the spec.
+      if (latentPatternIds.length > 0 && (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch))) {
         this.pendingLatentPatterns.set(actionId, latentPatternIds);
         // LRU eviction: remove oldest entries when cap is exceeded.
         if (this.pendingLatentPatterns.size > this.MAX_PENDING_LATENT) {
@@ -1232,6 +1401,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Only emit a CycleResponse if there is actual text to deliver.
       // Empty responses cause the frontend to show "Sylphie speaks" with no content.
       const emittedActionId = responseDegradedNoLlm ? 'SHRUG' : actionId;
+
+      // WS4 Ticket 1 — epoch fence (spec §3.6, CRITICAL): the most important fence.
+      // A watchdog-killed cycle that resolves late (e.g. Ollama eventually responds at
+      // T+28s) MUST NOT emit a second CycleResponse. The watchdog already:
+      //   (a) incremented cycleEpoch (step 3 of recovery), and
+      //   (b) emitted an honest SHRUG for this turn (step 4).
+      // A second emit would produce two contradictory responses for the same turnId
+      // — a CANON Theater Prohibition violation. Abort silently if epoch is stale.
+      // This is fence site :1248 from the spec.
+      if (myEpoch !== undefined && !this.cycleGuard.isEpochCurrent(myEpoch)) {
+        this.logger.warn(
+          `Zombie cycle detected (epoch ${myEpoch} vs current ${this.cycleGuard.cycleEpoch}) — ` +
+          `aborting CycleResponse emit. Watchdog already handled this turn.`,
+        );
+        return;
+      }
 
       if (responseText.trim().length > 0) {
         vlog('emitting CycleResponse', {
@@ -1293,6 +1478,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           arbitrationResult.type,
           tensorResult?.tensorTopCategory,
         );
+      }
+
+      // WS4 Ticket 1 — epoch fence for tail reportOutcome calls (spec §3.6).
+      // If this cycle was killed by the watchdog and the promise resolved late,
+      // the epoch check above (before responseSubject.next) already returned.
+      // This fence covers the rare case where both routeSensoryPredictionErrors
+      // and the reportOutcome calls happen AFTER the emit check. Belt-and-suspenders.
+      if (myEpoch !== undefined && !this.cycleGuard.isEpochCurrent(myEpoch)) {
+        return; // Zombie — tail work aborted.
       }
 
       // ── Route sensory prediction errors to drives ─────────────────────────

@@ -35,6 +35,7 @@
 import { Module } from '@nestjs/common';
 import { DriveEngineModule } from '@sylphie/drive-engine';
 import { LLM_SERVICE, TimescaleModule } from '@sylphie/shared';
+import { CycleGuardService } from './concurrency/cycle-guard.service';
 
 // ---------------------------------------------------------------------------
 // Injection tokens
@@ -209,6 +210,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     DeliberationService,
     ContextWindowService,
     ToolRegistryService,
+
+    // ── WS4 Ticket 1: Concurrency guard (queue/mutex/watchdog/epoch fence) ─────
+    CycleGuardService,
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────
     SensoryStreamLoggerService,
