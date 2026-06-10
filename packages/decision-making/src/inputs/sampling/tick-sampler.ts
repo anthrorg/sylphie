@@ -214,10 +214,10 @@ export class TickSamplerService {
    * context fingerprinting) automatically benefit from temporal context
    * without any changes to their code.
    */
-  async sample(): Promise<SensoryFrame> {
+  async sample(opts?: { readonly skipNetworkEmbedding?: boolean }): Promise<SensoryFrame> {
     // Step 1: Produce point-in-time frame from current raw values.
     const snapshot = new Map(this.latestValues);
-    const rawFrame = await this.fusion.fuse(snapshot);
+    const rawFrame = await this.fusion.fuse(snapshot, opts);
 
     // Step 2: Blend with temporal context via EWMA.
     if (this.blendedEmbedding === null) {

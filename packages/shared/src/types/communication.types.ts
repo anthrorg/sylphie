@@ -85,6 +85,14 @@ export interface CycleResponse {
   readonly knowledgeGrounding: KnowledgeGrounding;
 
   /**
+   * OKG provenance reference that backs a GROUNDED label (Standard 1).
+   * For OKG recall: `attr-${personId}-${factKey}` — the deterministic Attribute node id.
+   * Null when grounding is LLM_ASSISTED or UNKNOWN, or when the GROUNDED label
+   * comes from a latent-space pattern whose entityIds were recorded at write time.
+   */
+  readonly groundingProvenance?: string | null;
+
+  /**
    * Drive pressure vector captured just before action execution (EXECUTING phase).
    *
    * Communication uses this to compute the real driveEffectsObserved delta by
@@ -115,6 +123,14 @@ export interface CycleResponse {
 
   /** Bootstrap mode at decision time: shadow | audit | partial | full. */
   readonly bootstrapMode?: string;
+
+  /**
+   * Input category that triggered this cycle, from ProcessInputResult.
+   *
+   * Supervisor uses this for always-evaluate routing: GUARDIAN_FEEDBACK cycles
+   * bypass the sampling gate regardless of cycleCount % sampleRate.
+   */
+  readonly inputCategory?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,8 @@
+{
+  "capturedAt": "2026-06-09",
+  "note": "Seed baseline — replace with first real gate run via yarn gate:update-baseline",
+  "typeRatio": { "type1": 0, "type2": 0 },
+  "mae": { "mae": 0.30, "sampleCount": 0 },
+  "provenance": { "experientialRatio": 0.0, "totalNodes": 0 },
+  "driveTick": { "minHz": 0.5 }
+}

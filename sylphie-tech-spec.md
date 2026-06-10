@@ -126,7 +126,7 @@ Each cognitive cycle:
 
 **Type 1 graduation:** confidence > 0.80 *and* prediction MAE < 0.10 over rolling window
 **Type 1 demotion:** MAE > 0.15
-**Confidence ceiling:** 0.60 until guardian confirms (no node graduates from inference alone)
+**Confidence ceiling:** 0.60 until at least one successful retrieval-and-use event (guardian provenance sets base at 0.60, which is the ceiling, but cannot push above it; no node graduates from inference alone)
 
 ### 3.4 Tensor Cognition Sidecar
 
@@ -327,7 +327,7 @@ Hypertable: chunked 1 hour, indexed by `(session_id, type, timestamp DESC)` and 
 
 1. **Theater Prohibition** — no expressive output without corresponding drive state. Enforced at type level + drive-engine pre-flight + planning constraint validation.
 2. **Action ID Required** — every outcome carries actionId. Type-level enforcement.
-3. **Confidence Ceiling** — 0.60 until guardian confirms. No node graduates from inference alone.
+3. **Confidence Ceiling** — 0.60 until at least one successful retrieval-and-use event. Guardian provenance sets base at 0.60 (the ceiling) but cannot lift above it. No node graduates from inference alone.
 4. **Provenance Required** — every node/edge carries `provenance_type`. `ProvenanceMissingError` thrown if absent.
 5. **Guardian Asymmetry** — confirmation ×2, correction ×3, algorithmic ×1.
 6. **No Self-Modification of Evaluation** — drive isolation as process boundary, RLS-enforced, no introspection RPC.

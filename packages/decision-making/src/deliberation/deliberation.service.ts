@@ -86,6 +86,14 @@ export interface DeliberationResult {
   /** How well the response is grounded in Sylphie's own WKG knowledge. */
   readonly knowledgeGrounding: KnowledgeGrounding;
 
+  /**
+   * Provenance id backing a GROUNDED result, when grounding came from a
+   * system-verified OKG recall (the deterministic `attr-${personId}-${key}` id
+   * PersonModelService.writeFact computes). Null/undefined when grounding was
+   * not OKG-recall-derived. CANON Standard 1: GROUNDED must carry provenance.
+   */
+  readonly groundingProvenance?: string | null;
+
   /** New entity names discovered during deliberation. */
   readonly discoveredEntities: readonly string[];
 
@@ -101,6 +109,15 @@ export interface DeliberationResult {
    * Null if no action was requested.
    */
   readonly actionRequest: ActionRequest | null;
+
+  /**
+   * True when deliberation could not run because the LLM was unavailable
+   * (Lesion Test or tripped circuit breaker) and this result is the honest
+   * no-LLM fallback. The decision-making layer uses this to emit a SHRUG
+   * CycleResponse (not TYPE_2) carrying the honest "I can't reason about that
+   * right now" text — CANON §The Lesion Test / §Shrug Imperative.
+   */
+  readonly degradedNoLlm: boolean;
 }
 
 /** Complete trace of the deliberation for audit and introspection. */
@@ -181,7 +198,7 @@ export class DeliberationService {
   ): Promise<DeliberationResult> {
     if (!this.llm || !this.llm.isAvailable()) {
       vlog('deliberation aborted: LLM unavailable');
-      return this.fallbackResult('LLM service unavailable');
+      return this.fallbackResult('LLM service unavailable', true);
     }
 
     const startTime = Date.now();
@@ -300,15 +317,35 @@ export class DeliberationService {
       let knowledgeGrounding: KnowledgeGrounding;
       const responseText = monologueParsed.response!;
       if (isIgnoranceResponse(responseText)) {
-        // Honest "I don't know" — WKG was consulted but couldn't answer.
+        // Honest "I don't know" — context was consulted but couldn't answer.
         knowledgeGrounding = 'UNKNOWN';
-      } else if (monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION') {
-        // Conversational exchanges are social, not WKG-backed.
-        knowledgeGrounding = 'LLM_ASSISTED';
-      } else if (wkg.entities.length > 0 || wkg.facts.length > 0) {
+      } else if (personFactRecalled(personModel?.knownFacts, responseText)) {
+        // Recalled a taught person-model fact (OKG-backed self-knowledge).
         knowledgeGrounding = 'GROUNDED';
+      } else if (wkg.facts.length > 0 || hasTopicalEntity(wkg)) {
+        // Real topical WKG backing — not the Drive/CoBeing base context (Trap A).
+        knowledgeGrounding = 'GROUNDED';
+      } else if (monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION') {
+        // Conversational exchanges are social, not knowledge-backed.
+        knowledgeGrounding = 'LLM_ASSISTED';
       } else {
         knowledgeGrounding = 'UNKNOWN';
+      }
+
+      // Deterministic OKG recall grounding (CANON Standard 1 + 4). Only upgrades
+      // to GROUNDED when the question maps to a fact key, the fact node exists in
+      // the OKG, AND the value appears in the response. Unknowables return null →
+      // grounding stays UNKNOWN/LLM_ASSISTED. The LLM never self-asserts GROUNDED.
+      const shortCircuitOkg = applyOkgRecallGrounding(
+        personModel?.personId, rawText, responseText, personModel?.knownFacts, knowledgeGrounding,
+      );
+      knowledgeGrounding = shortCircuitOkg.grounding;
+      let groundingProvenance: string | null = shortCircuitOkg.provenance;
+      if (shortCircuitOkg.provenance) {
+        this.logger.debug(
+          `OKG recall grounded (short-circuit): provenance="${shortCircuitOkg.provenance}" ` +
+            `response="${responseText.substring(0, 60)}"`,
+        );
       }
 
       vlog('deliberation short-circuit', {
@@ -339,6 +376,7 @@ export class DeliberationService {
         confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
         rationale: monologueParsed.thought ?? 'Resolved by inner monologue',
         knowledgeGrounding,
+        groundingProvenance,
         candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
         trace: {
           innerMonologue,
@@ -356,6 +394,7 @@ export class DeliberationService {
         totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
         totalLatencyMs,
         actionRequest,
+        degradedNoLlm: false,
       };
     }
 
@@ -476,10 +515,16 @@ export class DeliberationService {
     const { text: cleanedText, grounding: parsedGrounding } = parseGroundingTag(selected.text);
     let finalResponseText = cleanedText;
 
-    // Determine knowledge grounding: parsed tag > WKG inference > default.
-    // Pass the cleaned response text so inferGrounding can detect ignorance admissions.
-    let knowledgeGrounding: KnowledgeGrounding = parsedGrounding
-      ?? inferGrounding(wkg, cleanedText);
+    // Determine knowledge grounding. The system-verified inference is the source
+    // of truth for GROUNDED: a [GROUNDED] tag the LLM emitted only survives if
+    // real provenance (OKG recall or topical WKG) actually backs the text — an
+    // LLM cannot self-assert grounding (Standard-1). A tag claiming LESS grounding
+    // than we found (UNKNOWN/LLM_ASSISTED) is honest and is respected.
+    const inferredGrounding = inferGrounding(wkg, cleanedText, personModel?.knownFacts);
+    let knowledgeGrounding: KnowledgeGrounding =
+      parsedGrounding === 'GROUNDED' && inferredGrounding !== 'GROUNDED'
+        ? inferredGrounding
+        : parsedGrounding ?? inferredGrounding;
 
     let confidence = 0.5 + (selectedIndex === 0 ? 0.1 : 0); // Slight boost if first choice
     let rationale = scored.rationale;
@@ -633,15 +678,35 @@ export class DeliberationService {
     // The arbiter sometimes includes [UNKNOWN] or [GROUNDED] in its modified text.
     const finalTagParse = parseGroundingTag(finalResponseText);
     finalResponseText = finalTagParse.text;
-    // If the arbiter's modified text had a tag, let it update the grounding
+    // If the arbiter's modified text had a tag, let it update the grounding —
+    // but a tag-claimed GROUNDED is re-verified against provenance, same as the
+    // selected-candidate path above (the LLM never gets to self-assert GROUNDED).
     if (finalTagParse.grounding) {
-      knowledgeGrounding = finalTagParse.grounding;
+      knowledgeGrounding =
+        finalTagParse.grounding === 'GROUNDED'
+          ? inferGrounding(wkg, finalResponseText, personModel?.knownFacts)
+          : finalTagParse.grounding;
     }
 
     // Final guard: an ignorance admission can never be GROUNDED regardless of
     // what tag the arbiter attached (LLM sometimes emits tags incorrectly).
     if (isIgnoranceResponse(finalResponseText) && knowledgeGrounding === 'GROUNDED') {
       knowledgeGrounding = 'UNKNOWN';
+    }
+
+    // Deterministic OKG recall grounding (CANON Standard 1 + 4). Defense-in-depth
+    // for genuine TYPE_2 NOVEL recall turns (no procedure node). The procedure-path
+    // counterpart lives in decision-making.service.ts after groundingForCachedResponse.
+    const novelOkg = applyOkgRecallGrounding(
+      personModel?.personId, rawText, finalResponseText, personModel?.knownFacts, knowledgeGrounding,
+    );
+    knowledgeGrounding = novelOkg.grounding;
+    let groundingProvenance: string | null = novelOkg.provenance;
+    if (novelOkg.provenance) {
+      this.logger.debug(
+        `OKG recall grounded (novel-deliberation): provenance="${novelOkg.provenance}" ` +
+          `response="${finalResponseText.substring(0, 60)}"`,
+      );
     }
 
     // Extract any new entity names mentioned in the response
@@ -652,6 +717,7 @@ export class DeliberationService {
       confidence,
       rationale,
       knowledgeGrounding,
+      groundingProvenance,
       candidates,
       trace: {
         innerMonologue,
@@ -666,6 +732,7 @@ export class DeliberationService {
       totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
       totalLatencyMs,
       actionRequest: null,
+      degradedNoLlm: false,
     };
 
     vlog('deliberation complete', {
@@ -717,9 +784,21 @@ export class DeliberationService {
     return parts.join('\n');
   }
 
-  private fallbackResult(reason: string): DeliberationResult {
+  /**
+   * Build the no-deliberation fallback result.
+   *
+   * When `degraded` is true the LLM was unavailable (Lesion Test / circuit
+   * breaker), so deliberation could not run at all. CANON §The Lesion Test
+   * requires the mind to keep standing without the LLM: rather than returning an
+   * empty string (which the decision layer would suppress, leaving Sylphie
+   * silently mute), we return an honest admission of incomprehension. The text
+   * is deliberately an ignorance response (matched by isIgnoranceResponse), so
+   * grounding stays UNKNOWN and the decision layer emits a SHRUG CycleResponse.
+   */
+  private fallbackResult(reason: string, degraded = false): DeliberationResult {
+    const responseText = degraded ? NO_LLM_SHRUG_TEXT : '';
     return {
-      responseText: '',
+      responseText,
       confidence: 0,
       rationale: reason,
       knowledgeGrounding: 'UNKNOWN',
@@ -727,7 +806,7 @@ export class DeliberationService {
       trace: {
         innerMonologue: reason,
         candidates: [],
-        selectedCandidate: '',
+        selectedCandidate: responseText,
         debate: null,
         arbiterRationale: reason,
         confidence: 0,
@@ -737,9 +816,20 @@ export class DeliberationService {
       totalTokens: { prompt: 0, completion: 0 },
       totalLatencyMs: 0,
       actionRequest: null,
+      degradedNoLlm: degraded,
     };
   }
 }
+
+/**
+ * Honest no-LLM SHRUG text used when deliberation cannot run because the LLM is
+ * unavailable. CANON §Shrug Imperative + §Theater Prohibition: an honest "I
+ * can't reason about this right now", not a fabricated answer. Phrased as a
+ * first-person ignorance admission so isIgnoranceResponse() classifies it
+ * UNKNOWN and grounding never reads GROUNDED/LLM_ASSISTED on this path.
+ */
+const NO_LLM_SHRUG_TEXT =
+  "I'm not sure how to answer that right now — I can't think it through at the moment.";
 
 // ---------------------------------------------------------------------------
 // Parsing helpers
@@ -1070,25 +1160,168 @@ function parseMonologueClassification(text: string): MonologueClassification {
  * Matches first-person denials: "I don't know", "I'm not sure", "I have no
  * idea", "I don't have access to", "I can't recall", etc.
  */
-function isIgnoranceResponse(text: string): boolean {
+export function isIgnoranceResponse(text: string): boolean {
   return /\b(i\s+don'?t\s+know|i\s+have\s+no\s+(idea|information|knowledge|record|way\s+to\s+know)|i\s+'?m\s+not\s+sure|i\s+can'?t\s+(recall|remember|tell|say)|i\s+do\s+not\s+know|no\s+information\s+about)\b/i.test(text);
 }
 
 /**
- * Infer knowledge grounding from WKG context and the actual response text.
+ * Map a recall question to the specific person-fact KEY it is asking about.
+ *
+ * Pure, synchronous. Returns the OKG fact key the question targets, or null when
+ * the question does not map to a known fact dimension (e.g. unknowables like
+ * "what did I have for breakfast"). The corpus teach facts are name / location /
+ * dog / favorite_color; occupation is included for the standard "what do I do
+ * for work" recall. A null return means this turn cannot be grounded by OKG
+ * recall and falls through to the honest WKG/LLM_ASSISTED ladder (C2 safety).
+ */
+export function recallKeyForQuestion(inputText: string): string | null {
+  const t = inputText.toLowerCase();
+  // Exclude middle/last/surname/maiden — those are unknowable variants, not the taught first name.
+  if (/\b(name|called)\b/.test(t) && !/dog|pet|animal|middle|last|surname|maiden/.test(t)) return 'name';
+  // Exclude childhood/birth location — "grow up / grew up / born" ≠ current city.
+  // Also removed 'town' which is ambiguous ("what town did I grow up in?" was colliding).
+  if (/\b(live|city|location|where)\b/.test(t) && !/grow|grew|born|childhood|raised/.test(t)) return 'location';
+  if (/\b(dog|pet|animal|named|called)\b/.test(t)) return 'dog';
+  // Exclude other "favorite X" categories — only map when the question is specifically about color.
+  if (/\b(color|colour|favourite|favorite)\b/.test(t) && !/food|drink|movie|book|song|music|sport|meal|dish/.test(t)) return 'favorite_color';
+  if (/\b(work|job|occupation|profession)\b/.test(t)) return 'occupation';
+  return null;
+}
+
+/**
+ * Retrieve a person fact by key from the fused-stream person model, returning
+ * its value and the deterministic provenance id PersonModelService.writeFact
+ * computes (`attr-${personId}-${key}`). Mirrors PersonModelService.getFactByKey
+ * over the knownFacts the OKG already loaded into the frame — the decision-making
+ * package cannot import PersonModelService (it lives in the app), but the
+ * provenance id is deterministic and the value comes from the same OKG-loaded
+ * facts, so this is a real fact-node retrieval, not LLM text inference.
+ *
+ * knownFacts arrive as "key: value" strings (getPersonModel builds them as
+ * `${key}: ${value}`). Returns null when the key is absent → unknowables and
+ * un-taught dimensions stay LLM_ASSISTED/UNKNOWN (C2 safety by construction).
+ */
+function getRecalledFact(
+  personId: string,
+  key: string,
+  knownFacts: readonly string[] | undefined,
+): { key: string; value: string; attrId: string } | null {
+  if (!knownFacts?.length) return null;
+  for (const kf of knownFacts) {
+    const colonIdx = kf.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const k = kf.substring(0, colonIdx).trim();
+    if (k !== key) continue;
+    const value = kf.substring(colonIdx + 1).trim();
+    if (!value) return null;
+    return { key, value, attrId: `attr-${personId}-${key}` };
+  }
+  return null;
+}
+
+/**
+ * Deterministic OKG recall grounding (CANON Standard 1 provenance-required +
+ * Standard 4 theater-prohibition). Returns the provenance id when, and only
+ * when, the question maps to a fact key, that fact node exists in the OKG, AND
+ * the fact value appears verbatim in the response. Returns null otherwise — so
+ * the LLM can never self-assert grounding and unknowables can never falsely read
+ * GROUNDED. The caller upgrades knowledgeGrounding to GROUNDED on a non-null.
+ */
+export function okgRecallProvenance(
+  personId: string | undefined,
+  inputText: string,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+): string | null {
+  if (!personId) return null;
+  const key = recallKeyForQuestion(inputText);
+  if (!key) return null;
+  const fact = getRecalledFact(personId, key, knownFacts);
+  if (!fact) return null;
+  const valueLower = fact.value.toLowerCase();
+  if (valueLower.length < 2) return null;
+  return responseText.toLowerCase().includes(valueLower) ? fact.attrId : null;
+}
+
+/**
+ * Shared helper: upgrade grounding to GROUNDED if OKG recall provenance is
+ * available. Called from both the deliberation pipeline and the procedure-handler
+ * path so the same logic covers TYPE_2 NOVEL and TYPE_2 PROCEDURE recall turns.
+ * Returns current grounding unchanged when already GROUNDED or no provenance.
+ */
+export function applyOkgRecallGrounding(
+  personId: string | undefined,
+  inputText: string,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+  currentGrounding: KnowledgeGrounding,
+): { grounding: KnowledgeGrounding; provenance: string | null } {
+  if (currentGrounding === 'GROUNDED') return { grounding: currentGrounding, provenance: null };
+  const provenance = okgRecallProvenance(personId, inputText, responseText, knownFacts);
+  return provenance
+    ? { grounding: 'GROUNDED', provenance }
+    : { grounding: currentGrounding, provenance: null };
+}
+
+/**
+ * True iff a taught person-model (OKG) fact VALUE surfaces in the response text.
+ *
+ * `knownFacts` come as "key: value" strings (person-model.service.ts builds them
+ * as `${key}: ${value}`). We match on the VALUE side so that genuine recall of a
+ * taught fact ("Your name is Jim" ⟵ "name: Jim") counts as GROUNDED-by-recall,
+ * while an unknowable asked while OTHER facts are known ("my shoe size", with
+ * knownFacts = {name, city}) does NOT falsely read GROUNDED — its value never
+ * appears in the reply. A miss degrades to the WKG/LLM_ASSISTED ladder: honest,
+ * and structurally incapable of producing a false GROUNDED. This is the OKG half
+ * of grounding that the old WKG-only check missed (Standard-1 provenance).
+ */
+export function personFactRecalled(
+  knownFacts: readonly string[] | undefined,
+  responseText: string,
+): boolean {
+  if (!knownFacts?.length) return false;
+  const text = responseText.toLowerCase();
+  return knownFacts.some((kf) => {
+    // Value side of "key: value" (re-join in case the value itself has a colon).
+    const value = kf.split(':').slice(1).join(':').trim().toLowerCase();
+    return value.length >= 2 && text.includes(value);
+  });
+}
+
+/**
+ * True iff the WKG context carries a REAL topical entity, as opposed to the
+ * Drive/CoBeing base-context that getContextForFrame() returns for any input
+ * without a proper-noun match. Base-context entities must not, on their own,
+ * count as GROUNDED — otherwise every nounless question (including unknowables)
+ * reads grounded off the always-present self/drive nodes (Trap A).
+ */
+function hasTopicalEntity(wkg: WkgContext): boolean {
+  return wkg.entities.some((e) => e.nodeType !== 'Drive' && e.nodeType !== 'CoBeing');
+}
+
+/**
+ * Infer knowledge grounding from the response text, OKG person-facts, and WKG
+ * context. GROUNDED means the SYSTEM verified provenance backs the response —
+ * never that the LLM asserted it.
  *
  * Rules (in priority order):
- *   1. If the response is an honest admission of ignorance → UNKNOWN.
- *      WKG context may have been loaded but was not enough to answer; the
- *      response itself is the ground truth for what was communicated.
- *   2. If WKG had matching entities or facts → GROUNDED (response used them).
- *   3. Otherwise → LLM_ASSISTED (general LLM knowledge, no WKG backing).
+ *   1. Honest admission of ignorance → UNKNOWN (the response is ground truth).
+ *   2. A taught person-model fact value surfaced in the reply → GROUNDED (OKG recall).
+ *   3. Real topical WKG backing — facts, or a non-base-context entity → GROUNDED.
+ *   4. Otherwise → LLM_ASSISTED (general LLM knowledge, no self-knowledge backing).
  */
-function inferGrounding(wkg: WkgContext, responseText: string): KnowledgeGrounding {
+export function inferGrounding(
+  wkg: WkgContext,
+  responseText: string,
+  knownFacts?: readonly string[],
+): KnowledgeGrounding {
   if (isIgnoranceResponse(responseText)) {
     return 'UNKNOWN';
   }
-  if (wkg.entities.length > 0 || wkg.facts.length > 0) {
+  if (personFactRecalled(knownFacts, responseText)) {
+    return 'GROUNDED';
+  }
+  if (wkg.facts.length > 0 || hasTopicalEntity(wkg)) {
     return 'GROUNDED';
   }
   return 'LLM_ASSISTED';

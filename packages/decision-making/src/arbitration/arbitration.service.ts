@@ -44,6 +44,46 @@ import {
 } from '../decision-making.tokens';
 
 // ---------------------------------------------------------------------------
+// Context-match gate for TYPE_1 reflexes
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum contextMatchScore a candidate must clear to fire as a TYPE_1 reflex.
+ *
+ * CANON Standard 4 (Shrug Imperative) + Standard 1 (Theater Prohibition):
+ * confidence alone is NOT sufficient to justify a reflex. A procedure that
+ * graduated past the graduation threshold (0.80) on prior similar inputs must
+ * STILL match the *current* input's context before it is allowed to fire
+ * without deliberation. Without this gate, any graduated procedure fires as a
+ * reflex for ANY input — including literal nonsense — which is the
+ * confabulation pathology the Provability Gate exposed (shrug=0 across 50
+ * turns). When the chosen candidate set has no member clearing this floor, the
+ * turn falls through to TYPE_2 (deliberation) or, if the LLM cannot run, to a
+ * genuine SHRUG.
+ *
+ * EMPIRICAL TUNING REQUIRED: this value MUST be calibrated by re-running the
+ * Provability Gate. Raise it if confabulation persists; lower it if legitimate
+ * reflexes are over-suppressed and Type-1 coverage collapses.
+ *
+ * NOTE on score provenance (re-baselined 2026-06-10): contextMatchScore is now
+ * UNIFORM across candidate sources — all are real cosine similarities in [0,1].
+ * Latent-space and tensor candidates carry their per-modality cosine/softmax;
+ * WKG-procedure candidates now carry cosine(queryEmbedding, triggerEmbedding)
+ * where both sides are nomic embeddings (the live `search_query:` input vs. the
+ * procedure's stored `search_document:` trigger phrase). This replaces the
+ * broken jaccard(contextFingerprint, triggerContext) match, where the sha256
+ * fingerprint tokenized to a single token that matched no natural-language
+ * triggerContext — so every WKG procedure scored ~0 and was suppressed
+ * regardless of relevance.
+ *
+ * The floor is raised from 0.20 (calibrated for the broken Jaccard regime, where
+ * it functioned as a near-binary "is this a WKG reflex" gate) to 0.55, a
+ * meaningful cosine threshold for nomic query/document retrieval: closely related
+ * query/document pairs sit well above 0.55, while off-topic pairs fall below it.
+ */
+export const CONTEXT_MATCH_FLOOR = 0.55;
+
+// ---------------------------------------------------------------------------
 // Arbitration Metrics
 // ---------------------------------------------------------------------------
 
@@ -162,12 +202,54 @@ export class ArbitrationService implements IArbitrationService {
     }
 
     // Step 4: Find the best Type 1 candidate.
-    // Type 1 requires: procedureData is present AND confidence > graduation threshold (0.80).
-    const bestType1 = qualified.find(
+    // Type 1 requires THREE conditions, ALL of which must hold:
+    //   (a) procedureData is present (it is a real reflex, not a Type 2 stub), AND
+    //   (b) confidence > graduation threshold (0.80), AND
+    //   (c) contextMatchScore >= CONTEXT_MATCH_FLOOR — the procedure actually
+    //       matches THIS input's context, not merely some prior input it
+    //       graduated on.
+    //
+    // Condition (c) is the keystone confabulation fix. We filter the candidate
+    // SET (not just the top pick) so that a graduated-but-irrelevant procedure
+    // can never be silently substituted for a context-matching one. If NO
+    // candidate clears all three, bestType1 is null and the turn falls through
+    // to TYPE_2 (deliberation) below — and, when the LLM is unavailable, the
+    // decision layer degrades that to an honest SHRUG.
+    const graduatedCandidates = qualified.filter(
       (c) =>
         c.procedureData !== null &&
         c.confidence > CONFIDENCE_THRESHOLDS.graduation,
-    ) ?? null;
+    );
+
+    const contextMatchedType1 = graduatedCandidates.filter(
+      (c) => c.contextMatchScore >= CONTEXT_MATCH_FLOOR,
+    );
+
+    // qualified is already sorted by confidence desc, contextMatchScore desc,
+    // so the first context-matched candidate is the best reflex.
+    const bestType1 = contextMatchedType1[0] ?? null;
+
+    // Diagnostic: a procedure graduated past 0.80 but failed the context floor.
+    // This is the confabulation guard firing — log it so the gate's effect on
+    // Type-1 rate is observable during Provability Gate calibration.
+    if (bestType1 === null && graduatedCandidates.length > 0) {
+      const topGraduated = graduatedCandidates[0];
+      this.logger.debug(
+        `Arbitration: ${graduatedCandidates.length} graduated candidate(s) suppressed by ` +
+          `CONTEXT_MATCH_FLOOR (${CONTEXT_MATCH_FLOOR.toFixed(2)}). ` +
+          `Top: "${topGraduated.procedureData?.name}" ` +
+          `confidence=${topGraduated.confidence.toFixed(3)} ` +
+          `contextMatch=${topGraduated.contextMatchScore.toFixed(3)}. ` +
+          `Falling through to deliberation/SHRUG instead of reflexing.`,
+      );
+      vlog('arbitration → TYPE_1 suppressed (context floor)', {
+        graduatedCount: graduatedCandidates.length,
+        topName: topGraduated.procedureData?.name,
+        topConfidence: +topGraduated.confidence.toFixed(3),
+        topContextMatch: +topGraduated.contextMatchScore.toFixed(3),
+        floor: CONTEXT_MATCH_FLOOR,
+      });
+    }
 
     if (bestType1 ) {
       // Step 5: Contradiction scan before committing TYPE_1.
@@ -224,14 +306,30 @@ export class ArbitrationService implements IArbitrationService {
       return { type: 'TYPE_1', candidate: bestType1 };
     }
 
-    // Step 7: Qualified candidates exist but none meet Type 1 graduation.
-    // Return the best qualified candidate via TYPE_2 path.
-    const bestType2 = qualified[0];
+    // Step 7: Qualified candidates exist but none meet Type 1 graduation
+    // (either confidence < 0.80, OR confidence >= 0.80 but contextMatchScore
+    // failed CONTEXT_MATCH_FLOOR). Route to the TYPE_2 deliberation path.
+    //
+    // CONTEXT-FLOOR FALL-THROUGH: when graduated candidates existed but were ALL
+    // suppressed by the context floor, we must NOT hand decision-making a
+    // procedure-backed candidate — doing so would make it re-execute that
+    // irrelevant procedure's action sequence (e.g. LLM_GENERATE) instead of
+    // genuinely deliberating, and would deny the honest-SHRUG fallback when the
+    // LLM is unavailable. We null out procedureData so the decision layer takes
+    // the NOVEL deliberation branch: it deliberates afresh when the LLM is up,
+    // and degrades to the honest NO_LLM_SHRUG when it is down. CANON Standard 4.
+    const type1SuppressedByContextFloor =
+      contextMatchedType1.length === 0 && graduatedCandidates.length > 0;
+
+    const bestType2: ActionCandidate = type1SuppressedByContextFloor
+      ? { ...qualified[0], procedureData: null }
+      : qualified[0];
     this._type2Count++;
 
     this.logger.debug(
       `Arbitration TYPE_2: best candidate confidence=${bestType2.confidence.toFixed(3)}, ` +
-        `threshold=${threshold.toFixed(3)}, total qualified=${qualified.length}`,
+        `threshold=${threshold.toFixed(3)}, total qualified=${qualified.length}` +
+        (type1SuppressedByContextFloor ? ' [context-floor fall-through → forcing novel deliberation]' : ''),
     );
 
     this.logEvent(

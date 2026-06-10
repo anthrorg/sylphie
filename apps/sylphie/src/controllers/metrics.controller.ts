@@ -1,9 +1,10 @@
-import { Controller, Get, Inject, Logger } from '@nestjs/common';
+import { Controller, Get, HttpCode, Inject, Logger, Post } from '@nestjs/common';
 import {
   ARBITRATION_SERVICE,
   ArbitrationService,
   ATTRACTOR_MONITOR_SERVICE,
   AttractorMonitorService,
+  LatentSpaceService,
 } from '@sylphie/decision-making';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import {
@@ -62,6 +63,7 @@ export class MetricsController {
 
     private readonly neo4j: Neo4jService,
     private readonly timescale: TimescaleService,
+    private readonly latentSpace: LatentSpaceService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -115,6 +117,67 @@ export class MetricsController {
       interoceptiveAccuracy,
       meanDriveResolutionTimes,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Metrics reset — per-run measurement window for the Provability Gate
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /metrics/reset
+   *
+   * Zero the in-process arbitration outcome counters (type1/type2/shrug) so a
+   * caller can measure a clean window. The Provability Gate calls this AFTER the
+   * reachability check and BEFORE the corpus runs, so the Type 1/Type 2 ratio
+   * (CANON §Development Metrics) reflects only that run's turns rather than the
+   * process's lifetime counters.
+   *
+   * CANON §Theater Prohibition: this resets only the diagnostic counters used by
+   * the metrics window. It does NOT touch drive state, WKG provenance, or any
+   * evaluation logic — there is no self-modification of evaluation here.
+   *
+   * @returns The counts as they stood immediately before the reset, for audit.
+   */
+  @Post('reset')
+  @HttpCode(200)
+  resetMetrics(): { ok: true; clearedAt: string; previous: { type1: number; type2: number; shrug: number } } {
+    const { type1Count, type2Count, shrugCount } = this.arbitration.getMetrics();
+    this.arbitration.resetMetrics();
+    this.logger.log(
+      `Arbitration metrics reset (was type1=${type1Count} type2=${type2Count} shrug=${shrugCount}).`,
+    );
+    return {
+      ok: true,
+      clearedAt: new Date().toISOString(),
+      previous: { type1: type1Count, type2: type2Count, shrug: shrugCount },
+    };
+  }
+
+  /**
+   * POST /metrics/latent-reset
+   *
+   * Clear ONLY the in-memory latent hot layer, so the next run starts from a cold
+   * latent index. NON-DESTRUCTIVE: the persistent `learned_patterns` warm layer is
+   * left intact and re-hydrates the hot layer on the next boot, so no accumulated
+   * data is lost. The Provability Gate calls this at the start of a run for
+   * within-session hermeticity: without it, the hot layer is hydrated on boot from
+   * patterns accumulated by ALL prior runs, so a graduated-but-over-general stored
+   * pattern matches unknowable inputs as ~10ms TYPE_1 reflexes (confabulation that
+   * no fresh embedding could explain).
+   *
+   * This does NOT truncate the warm layer — a durable hermetic gate would, but that
+   * is irreversible and a separately authorized action.
+   *
+   * @returns The number of hot-layer patterns cleared, for audit.
+   */
+  @Post('latent-reset')
+  @HttpCode(200)
+  resetLatentSpace(): { ok: true; clearedAt: string; hotLayerCleared: number } {
+    const hotLayerCleared = this.latentSpace.clearHotLayer();
+    this.logger.warn(
+      `Latent hot layer cleared for gate hermeticity (non-destructive): ${hotLayerCleared} patterns removed; warm layer preserved.`,
+    );
+    return { ok: true, clearedAt: new Date().toISOString(), hotLayerCleared };
   }
 
   // ---------------------------------------------------------------------------

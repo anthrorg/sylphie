@@ -8,6 +8,23 @@ import { xavierMatrix, linearProject } from '../linear-algebra';
 const FUSION_PROJECTION_SEED = 0xf05e;
 
 /**
+ * Modalities whose encoders perform a blocking network call to produce their
+ * embedding (currently only 'text', which embeds via the Ollama HTTP endpoint).
+ *
+ * CANON §The Lesion Test: when the LLM/embedding endpoint is known-unavailable
+ * (Lesion Test or a tripped circuit breaker), fuse() is asked to skip these
+ * encoders' network calls and substitute a deterministic zero embedding rather
+ * than awaiting an inevitable socket timeout that would park the whole per-turn
+ * decision cycle. The raw value is still preserved on the frame so the text
+ * CONTENT still reaches retrieval (entity extraction) and the deliberation
+ * degraded-SHRUG path — only the network-bound EMBEDDING is skipped.
+ *
+ * This is a named set (not a hardcoded string) so additional network-bound
+ * modalities can be added without touching fuse() logic.
+ */
+const NETWORK_BOUND_MODALITIES: ReadonlySet<string> = new Set(['text']);
+
+/**
  * Combines encoder outputs into a unified SensoryFrame.
  *
  * Discovers available modalities through the registry — never references
@@ -52,9 +69,21 @@ export class SensoryFusionService {
   /**
    * Fuse raw modality inputs into a single SensoryFrame.
    * @param inputs Map of modality name → raw value (only present modalities included)
+   * @param opts.skipNetworkEmbedding When true, encoders in
+   *   NETWORK_BOUND_MODALITIES are NOT invoked; a deterministic zero embedding
+   *   is substituted instead. The raw value is still preserved on the frame so
+   *   text content reaches retrieval and deliberation. Used when the LLM/embed
+   *   endpoint is known-unavailable to avoid a blocking network call that would
+   *   stall the per-turn cycle (CANON §The Lesion Test).
    */
-  async fuse(inputs: Map<string, unknown>): Promise<SensoryFrame> {
+  async fuse(
+    inputs: Map<string, unknown>,
+    opts?: { readonly skipNetworkEmbedding?: boolean },
+  ): Promise<SensoryFrame> {
     this.ensureProjection();
+
+    const skipNetworkEmbedding = opts?.skipNetworkEmbedding === true;
+    const zero = new Array(EMBEDDING_DIM).fill(0);
 
     const activeModalities: string[] = [];
     const modalityEmbeddings: Record<string, number[]> = {};
@@ -66,8 +95,19 @@ export class SensoryFusionService {
       const rawValue = inputs.get(encoder.modalityName);
       if (rawValue !== undefined) {
         activeModalities.push(encoder.modalityName);
-        modalityEmbeddings[encoder.modalityName] =
-          await encoder.encode(rawValue);
+        if (skipNetworkEmbedding && NETWORK_BOUND_MODALITIES.has(encoder.modalityName)) {
+          // Known-unavailable endpoint: skip the blocking encode() and use a
+          // deterministic zero embedding. The raw value is still preserved below
+          // so the content survives for retrieval/deliberation.
+          modalityEmbeddings[encoder.modalityName] = [...zero];
+          this.logger.debug(
+            `Fusion: skipped network-bound encode for "${encoder.modalityName}" ` +
+              `(embed endpoint known-unavailable) — using zero embedding.`,
+          );
+        } else {
+          modalityEmbeddings[encoder.modalityName] =
+            await encoder.encode(rawValue);
+        }
         raw[encoder.modalityName] = rawValue;
         encodedModalityNames.add(encoder.modalityName);
       }

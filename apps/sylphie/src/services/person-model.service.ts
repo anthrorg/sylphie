@@ -297,6 +297,18 @@ export class PersonModelService implements OnModuleInit {
     };
   }
 
+  /** Return the keys of all known facts for a person. */
+  listFactKeys(personId: string): string[] {
+    return (this.cache.get(personId) ?? []).map((f) => f.key);
+  }
+
+  /** Return a specific fact with its deterministic provenance id, or null if not found. */
+  getFactByKey(personId: string, key: string): { key: string; value: string; attrId: string } | null {
+    const fact = (this.cache.get(personId) ?? []).find((f) => f.key === key);
+    if (!fact) return null;
+    return { key: fact.key, value: fact.value, attrId: `attr-${personId}-${fact.key}` };
+  }
+
   /**
    * Get the model for the currently active person, if any.
    */

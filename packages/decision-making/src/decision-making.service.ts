@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('Cortex');
 import { DRIVE_STATE_READER, ACTION_OUTCOME_REPORTER, type IDriveStateReader, type IActionOutcomeReporter } from '@sylphie/drive-engine';
@@ -62,9 +62,11 @@ import { ActionHandlerRegistryService, type ActionCycleContext } from './action-
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
-import { LatentSpaceService, type MultiModalLatentMatch } from './latent-space/latent-space.service';
+import { LatentSpaceService, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
-import { DeliberationService, type DeliberationResult } from './deliberation/deliberation.service';
+import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding } from './deliberation/deliberation.service';
+import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
+import { isDocumentEncoder } from './inputs/encoders/text.encoder';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
 import { ScenePredictionService } from './prediction/scene-prediction.service';
 import type { SceneSnapshot } from '@sylphie/shared';
@@ -149,6 +151,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     @Inject(TENSOR_INFERENCE_SERVICE)
     private readonly tensorInference: ITensorInferenceService | null,
 
+    // Injected read-only to probe availability for the pre-cycle embedding gate
+    // (CANON §The Lesion Test). Never used to call the LLM from here — only
+    // isAvailable() is consulted, to decide whether the network-bound text embed
+    // should be skipped this tick. Optional so the loop degrades if unwired.
+    @Optional()
+    @Inject(LLM_SERVICE)
+    private readonly llm: ILlmService | null,
+
     @Inject(ATTRACTOR_MONITOR_SERVICE)
     private readonly attractorMonitor: AttractorMonitorService,
 
@@ -161,6 +171,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     private readonly deliberation: DeliberationService,
     private readonly sensoryPrediction: SensoryPredictionService,
     private readonly scenePrediction: ScenePredictionService,
+
+    // Used at write-back to re-embed stored text patterns as nomic DOCUMENTS
+    // (`search_document:`), the asymmetric counterpart to the per-turn QUERY
+    // embedding the fusion layer produces. See the write-back block.
+    private readonly modalityRegistry: ModalityRegistryService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -360,7 +375,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
     this.tickInFlight = true;
     try {
-      const frame = await this.tickSampler.sample();
+      // ── Pre-cycle availability gate (CANON §The Lesion Test) ──────────────
+      // When the LLM/embed endpoint is known-unavailable, skip the blocking
+      // network-bound text embed so the cycle proceeds immediately on a zero
+      // embedding. Retrieval/arbitration then operate on a deterministic
+      // fingerprint and arbitration can SHRUG honestly within bounded time,
+      // exercising the deliberation degraded-SHRUG path — instead of parking the
+      // whole turn on an inevitable socket timeout. The text CONTENT still flows
+      // (raw value preserved), only its embedding is zeroed.
+      const skipNetworkEmbedding = this.llm !== null && !this.llm.isAvailable();
+      if (skipNetworkEmbedding) {
+        vlog('pre-cycle gate: LLM unavailable — skipping network-bound embed', { eventDriven });
+      }
+      const frame = await this.tickSampler.sample({ skipNetworkEmbedding });
 
       const rawText = frame.raw['text'] as string | undefined;
       vlog('tick sampled frame', {
@@ -695,14 +722,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // there is nothing to execute. TYPE_1 and TYPE_2 dispatch their step sequences.
       const executionResults: Array<Record<string, unknown> | null> = [];
 
+      // Set in the SHRUG branch below: true when arbitration SHRUG'd because of
+      // genuine incomprehension (MISSING_CONTEXT / CONTRADICTION, not merely
+      // LOW_CONFIDENCE). When true, any deliberation response is delivered (so
+      // Sylphie isn't mute) but is NEVER written back as a learned reflex —
+      // CANON Standard 4 (Shrug Imperative). See the SHRUG branch for rationale.
+      let isGenuineIncomprehensionShrug = false;
+
       if (arbitrationResult.type !== 'SHRUG') {
         const { candidate } = arbitrationResult;
         const procedureData = candidate.procedureData;
 
-        // Fast path: if this candidate came from the latent space, use the
-        // cached response directly. No LLM call needed — this is Type 1.
+        // Fast path: emit the cached latent response directly (Type 1, no LLM)
+        // ONLY when arbitration actually GRADUATED the latent candidate to
+        // TYPE_1 and the candidate it chose IS that latent candidate.
+        //
+        // The latent candidate is unshifted onto `candidates` BEFORE arbitration
+        // (see ~:531); previously this fast path fired off the raw `latentMatch`
+        // regardless of what arbitration decided, so the CONTEXT_MATCH_FLOOR the
+        // candidate carries was never actually enforced and a low-confidence /
+        // SHRUG'd match still emitted its reflex. Gating on
+        // `arbitrationResult.type === 'TYPE_1'` AND candidate identity (the
+        // chosen candidate's procedureData.name is the `latent-…` name minted at
+        // injection) makes arbitration the sole authority over Type 1 dispatch.
+        const arbitrationChoseLatent =
+          arbitrationResult.type === 'TYPE_1' &&
+          procedureData?.name?.startsWith('latent-') === true;
+
         // Guard: only use latent match if responseText is non-empty.
-        if (latentMatch && procedureData?.name?.startsWith('latent-') && latentMatch.pattern.responseText.trim().length > 0) {
+        if (arbitrationChoseLatent && latentMatch && latentMatch.pattern.responseText.trim().length > 0) {
           vlog('executing Type 1 latent reflex', {
             patternId: latentMatch.pattern.id.substring(0, 8),
             similarity: +latentMatch.similarity.toFixed(3),
@@ -715,8 +763,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             content: latentMatch.pattern.responseText,
             model: 'latent-space-type1',
             latencyMs: 0,
+            // Grounding derives from the matched pattern's recorded provenance
+            // (entityIds captured at write time): GROUNDED when traceable to a
+            // prior verified WKG fact, LLM_ASSISTED when not, UNKNOWN for an
+            // ignorance admission. See groundingForCachedPattern.
+            knowledgeGrounding: groundingForCachedPattern(latentMatch.pattern),
           });
-        } else if (latentMatch && procedureData?.name?.startsWith('latent-')) {
+        } else if (arbitrationChoseLatent && latentMatch) {
           // Latent match found but responseText is empty — fall through to deliberation.
           this.logger.warn(
             `Latent match ${latentMatch.pattern.id.substring(0, 8)} has empty responseText — falling through to Type 2.`,
@@ -730,10 +783,34 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             deliberationTrace: deliberationResult.trace,
             confidence: deliberationResult.confidence,
             knowledgeGrounding: deliberationResult.knowledgeGrounding,
+            groundingProvenance: deliberationResult.groundingProvenance ?? null,
+            degradedNoLlm: deliberationResult.degradedNoLlm,
           });
         } else if (procedureData !== null) {
           for (const step of procedureData.actionSequence) {
             const result = await this.actionHandlerRegistry.execute(step, cycleContext);
+            // CANON Standard 1: the procedure-handler path (e.g. LLM_GENERATE)
+            // produces a fresh LLM response with NO knowledgeGrounding key, so
+            // without this it would fall to the unconditional GROUNDED default.
+            // A procedure-handler response is LLM-produced, not WKG-fact-backed —
+            // honest grounding is LLM_ASSISTED (or UNKNOWN if it admits ignorance),
+            // unless OKG recall provenance confirms the response surfaced a taught fact.
+            if (result && typeof result['content'] === 'string' && result['knowledgeGrounding'] === undefined) {
+              const procedureResponseText = result['content'] as string;
+              const baseGrounding = groundingForCachedResponse(procedureResponseText);
+              const procedurePersonModel = frame.raw['person_model'] as
+                { personId?: string; knownFacts?: string[] } | null | undefined;
+              const procedureRawText = (frame.raw['text'] as string | undefined) ?? inputSummary;
+              const { grounding: procedureGrounding, provenance: procedureProvenance } = applyOkgRecallGrounding(
+                procedurePersonModel?.personId,
+                procedureRawText,
+                procedureResponseText,
+                procedurePersonModel?.knownFacts,
+                baseGrounding,
+              );
+              result['knowledgeGrounding'] = procedureGrounding;
+              if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
+            }
             executionResults.push(result);
           }
         } else {
@@ -772,6 +849,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              groundingProvenance: deliberationResult.groundingProvenance ?? null,
               actionResult,
             });
           } else {
@@ -783,29 +861,50 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              degradedNoLlm: deliberationResult.degradedNoLlm,
             });
           }
         }
       } else {
-        // SHRUG — no candidate exceeded threshold. However, if there's actual
-        // text input in this frame, fall back to a Type 2 novel LLM response.
-        // Without this, Sylphie is permanently mute until the WKG has learned
-        // procedures. The SHRUG is still recorded for gap type tracking above.
+        // SHRUG — arbitration found no actionable reflex. There are TWO kinds:
+        //
+        //   1. "Route to Type 2 because Type 1 wasn't confident"
+        //      (gapTypes includes LOW_CONFIDENCE): candidates existed but were
+        //      below threshold. Deliberation is legitimately allowed to reason a
+        //      fresh response — Sylphie is not permanently mute. The pipeline
+        //      grounds its own output honestly (inferGrounding → UNKNOWN if it
+        //      ends up admitting ignorance).
+        //
+        //   2. "Genuine incomprehension — nothing matches"
+        //      (MISSING_CONTEXT or CONTRADICTION, and NOT LOW_CONFIDENCE): the
+        //      input is novel/contradictory with no contextual foothold. We may
+        //      still let deliberation attempt a response so Sylphie isn't mute,
+        //      BUT this is the Shrug Imperative's domain — the emitted
+        //      arbitrationType stays SHRUG (honest), and we must NOT write the
+        //      result back to the latent space / WKG as a learned reflex. Caching
+        //      a guessed answer to genuinely-incomprehensible input is exactly
+        //      the confabulation the Provability Gate must not bake in.
+        //
+        // CANON Standard 4 (Shrug Imperative) + Standard 1 (Theater Prohibition).
         const rawText = frame.raw['text'] as string | undefined;
+        const shrugGapTypes = arbitrationResult.shrugDetail?.gapTypes ?? [];
+        isGenuineIncomprehensionShrug =
+          !shrugGapTypes.includes('LOW_CONFIDENCE') &&
+          (shrugGapTypes.includes('MISSING_CONTEXT') ||
+            shrugGapTypes.includes('CONTRADICTION'));
 
-        // Fast path: if latent space already matched, use the pattern directly.
-        // No deliberation needed — this IS Type 1 reflexive response.
-        if (latentMatch && latentMatch.pattern.responseText) {
-          this.logger.debug(
-            `SHRUG bypassed — using latent space response (similarity=${latentMatch.similarity.toFixed(3)})`,
-          );
-          executionResults.push({
-            content: latentMatch.pattern.responseText,
-            model: 'latent-space-type1',
-            latencyMs: 0,
-          });
-        } else if (rawText && rawText.length > 0) {
-          // No latent match — run the full deliberation pipeline.
+        // CANON Standard 4 (Shrug Imperative): a SHRUG MUST NOT be bypassed by a
+        // cached latent reflex. Previously this branch re-emitted the raw
+        // `latentMatch` response here even though arbitration SHRUG'd —
+        // overriding the honest "I don't have a confident answer" with a
+        // confabulated one. That fast path is DELETED. When arbitration SHRUGs,
+        // the only paths are: deliberate a fresh, honestly-grounded response (so
+        // Sylphie isn't mute), or — with no text to reason about — stay silent.
+        // The latent candidate, if any, was already offered to arbitration as a
+        // candidate; arbitration's decision to SHRUG is final.
+        if (rawText && rawText.length > 0) {
+          // Run the full deliberation pipeline.
           this.logger.debug('SHRUG with text input — running deliberation pipeline.');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
 
@@ -826,6 +925,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline+action',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              groundingProvenance: deliberationResult.groundingProvenance ?? null,
               confidence: deliberationResult.confidence,
               actionResult,
             });
@@ -837,7 +937,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              groundingProvenance: deliberationResult.groundingProvenance ?? null,
               confidence: deliberationResult.confidence,
+              degradedNoLlm: deliberationResult.degradedNoLlm,
             });
           }
         } else {
@@ -931,7 +1033,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       let responseText = '';
       let responseModel: string | undefined;
       let responseTokens: { prompt: number; completion: number } | undefined;
-      let responseGrounding: KnowledgeGrounding = 'GROUNDED'; // Default for Type 1
+      // CANON Standard 1 (Theater Prohibition): the default grounding is NOT
+      // GROUNDED. A response is GROUNDED only when it is backed by real WKG
+      // entity/fact hits — which is asserted by the path that produced it
+      // (deliberation via inferGrounding, latent/procedure via
+      // groundingForCachedResponse). An unlabeled reflex must never be reported
+      // as GROUNDED, since that would fabricate provenance the system never
+      // verified. LLM_ASSISTED is the honest, conservative floor.
+      let responseGrounding: KnowledgeGrounding = 'LLM_ASSISTED';
+      let responseGroundingProvenance: string | null = null;
+      let responseDegradedNoLlm = false;
 
       for (const result of executionResults) {
         if (result && typeof result['content'] === 'string') {
@@ -942,9 +1053,49 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           if (result['knowledgeGrounding']) {
             responseGrounding = result['knowledgeGrounding'] as KnowledgeGrounding;
           }
+          // Thread OKG provenance reference (Standard 1: GROUNDED must carry the node id).
+          if (typeof result['groundingProvenance'] === 'string') {
+            responseGroundingProvenance = result['groundingProvenance'];
+          }
+          // Did deliberation degrade because the LLM was unavailable? If so this
+          // turn is an honest no-LLM SHRUG, not the TYPE_2 arbitration chose.
+          if (result['degradedNoLlm'] === true) {
+            responseDegradedNoLlm = true;
+          }
           break;
         }
       }
+
+      // CANON §The Lesion Test: when deliberation could not run because the LLM
+      // was unavailable, the cycle's *delivered* behavior is a SHRUG regardless
+      // of what arbitration selected (it had no way to know the LLM would be
+      // gone at deliberation time). Override the emitted arbitrationType so the
+      // CycleResponse honestly reports a SHRUG and never a phantom TYPE_2.
+      const emittedArbitrationType: CycleResponse['arbitrationType'] =
+        responseDegradedNoLlm ? 'SHRUG' : arbitrationResult.type;
+
+      // Keep arbitrationType and arbitrationResult consistent. When degraded,
+      // emit a SHRUG result so reportOutcome() and any consumer reading
+      // arbitrationResult.type agree with the emitted SHRUG label. If arbitration
+      // already SHRUG'd, preserve its original shrugDetail; otherwise (it chose
+      // TYPE_2) synthesize a LOW_CONFIDENCE detail — a candidate existed but the
+      // path that would have raised its confidence, deliberation, was gone.
+      const degradedReason =
+        'LLM unavailable — deliberation could not run; degraded to honest SHRUG.';
+      const emittedArbitrationResult: ArbitrationResult = !responseDegradedNoLlm
+        ? arbitrationResult
+        : arbitrationResult.type === 'SHRUG'
+          ? arbitrationResult
+          : {
+              type: 'SHRUG',
+              reason: degradedReason,
+              shrugDetail: {
+                gapTypes: ['LOW_CONFIDENCE'],
+                candidateConfidences: [arbitrationResult.candidate.confidence],
+                threshold: 0.5,
+                reason: degradedReason,
+              },
+            };
 
       const cycleLatencyMs = Date.now() - cycleStartTime;
 
@@ -956,17 +1107,42 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Patterns are written at LOW initial confidence (0.3) because we don't
       // yet know if the response was good. reportOutcome() updates confidence
       // later based on real outcome data (guardian feedback, drive deltas).
+      //
+      // A degraded no-LLM SHRUG is NEVER written back: it is a transient
+      // unavailability artifact, not a learned response. Caching it would teach
+      // Sylphie to reflexively shrug on these inputs once the LLM returns —
+      // exactly the regression the Lesion Test must not bake in.
+      //
+      // A genuine-incomprehension SHRUG (MISSING_CONTEXT / CONTRADICTION) is
+      // likewise NEVER written back: the input had no contextual foothold, so
+      // any response deliberation produced is a guess. Caching it as a Type 1
+      // reflex would re-introduce confabulation — CANON Standard 4 (Shrug
+      // Imperative). Sylphie still SPEAKS the response this turn (not mute), but
+      // does not LEARN it as a graduated reflex.
       let latentPatternIds: string[] = [];
 
-      if (responseText.length > 0 && !multiModalMatch) {
+      if (
+        responseText.length > 0 &&
+        !multiModalMatch &&
+        !responseDegradedNoLlm &&
+        !isGenuineIncomprehensionShrug
+      ) {
         // Only write if this was NOT already a latent space hit (avoid duplication)
         try {
           const wkgCtx = await this.wkgContext.getContextForFrame(frame);
           const entityIds = wkgCtx.entities.map((e) => e.nodeId);
 
+          // nomic asymmetry: the per-turn frame embeddings are QUERIES
+          // (`search_query:`), but a stored pattern is a DOCUMENT
+          // (`search_document:`). Re-embed the text STIMULUS as a document so a
+          // future `search_query:` input retrieves it from the correct sub-space.
+          // Non-text modalities (audio/video) carry no prefix asymmetry — keep
+          // their fused query embeddings unchanged.
+          const storageEmbeddings = await this.toDocumentEmbeddings(frame);
+
           // Write per-modality patterns (text, audio, video — not drives/faces)
           latentPatternIds = await this.latentSpace.writeMultiModal(
-            frame.modality_embeddings,
+            storageEmbeddings,
             responseText,
             {
               procedureId: actionId !== 'SHRUG' ? actionId : undefined,
@@ -1021,10 +1197,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       // Only emit a CycleResponse if there is actual text to deliver.
       // Empty responses cause the frontend to show "Sylphie speaks" with no content.
+      const emittedActionId = responseDegradedNoLlm ? 'SHRUG' : actionId;
+
       if (responseText.trim().length > 0) {
         vlog('emitting CycleResponse', {
-          arbitrationType: arbitrationResult.type,
-          actionId,
+          arbitrationType: emittedArbitrationType,
+          degradedNoLlm: responseDegradedNoLlm,
+          actionId: emittedActionId,
           responseLength: responseText.length,
           responsePreview: responseText.substring(0, 100),
           model: responseModel,
@@ -1035,14 +1214,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.responseSubject.next({
           turnId: randomUUID(),
           text: responseText,
-          arbitrationType: arbitrationResult.type,
-          actionId,
+          arbitrationType: emittedArbitrationType,
+          actionId: emittedActionId,
           driveSnapshot,
-          arbitrationResult,
+          arbitrationResult: emittedArbitrationResult,
           latencyMs: cycleLatencyMs,
-          model: responseModel,
-          tokensUsed: responseTokens,
+          // No model produced a degraded SHRUG — the LLM was unavailable.
+          model: responseDegradedNoLlm ? undefined : responseModel,
+          tokensUsed: responseDegradedNoLlm ? undefined : responseTokens,
           knowledgeGrounding: responseGrounding,
+          groundingProvenance: responseGroundingProvenance ?? undefined,
           preExecutionDriveSnapshot: driveSnapshot.pressureVector,
           latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
           // Tensor metadata — populated when sidecar was available this cycle
@@ -1052,6 +1233,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             tensorConsensus: tensorResult.consensus,
             bootstrapMode: tensorResult.bootstrapMode,
           } : {}),
+          inputCategory: processInputResult.inputCategory,
         });
       } else {
         this.logger.debug(
@@ -1061,8 +1243,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       // ── Tensor training with real frame data ──────────────────────────────
       if (this.tensorInference && this.tensorInference.isAvailable()) {
-        // Derive the action category from the arbitration result (same logic
-        // as the old CognitionBridgeService, but with real frame data).
+        // Derive the action category from the REAL arbitration result, not the
+        // degraded-SHRUG override: the tensor learns to predict arbitration from
+        // frame+drives, and a transient LLM outage must not teach it to SHRUG on
+        // otherwise-deliberable inputs.
         let trainCategory = 'SHRUG';
         if (arbitrationResult.type !== 'SHRUG') {
           trainCategory = arbitrationResult.candidate.procedureData?.category
@@ -1364,6 +1548,44 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * In partial mode, confidence is capped below 0.80 (forces Type 2).
    * In full mode, confidence can exceed 0.80 (allows Type 1 reflex).
    */
+  /**
+   * Produce the per-modality embeddings to STORE for a learned pattern.
+   *
+   * The frame's text embedding was produced by the fusion layer as a nomic
+   * QUERY (`search_query:`). A stored pattern must live in the DOCUMENT
+   * sub-space (`search_document:`) so a future query retrieves it correctly, so
+   * we re-embed the raw text stimulus via the text encoder's document method.
+   * If the text encoder, the raw text, or the document re-embed is unavailable,
+   * we fall back to the frame's existing text embedding (degraded, but never a
+   * crash). Non-text modalities are passed through unchanged — they carry no
+   * nomic query/document asymmetry.
+   */
+  private async toDocumentEmbeddings(
+    frame: SensoryFrame,
+  ): Promise<Record<string, number[]>> {
+    const result: Record<string, number[]> = { ...frame.modality_embeddings };
+
+    const rawText = frame.raw['text'];
+    const textEncoder = this.modalityRegistry.get('text');
+    if (
+      typeof rawText === 'string' &&
+      rawText.trim().length > 0 &&
+      isDocumentEncoder(textEncoder)
+    ) {
+      try {
+        result['text'] = await textEncoder.encodeDocument(rawText);
+      } catch (err) {
+        this.logger.warn(
+          `Document re-embed for write-back failed; storing query embedding instead: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return result;
+  }
+
   private buildTensorCandidate(
     tensorResult: TensorInferenceResult,
     contextFingerprint: string,
@@ -1554,4 +1776,41 @@ function computeArousal(driveSnapshot: DriveSnapshot): number {
   const curiosity = driveSnapshot.pressureVector[DriveName.Curiosity] ?? 0;
   const raw = (anxiety + curiosity) / 2;
   return Math.min(1.0, Math.max(0.0, raw));
+}
+
+/**
+ * Honest knowledge grounding for a procedure-handler LLM_GENERATE reflex that
+ * carries NO provenance tag of its own.
+ *
+ * CANON Standard 1 (Theater Prohibition): a fresh LLM_GENERATE response is not
+ * backed by a WKG fact lookup, so it can never honestly be GROUNDED. We reuse
+ * inferGrounding with an empty WKG context: UNKNOWN when the text admits
+ * ignorance ("I don't know"), otherwise LLM_ASSISTED — the correct floor for an
+ * LLM-produced reflex with no recorded provenance.
+ */
+function groundingForCachedResponse(responseText: string): KnowledgeGrounding {
+  return inferGrounding(
+    { entities: [], facts: [], relationships: [], procedures: [], summary: '' },
+    responseText,
+  );
+}
+
+/**
+ * Honest knowledge grounding for a latent-space (Type 1) cache hit, derived
+ * from the matched pattern's recorded provenance.
+ *
+ * GROUNDED here = traceable to a prior verified WKG fact (entityIds recorded at
+ * write time), not re-verified this turn. The pattern's `entityIds` were
+ * populated from the REAL WKG context when the pattern was first learned
+ * (decision-making write-back). A non-empty entityIds set therefore means this
+ * cached reflex echoes a response that WAS WKG-fact-backed — honestly GROUNDED,
+ * without re-querying WKG. An empty set means the original response had no WKG
+ * backing → LLM_ASSISTED. In all cases an ignorance admission overrides to
+ * UNKNOWN (CANON Standard 1: the text is the ground truth for what was said).
+ */
+function groundingForCachedPattern(pattern: LearnedPattern): KnowledgeGrounding {
+  if (isIgnoranceResponse(pattern.responseText)) {
+    return 'UNKNOWN';
+  }
+  return pattern.entityIds.length > 0 ? 'GROUNDED' : 'LLM_ASSISTED';
 }

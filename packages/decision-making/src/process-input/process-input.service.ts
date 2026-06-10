@@ -31,6 +31,7 @@ import { DRIVE_INDEX_ORDER, verboseFor } from '@sylphie/shared';
 const vlog = verboseFor('Cortex');
 import type { IEpisodicMemoryService, IActionRetrieverService } from '../interfaces/decision-making.interfaces';
 import { EPISODIC_MEMORY_SERVICE, ACTION_RETRIEVER_SERVICE } from '../decision-making.tokens';
+import { ModalityRegistryService } from '../inputs/registry/modality-registry.service';
 
 // ---------------------------------------------------------------------------
 // Input Category Types
@@ -91,6 +92,11 @@ export class ProcessInputService {
     @Optional()
     @Inject(ACTION_RETRIEVER_SERVICE)
     private readonly actionRetriever: IActionRetrieverService | null,
+
+    // Used to obtain the live QUERY embedding of the raw input text for semantic
+    // WKG context matching. Optional for graceful degradation in lesion configs.
+    @Optional()
+    private readonly modalityRegistry: ModalityRegistryService | null,
   ) {}
 
   /**
@@ -133,11 +139,27 @@ export class ProcessInputService {
       this.logger.debug(`Found ${similarEpisodes.length} similar prior episodes`);
     }
 
+    // Step 6b: Obtain the live QUERY embedding for semantic WKG context matching.
+    // The fused frame already carries a per-modality text embedding produced by
+    // the encoder as a nomic QUERY (`search_query:`) — reuse it to avoid a
+    // redundant Ollama round-trip inside the latency-sensitive decision cycle.
+    // Fall back to a fresh encode() of the raw text only if no frame text
+    // embedding is present. Null when neither is available → cosine fails closed.
+    const queryEmbedding = await this.resolveQueryEmbedding(frame);
+    vlog('query embedding resolved', {
+      hasEmbedding: queryEmbedding !== null,
+      dims: queryEmbedding?.length ?? 0,
+    });
+
     // Step 7: Retrieve action candidates from the WKG
     let candidates: ActionCandidate[] = [];
     if (this.actionRetriever) {
       try {
-        candidates = await this.actionRetriever.retrieve(contextFingerprint, driveSnapshot);
+        candidates = await this.actionRetriever.retrieve(
+          contextFingerprint,
+          driveSnapshot,
+          queryEmbedding,
+        );
         this.logger.debug(`Retrieved ${candidates.length} action candidates`);
       } catch (err) {
         this.logger.error(`Failed to retrieve action candidates: ${err}`);
@@ -168,13 +190,26 @@ export class ProcessInputService {
   }
 
   /**
+   * Normalize frame.raw['text'] to a consistent object form.
+   *
+   * tick-sampler.updateText() stores a plain string; guardian-feedback frames
+   * may carry { content, guardianFeedback }. Both must be handled here so that
+   * all downstream reads see a uniform shape without unsafe casts.
+   */
+  private readText(frame: SensoryFrame): { content?: string; guardianFeedback?: string } {
+    const raw = frame.raw['text'];
+    if (typeof raw === 'string') return { content: raw };
+    return (raw as { content?: string; guardianFeedback?: string } | undefined) ?? {};
+  }
+
+  /**
    * Categorize a SensoryFrame based on its active modalities.
    */
   private categorizeFrame(frame: SensoryFrame): InputCategory {
     const modalities = new Set(frame.active_modalities);
 
     // Check for guardian feedback in raw text data
-    const rawText = frame.raw['text'] as { content?: string; guardianFeedback?: string } | undefined;
+    const rawText = this.readText(frame);
     if (rawText?.guardianFeedback && rawText.guardianFeedback !== 'none') {
       return 'GUARDIAN_FEEDBACK';
     }
@@ -209,7 +244,7 @@ export class ProcessInputService {
     const entities: string[] = [];
 
     // Extract from text modality
-    const rawText = frame.raw['text'] as { content?: string } | undefined;
+    const rawText = this.readText(frame);
     if (rawText?.content) {
       const words = rawText.content.split(/\s+/).filter((w) => w.length > 2);
       // Capitalized words as potential entities
@@ -274,7 +309,7 @@ export class ProcessInputService {
     category: InputCategory,
     entities: readonly string[],
   ): string {
-    const rawText = frame.raw['text'] as { content?: string } | undefined;
+    const rawText = this.readText(frame);
 
     if (rawText?.content) {
       // Truncate to ~100 chars
@@ -309,6 +344,59 @@ export class ProcessInputService {
 
     const fingerprintString = `${category}::${quantized.join(',')}::${dominantDrive}`;
     return createHash('sha256').update(fingerprintString).digest('hex');
+  }
+
+  /**
+   * Resolve the per-cycle nomic QUERY (`search_query:`) embedding used for
+   * semantic WKG context matching.
+   *
+   * Priority:
+   *   1. The frame's existing text modality embedding — the encoder already
+   *      produced it as a `search_query:` embedding for this turn, so reusing it
+   *      avoids a second Ollama call in the latency-sensitive decision cycle.
+   *   2. A fresh `encode()` of the raw input text via the registered text encoder
+   *      (also `search_query:`-prefixed) when no frame text embedding exists.
+   *
+   * Returns null when neither is available (e.g. a non-text frame with no text
+   * encoder), which makes every WKG contextMatchScore fail closed to 0.0.
+   */
+  private async resolveQueryEmbedding(
+    frame: SensoryFrame,
+  ): Promise<number[] | null> {
+    // 1. Reuse the frame's text modality embedding if it is present and non-zero.
+    const frameTextEmbedding = frame.modality_embeddings?.['text'];
+    if (
+      Array.isArray(frameTextEmbedding) &&
+      frameTextEmbedding.length > 0 &&
+      frameTextEmbedding.some((v) => v !== 0)
+    ) {
+      return frameTextEmbedding;
+    }
+
+    // 2. Fall back to a fresh QUERY embed of the raw text via the text encoder.
+    if (!this.modalityRegistry) {
+      return null;
+    }
+    const rawText = this.readText(frame);
+    const text = rawText?.content?.trim();
+    if (!text || text.length === 0) {
+      return null;
+    }
+    const textEncoder = this.modalityRegistry.get('text');
+    if (!textEncoder) {
+      return null;
+    }
+    try {
+      const embedding = await textEncoder.encode(text);
+      return embedding.some((v) => v !== 0) ? embedding : null;
+    } catch (err) {
+      this.logger.warn(
+        `ProcessInput: query embed failed; WKG context match will fail closed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
   }
 }
 

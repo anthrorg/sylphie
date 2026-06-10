@@ -29,7 +29,11 @@
     "start:drive-server": "yarn workspace @sylphie/drive-server start",
     "test:e2e": "npx tsx test/e2e/full-system.e2e.ts",
     "test:arch": "npx tsx test/e2e/architecture-verification.e2e.ts",
-    "test:agi": "npx tsx test/e2e/agi-verification.e2e.ts"
+    "test:agi": "npx tsx test/e2e/agi-verification.e2e.ts",
+    "gate": "npx tsx test/gate/gate.ts --mode=replay",
+    "gate:record": "npx tsx test/gate/gate.ts --mode=record",
+    "gate:lesion": "npx tsx test/gate/gate.ts --mode=lesion",
+    "gate:update-baseline": "npx tsx test/gate/gate.ts --mode=update-baseline"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0"

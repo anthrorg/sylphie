@@ -396,4 +396,26 @@ export interface ILlmService {
    * @returns True if the service can accept calls; false otherwise.
    */
   isAvailable(): boolean;
+
+  /**
+   * Force the service into the unavailable state for the Lesion Test
+   * (CANON §The Lesion Test).
+   *
+   * After this call, isAvailable() returns false and complete() throws
+   * immediately rather than attempting a network call. This is the INTENDED
+   * "LLM unplugged" signal — distinct from a transport-level socket failure,
+   * which would throw mid-call and leave callers no chance to degrade.
+   *
+   * Callers MUST degrade gracefully (Decision Making → SHRUG, Learning → skip,
+   * Planning → defer). Restore with resetCircuitBreaker().
+   */
+  enableLesionTest(): void;
+
+  /**
+   * Restore availability after a Lesion Test or a tripped circuit breaker.
+   *
+   * Clears the consecutive-failure counter and marks the service available
+   * again. Idempotent.
+   */
+  resetCircuitBreaker(): void;
 }

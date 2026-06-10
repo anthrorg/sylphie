@@ -106,6 +106,20 @@ const MAX_HOT_ENTRIES = 6000;
 /** Default similarity threshold for Type 1 matching. */
 const DEFAULT_SIMILARITY_THRESHOLD = 0.80;
 
+/**
+ * Minimum margin by which the best match must beat the SECOND-best match to be
+ * accepted as a Type 1 reflex.
+ *
+ * Without a runner-up margin, a single over-general pattern can blanket every
+ * input: as long as it (barely) clears the threshold it wins, even when many
+ * other patterns score nearly identically — a signature of "matches everything"
+ * rather than "matches this". Requiring the winner to stand out from the field
+ * means a genuine, specific reflex (which dominates its neighbours) still fires,
+ * while a diffuse over-general pattern (tied with the pack) is rejected and the
+ * input falls through to honest deliberation / SHRUG.
+ */
+const RUNNER_UP_MARGIN = 0.05;
+
 /** Modality weights for composite scoring. Text dominates to prevent drowning. */
 const MODALITY_WEIGHTS: Record<string, number> = {
   text: 0.50,
@@ -182,18 +196,38 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
   ): LatentMatch | null {
     let bestEntry: HotEntry | null = null;
     let bestSimilarity = -1;
+    // Highest similarity among entries OTHER than the current best. A genuine
+    // reflex must clear the threshold AND beat this runner-up by RUNNER_UP_MARGIN.
+    let secondSimilarity = -1;
 
     for (const entry of this.hotLayer) {
       if (entry.modality !== modality) continue;
       const sim = cosineSimilarity(embedding, entry.embedding);
-      if (sim > bestSimilarity && sim >= threshold) {
+      if (sim > bestSimilarity) {
+        // Previous best becomes the runner-up.
+        secondSimilarity = bestSimilarity;
         bestSimilarity = sim;
         bestEntry = entry;
+      } else if (sim > secondSimilarity) {
+        secondSimilarity = sim;
       }
     }
 
-    if (!bestEntry) {
+    if (!bestEntry || bestSimilarity < threshold) {
       vlog('latent searchByModality MISS', { modality, threshold, hotLayerSize: this.hotLayer.length });
+      return null;
+    }
+
+    // Runner-up margin: reject an over-general pattern that wins by a hair over
+    // a crowded field. A negative secondSimilarity means there was no runner-up
+    // (only one candidate of this modality), which trivially satisfies the margin.
+    if (secondSimilarity >= 0 && bestSimilarity - secondSimilarity < RUNNER_UP_MARGIN) {
+      vlog('latent searchByModality MISS (runner-up margin)', {
+        modality,
+        best: +bestSimilarity.toFixed(3),
+        second: +secondSimilarity.toFixed(3),
+        margin: RUNNER_UP_MARGIN,
+      });
       return null;
     }
 
@@ -455,6 +489,26 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.warn(`Latent space cleared: ${count} hot layer patterns removed, warm layer truncated.`);
+    return count;
+  }
+
+  /**
+   * Clear ONLY the in-memory hot layer, leaving the persistent warm layer
+   * (learned_patterns) untouched. Non-destructive: the hot layer re-hydrates
+   * from the warm layer on the next boot, so no accumulated data is lost.
+   *
+   * Used to give the Provability Gate a COLD latent index for a single run —
+   * latent search then reflects only patterns written during that run — without
+   * discarding the persisted patterns. (A durable hermetic gate would instead
+   * truncate the warm layer via clear(); that is a deliberate, separately
+   * authorized action because it is irreversible.)
+   */
+  clearHotLayer(): number {
+    const count = this.hotLayer.length;
+    this.hotLayer = [];
+    this.logger.warn(
+      `Latent hot layer cleared (non-destructive): ${count} patterns removed; warm layer (learned_patterns) preserved.`,
+    );
     return count;
   }
 

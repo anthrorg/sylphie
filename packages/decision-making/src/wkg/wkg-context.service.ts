@@ -34,6 +34,7 @@ import {
   DriveName,
   verboseFor,
 } from '@sylphie/shared';
+import { TextEncoder } from '../inputs/encoders/text.encoder';
 
 const vlog = verboseFor('Cortex');
 
@@ -126,6 +127,11 @@ export class WkgContextService {
 
   constructor(
     @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
+    // TextEncoder is provided by DecisionMakingModule (same package). Injected
+    // @Optional so the runtime write-back still works (with a null
+    // triggerEmbedding → fail-closed cosine=0 at retrieval) when the encoder is
+    // unavailable, mirroring ProcedureCreationService's graceful degradation.
+    @Optional() private readonly textEncoder: TextEncoder | null,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -420,6 +426,14 @@ export class WkgContextService {
         { category: proc.category },
       );
 
+      // Derive the natural-language trigger phrase and embed it as a nomic
+      // DOCUMENT so a later per-turn QUERY embedding can cosine-match it. This is
+      // the same semantic context-match data ProcedureCreationService writes; the
+      // runtime write-back path previously left both fields null, suppressing
+      // every WKG-written procedure at the context-match floor.
+      const triggerPhrase = proc.triggerContext; // already natural-language inputSummary
+      const triggerEmbedding = await this.embedTriggerPhrase(triggerPhrase);
+
       const newTokens = tokenize(proc.triggerContext);
       for (const record of existingResult.records) {
         const existingContext = (record.get('triggerContext') as string) ?? '';
@@ -433,8 +447,8 @@ export class WkgContextService {
 
           await session.run(
             `MATCH (p:ActionProcedure {node_id: $nodeId})
-             SET p.confidence = $confidence, p.updated_at = datetime()`,
-            { nodeId: existingId, confidence: boosted },
+             SET p.confidence = $confidence, p.updated_at = datetime(), p.triggerPhrase = $triggerPhrase, p.triggerEmbedding = $triggerEmbedding`,
+            { nodeId: existingId, confidence: boosted, triggerPhrase, triggerEmbedding },
           );
 
           vlog('WKG procedure deduplicated', {
@@ -463,6 +477,8 @@ export class WkgContextService {
            name: $name,
            category: $category,
            triggerContext: $triggerContext,
+           triggerPhrase: $triggerPhrase,
+           triggerEmbedding: $triggerEmbedding,
            response_text: $responseText,
            action_sequence: $actionSequence,
            provenance_type: $provenance,
@@ -476,6 +492,8 @@ export class WkgContextService {
           name: proc.name,
           category: proc.category,
           triggerContext: proc.triggerContext,
+          triggerPhrase,
+          triggerEmbedding,
           responseText: proc.responseText,
           actionSequence: JSON.stringify(proc.actionSequence),
           provenance: proc.provenance,
@@ -506,6 +524,7 @@ export class WkgContextService {
         entityCount: proc.entityIds.length,
         motivatingDrive: proc.motivatingDrive,
         confidence: proc.confidence,
+        triggerEmbedded: triggerEmbedding !== null,
       });
 
       this.logger.log(
@@ -518,6 +537,38 @@ export class WkgContextService {
       return '';
     } finally {
       await session.close();
+    }
+  }
+
+  /**
+   * Embed the trigger phrase as a nomic DOCUMENT (`search_document:`) so a
+   * later per-turn QUERY embedding retrieves it correctly. Returns null when the
+   * encoder is unavailable, the phrase is empty, or the embed fails/returns a
+   * zero vector — null triggers the fail-closed cosine=0.0 path at retrieval.
+   */
+  private async embedTriggerPhrase(phrase: string): Promise<number[] | null> {
+    if (!this.textEncoder || phrase.trim().length === 0) {
+      return null;
+    }
+    try {
+      const embedding = await this.textEncoder.encodeDocument(phrase);
+      // A zero vector is the encoder's failure sentinel (Ollama unreachable).
+      // Persist null instead so retrieval fail-closes rather than scoring 0/0.
+      if (!embedding.some((v) => v !== 0)) {
+        this.logger.warn(
+          'Trigger phrase embed returned a zero vector (Ollama likely unavailable); ' +
+            'storing triggerEmbedding=null (fail-closed at retrieval).',
+        );
+        return null;
+      }
+      return embedding;
+    } catch (err) {
+      this.logger.warn(
+        `Trigger phrase embed failed; storing triggerEmbedding=null: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
     }
   }
 

@@ -32,9 +32,12 @@
  * candidate list (which triggers the Type 2 path) and a debug message is
  * logged rather than throwing. This is intentional graceful degradation.
  *
- * Context similarity is computed with Jaccard similarity on whitespace tokens.
- * This is a lightweight approximation appropriate for fingerprint matching
- * before a proper embedding-based retrieval layer is in place.
+ * Context similarity is computed as cosine similarity between the live per-turn
+ * nomic QUERY embedding (`search_query:` of the raw input text) and each
+ * procedure's stored nomic DOCUMENT trigger embedding (`search_document:` of its
+ * triggerPhrase), clamped to [0,1]. This replaced an earlier sha256→Jaccard
+ * match that scored ~0 for every WKG procedure (a 64-char hex digest tokenizes
+ * to one token that matches no natural-language triggerContext).
  *
  * CANON KNOWN LIMITATION: WKG_SERVICE token is not yet formally defined in
  * decision-making.tokens.ts. Neo4jService from @sylphie/shared is injected
@@ -60,6 +63,8 @@ import {
 
 const vlog = verboseFor('Cortex');
 import type { IActionRetrieverService } from '../interfaces/decision-making.interfaces';
+import { cosineSimilarity } from '../latent-space/vector-math';
+import { TextEncoder } from '../inputs/encoders/text.encoder';
 
 // ---------------------------------------------------------------------------
 // LRU Cache
@@ -151,6 +156,14 @@ interface ProcedureRow {
   readonly provenance: string;
   readonly confidence: number;
   readonly actionSequence?: string | null;
+  /** Natural-language trigger phrase (observability + future use). May be null. */
+  readonly triggerPhrase?: string | null;
+  /**
+   * nomic DOCUMENT embedding of the trigger phrase. Cosine-matched against the
+   * live query embedding to score context relevance. May be null (fail-closed
+   * to contextMatchScore = 0.0).
+   */
+  readonly triggerEmbedding?: number[] | null;
 }
 
 function isProcedureRow(value: unknown): value is ProcedureRow {
@@ -177,6 +190,11 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
     // Neo4jService used as structural WKG placeholder. Injected @Optional for
     // graceful degradation when the WKG connection is not yet established.
     @Optional() @Inject(Neo4jService) private readonly neo4j: Neo4jService | null,
+    // TextEncoder is used to embed bootstrap seed trigger phrases at cold start so
+    // seeds participate in the cosine-similarity context match like learned
+    // procedures. Optional: if unavailable, seeds store triggerEmbedding=null and
+    // fail closed (never fire as reflexes) until re-embedded.
+    @Optional() private readonly textEncoder: TextEncoder | null,
   ) {}
 
   /**
@@ -208,8 +226,9 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
    *   1. Check LRU cache (keyed by contextFingerprint).
    *   2. If cache miss, query Neo4j for ActionProcedure nodes with
    *      confidence >= retrieval threshold (0.50).
-   *   3. Compute Jaccard similarity between each node's triggerContext and
-   *      the provided contextFingerprint.
+   *   3. Compute cosine similarity between each node's stored trigger embedding
+   *      and the provided live query embedding (fail-closed to 0.0 when either
+   *      is missing).
    *   4. Assign the motivating drive (highest-pressure drive in driveSnapshot).
    *   5. Sort by composite score (confidence * W_CONFIDENCE +
    *      contextMatch * W_CONTEXT + 0.0 * W_DRIVE) descending.
@@ -222,13 +241,22 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
    * by entering the Type 2 path.
    *
    * @param contextFingerprint - Semantic fingerprint of the current input context.
+   *                             Used ONLY as the LRU cache key (a sha256 digest);
+   *                             never as a similarity operand.
    * @param driveSnapshot      - Current drive state for motivating drive assignment
    *                             and drive relevance scoring.
+   * @param queryEmbedding     - nomic QUERY (`search_query:`) embedding of the raw
+   *                             input text for the current cycle. Cosine-matched
+   *                             against each procedure's stored trigger embedding
+   *                             to compute contextMatchScore. Null/empty when no
+   *                             embedding is available → every contextMatchScore
+   *                             fails closed to 0.0.
    * @returns Array of ActionCandidate records, ranked by composite score. May be empty.
    */
   async retrieve(
     contextFingerprint: string,
     driveSnapshot: DriveSnapshot,
+    queryEmbedding?: number[] | null,
   ): Promise<ActionCandidate[]> {
     // Cache check.
     const cached = this.cache.get(contextFingerprint);
@@ -272,7 +300,9 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
                 coalesce(p.triggerContext, p.trigger_context) AS triggerContext,
                 coalesce(p.provenance, p.provenance_type) AS provenance,
                 p.confidence AS confidence,
-                coalesce(p.actionSequence, p.action_sequence) AS actionSequence`,
+                coalesce(p.actionSequence, p.action_sequence) AS actionSequence,
+                coalesce(p.triggerPhrase, p.trigger_phrase) AS triggerPhrase,
+                coalesce(p.triggerEmbedding, p.trigger_embedding) AS triggerEmbedding`,
         { threshold: CONFIDENCE_THRESHOLDS.retrieval },
       );
 
@@ -280,9 +310,18 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
         .map((record) => record.toObject())
         .filter(isProcedureRow)
         .map((row): ActionCandidate => {
-          const contextMatchScore = this.jaccardSimilarity(
-            contextFingerprint,
-            row.triggerContext,
+          // Semantic context match: cosine between the live query embedding and
+          // the procedure's stored trigger embedding, clamped to [0,1]. Replaces
+          // the broken sha256→Jaccard match (a 64-char hex digest tokenizes to a
+          // single token that matches no natural-language triggerContext, so every
+          // WKG procedure scored ~0 and was suppressed by the floor).
+          //
+          // Fail-closed: if either side is missing/empty, the score is 0.0 and the
+          // candidate is suppressed by CONTEXT_MATCH_FLOOR — a procedure with no
+          // usable trigger embedding cannot fire as a reflex.
+          const contextMatchScore = computeContextMatch(
+            queryEmbedding,
+            row.triggerEmbedding,
           );
 
           // Parse actionSequence from Neo4j if stored, otherwise default to LLM_GENERATE.
@@ -458,13 +497,23 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
         return;
       }
 
+      let embeddedSeedCount = 0;
       for (const seed of seeds) {
+        // The seed's keyword string is its natural-language trigger phrase. Embed
+        // it as a nomic DOCUMENT so it cosine-matches a later query embedding,
+        // exactly like a learned procedure. Null on encoder failure (fail-closed).
+        const triggerPhrase = seed.triggerContext;
+        const triggerEmbedding = await this.embedSeedTrigger(triggerPhrase);
+        if (triggerEmbedding !== null) embeddedSeedCount++;
+
         await session.run(
           `MERGE (p:ActionProcedure {id: $id})
            ON CREATE SET
              p.name = $name,
              p.category = $category,
              p.triggerContext = $triggerContext,
+             p.triggerPhrase = $triggerPhrase,
+             p.triggerEmbedding = $triggerEmbedding,
              p.provenance = $provenance,
              p.confidence = $confidence,
              p.actionSequence = $actionSequence,
@@ -474,6 +523,8 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             name: seed.name,
             category: seed.category,
             triggerContext: seed.triggerContext,
+            triggerPhrase,
+            triggerEmbedding,
             provenance: 'SYSTEM_BOOTSTRAP',
             confidence: BASE_CONFIDENCE,
             actionSequence: seed.actionSequence
@@ -482,7 +533,18 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
           },
         );
 
-        this.logger.debug(`ActionRetriever: seeded procedure "${seed.name}" (id: ${seed.id})`);
+        this.logger.debug(
+          `ActionRetriever: seeded procedure "${seed.name}" (id: ${seed.id}, ` +
+            `embedded: ${triggerEmbedding !== null})`,
+        );
+      }
+
+      if (embeddedSeedCount < seeds.length) {
+        this.logger.warn(
+          `ActionRetriever: only ${embeddedSeedCount}/${seeds.length} seeds got a ` +
+            `trigger embedding (Ollama likely unavailable at bootstrap). Un-embedded ` +
+            `seeds fail closed (contextMatchScore=0) until re-seeded.`,
+        );
       }
 
       this.logger.log(
@@ -510,6 +572,32 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
   }
 
   /**
+   * Embed a bootstrap seed's trigger phrase as a nomic DOCUMENT, returning null
+   * if the encoder is unavailable or the embed fails / returns a zero vector
+   * (the encoder's failure sentinel). A null embedding is persisted so the seed
+   * fails closed at retrieval rather than scoring against a zero vector.
+   */
+  private async embedSeedTrigger(phrase: string): Promise<number[] | null> {
+    if (!this.textEncoder || phrase.trim().length === 0) {
+      return null;
+    }
+    try {
+      const embedding = await this.textEncoder.encodeDocument(phrase);
+      if (!embedding.some((v) => v !== 0)) {
+        return null;
+      }
+      return embedding;
+    } catch (err) {
+      this.logger.warn(
+        `ActionRetriever: seed trigger embed failed for "${phrase.slice(0, 40)}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Compute the composite ranking score for a candidate.
    *
    * Combines confidence, context match, and drive relevance with fixed weights.
@@ -526,38 +614,6 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       W_CONTEXT * candidate.contextMatchScore +
       W_DRIVE * (candidate.driveRelevanceScore ?? 0.0)
     );
-  }
-
-  /**
-   * Compute Jaccard similarity between two strings tokenized on whitespace.
-   *
-   * Jaccard(A, B) = |A ∩ B| / |A ∪ B|
-   *
-   * Returns 0.0 if either string is empty. Returns 1.0 for identical strings.
-   * This is a lightweight approximation used for fingerprint matching before
-   * a proper embedding layer is available.
-   *
-   * @param a - First string.
-   * @param b - Second string.
-   * @returns Jaccard similarity in [0.0, 1.0].
-   */
-  private jaccardSimilarity(a: string, b: string): number {
-    const tokensA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
-    const tokensB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
-
-    if (tokensA.size === 0 || tokensB.size === 0) {
-      return 0.0;
-    }
-
-    let intersectionCount = 0;
-    for (const token of tokensA) {
-      if (tokensB.has(token)) {
-        intersectionCount++;
-      }
-    }
-
-    const unionCount = tokensA.size + tokensB.size - intersectionCount;
-    return intersectionCount / unionCount;
   }
 
   /**
@@ -586,4 +642,44 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
 
     return highestDrive;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Context-match helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the semantic context-match score for a WKG procedure candidate.
+ *
+ * Cosine similarity between the live per-turn QUERY embedding and the
+ * procedure's stored DOCUMENT trigger embedding, clamped to [0,1]. nomic
+ * query/document embeddings are non-negative-dominated in practice, but cosine
+ * is mathematically in [-1,1]; we clamp the (rare) negative case to 0 so the
+ * score composes cleanly with the other [0,1] ranking signals and the
+ * CONTEXT_MATCH_FLOOR gate.
+ *
+ * Fail-closed: returns 0.0 whenever the query embedding or the stored trigger
+ * embedding is missing, empty, or a zero vector. A procedure that was created
+ * while Ollama was down (triggerEmbedding=null) therefore cannot fire as a
+ * reflex until it is re-embedded.
+ */
+function computeContextMatch(
+  queryEmbedding: number[] | null | undefined,
+  triggerEmbedding: number[] | null | undefined,
+): number {
+  if (
+    !queryEmbedding ||
+    !triggerEmbedding ||
+    queryEmbedding.length === 0 ||
+    triggerEmbedding.length === 0
+  ) {
+    return 0.0;
+  }
+  // Guard against zero vectors (encoder failure sentinel): cosine is 0 for them,
+  // but be explicit so the intent is clear.
+  if (!queryEmbedding.some((v) => v !== 0) || !triggerEmbedding.some((v) => v !== 0)) {
+    return 0.0;
+  }
+  const cos = cosineSimilarity(queryEmbedding, triggerEmbedding);
+  return cos < 0 ? 0.0 : cos > 1 ? 1.0 : cos;
 }

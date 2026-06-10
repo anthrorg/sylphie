@@ -388,12 +388,22 @@ export interface IActionRetrieverService {
    * An empty array is a valid return — it means no WKG candidates exist above
    * threshold for this context, which will trigger the Type 2 path.
    *
-   * @param contextFingerprint - Semantic fingerprint of the current input context.
+   * @param contextFingerprint - Semantic fingerprint of the current input context
+   *                             (sha256 digest). Used as the LRU cache key only.
    * @param driveSnapshot      - Current drive state for motivating drive assignment.
+   * @param queryEmbedding     - nomic QUERY embedding of the raw input text for this
+   *                             cycle, cosine-matched against each procedure's stored
+   *                             trigger embedding to score context relevance. When
+   *                             null/absent, every contextMatchScore fails closed to
+   *                             0.0 and only confidence drives ranking.
    * @returns Array of ActionCandidate records. May be empty.
    * @throws {DecisionMakingException} If the WKG query fails.
    */
-  retrieve(contextFingerprint: string, driveSnapshot: DriveSnapshot): Promise<ActionCandidate[]>;
+  retrieve(
+    contextFingerprint: string,
+    driveSnapshot: DriveSnapshot,
+    queryEmbedding?: number[] | null,
+  ): Promise<ActionCandidate[]>;
 
   /**
    * Bootstrap the action tree with seed procedure nodes on cold start.
