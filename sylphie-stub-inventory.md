@@ -12,72 +12,49 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 
 ## TIER 1 — CRITICAL: Breaks an Architectural Promise
 
-### 1.1 EWC catastrophic interference prevention is a no-op
+### 1.1 EWC catastrophic interference prevention — RESOLVED (2026-06-10)
 
-**Where:** `packages/cognition-service/training/replay.py:72-209`
+**Where (was):** `packages/cognition-service/training/replay.py`
 
-**What:** `EWCRegularizer` exists as a class. `_compute_uniform_fisher` returns all-ones arrays — equivalent to plain L2 weight anchoring at the reference point. `set_reference()` is **never called anywhere in the codebase**. The trainer adds zero penalty gradients each step.
-
-**Impact:**
-- The cognition sidecar's whole "online learning + bootstrap progression" story rests on the claim that learning new action categories doesn't destroy older ones. EWC is the named mechanism for that.
-- Currently, when the global model is trained on a new category, gradient descent freely overwrites weights that mattered for old categories. There is no protection.
-- This is asymptomatic during shadow/audit (LLM still drives decisions) but becomes load-bearing in **partial** and **full** modes — the very modes the bootstrap progression is designed to reach.
-- Concrete failure mode: a category that graduates early can silently regress as later training overwrites its weights. The shadow-mode agreement-rate gate would not detect this because graduated categories stop being compared.
-
-**Fix complexity:** Medium-high. Needs a calibration dataset to compute true Fisher diagonals (TODO comment at `replay.py:92-93`), a hook to call `set_reference()` after each meaningful training milestone, and a tuning round on the lambda penalty.
+**Resolution:** `EWCRegularizer` rewritten as Online EWC (Schwarz 2018). `compute_fisher()` computes empirical Fisher diagonal (squared gradients, normalized, floored at 1e-8, clamped at 1e2 per-layer). `set_reference()` implements `F_new = 0.7·F_old + F_phase`. λ ramp-up over 200 steps prevents Adam-momentum shock. Per-layer Fisher stats logged at every phase transition (Fisher collapse is silent without this). `DataBuffer.snapshot_calibration()` added. `POST /cognition/phase-transition` endpoint triggers `set_reference()` + `compute_fisher()` at runtime when bootstrap phase changes. 7 tests in `training/tests/test_replay.py`, all passing.
 
 ---
 
-### 1.2 Pressure-driven learning cycles do not exist
+### 1.2 Pressure-driven learning cycles — RESOLVED (2026-06-10)
 
-**Where:** `packages/learning/src/learning.service.ts:8-12, 89, 187`
+**Where (was):** `packages/learning/src/learning.service.ts:8-12, 89, 187`
 
-**What:** Class docstring states explicitly: *"In a future phase, the Cognitive Awareness drive should trigger cycles when pressure exceeds a threshold. For now, the timer fires every CYCLE_INTERVAL_MS."* All four learning timers (60s consolidation, 5min reflection, 30min synthesis, 10min decay) are pure `setInterval`. Drive pressure has zero influence on cycle scheduling.
+**What (was):** Timer-only triggers; CognitiveAwareness pressure had zero influence on cycle scheduling.
 
-**Impact:**
-- A core CANON claim is that learning is motivated — Sylphie consolidates because she *needs to*. Currently, learning is a cron job.
-- High-CognitiveAwareness states (LLM cost pressure, novelty stress) should accelerate consolidation; they don't. Sylphie can sit on hours of unprocessed events with no urgency response, waiting for the next 60s tick.
-- Conversely, low-pressure idle periods still run cycles, wasting work.
-- This subtly invalidates the **InteroceptiveAccuracy** metric: Sylphie can't develop a real model of "I'm overwhelmed and should consolidate" if the consolidator ignores her drive state.
-
-**Fix complexity:** Low. Add a CognitiveAwareness threshold check to `runMaintenanceCycle()` that bumps frequency when pressure > 0.7, and a `forceCycle()` entrypoint the drive engine can trigger via event.
+**Resolution:** `LearningService.forceCycle()` added (`ILearningService` contract + implementation). `LearningPressureBridgeService` in `apps/sylphie/src/services/learning-pressure-bridge.service.ts` subscribes to `driveState$`, and calls `forceCycle()` when `CognitiveAwareness > 0.70` (30s minimum interval between pressure-triggered cycles). Timer remains as a safety floor at 60s. Bridge registered in `AppModule`.
 
 ---
 
-### 1.3 Procedure conflict detection always passes
+### 1.3 Procedure conflict detection always passes — RESOLVED
 
-**Where:** `packages/planning/src/services/constraint-validation.service.ts:203-205`
+**Where:** `packages/planning/src/pipeline/constraint-validation.service.ts`, `constraint-checks.ts`, `proposal.service.ts`, `procedure-creation.service.ts`
 
-**What:** `fetchExistingTriggerContexts()` returns `new Set<string>()` — a hard-coded empty set with a TODO to wire WKG. So `checkProcedureConflict` (one of the five constraint checks) always passes.
+**What (was):** `fetchExistingTriggerContexts()` returned a hard-coded empty set, so `checkProcedureConflict` always passed and Planning could write duplicate `:ActionProcedure` nodes with overlapping `trigger_context`, fragmenting confidence across phantom-twin nodes and corrupting Type 1 graduation.
 
-**Impact:**
-- Planning can write duplicate `:ActionProcedure` nodes with overlapping `trigger_context` values. The action-retriever's composite scoring will then return both with similar scores, creating non-deterministic Type 1 selections.
-- Worse, guardian-taught procedures (TAUGHT_PROCEDURE provenance, conf 0.50) will silently coexist with INFERENCE-provenance duplicates of the same behavior, fragmenting the confidence updates across two nodes.
-- Over time this manifests as "Sylphie sometimes does X correctly, sometimes does X incorrectly, with no apparent learning" — because half her experience is being attributed to a phantom twin procedure.
+**Resolution (two halves):**
+- **Live conflict fetch + fail-closed.** `fetchExistingTriggerContexts()` now queries Neo4j WORLD for existing `trigger_context` values. On query error it returns a discriminated `{ ok: false }` and `validate()` returns `deferred: true` (see §3.4) — fail CLOSED, never blind-pass.
+- **Stable dedup key for ALL proposal paths.** The exact-match dedup only worked for the template path (which used the deterministic `contextFingerprint`). The LLM path authored a free-form trigger string, so two proposals for the same pattern never collided. `ProposalService.withStableTrigger()` now pins `triggerContext` to `opportunity.payload.contextFingerprint` for every path (template, LLM, refinement, parse-fallback), and preserves any LLM-authored descriptive text in a separate `triggerDescription` property (`trigger_description` on the node). Decision Making retrieves by Jaccard similarity against the same fingerprint format, so retrieval semantics are unchanged. Empty/whitespace triggers can no longer poison the dedup set: `checkProcedureConflict` abstains on them, and the override means `''` never reaches the graph as a key. CANON: each guardian teaching carries a distinct `contextFingerprint`, so distinct teachings still get distinct keys.
 
-**Fix complexity:** Low. One Cypher query against Neo4j WORLD: `MATCH (p:ActionProcedure) RETURN p.trigger_context AS ctx`.
+**KNOWN LIMITATION (flagged):** Dedup is still exact-match on the stable key. It closes the common case (same opportunity / same pattern → same fingerprint → caught). It does NOT catch semantic near-duplicates — two genuinely different opportunities whose `contextFingerprint`s differ but describe the same underlying behavior. True semantic/fuzzy dedup at write time would require the embedding service and is out of planning-local scope. (Note: Decision Making's own `wkg-context.service.ts:writeActionProcedure` DOES do Jaccard>0.70 fuzzy dedup on its write path; Planning's write path does not, by design, to keep validation synchronous and I/O-light.)
 
 ---
 
 ## TIER 2 — HIGH: Breaks a User-Visible Feature
 
-### 2.1 Supervisor cannot actually intervene on the cognition sidecar
+### 2.1 Supervisor cognition control endpoints — RESOLVED (2026-06-10)
 
-**Where:** `packages/cognition-service/main.py:448-491`
+**Where (was):** `packages/cognition-service/main.py`
 
-**What:** Three control endpoints are TODO stubs:
-- `POST /cognition/control/reinforce` — comment "Not yet implemented", logs and returns OK
-- `POST /cognition/control/correct` — same
-- `POST /cognition/control/freeze` / `/unfreeze` — same
-
-The frontend Guardian view + Supervisor service both call these.
-
-**Impact:**
-- The supervisor's entire "corrective training signal" story is theatre. When DeepSeek flags a wrong arbitration and the supervisor calls `executeIntervention({type:'correct', ...})`, the HTTP call succeeds, the intervention is logged, and the sidecar does nothing.
-- The guardian dashboard's "rollback to checkpoint" button works (rollback IS implemented at `main.py:494-511`) but the more granular reinforce/correct/freeze controls are silently inert.
-- This makes it impossible to distinguish "the supervisor is making the system better" from "the supervisor is just emitting verdicts that get logged" — the very question CANON's Guardian Asymmetry section depends on.
-
-**Fix complexity:** Medium. Each endpoint needs a defined gradient-injection or weight-mask operation on the global model. `freeze` is the easiest (set a per-parameter requires_grad flag); `reinforce` and `correct` need policy decisions about how supervisor signals enter the loss.
+**Resolution:** All four endpoints now do real work:
+- `reinforce` — injects `round(strengthFactor*3)` clamped [1,10] copies of the input sample into DataBuffer; DataBuffer.add_sample() added.
+- `correct` — injects `(inputVector, correctCategory)` 3× into DataBuffer; calls `zero_pending_for_category()` on the trainer (logs + no-op hook wired).
+- `freeze` / `unfreeze` — flip `trainer._training_frozen`; `_train_step()` returns early when frozen.
+- `boost_salience` (TypeScript sidecar-control.service.ts) deferred — needs per-feature attention multipliers on panel models (WS3).
 
 ---
 
@@ -125,33 +102,21 @@ The frontend Guardian view + Supervisor service both call these.
 
 ---
 
-### 2.5 ConvergenceModel never uses its learned head
+### 2.5 ConvergenceModel dead panel-adjustment head — RESOLVED (2026-06-10)
 
-**Where:** `packages/cognition-service/models/convergence.py:70, 124-129`
+**Where (was):** `packages/cognition-service/models/convergence.py`
 
-**What:** `use_learned: bool` flag defaults False. The heuristic path is pure cosine-similarity averaged across panels. There is **no code path anywhere that flips `use_learned` to True** — same trapdoor as EWC.
-
-**Impact:**
-- The 10K-parameter learned convergence model sits in memory, gets serialized to disk on checkpoints, but never influences a single decision.
-- Bootstrap progression `partial → full` requires "≥ 3 graduated categories AND overall agreement ≥ 0.90" — the agreement signal *should* improve as the convergence model learns when panels disagree meaningfully vs trivially. Without learned convergence, agreement is just averaged cosine similarity, which has a much noisier ceiling.
-- Practically: bootstrap may stall at partial mode because raw cosine averaging is too noisy to clear the 0.90 threshold consistently.
-
-**Fix complexity:** Medium. Need a defined supervisor signal or self-supervised target for the convergence head, plus the flip-trigger logic (probably "after the panel models have trained N steps").
+**Resolution:** Dead `w_adj`/`b_adj` weights removed from `_build()`, `save()`, `load()`. `total_params` now accurately reports 10369. Legacy checkpoints with `w_adj`/`b_adj` keys are silently ignored in `load()` (backward compat). `_predict_learned()` has an explicit TODO: graduation criterion requires `>= N convergence training pairs + validation accuracy threshold`. `use_learned` remains False until that criterion is met.
 
 ---
 
-### 2.6 `alwaysEvaluate` event types are not wired
+### 2.6 `alwaysEvaluate` event types — PARTIALLY RESOLVED (2026-06-10)
 
-**Where:** `packages/supervisor/src/supervisor.service.ts:229-230`
+**Where (was):** `packages/supervisor/src/supervisor.service.ts:229-230`
 
-**What:** `SamplingPolicy.alwaysEvaluate` defaults to `['guardian_feedback', 'attractor_alert']`, type union also includes `model_freeze` / `model_rollback`. `shouldEvaluate()` only checks `cycleCount % sampleRate === 0` — the alwaysEvaluate logic is never consulted. TODO comment.
+**Resolution (guardian_feedback half):** `CycleResponse.inputCategory` field added (`packages/shared/src/types/communication.types.ts`). Threaded from `processInputResult.inputCategory` in `decision-making.service.ts`. `shouldEvaluate()` now returns `true` when `cycle.inputCategory === 'GUARDIAN_FEEDBACK'` and it's in the `alwaysEvaluate` list.
 
-**Impact:**
-- Guardian feedback events should trigger an immediate supervisor evaluation regardless of sample rate. They don't.
-- Attractor alerts (e.g., DepressiveAttractor triggered, Type2Addict detected) should also force evaluation. They don't.
-- The supervisor thus misses the most important moments to be watching — exactly when human-equivalent oversight would be most valuable.
-
-**Fix complexity:** Low. Subscribe to the event backbone for these specific event types and bypass the sampling gate when seen.
+**Remaining (attractor_alert half):** `attractor_alert` cannot be detected from `CycleResponse` yet — requires the attractor monitor to emit a per-cycle marker on the CycleResponse. Deferred until attractor monitor emits this signal.
 
 ---
 
@@ -210,23 +175,20 @@ The frontend Guardian view + Supervisor service both call these.
 **Impact:**
 - Guardian dashboard's drive override switches and drift sliders **do nothing**. The frontend updates its local state, the API succeeds, the drive engine is unaffected.
 - This is a real CANON tension: drive isolation says the main app cannot mutate drive state. So these stubs may be **correctly stubs** — they pretend to be a control surface but the drive-engine ignores them by design.
-- BUT — the operator can't tell. There's no error, no indicator that the UI lever is decorative. Every guardian who tries them assumes they worked.
 
-**Fix complexity:** Either (a) remove the UI affordances, or (b) route the override through a permitted path (e.g., guardian feedback events that the drive-engine processes). The current state — UI controls that silently do nothing — is the worst outcome.
+**Partial resolution (2026-06-09):** the three POST routes now throw `NotImplementedException` (HTTP 501) with a CANON Drive-Isolation explanation instead of returning a fake `{}` success. The "silent UI lie" — the worst outcome — is gone: a caller now gets a truthful error. The frontend DrivesPanel still needs follow-up (option (a) below) so guardians don't see 501s on decorative controls.
+
+**Fix complexity:** Remaining work is a product decision: either (a) remove the UI affordances, or (b) route the override through a permitted path (e.g., guardian feedback events that the drive-engine processes). The backend no longer misrepresents success.
 
 ---
 
-### 3.4 `validationResult.deferred` branch in Planning is unreachable
+### 3.4 `validationResult.deferred` branch in Planning is unreachable — RESOLVED
 
-**Where:** `packages/planning/src/services/constraint-validation.service.ts:192`, `packages/planning/src/planning.service.ts:551-556`
+**Where:** `packages/planning/src/pipeline/constraint-validation.service.ts`, `packages/planning/src/planning.service.ts`
 
-**What:** ConstraintValidationService always sets `deferred: false` since it became deterministic (no LLM). The `if (validationResult.deferred)` re-enqueue path in PlanningService is dead code.
+**What (was):** ConstraintValidationService always set `deferred: false` since it became deterministic, leaving the `if (validationResult.deferred)` re-enqueue path in PlanningService as dead code.
 
-**Impact:**
-- Low-impact dead code. Planning works correctly today.
-- BUT — if ConstraintValidationService is ever upgraded to add LLM-based checks back (e.g., semantic conflict detection), the dead `deferred` path will silently activate without testing, because no current test exercises it.
-
-**Fix complexity:** Trivial. Either delete the branch or document that it's a forward-compat hook with explicit test coverage.
+**Resolution:** The `deferred` path is now LIVE and load-bearing. When the procedure-conflict check cannot fetch existing trigger contexts from the WORLD graph (Neo4j unreachable), `validate()` returns `deferred: true` instead of silently passing with an empty set. This is the fail-closed half of the §1.3 fix: a transient DB blip now re-enqueues the opportunity rather than writing a possibly-duplicate procedure. PlanningService re-enqueues deferred opportunities up to `MAX_DEFERRALS` (5) times, then drops loudly (`OPPORTUNITY_DROPPED`, error log) so a permanent outage cannot spin forever. The degradation is logged at error level and emits a `PLAN_VALIDATION_FAILED` event with `reason: 'world_unreachable_conflict_check_skipped'`.
 
 ---
 
@@ -277,15 +239,15 @@ The frontend Guardian view + Supervisor service both call these.
 
 | # | Stub | Tier | Fix Effort | User-Visible? |
 |---|------|------|------------|---------------|
-| 1.1 | EWC catastrophic interference | CRITICAL | Med-High | No (silent regression) |
-| 1.2 | Pressure-driven learning cycles | CRITICAL | Low | No (latency only) |
+| 1.1 | EWC catastrophic interference | CRITICAL | ✅ DONE | No (silent regression) |
+| 1.2 | Pressure-driven learning cycles | CRITICAL | ✅ DONE | No (latency only) |
 | 1.3 | Procedure conflict detection | CRITICAL | Low | Yes (non-deterministic Type 1) |
-| 2.1 | Cognition control endpoints | HIGH | Medium | Yes (supervisor inert) |
+| 2.1 | Cognition control endpoints | HIGH | ✅ DONE | Yes (supervisor inert) |
 | 2.2 | boost_salience intervention | HIGH | Medium | Partial |
 | 2.3 | per_category_confidence | HIGH | Low | Yes (empty dashboard panel) |
 | 2.4 | DeepSeek reasoning trace dropped | HIGH | Trivial | Yes (audit blindness) |
-| 2.5 | ConvergenceModel.use_learned | HIGH | Medium | No (bootstrap stall risk) |
-| 2.6 | alwaysEvaluate types | HIGH | Low | No (sampling miss) |
+| 2.5 | ConvergenceModel.use_learned | HIGH | ✅ DONE (head removed) | No (bootstrap stall risk) |
+| 2.6 | alwaysEvaluate types | HIGH | ✅ PARTIAL (guardian_feedback done, attractor_alert deferred) | No (sampling miss) |
 | 2.7 | Inference timeout enforcement | HIGH | Trivial | No (hang risk) |
 | 3.1 | Theater check sentiment-vs-drive | MEDIUM | High | No (toothless guard) |
 | 3.2 | SearXNG unused | MEDIUM | Medium | No (research limited to history) |

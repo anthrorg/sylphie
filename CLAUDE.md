@@ -14,6 +14,9 @@ Escalate — don't grind on it yourself:
 
 Don't try to out-reason `mythos` on architecture or novel problems — escalate. Don't attempt a hard multi-file build yourself when `opus-agent` should — delegate. Your value is fast, correct routing and clean execution of the mechanical work.
 
+- **Workstream / milestone verification → `mythos`** (mandatory). When a workstream (WS1, WS2, etc.) or any milestone is declared "done", invoke `mythos` to independently verify before closing it out. `mythos` reads the code, runs commands, and checks gate output. Do not mark something complete solely on a passing build + unit tests — `mythos` is the final sign-off.
+- **Live smoke test → `mythos`** (mandatory, every roadmap workstream). `mythos` must bring up the relevant service(s), exercise the critical path end-to-end, and observe actual runtime behavior (log output, HTTP responses, state changes) — not just static analysis. A workstream is not closed until `mythos` has seen it run.
+
 ## Project conventions (apply everywhere, yours and delegated work)
 
 - **Verify before presenting.** Run the service/script/test and confirm behavior before saying it works. If something failed or was skipped, say so with output.
