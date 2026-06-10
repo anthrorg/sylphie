@@ -568,8 +568,12 @@ export function extractFactsFromText(text: string): ExtractedFact[] {
     });
   }
 
-  // "I work at/as/for X"
-  const workMatch = lower.match(/i work (?:at|as|for) (.+?)(?:\.|!|$)/);
+  // "I work at/as/for/in X"
+  // Note: "at/as/for" were the original captures; "in" is added to handle
+  // "I work in software/finance/tech/..." — a common natural-language form
+  // that the corpus uses ("I work in software."). Without "in", the occupation
+  // fact is never stored and OKG recall grounding for job questions always fails.
+  const workMatch = lower.match(/i work (?:at|as|for|in) (.+?)(?:\.|!|$)/);
   if (workMatch) {
     facts.push({
       key: 'occupation',

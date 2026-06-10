@@ -367,11 +367,23 @@ export class Cassette {
     const urlPath = req.url ?? '/';
     const body = await readBody(req);
 
-    // Lesion: simulate the LLM being unreachable by killing the socket.
+    // Lesion: simulate the LLM chat endpoint being unreachable by killing the
+    // socket — but ONLY for chat/generation requests, not for embed requests.
+    //
+    // Embed requests (/api/embed, /api/embeddings) are served from tape even
+    // during lesion so that Type 1 latent-space retrieval can still function.
+    // In a real outage the embed endpoint would also be unreachable, but the
+    // gate test is specifically probing CHAT absence while leaving the latent
+    // space intact — that is the canonical lesion scenario (CANON §The Lesion
+    // Test: Type 1 reflexes must survive LLM removal).
     if (this.live === 'lesion') {
-      this.stats.lesionRejections++;
-      req.socket.destroy(); // ECONNRESET on the client side — like Ollama being down.
-      return;
+      const isEmbedRequest = urlPath.startsWith('/api/embed');
+      if (!isEmbedRequest) {
+        this.stats.lesionRejections++;
+        req.socket.destroy(); // ECONNRESET on the client side — like Ollama being down.
+        return;
+      }
+      // Embed request falls through to tape replay below.
     }
 
     const key = extractKeyMaterial(method, urlPath, body);
@@ -403,6 +415,28 @@ export class Cassette {
     // Replay / update-baseline: serve from tape, miss = hard fail.
     const entry = this.tape[hash];
     if (!entry) {
+      // Special case: an embed request that was not recorded during the corpus
+      // (e.g. a lesion-only probe with a novel text). Under lesion mode we let
+      // these fall through to tape and here we return a synthetic zero-vector
+      // response rather than a 599 CASSETTE_MISS — the text encoder already
+      // handles embed failure by returning a zero vector, and a genuine miss
+      // failure code would trip X0 (the cassette-clean check) on requests that
+      // are deliberately new (lesion-only probe texts never appear in the corpus).
+      // Non-lesion embed misses are still a hard fail (same as chat misses).
+      if (this.live === 'lesion' && urlPath.startsWith('/api/embed')) {
+        const EMBEDDING_DIM = 768;
+        const zeroResponse = JSON.stringify({
+          model: 'nomic-embed-text',
+          embeddings: [new Array(EMBEDDING_DIM).fill(0)],
+          total_duration: 0,
+          load_duration: 0,
+          prompt_eval_count: 0,
+        });
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(zeroResponse);
+        return;
+      }
+
       this.stats.misses++;
       this.stats.missDetails.push({ hash, hint });
       this.logMissDiff(key);

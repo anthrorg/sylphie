@@ -375,19 +375,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
     this.tickInFlight = true;
     try {
-      // ── Pre-cycle availability gate (CANON §The Lesion Test) ──────────────
-      // When the LLM/embed endpoint is known-unavailable, skip the blocking
-      // network-bound text embed so the cycle proceeds immediately on a zero
-      // embedding. Retrieval/arbitration then operate on a deterministic
-      // fingerprint and arbitration can SHRUG honestly within bounded time,
-      // exercising the deliberation degraded-SHRUG path — instead of parking the
-      // whole turn on an inevitable socket timeout. The text CONTENT still flows
-      // (raw value preserved), only its embedding is zeroed.
-      const skipNetworkEmbedding = this.llm !== null && !this.llm.isAvailable();
-      if (skipNetworkEmbedding) {
-        vlog('pre-cycle gate: LLM unavailable — skipping network-bound embed', { eventDriven });
-      }
-      const frame = await this.tickSampler.sample({ skipNetworkEmbedding });
+      // ── Sensory frame sampling ──────────────────────────────────────────────
+      // The text encoder has its own timeout guard (DEFAULT_EMBED_TIMEOUT_MS =
+      // 3000ms) and catches all failures gracefully — ECONNRESET (e.g. dead
+      // Ollama or cassette lesion for chat-only) returns immediately with a zero
+      // vector, and a truly hung endpoint is cut off by the timer. There is no
+      // need to skip embedding here based on LLM chat availability; the encoder
+      // degrades on its own. Keeping the embed path active under lesion is also
+      // required for CANON §The Lesion Test: Type 1 latent-space reflexes must
+      // survive LLM removal, which requires real embeddings.
+      const frame = await this.tickSampler.sample();
 
       const rawText = frame.raw['text'] as string | undefined;
       vlog('tick sampled frame', {
@@ -759,15 +756,41 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.debug(
             `Type 1 reflex from latent space — returning cached response (no LLM).`,
           );
+          // Base grounding from the pattern's stored provenance. LLM_ASSISTED is
+          // mapped to UNKNOWN here (not at write time) because this is a pure
+          // reflex replay — the LLM is not involved, so claiming it was
+          // LLM_ASSISTED would be inaccurate (L2: no LLM_ASSISTED under lesion).
+          const latentBaseGrounding = groundingForCachedPattern(latentMatch.pattern);
+
+          // Defense-in-depth OKG recall attribution for Type 1 fact-recall hits:
+          // the stored pattern may carry LLM_ASSISTED/UNKNOWN from when it was
+          // first written (e.g. the OKG hadn't ingested the teach yet, or a later
+          // corpus run matched a social pattern rather than the actual fact turn).
+          // Re-running applyOkgRecallGrounding with the current session's person
+          // facts allows a genuine recall hit to be upgraded to GROUNDED even if
+          // the stored grounding was conservative. This is honest: the OKG fact IS
+          // in session memory, the response text DOES contain the fact value; the
+          // provenance is real.
+          const latentPersonModel = frame.raw['person_model'] as
+            { personId?: string; knownFacts?: string[] } | null | undefined;
+          const latentInputText = (frame.raw['text'] as string | undefined) ?? inputSummary;
+          const { grounding: latentGrounding, provenance: latentProvenance } = applyOkgRecallGrounding(
+            latentPersonModel?.personId,
+            latentInputText,
+            latentMatch.pattern.responseText,
+            latentPersonModel?.knownFacts,
+            latentBaseGrounding,
+          );
+
           executionResults.push({
             content: latentMatch.pattern.responseText,
             model: 'latent-space-type1',
             latencyMs: 0,
-            // Grounding derives from the matched pattern's recorded provenance
-            // (entityIds captured at write time): GROUNDED when traceable to a
-            // prior verified WKG fact, LLM_ASSISTED when not, UNKNOWN for an
-            // ignorance admission. See groundingForCachedPattern.
-            knowledgeGrounding: groundingForCachedPattern(latentMatch.pattern),
+            // Grounding: stored provenance, upgraded by OKG recall attribution if
+            // the current session's facts can verify it. LLM_ASSISTED is mapped to
+            // UNKNOWN by groundingForCachedPattern (reflex replay has no LLM).
+            knowledgeGrounding: latentGrounding,
+            groundingProvenance: latentProvenance ?? undefined,
           });
         } else if (arbitrationChoseLatent && latentMatch) {
           // Latent match found but responseText is empty — fall through to deliberation.
@@ -786,7 +809,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             groundingProvenance: deliberationResult.groundingProvenance ?? null,
             degradedNoLlm: deliberationResult.degradedNoLlm,
           });
-        } else if (procedureData !== null) {
+        } else if (procedureData !== null && (this.llm === null || this.llm.isAvailable())) {
+          // Guard: skip procedure execution when the LLM is unavailable.
+          // Procedure steps (e.g. LLM_GENERATE, RESEARCH_ENTITY) require the LLM.
+          // When the LLM is down they return null → empty responseText → no
+          // cb_speech → 45-second gate timeout (CANON §The Lesion Test).
+          // Falling through to the deliberation branch below lets deliberate()
+          // detect the unavailability and emit an honest degraded-SHRUG instead.
           for (const step of procedureData.actionSequence) {
             const result = await this.actionHandlerRegistry.execute(step, cycleContext);
             // CANON Standard 1: the procedure-handler path (e.g. LLM_GENERATE)
@@ -1150,6 +1179,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationSummary: `${arbitrationResult.type} response to: ${inputSummary}`,
               entityIds,
               sessionId: driveSnapshot.sessionId,
+              // Persist the response grounding at write time so the Type 1 reflex
+              // path can replay it honestly via groundingForCachedPattern(), instead
+              // of inferring it from entityIds which may include non-fact base-context
+              // nodes (Drive/CoBeing) that don't constitute provenance evidence.
+              knowledgeGrounding: responseGrounding,
             },
           );
           const primaryPatternId = latentPatternIds[0] ?? randomUUID();
@@ -1799,18 +1833,42 @@ function groundingForCachedResponse(responseText: string): KnowledgeGrounding {
  * Honest knowledge grounding for a latent-space (Type 1) cache hit, derived
  * from the matched pattern's recorded provenance.
  *
- * GROUNDED here = traceable to a prior verified WKG fact (entityIds recorded at
- * write time), not re-verified this turn. The pattern's `entityIds` were
- * populated from the REAL WKG context when the pattern was first learned
- * (decision-making write-back). A non-empty entityIds set therefore means this
- * cached reflex echoes a response that WAS WKG-fact-backed — honestly GROUNDED,
- * without re-querying WKG. An empty set means the original response had no WKG
- * backing → LLM_ASSISTED. In all cases an ignorance admission overrides to
- * UNKNOWN (CANON Standard 1: the text is the ground truth for what was said).
+ * GROUNDED is replayed as GROUNDED (provenance is real: OKG/WKG backed the
+ * response when it was first written; the pattern is a cached echo of that).
+ *
+ * LLM_ASSISTED is mapped to UNKNOWN, not replayed:
+ *   A Type 1 reflex replay does NOT involve the LLM. Claiming LLM_ASSISTED
+ *   would be inaccurate (L2: no LLM_ASSISTED under lesion). UNKNOWN is the
+ *   honest conservative floor for "I have a cached response but no verified
+ *   fact backing for this replay." The caller (latent cache path in processInput)
+ *   then applies applyOkgRecallGrounding to upgrade to GROUNDED when the
+ *   current session's OKG facts do confirm the response value.
+ *
+ * Stored knowledgeGrounding (primary path, Bug A + B fix): patterns written
+ * after this field was added carry the honest grounding from the original
+ * deliberation, avoiding the Drive/CoBeing entityIds heuristic that falsely
+ * inflated grounding for any input with no proper nouns.
+ *
+ * Legacy fallback: patterns without knowledgeGrounding (warm-layer rows from
+ * before this field existed) fall back to the entityIds heuristic, with the
+ * same LLM_ASSISTED→UNKNOWN mapping applied.
+ *
+ * Ignorance admission in the responseText always overrides to UNKNOWN
+ * (CANON Standard 1: what the response says is the ground truth).
  */
 function groundingForCachedPattern(pattern: LearnedPattern): KnowledgeGrounding {
   if (isIgnoranceResponse(pattern.responseText)) {
     return 'UNKNOWN';
   }
-  return pattern.entityIds.length > 0 ? 'GROUNDED' : 'LLM_ASSISTED';
+
+  // Primary path: use the grounding stored at write time.
+  if (pattern.knowledgeGrounding !== null) {
+    // LLM_ASSISTED → UNKNOWN: a cached reflex replay does not involve the LLM.
+    return pattern.knowledgeGrounding === 'LLM_ASSISTED' ? 'UNKNOWN' : pattern.knowledgeGrounding;
+  }
+
+  // Legacy fallback: infer from entityIds (may include Drive/CoBeing noise).
+  // LLM_ASSISTED → UNKNOWN mapping applies here too.
+  if (pattern.entityIds.length === 0) return 'UNKNOWN';
+  return 'GROUNDED'; // non-empty entityIds = some WKG backing (legacy behavior)
 }

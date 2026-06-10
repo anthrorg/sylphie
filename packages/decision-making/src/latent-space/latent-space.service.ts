@@ -23,7 +23,7 @@
 
 import { Injectable, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { TimescaleService, EMBEDDING_DIM, verboseFor } from '@sylphie/shared';
+import { TimescaleService, EMBEDDING_DIM, verboseFor, type KnowledgeGrounding } from '@sylphie/shared';
 
 const vlog = verboseFor('Memory');
 import { cosineSimilarity, parseEmbedding } from './vector-math';
@@ -47,6 +47,14 @@ export interface LearnedPattern {
   readonly createdAt: Date;
   readonly lastUsedAt: Date | null;
   readonly sessionId: string | null;
+  /**
+   * The knowledge grounding recorded at write time, derived from the response
+   * that produced this pattern. Used by groundingForCachedPattern() to replay
+   * the same honest grounding verdict when this pattern fires as a Type 1 reflex.
+   * Optional for backward compatibility with patterns written before this field
+   * existed (those fall back to the entityIds heuristic in groundingForCachedPattern).
+   */
+  readonly knowledgeGrounding: KnowledgeGrounding | null;
 }
 
 /** Result of a single-modality latent space search. */
@@ -76,6 +84,13 @@ export interface NewPattern {
   readonly deliberationSummary?: string;
   readonly entityIds: readonly string[];
   readonly sessionId?: string;
+  /**
+   * The knowledge grounding verdict to persist with the pattern so it can be
+   * replayed honestly when this pattern fires as a Type 1 reflex, without
+   * re-running the WKG/OKG attribution logic. Optional: omitting it causes
+   * groundingForCachedPattern to fall back to the entityIds heuristic.
+   */
+  readonly knowledgeGrounding?: KnowledgeGrounding;
 }
 
 /** Options for writeMultiModal (everything except per-modality fields). */
@@ -94,6 +109,7 @@ interface HotEntry {
   confidence: number;
   useCount: number;
   entityIds: string[];
+  knowledgeGrounding: KnowledgeGrounding | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +210,17 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     embedding: number[],
     threshold = DEFAULT_SIMILARITY_THRESHOLD,
   ): LatentMatch | null {
+    // Zero-vector guard: a zero embedding (cassette synthetic fallback, encoder
+    // failure) has no semantic content. cosineSimilarity returns 0 for any
+    // dot product against it, so it would never exceed 0.80 anyway — but
+    // guarding explicitly here makes the invariant visible and prevents any
+    // future refactoring from introducing NaN/1.0 via a different math path.
+    const normSq = embedding.reduce((s, v) => s + v * v, 0);
+    if (normSq === 0) {
+      vlog('latent searchByModality MISS (zero-vector input — no semantic content)', { modality });
+      return null;
+    }
+
     let bestEntry: HotEntry | null = null;
     let bestSimilarity = -1;
     // Highest similarity among entries OTHER than the current best. A genuine
@@ -348,6 +375,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       confidence: pattern.confidence,
       useCount: 0,
       entityIds: [...pattern.entityIds],
+      knowledgeGrounding: pattern.knowledgeGrounding ?? null,
     });
 
     vlog('latent write', {
@@ -371,8 +399,8 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         `INSERT INTO learned_patterns
            (id, modality, stimulus_embedding, response_text, procedure_id, confidence,
             use_count, recent_mae, deliberation_summary, entity_ids,
-            created_at, last_used_at, session_id)
-         VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            created_at, last_used_at, session_id, knowledge_grounding)
+         VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           id,
           pattern.modality,
@@ -387,6 +415,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
           now,
           null,
           pattern.sessionId ?? null,
+          pattern.knowledgeGrounding ?? null,
         ],
       ).then(() => {
         // Remove from pending list on success
@@ -556,6 +585,12 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         ADD COLUMN IF NOT EXISTS modality TEXT DEFAULT 'fused'
       `);
 
+      // Add knowledge_grounding column if upgrading from older schema
+      await this.timescale.query(`
+        ALTER TABLE learned_patterns
+        ADD COLUMN IF NOT EXISTS knowledge_grounding TEXT
+      `);
+
       await this.timescale.query(`
         CREATE INDEX IF NOT EXISTS learned_patterns_embedding_idx
         ON learned_patterns
@@ -597,10 +632,11 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         confidence: number;
         use_count: number;
         entity_ids: string[] | null;
+        knowledge_grounding: string | null;
       }>(
         `SELECT id, COALESCE(modality, 'fused') AS modality,
                 stimulus_embedding::text, response_text, procedure_id,
-                confidence, use_count, entity_ids
+                confidence, use_count, entity_ids, knowledge_grounding
          FROM learned_patterns
          ORDER BY use_count DESC, last_used_at DESC NULLS LAST
          LIMIT $1`,
@@ -619,6 +655,9 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
             confidence: row.confidence,
             useCount: row.use_count,
             entityIds: row.entity_ids ?? [],
+            knowledgeGrounding: isValidGrounding(row.knowledge_grounding)
+              ? row.knowledge_grounding
+              : null,
           });
         }
       }
@@ -654,6 +693,19 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       createdAt: new Date(),
       lastUsedAt: null,
       sessionId: null,
+      knowledgeGrounding: entry.knowledgeGrounding,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Type guard for knowledge grounding values stored in the DB.
+ * Rejects null / stale / unknown strings from pre-field-addition rows.
+ */
+function isValidGrounding(v: string | null): v is KnowledgeGrounding {
+  return v === 'GROUNDED' || v === 'LLM_ASSISTED' || v === 'UNKNOWN';
 }
