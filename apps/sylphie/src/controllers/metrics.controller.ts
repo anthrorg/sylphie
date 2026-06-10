@@ -13,6 +13,7 @@ import {
   TimescaleService,
   DriveName,
 } from '@sylphie/shared';
+import { PersonModelService } from '../services/person-model.service';
 import type {
   Type1Type2Ratio,
   PredictionMAEMetric,
@@ -64,6 +65,7 @@ export class MetricsController {
     private readonly neo4j: Neo4jService,
     private readonly timescale: TimescaleService,
     private readonly latentSpace: LatentSpaceService,
+    private readonly personModel: PersonModelService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -178,6 +180,35 @@ export class MetricsController {
       `Latent hot layer cleared for gate hermeticity (non-destructive): ${hotLayerCleared} patterns removed; warm layer preserved.`,
     );
     return { ok: true, clearedAt: new Date().toISOString(), hotLayerCleared };
+  }
+
+  /**
+   * POST /metrics/person-facts-reset
+   *
+   * Delete all OKG facts (Attribute nodes) for the gate conversation person
+   * ('guardian' — the default userId the conversation WS attributes text to)
+   * and clear the in-memory fact cache. The Person anchor node is preserved.
+   *
+   * The Provability Gate calls this at the start of a run (P0 step): person
+   * facts are injected verbatim into LLM prompts, so any fact accumulated
+   * between cassette record and replay changes prompt content and causes a
+   * cassette miss (X0). The gate corpus re-teaches its facts every run, so a
+   * pre-run wipe makes prompt content deterministic across runs.
+   *
+   * DESTRUCTIVE for the 'guardian' person's accumulated facts, by design and
+   * gate-authorized: in the current single-user deployment those facts are
+   * (re)taught by the corpus itself. Multi-person fact isolation is WS4.
+   *
+   * @returns The number of Attribute nodes deleted, for audit.
+   */
+  @Post('person-facts-reset')
+  @HttpCode(200)
+  async resetPersonFacts(): Promise<{ ok: boolean; clearedAt: string; factsCleared: number }> {
+    const factsCleared = await this.personModel.clearFactsForPerson('guardian');
+    this.logger.warn(
+      `Person facts reset for gate hermeticity: ${factsCleared} attribute(s) deleted for 'guardian'.`,
+    );
+    return { ok: factsCleared >= 0, clearedAt: new Date().toISOString(), factsCleared };
   }
 
   // ---------------------------------------------------------------------------

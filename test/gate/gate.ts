@@ -711,6 +711,27 @@ async function main(): Promise<void> {
         `gate is NON-HERMETIC: latent matches include cross-run residue`);
   }
 
+  // Wipe the gate person's OKG facts so prompt content is deterministic. Person
+  // facts ("Known facts about this person: ...") are injected verbatim into LLM
+  // prompts, so ANY fact accumulated between cassette record and replay (e.g. a
+  // junk extraction from a live chat) changes the prompt and causes a cassette
+  // miss (X0). The corpus re-teaches its facts every run, so a pre-run wipe is
+  // safe and makes record/replay start from identical person state.
+  // POST /api/metrics/person-facts-reset → PersonModelService.clearFactsForPerson('guardian').
+  try {
+    const { status, body } = await fetchJson('/api/metrics/person-facts-reset', { method: 'POST' });
+    if (status !== 200 || body?.ok === false) {
+      throw new Error(`person-facts-reset returned HTTP ${status} ok=${body?.ok}`);
+    }
+    recordBool('P0', 'person facts reset (deterministic prompts)', true,
+      `POST /api/metrics/person-facts-reset OK — ${body?.factsCleared ?? '?'} OKG fact(s) cleared for ` +
+        `the gate person; prompts now reflect only this run's taught facts`);
+  } catch (err) {
+    recordBool('P0', 'person facts reset (deterministic prompts)', false,
+      `POST /api/metrics/person-facts-reset failed (${err instanceof Error ? err.message : err}) — ` +
+        `gate is NON-HERMETIC: person facts from prior sessions leak into prompts (X0 misses likely)`);
+  }
+
   let exitCode = 0;
 
   try {

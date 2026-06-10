@@ -274,6 +274,53 @@ export class PersonModelService implements OnModuleInit {
     }
   }
 
+  /**
+   * Delete ALL stored facts for one person — OKG Attribute nodes and the
+   * in-memory cache. The Person anchor node itself is preserved.
+   *
+   * DESTRUCTIVE, but scoped to a single person's HAS_FACT attributes. Exists
+   * for the Provability Gate's hermeticity step (P0): person facts leak into
+   * LLM prompts, so any fact accumulated between cassette record and replay
+   * causes a cassette miss. The gate corpus re-teaches its facts every run,
+   * so a pre-run wipe of the gate person makes prompt content deterministic.
+   *
+   * Also zeroes the in-memory interaction count: the count is embedded in
+   * the "who am I?" prompt ("N interactions. ..."), so a monotonically
+   * increasing counter makes that one prompt drift across runs — the exact
+   * single-cassette-miss failure this reset exists to prevent.
+   *
+   * @param userId - The person whose facts are wiped (gate uses 'guardian').
+   * @returns Number of Attribute nodes deleted (-1 if Neo4j unavailable).
+   */
+  async clearFactsForPerson(userId: string): Promise<number> {
+    this.cache.delete(userId);
+    this.interactionCounts.delete(userId);
+
+    if (!this.neo4j) return -1;
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    try {
+      const result = await session.run(
+        `MATCH (p:Person {node_id: $userId})-[:HAS_FACT]->(a:Attribute)
+         DETACH DELETE a
+         RETURN count(a) AS cleared`,
+        { userId },
+      );
+      const raw = result.records[0]?.get('cleared');
+      const cleared = typeof raw === 'number' ? raw
+        : (raw && typeof raw.toNumber === 'function') ? raw.toNumber() : 0;
+      this.logger.warn(
+        `OKG person facts cleared for '${userId}': ${cleared} attribute(s) deleted (gate hermeticity / authorized cleanup).`,
+      );
+      return cleared;
+    } catch (err) {
+      this.logger.warn(`OKG fact clear failed: ${err instanceof Error ? err.message : String(err)}`);
+      return -1;
+    } finally {
+      await session.close();
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Public API (used by CommunicationService and deliberation)
   // ---------------------------------------------------------------------------
@@ -365,6 +412,30 @@ export class PersonModelService implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Fact extraction (pure function, used by CommunicationService)
 // ---------------------------------------------------------------------------
+
+/**
+ * First-word stoplist for the "I am X" / "You are X" identity extractors.
+ * Pleasantries and transient states are not identity: "I'm glad to meet you"
+ * must not produce identity="glad to" at 90% confidence (a real junk fact
+ * this list exists to prevent — it broke gate cassette hermeticity).
+ */
+const IDENTITY_STOPWORDS = new Set([
+  // negation / intensifiers / fillers (original list)
+  'not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'feeling',
+  // pleasantries
+  'glad', 'happy', 'sorry', 'pleased', 'thankful', 'grateful', 'welcome', 'called',
+  // transient states — not identity
+  'sure', 'afraid', 'fine', 'good', 'great', 'okay', 'ok', 'well', 'tired',
+  'bored', 'curious', 'excited', 'interested', 'ready', 'here', 'back', 'done',
+  'trying', 'looking', 'thinking', 'wondering', 'asking', 'still', 'always', 'now',
+]);
+
+/**
+ * Rejects two-word identity captures that end in a dangling function word —
+ * the regex grabs up to two words, so "glad to", "happy to", "here for"
+ * would otherwise survive a stoplist miss on the first word.
+ */
+const DANGLING_TAIL_REGEX = /\b(?:to|of|in|at|for|on|with|that|it|the|and|or|but)$/;
 
 /**
  * Extract structured facts from conversation text.
@@ -471,7 +542,11 @@ export function extractFactsFromText(text: string): ExtractedFact[] {
 
   // "I am X" / "I'm X" (occupation, state, identity)
   const iAmMatch = lower.match(/i(?:'m| am) (?:a |an )?(\w+(?:\s+\w+)?)/);
-  if (iAmMatch && !['not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'feeling'].includes(iAmMatch[1].split(/\s+/)[0])) {
+  if (
+    iAmMatch &&
+    !IDENTITY_STOPWORDS.has(iAmMatch[1].split(/\s+/)[0]) &&
+    !DANGLING_TAIL_REGEX.test(iAmMatch[1])
+  ) {
     facts.push({
       key: 'identity',
       value: iAmMatch[1].trim(),
@@ -547,7 +622,8 @@ export function extractFactsFromText(text: string): ExtractedFact[] {
   // "You are X" / "You're X" (identity/description)
   const youAreMatch = lower.match(/you(?:'re| are) (?:a |an )?(\w+(?:\s+\w+){0,3})/);
   if (youAreMatch
-    && !['not', 'very', 'so', 'just', 'also', 'really', 'doing', 'going', 'welcome', 'called'].includes(youAreMatch[1].split(/\s+/)[0])
+    && !IDENTITY_STOPWORDS.has(youAreMatch[1].split(/\s+/)[0])
+    && !DANGLING_TAIL_REGEX.test(youAreMatch[1])
     && !yourNameMatch // avoid double-matching "you are called X"
   ) {
     facts.push({

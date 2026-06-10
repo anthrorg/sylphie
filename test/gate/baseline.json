@@ -1,8 +1,19 @@
 {
-  "capturedAt": "2026-06-09",
-  "note": "Seed baseline — replace with first real gate run via yarn gate:update-baseline",
-  "typeRatio": { "type1": 0, "type2": 0 },
-  "mae": { "mae": 0.30, "sampleCount": 0 },
-  "provenance": { "experientialRatio": 0.0, "totalNodes": 0 },
-  "driveTick": { "minHz": 0.5 }
+  "capturedAt": "2026-06-10",
+  "note": "Captured from a real gate run via yarn gate:update-baseline",
+  "typeRatio": {
+    "type1": 4,
+    "type2": 45
+  },
+  "mae": {
+    "mae": 0.08159078268849104,
+    "sampleCount": 50
+  },
+  "provenance": {
+    "experientialRatio": 0.7302363488182559,
+    "totalNodes": 6135
+  },
+  "driveTick": {
+    "minHz": 0.5
+  }
 }

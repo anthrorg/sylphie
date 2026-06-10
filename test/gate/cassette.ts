@@ -88,6 +88,14 @@ interface TapeEntry {
   readonly contentType: string;
   /** Response body, verbatim. */
   readonly body: string;
+  /**
+   * Full normalized key material the hash was computed from. Stored so a
+   * replay MISS can be diffed character-by-character against the nearest
+   * recorded prompt — without this, a miss only shows an 80-char hint and
+   * the actual drift source (deep in the prompt) is invisible.
+   * Optional: tapes recorded before this field existed lack it.
+   */
+  readonly key?: string;
 }
 
 type Tape = Record<string, TapeEntry>;
@@ -259,7 +267,12 @@ export class Cassette {
     // immediately before the probe set. Starting lesioned here would sever the
     // LLM during the corpus and hang every turn (the original bug this fixes).
     this.live = 'normal';
-    this.tape = loadTape();
+    // Record mode starts from a BLANK tape: merging onto the previous tape
+    // leaves stale entries that mask prompt drift (a replayed prompt can hit
+    // an entry from an older recording session whose system state differed,
+    // while the freshly-recorded entry for the same turn goes unused). One
+    // recording session = one tape, exactly the corpus's calls, nothing else.
+    this.tape = mode === 'record' ? {} : loadTape();
   }
 
   /**
@@ -361,7 +374,8 @@ export class Cassette {
       return;
     }
 
-    const hash = hashRequest(method, urlPath, body);
+    const key = extractKeyMaterial(method, urlPath, body);
+    const hash = createHash('sha256').update(key).digest('hex');
     const hint = this.makeHint(method, urlPath, body);
 
     if (this.mode === 'record') {
@@ -373,6 +387,7 @@ export class Cassette {
           status: upstream.status,
           contentType: upstream.contentType,
           body: upstream.body,
+          key,
         };
         saveTape(this.tape);
         this.stats.recorded++;
@@ -390,6 +405,7 @@ export class Cassette {
     if (!entry) {
       this.stats.misses++;
       this.stats.missDetails.push({ hash, hint });
+      this.logMissDiff(key);
       // 599 is a non-standard "tape miss" signal. The ollama client surfaces it
       // as a non-2xx, which the LLM service treats as a failure (correct: an
       // un-recorded request must not silently pass through to live Ollama).
@@ -408,6 +424,33 @@ export class Cassette {
     this.stats.hits++;
     res.writeHead(entry.status, { 'content-type': entry.contentType });
     res.end(entry.body);
+  }
+
+  /**
+   * On a cassette miss, find the recorded entry whose key shares the longest
+   * common prefix with the incoming request and print where they diverge.
+   * This names the drift source directly (a changed fact list, an episodic
+   * snippet, a counter in the prompt) instead of leaving an opaque hash miss.
+   * Entries from pre-`key` tapes are skipped (nothing to diff against).
+   */
+  private logMissDiff(incomingKey: string): void {
+    let best: { key: string; hint: string; common: number } | null = null;
+    for (const entry of Object.values(this.tape)) {
+      if (!entry.key) continue;
+      let i = 0;
+      const max = Math.min(entry.key.length, incomingKey.length);
+      while (i < max && entry.key[i] === incomingKey[i]) i++;
+      if (!best || i > best.common) best = { key: entry.key, hint: entry.hint, common: i };
+    }
+    if (!best || best.common < 40) return; // nothing meaningfully close
+
+    const d = best.common;
+    const from = Math.max(0, d - 80);
+    console.error(`\n  CASSETTE MISS DIFF (vs nearest recorded prompt, common prefix ${d} chars):`);
+    console.error(`    nearest : ${best.hint}`);
+    console.error(`    ...context: "${incomingKey.slice(from, d)}"`);
+    console.error(`    recorded ->"${best.key.slice(d, d + 160)}"`);
+    console.error(`    incoming ->"${incomingKey.slice(d, d + 160)}"\n`);
   }
 
   /** Build a short human hint (model + truncated prompt) for diagnostics. */
