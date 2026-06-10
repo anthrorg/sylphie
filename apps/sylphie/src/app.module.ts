@@ -26,6 +26,7 @@ import { SkillsController } from './controllers/skills.controller';
 import { DrivesController, PressureController } from './controllers/drives.controller';
 import { VoiceController } from './controllers/voice.controller';
 import { MetricsController } from './controllers/metrics.controller';
+import { LlmController } from './controllers/llm.controller';
 import { DebugController } from './controllers/debug.controller';
 import { AuthController } from './controllers/auth.controller';
 import { SupervisorController } from './controllers/supervisor.controller';
@@ -57,6 +58,7 @@ import { CognitionGatewayService } from './services/cognition-gateway.service';
 import { CognitionBridgeService } from './services/cognition-bridge.service';
 import { TensorInferenceAdapter } from './services/tensor-inference-adapter.service';
 import { GuardianRulesService } from './services/guardian-rules.service';
+import { LearningPressureBridgeService } from './services/learning-pressure-bridge.service';
 
 /**
  * @Global() CognitionModule — makes TENSOR_INFERENCE_SERVICE available to
@@ -164,6 +166,7 @@ class CognitionModule {}
     PressureController,
     VoiceController,
     MetricsController,
+    LlmController,
     DebugController,
     SupervisorController,
     RulesController,
@@ -207,6 +210,8 @@ class CognitionModule {}
     TelemetryBroadcastService,
     SupervisorBroadcastService,
     CognitionBridgeService,
+    // Learning pressure bridge: triggers maintenance cycles when CognitiveAwareness > 0.70
+    LearningPressureBridgeService,
     // Gateways
     GraphGateway,
     ConversationGateway,

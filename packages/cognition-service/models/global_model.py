@@ -174,6 +174,78 @@ class GlobalModel:
         }
 
     # ------------------------------------------------------------------
+    # Canonical weight access (training / EWC support)
+    # ------------------------------------------------------------------
+    #
+    # Canonical tensor order — shared by the NumPy arrays, the .npz
+    # checkpoints, and the TF model's trainable_variables:
+    #     [w1, b1, w2, b2, w_action, b_action, w_aux, b_aux]
+
+    _NUMPY_TENSOR_NAMES = (
+        "w1", "b1", "w2", "b2", "w_action", "b_action", "w_aux", "b_aux",
+    )
+
+    @property
+    def uses_tf(self) -> bool:
+        """True when the TensorFlow model is the active implementation."""
+        return HAS_TF and hasattr(self, "model")
+
+    def _canonical_shapes(self) -> list[tuple[int, ...]]:
+        return [
+            (self.input_dim, 512), (512,),
+            (512, 256), (256,),
+            (256, self.action_dim), (self.action_dim,),
+            (256, 2), (2,),
+        ]
+
+    def tf_variables(self) -> list:
+        """TF trainable variables in canonical order, shape-validated.
+
+        Keras returns trainable_variables in layer-creation order, which for
+        this functional model matches the canonical convention exactly
+        (verified: kernel/bias pairs for hidden_1, hidden_2, action_bias,
+        aux_outputs). The shape check makes any future Keras ordering change
+        a loud RuntimeError instead of a silent wrong-weight EWC penalty.
+        """
+        variables = list(self.model.trainable_variables)
+        got = [tuple(int(d) for d in v.shape) for v in variables]
+        expected = self._canonical_shapes()
+        if got != expected:
+            raise RuntimeError(
+                "TF trainable_variables do not match the canonical weight "
+                f"order. Expected shapes {expected}, got {got}. "
+                "Training/EWC must not proceed with misaligned tensors."
+            )
+        return variables
+
+    def weights_np(self) -> list[np.ndarray]:
+        """Return host-memory copies of all weights in canonical order.
+
+        Works on both paths: TF variables are copied out via .numpy();
+        NumPy arrays are .copy()'d. Safe to store as an EWC anchor.
+        """
+        if self.uses_tf:
+            return [v.numpy() for v in self.tf_variables()]
+        return [getattr(self, n).copy() for n in self._NUMPY_TENSOR_NAMES]
+
+    def set_weights_np(self, weights: list[np.ndarray]) -> None:
+        """Write a canonical-order weight list into the live model.
+
+        Caller is responsible for holding the trainer's weight lock when the
+        model is concurrently serving inference.
+        """
+        if self.uses_tf:
+            # tf_variables() validates ordering; set_weights assigns in the
+            # same trainable_variables order.
+            self.tf_variables()
+            self.model.set_weights(
+                [np.asarray(w, dtype=np.float32) for w in weights]
+            )
+        else:
+            for name, w in zip(self._NUMPY_TENSOR_NAMES, weights):
+                np.copyto(getattr(self, name), w)
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -185,15 +257,15 @@ class GlobalModel:
             self.model.save_weights(os.path.join(directory, "global_model.weights.h5"))
         else:
             final_path = os.path.join(directory, "global_model_np.npz")
-            tmp_path = final_path + ".tmp"
+            tmp_stem = final_path[:-4] + ".tmp"  # strip ".npz", np.savez re-appends it
             np.savez(
-                tmp_path,
+                tmp_stem,
                 w1=self.w1, b1=self.b1,
                 w2=self.w2, b2=self.b2,
                 w_action=self.w_action, b_action=self.b_action,
                 w_aux=self.w_aux, b_aux=self.b_aux,
             )
-            os.replace(tmp_path, final_path)
+            os.replace(tmp_stem + ".npz", final_path)
         logger.info("Global model weights saved to %s", directory)
 
     def load(self, directory: str) -> bool:

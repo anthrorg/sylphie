@@ -265,6 +265,13 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     }
   }
 
+  async forceCycle(): Promise<MaintenanceCycleResult> {
+    // Delegates to runMaintenanceCycle() which already has the overlap guard.
+    // The cycle runs immediately rather than waiting for the next timer tick.
+    vlog('pressure-triggered cycle requested');
+    return this.runMaintenanceCycle();
+  }
+
   async runReflectionCycle(): Promise<ReflectionResult> {
     if (this.reflectionInFlight) {
       this.logger.debug('Reflection cycle already in flight — skipping');

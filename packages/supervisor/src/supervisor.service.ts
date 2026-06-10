@@ -226,8 +226,15 @@ export class SupervisorService
     if (!this.enabled) return false;
     if (this.samplingPolicy.burstMode) return true;
 
-    // TODO: Check for always-evaluate events (guardian_feedback, attractor_alert)
-    // These require wiring into the guardian feedback path.
+    // Always-evaluate: GUARDIAN_FEEDBACK cycles bypass sampling regardless of rate.
+    // These are safety-critical moments — a guardian correction must never be missed.
+    // attractor_alert is deferred until attractor monitor emits a per-cycle marker.
+    if (
+      cycle.inputCategory === 'GUARDIAN_FEEDBACK' &&
+      this.samplingPolicy.alwaysEvaluate.includes('guardian_feedback')
+    ) {
+      return true;
+    }
 
     // Standard sampling
     return this.cycleCount % this.samplingPolicy.sampleRate === 0;

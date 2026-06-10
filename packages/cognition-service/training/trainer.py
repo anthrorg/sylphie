@@ -5,10 +5,14 @@ is never blocked — the training thread only acquires the model weight lock
 during the brief window when it copies gradients into the weight matrices.
 
 Architecture note:
-    Training targets the NumPy model exclusively. TensorFlow GradientTape
-    training can be layered on later when TF is confirmed to be installed
-    in production. The NumPy path is self-contained, has no external
-    dependencies, and is straightforward to test.
+    Training supports both GlobalModel implementations. The NumPy path uses
+    the hand-derived backprop below; the TensorFlow path uses GradientTape
+    purely as the gradient engine. Everything downstream of the gradients —
+    the NumPy AdamOptimizer, the EWC penalty, and the compute-off-lock /
+    brief-lock-write-back pattern — is shared, so both paths exercise the
+    same validated update machinery. The TF trainable_variables order is
+    shape-validated against the canonical [w1, b1, ..., w_aux, b_aux]
+    convention in GlobalModel.tf_variables().
 
 Loss signal during bootstrap:
     Primary: cross-entropy between the model's softmax action_bias output
@@ -299,6 +303,77 @@ def _backprop(
     return grads, loss
 
 
+def _tf_batch_gradients(
+    model: Any,
+    x: np.ndarray,
+    labels: np.ndarray,
+) -> tuple[list[np.ndarray], float]:
+    """Mean cross-entropy gradients via tf.GradientTape (TF path).
+
+    Mirrors _backprop() exactly: same clipped-log CE loss, same per-batch
+    mean, same canonical tensor order, and the unsupervised aux head comes
+    back as zero gradients (the tape returns None for variables the loss
+    does not depend on; those are converted to zeros for shape parity).
+
+    Args:
+        model:  GlobalModel instance with the TF path active.
+        x:      Input batch (batch, GLOBAL_INPUT_DIM).
+        labels: One-hot target labels (batch, ACTION_SPACE_DIM).
+
+    Returns:
+        Tuple (grads, loss) — eight numpy arrays in canonical order plus the
+        scalar cross-entropy loss, identical contract to _backprop().
+    """
+    import tensorflow as tf  # local import — only reached when TF is active
+
+    variables = model.tf_variables()
+    x_t = tf.convert_to_tensor(x, dtype=tf.float32)
+    labels_t = tf.convert_to_tensor(labels, dtype=tf.float32)
+    batch = float(x.shape[0])
+
+    with tf.GradientTape() as tape:
+        action_probs, _aux = model.model(x_t, training=True)
+        clipped = tf.clip_by_value(action_probs, 1e-12, 1.0)
+        loss = -tf.reduce_sum(labels_t * tf.math.log(clipped)) / batch
+
+    tape_grads = tape.gradient(loss, variables)
+    grads = [
+        np.zeros(tuple(int(d) for d in v.shape), dtype=np.float32)
+        if g is None
+        else np.asarray(g.numpy(), dtype=np.float32)
+        for g, v in zip(tape_grads, variables)
+    ]
+    return grads, float(loss.numpy())
+
+
+def compute_batch_gradients(
+    model: Any,
+    x: np.ndarray,
+    labels: np.ndarray,
+) -> tuple[list[np.ndarray], float]:
+    """Mean CE gradients in canonical order, for either model path.
+
+    The single gradient entry point shared by the training step and the EWC
+    Fisher computation (replay.py), so both consume identical gradients
+    regardless of which GlobalModel implementation is active.
+
+    Args:
+        model:  GlobalModel (NumPy or TF path) or a NumPy-compatible test
+                double exposing w1..b_aux.
+        x:      Input batch (batch, GLOBAL_INPUT_DIM).
+        labels: One-hot labels (batch, ACTION_SPACE_DIM).
+
+    Returns:
+        Tuple (grads, loss): eight numpy gradient arrays in the canonical
+        [w1, b1, w2, b2, w_action, b_action, w_aux, b_aux] order, and the
+        scalar cross-entropy loss.
+    """
+    if hasattr(model, "w1"):
+        h1, h2, action_probs, _aux, _ = _forward_with_cache(model, x)
+        return _backprop(model, x, h1, h2, action_probs, labels)
+    return _tf_batch_gradients(model, x, labels)
+
+
 def _build_labels(
     samples: list[dict[str, Any]],
     vocab: ActionVocabulary,
@@ -374,8 +449,12 @@ class Trainer:
           on all platforms we target.
         - The trainer acquires _weight_lock only for the brief period when
           it copies updated weight values back into the model (in-place
-          array assignment). This is sub-millisecond and does not stall
-          inference in practice.
+          array assignment, or model.set_weights on the TF path). This is
+          sub-millisecond and does not stall inference in practice.
+        - TF path: a concurrent forward pass may observe some variables
+          updated and others not (same cross-tensor exposure the NumPy
+          design accepts). Per-variable assignment via set_weights keeps
+          individual tensors internally consistent.
         - A threading.Event (_stop_event) signals the loop to exit cleanly.
 
     Weight order convention (same as GlobalModel.save / GlobalModel.load):
@@ -403,6 +482,12 @@ class Trainer:
         self._training_steps: int = 0
         self._last_loss: float | None = None
         self._step_lock = threading.Lock()  # protects _training_steps / _last_loss
+
+        # Supervisor freeze flag. When True, _train_step() returns early after
+        # logging — weights are held fixed but the thread keeps running so it
+        # can resume instantly on unfreeze (distinct from stop(), which kills
+        # the thread). Flipped by the /cognition/control/freeze endpoints.
+        self._training_frozen: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -457,6 +542,86 @@ class Trainer:
         """Cross-entropy loss from the most recent training step, or None."""
         with self._step_lock:
             return self._last_loss
+
+    @property
+    def ewc(self) -> EWCRegularizer:
+        """The EWC regularizer instance used by the training step.
+
+        Exposed so the phase-transition endpoint can call set_reference() /
+        compute_fisher() on the *same* instance the training loop reads from.
+        """
+        return self._ewc
+
+    @property
+    def vocab(self) -> ActionVocabulary:
+        """The action vocabulary (category <-> index mapping)."""
+        return self._vocab
+
+    @property
+    def is_frozen(self) -> bool:
+        """True when supervisor freeze is active (weights held fixed)."""
+        return self._training_frozen
+
+    # ------------------------------------------------------------------
+    # Weight snapshot / EWC anchor support
+    # ------------------------------------------------------------------
+
+    def get_weights(self) -> list[np.ndarray]:
+        """Return copies of the current model weights in canonical order.
+
+        Used by the phase-transition endpoint to capture the EWC anchor point.
+        Returns copies (not live references) so the caller can store them as a
+        stable snapshot. Acquires the weight lock so it never reads a tensor
+        mid-update.
+
+        Order: [w1, b1, w2, b2, w_action, b_action, w_aux, b_aux].
+        Works on both the NumPy and TF model paths.
+        """
+        model = self._cycle.global_model
+        with self._weight_lock:
+            return self._current_weights(model, copy=True)
+
+    # ------------------------------------------------------------------
+    # Supervisor freeze control
+    # ------------------------------------------------------------------
+
+    def freeze(self) -> None:
+        """Freeze weight updates without stopping the training thread.
+
+        The loop keeps spinning but _train_step() returns early. Resume with
+        unfreeze(). This is intentionally distinct from stop(), which tears the
+        thread down entirely.
+        """
+        self._training_frozen = True
+        logger.info("Trainer frozen — weight updates suspended")
+
+    def unfreeze(self) -> None:
+        """Resume weight updates after a freeze()."""
+        self._training_frozen = False
+        logger.info("Trainer unfrozen — weight updates resumed")
+
+    def zero_pending_for_category(self, category: str) -> None:
+        """Hook for cancelling pending gradient updates toward a category.
+
+        Called by the /cognition/control/correct endpoint after a supervisor
+        flags a wrong action category. The current trainer applies each batch's
+        gradients synchronously inside _train_step() (no cross-step pending
+        accumulation), so there is genuinely nothing queued to cancel — this is
+        a no-op by design, not a silent stub.
+
+        It exists as a real, wired call site so that if a future change adds
+        asynchronous / accumulated gradient queues, the correction path already
+        invokes the cancellation point. Logged so the no-op is observable.
+
+        Args:
+            category: The (wrong) action category whose pending updates should
+                      be cancelled, if any were queued.
+        """
+        logger.info(
+            "zero_pending_for_category('%s'): no cross-step pending gradients "
+            "in the current synchronous trainer — nothing to cancel.",
+            category,
+        )
 
     # ------------------------------------------------------------------
     # Bootstrap support
@@ -569,24 +734,22 @@ class Trainer:
         Returns:
             Cross-entropy loss scalar for this batch.
         """
-        model = self._cycle.global_model
+        # Supervisor freeze: hold weights fixed but keep the thread alive.
+        if self._training_frozen:
+            # Return the last known loss (or 0.0) without touching weights.
+            return self._last_loss if self._last_loss is not None else 0.0
 
-        # Only the NumPy path is trained here. If TF is loaded, skip.
-        if not hasattr(model, "w1"):
-            # TF model present — not training via NumPy path.
-            return 0.0
+        model = self._cycle.global_model
 
         x = _build_input_batch(batch)
         labels = _build_labels(batch, self._vocab)
 
-        # Forward
-        h1, h2, action_probs, aux_probs, _ = _forward_with_cache(model, x)
-
-        # Backprop
-        grads, loss = _backprop(model, x, h1, h2, action_probs, labels)
+        # Gradients — hand-derived backprop (NumPy path) or GradientTape
+        # (TF path); identical contract either way.
+        grads, loss = compute_batch_gradients(model, x, labels)
 
         # EWC penalty gradients (zero until a reference point is set)
-        current_weights = self._get_weights(model)
+        current_weights = self._current_weights(model)
         ewc_grads = self._ewc.penalty_gradients(current_weights, lambda_ewc=0.1)
         grads = [g + eg for g, eg in zip(grads, ewc_grads)]
 
@@ -596,13 +759,41 @@ class Trainer:
 
         # Write updated weights back into the model under the lock.
         with self._weight_lock:
-            self._set_weights(model, weight_copies)
+            self._write_weights(model, weight_copies)
 
         return loss
 
     # ------------------------------------------------------------------
     # Weight access helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _current_weights(model: Any, copy: bool = False) -> list[np.ndarray]:
+        """Canonical-order weight list for either model path.
+
+        NumPy path: live array references (or copies when ``copy=True``).
+        TF path: always host-memory copies (weights_np() copies out of the
+        TF variables — there is no zero-copy view of a tf.Variable).
+
+        Args:
+            model: GlobalModel instance (either path).
+            copy:  Force copies on the NumPy path (e.g., for stable snapshots).
+        """
+        if hasattr(model, "w1"):
+            live = Trainer._get_weights(model)
+            return [w.copy() for w in live] if copy else live
+        return model.weights_np()
+
+    @staticmethod
+    def _write_weights(model: Any, weights: list[np.ndarray]) -> None:
+        """Write a canonical-order weight list back into either model path.
+
+        Caller must hold the weight lock.
+        """
+        if hasattr(model, "w1"):
+            Trainer._set_weights(model, weights)
+        else:
+            model.set_weights_np(weights)
 
     @staticmethod
     def _get_weights(model: Any) -> list[np.ndarray]:

@@ -141,15 +141,15 @@ class DeliberationPipeline:
         """Save pipeline weights atomically."""
         os.makedirs(directory, exist_ok=True)
         final_path = os.path.join(directory, f"delib_{self.name}.npz")
-        tmp_path = final_path + ".tmp"
+        tmp_stem = final_path[:-4] + ".tmp"  # strip ".npz", np.savez re-appends it
         np.savez(
-            tmp_path,
+            tmp_stem,
             w1=self.w1, b1=self.b1,
             w2=self.w2, b2=self.b2,
             w_action=self.w_action, b_action=self.b_action,
             w_conf=self.w_conf, b_conf=self.b_conf,
         )
-        os.replace(tmp_path, final_path)
+        os.replace(tmp_stem + ".npz", final_path)
 
     def load(self, directory: str) -> bool:
         """Load pipeline weights. Tolerates corrupted checkpoints."""
@@ -264,15 +264,15 @@ class SynthesisModel:
         """Save synthesis model weights atomically."""
         os.makedirs(directory, exist_ok=True)
         final_path = os.path.join(directory, "synthesis_model.npz")
-        tmp_path = final_path + ".tmp"
+        tmp_stem = final_path[:-4] + ".tmp"  # strip ".npz", np.savez re-appends it
         np.savez(
-            tmp_path,
+            tmp_stem,
             w1=self.w1, b1=self.b1,
             w_action=self.w_action, b_action=self.b_action,
             w_weights=self.w_weights, b_weights=self.b_weights,
             w_conf=self.w_conf, b_conf=self.b_conf,
         )
-        os.replace(tmp_path, final_path)
+        os.replace(tmp_stem + ".npz", final_path)
 
     def load(self, directory: str) -> bool:
         """Load synthesis model weights. Tolerates corrupted checkpoints."""

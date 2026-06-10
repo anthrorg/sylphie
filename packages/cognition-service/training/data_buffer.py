@@ -7,12 +7,15 @@ positions in the buffer (replay), the rest from the most recent additions.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
 import numpy as np
 
 import config
+
+logger = logging.getLogger("cognition_service.training.data_buffer")
 
 
 class DataBuffer:
@@ -119,6 +122,135 @@ class DataBuffer:
                     batch.append(self._buffer[idx])
 
             return batch
+
+    def snapshot_calibration(
+        self,
+        n_samples: int,
+        stratified: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Draw a calibration set for Fisher-information estimation (EWC).
+
+        Unlike sample_batch(), this draws purely at random across the entire
+        valid buffer (no recency bias from the ring head), which is what the
+        empirical Fisher diagonal needs at a phase boundary. When ``stratified``
+        is True and samples carry an ``action_category`` field, the draw is
+        stratified by category so rare categories are not crowded out by the
+        dominant one (recency / class-imbalance bias is the documented failure
+        mode for calibration sets).
+
+        If the buffer holds fewer than ``n_samples`` valid entries, all valid
+        entries are returned (no repetition).
+
+        Args:
+            n_samples:  Target number of calibration samples.
+            stratified: If True, balance the draw across action categories when
+                        the field is present. Falls back to plain random draw
+                        when no category field exists on the samples.
+
+        Returns:
+            List of sample dicts (the same dict objects stored in the buffer).
+        """
+        with self._lock:
+            count = self._count
+            if count == 0:
+                return []
+
+            if count < self._capacity:
+                valid_indices = list(range(count))
+            else:
+                valid_indices = [
+                    (self._head + i) % self._capacity for i in range(self._capacity)
+                ]
+
+            samples = [self._buffer[i] for i in valid_indices]
+
+        target = min(n_samples, len(samples))
+        if target == 0:
+            return []
+
+        # Determine whether stratification is possible (any sample carries a
+        # usable action_category). If not, fall back to a plain random draw.
+        categories = [s.get("action_category") for s in samples]
+        can_stratify = stratified and any(c is not None for c in categories)
+
+        if not can_stratify:
+            picks = np.random.choice(len(samples), size=target, replace=False)
+            return [samples[int(i)] for i in picks]
+
+        # Stratified draw: bucket sample indices by category, then round-robin
+        # across buckets drawing without replacement until we hit ``target``.
+        buckets: dict[Any, list[int]] = {}
+        for idx, cat in enumerate(categories):
+            key = cat if cat is not None else "__none__"
+            buckets.setdefault(key, []).append(idx)
+
+        # Shuffle within each bucket so we don't bias toward insertion order.
+        for key in buckets:
+            np.random.shuffle(buckets[key])
+
+        selected: list[int] = []
+        bucket_keys = list(buckets.keys())
+        np.random.shuffle(bucket_keys)
+        cursor = {key: 0 for key in bucket_keys}
+
+        # Round-robin: one sample per category per pass until target is met or
+        # every bucket is exhausted.
+        while len(selected) < target:
+            progressed = False
+            for key in bucket_keys:
+                if len(selected) >= target:
+                    break
+                pos = cursor[key]
+                if pos < len(buckets[key]):
+                    selected.append(buckets[key][pos])
+                    cursor[key] = pos + 1
+                    progressed = True
+            if not progressed:
+                # Every bucket exhausted before reaching target — buffer simply
+                # doesn't hold enough distinct samples. Return what we have.
+                break
+
+        return [samples[i] for i in selected]
+
+    def add_sample(
+        self,
+        fused_embedding: list[float] | np.ndarray,
+        drive_vector: list[float] | np.ndarray,
+        drive_deltas: list[float] | np.ndarray,
+        total_pressure: float,
+        episodic_context: list[float] | np.ndarray,
+        action_category: str | None = None,
+        arbitration_type: str = "TYPE_1",
+        **extra: Any,
+    ) -> None:
+        """Convenience constructor + add for an explicitly-componented sample.
+
+        Used by the supervisor control endpoints (reinforce / correct) which
+        inject hand-built samples rather than relaying a full TrainingSample
+        from NestJS. Mirrors the field layout that _build_input_batch() and
+        _build_labels() expect on the training side.
+
+        Args:
+            fused_embedding:  768-float fused multimodal embedding.
+            drive_vector:     12-float drive state vector.
+            drive_deltas:     12-float drive deltas.
+            total_pressure:   Scalar total drive pressure.
+            episodic_context: 768-float episodic context embedding.
+            action_category:  Category label for the one-hot training target.
+            arbitration_type: Arbitration type tag (default TYPE_1).
+            **extra:          Any additional fields to store on the sample dict.
+        """
+        sample: dict[str, Any] = {
+            "fused_embedding": fused_embedding,
+            "drive_vector": drive_vector,
+            "drive_deltas": drive_deltas,
+            "total_pressure": float(total_pressure),
+            "episodic_context": episodic_context,
+            "action_category": action_category,
+            "arbitration_type": arbitration_type,
+        }
+        sample.update(extra)
+        self.add(sample)
 
     # ------------------------------------------------------------------
     # Dunder helpers

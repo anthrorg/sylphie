@@ -87,15 +87,16 @@ class ConvergenceModel:
         self.w_div = xavier(64, 1)
         self.b_div = np.zeros(1, dtype=np.float32)
 
-        # Panel adjustment head: 64 → 4 (sigmoid, one per panel)
-        self.w_adj = xavier(64, 4)
-        self.b_adj = np.zeros(4, dtype=np.float32)
+        # NOTE: A panel-adjustment head (64 → 4) was removed here. It was never
+        # activated (use_learned stayed False, _predict_learned never read it)
+        # and contributed 260 random floats that influenced nothing. Wiring a
+        # real adjustment head is deferred until there is a training signal for
+        # it; see the graduation TODO in _predict_learned().
 
         self.total_params = sum(
             a.size for a in [
                 self.w1, self.b1,
                 self.w_div, self.b_div,
-                self.w_adj, self.b_adj,
             ]
         )
 
@@ -158,21 +159,24 @@ class ConvergenceModel:
         div_raw = h1 @ self.w_div + self.b_div
         divergence = 1.0 / (1.0 + np.exp(-div_raw))
 
+        # TODO: use_learned graduation criterion: flip to True when trained on
+        # >= N convergence samples with validation accuracy > threshold.
+        # Target: after panel models have seen >= 1000 cycles. Until then this
+        # learned divergence path stays gated off (check() uses the heuristic).
         return float(divergence[0, 0])
 
     def save(self, directory: str) -> None:
         """Save convergence model weights atomically."""
         os.makedirs(directory, exist_ok=True)
         final_path = os.path.join(directory, "convergence_model.npz")
-        tmp_path = final_path + ".tmp"
+        tmp_stem = final_path[:-4] + ".tmp"  # strip ".npz", np.savez re-appends it
         np.savez(
-            tmp_path,
+            tmp_stem,
             w1=self.w1, b1=self.b1,
             w_div=self.w_div, b_div=self.b_div,
-            w_adj=self.w_adj, b_adj=self.b_adj,
             use_learned=np.array([self.use_learned]),
         )
-        os.replace(tmp_path, final_path)
+        os.replace(tmp_stem + ".npz", final_path)
 
     def load(self, directory: str) -> bool:
         """Load convergence model weights. Tolerates corrupted checkpoints."""
@@ -185,10 +189,20 @@ class ConvergenceModel:
             self.b1 = data["b1"]
             self.w_div = data["w_div"]
             self.b_div = data["b_div"]
-            self.w_adj = data["w_adj"]
-            self.b_adj = data["b_adj"]
+            # Backward compat: older checkpoints carry "w_adj"/"b_adj" from the
+            # removed panel-adjustment head. Silently ignore them.
+            if "w_adj" in data or "b_adj" in data:
+                logger.debug(
+                    "Ignoring legacy w_adj/b_adj keys in %s (dead head removed)",
+                    path,
+                )
             if "use_learned" in data:
                 self.use_learned = bool(data["use_learned"][0])
+            # Recompute param count from the live tensors (the loaded arrays may
+            # differ in shape from the build-time defaults across versions).
+            self.total_params = sum(
+                a.size for a in [self.w1, self.b1, self.w_div, self.b_div]
+            )
             logger.info("Convergence model loaded from %s", path)
             return True
         except Exception as e:

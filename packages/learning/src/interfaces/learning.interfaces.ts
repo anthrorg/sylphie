@@ -55,6 +55,17 @@ export interface ILearningService {
    * @returns Summary of what the synthesis cycle did.
    */
   runSynthesisCycle(): Promise<SynthesisCycleResult>;
+
+  /**
+   * Request an immediate maintenance cycle driven by external pressure.
+   *
+   * Called by the learning-pressure bridge when CognitiveAwareness drive
+   * pressure exceeds the configured threshold. If a cycle is already in
+   * flight the call is a no-op (the overlap guard fires).
+   *
+   * @returns Summary of what the cycle did, or a no-op summary if skipped.
+   */
+  forceCycle(): Promise<MaintenanceCycleResult>;
 }
 
 // ---------------------------------------------------------------------------

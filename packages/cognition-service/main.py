@@ -432,6 +432,120 @@ async def bootstrap_status():
 
 
 # ---------------------------------------------------------------------------
+# Phase transition (Online EWC anchor + Fisher recompute)
+# ---------------------------------------------------------------------------
+
+# Number of calibration samples drawn from the replay buffer at a phase
+# boundary for the empirical-Fisher estimate. 1000 is within the 500–2000
+# range recommended by the EWC research note.
+_FISHER_CALIBRATION_SAMPLES = 1000
+
+_VALID_PHASES = {"shadow", "audit", "partial", "full"}
+
+
+class PhaseTransitionRequest(BaseModel):
+    """Phase-boundary signal from the supervisor.
+
+    Triggers an Online EWC consolidation: anchor to current weights, compute
+    the empirical Fisher over a calibration set, and update the runtime
+    bootstrap mode.
+    """
+    new_phase: str  # audit | partial | full (shadow accepted but is the start state)
+
+
+@app.post("/cognition/phase-transition")
+async def phase_transition(req: PhaseTransitionRequest):
+    """Consolidate weights at an operational phase boundary (Online EWC).
+
+    This is the runtime mechanism by which the supervisor advances Sylphie
+    between operational phases. The static COGNITION_BOOTSTRAP_MODE env var
+    only sets the *initial* mode; this endpoint moves the live state machine.
+
+    On receipt it:
+      1. Anchors EWC to the current model weights (set_reference) — rolls the
+         running Online-EWC Fisher estimate.
+      2. Computes the empirical Fisher diagonal over a stratified calibration
+         set drawn from the replay buffer.
+      3. Updates the runtime bootstrap mode (BootstrapTracker.mode).
+
+    Returns 400 if the phase is unknown or the trainer/buffer is unavailable.
+    """
+    new_phase = req.new_phase.strip().lower()
+    if new_phase not in _VALID_PHASES:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "accepted": False,
+                "error": f"Unknown phase '{req.new_phase}'. "
+                         f"Expected one of {sorted(_VALID_PHASES)}.",
+            },
+        )
+
+    if _state.trainer is None or _state.buffer is None:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "Trainer/buffer not initialized"},
+        )
+
+    prev_phase = _state.bootstrap_mode
+    trainer = _state.trainer
+    buffer = _state.buffer
+
+    # Capture the EWC anchor and run the calibration-set Fisher pass.
+    weights = trainer.get_weights()
+    fisher_computed = False
+    calibration_n = 0
+    if not weights:
+        # Both model paths expose canonical weights now — an empty list is a
+        # bug, not an accepted configuration. Log loudly.
+        logger.error(
+            "Phase transition to '%s': trainer returned NO weights — "
+            "EWC anchor/Fisher skipped. This should be impossible (NumPy and "
+            "TF paths both expose canonical weights); investigate.",
+            new_phase,
+        )
+    else:
+        trainer.ewc.set_reference(weights)
+        calibration = buffer.snapshot_calibration(
+            _FISHER_CALIBRATION_SAMPLES, stratified=True,
+        )
+        if calibration:
+            try:
+                trainer.ewc.compute_fisher(trainer, calibration)
+                fisher_computed = True
+                calibration_n = len(calibration)
+            except ValueError as exc:
+                logger.warning(
+                    "Phase transition Fisher computation skipped: %s", exc,
+                )
+        else:
+            logger.warning(
+                "Phase transition to '%s': replay buffer empty, Fisher not "
+                "computed (EWC anchored with uniform/decayed Fisher).",
+                new_phase,
+            )
+
+    # Advance the runtime mode.
+    if _state.bootstrap_tracker is not None:
+        _state.bootstrap_tracker.mode = new_phase
+
+    logger.info(
+        "=== PHASE TRANSITION: %s -> %s === "
+        "(ewc_anchored=%s, fisher_computed=%s, calibration_samples=%d)",
+        prev_phase, new_phase, bool(weights), fisher_computed, calibration_n,
+    )
+
+    return {
+        "accepted": True,
+        "previous_phase": prev_phase,
+        "new_phase": new_phase,
+        "ewc_anchored": bool(weights),
+        "fisher_computed": fisher_computed,
+        "calibration_samples": calibration_n,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Supervisor Control Endpoints
 # ---------------------------------------------------------------------------
 
@@ -445,32 +559,177 @@ class InterventionRequest(BaseModel):
     reason: str = ""
 
 
+class ReinforceRequest(BaseModel):
+    """Positive reinforcement of a specific (input, action) pair."""
+    actionId: str
+    inputVector: list[float]
+    strengthFactor: float = 1.0
+
+
+class CorrectRequest(BaseModel):
+    """Supervisor correction: the action taken for this input was wrong."""
+    actionId: str
+    inputVector: list[float]
+    correctCategory: str
+
+
+def _split_input_vector(vec: list[float]) -> dict[str, list[float] | float]:
+    """Split a full assembled global input vector into its components.
+
+    Mirrors CognitiveCycle._assemble_global_input() layout so an injected
+    sample reconstructs into the same fields the trainer's _build_input_batch()
+    expects.
+
+    Layout (GLOBAL_INPUT_DIM == 1561):
+        [0:768]      fused_embedding
+        [768:780]    drive_vector (12)
+        [780:792]    drive_deltas (12)
+        [792]        total_pressure (1)
+        [793:1561]   episodic_context (768)
+
+    Raises:
+        ValueError: If the vector length does not match GLOBAL_INPUT_DIM.
+    """
+    expected = config.GLOBAL_INPUT_DIM
+    if len(vec) != expected:
+        raise ValueError(
+            f"inputVector has wrong dimensionality: got {len(vec)}, "
+            f"expected {expected}"
+        )
+    emb = config.EMBEDDING_DIM        # 768
+    dv = config.DRIVE_VECTOR_DIM      # 12
+    i = 0
+    fused = vec[i:i + emb]; i += emb
+    drive_vector = vec[i:i + dv]; i += dv
+    drive_deltas = vec[i:i + dv]; i += dv
+    total_pressure = vec[i]; i += 1
+    episodic = vec[i:i + emb]; i += emb
+    return {
+        "fused_embedding": fused,
+        "drive_vector": drive_vector,
+        "drive_deltas": drive_deltas,
+        "total_pressure": float(total_pressure),
+        "episodic_context": episodic,
+    }
+
+
 @app.post("/cognition/control/reinforce")
-async def reinforce(req: InterventionRequest):
-    """Positive training signal — strengthen current weights for a pattern."""
-    # TODO: Implement targeted reinforcement when training pipeline supports it
-    logger.info("Reinforce signal received (cycle=%s, weight=%.2f, reason=%s)",
-                req.cycle_id, req.weight, req.reason)
-    return {"accepted": True, "type": "reinforce"}
+async def reinforce(req: ReinforceRequest):
+    """Positive training signal — overweight an (input, action) pair on replay.
+
+    Injects the sample back into the DataBuffer multiple times so the training
+    loop naturally over-samples it. Repeat count = round(strengthFactor * 3),
+    clamped to [1, 10].
+    """
+    if _state.buffer is None:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "Buffer not initialized"},
+        )
+
+    try:
+        components = _split_input_vector(req.inputVector)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": str(exc)},
+        )
+
+    if not req.actionId:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "actionId is required"},
+        )
+
+    repeats = max(1, min(10, round(req.strengthFactor * 3)))
+    for _ in range(repeats):
+        _state.buffer.add_sample(
+            action_category=req.actionId,
+            arbitration_type="TYPE_1",
+            **components,  # type: ignore[arg-type]
+        )
+
+    logger.info(
+        "Reinforce: action='%s' injected %d× (strength=%.2f, buffer=%d)",
+        req.actionId, repeats, req.strengthFactor, _state.samples_in_buffer,
+    )
+    return {
+        "accepted": True,
+        "type": "reinforce",
+        "action": req.actionId,
+        "injected": repeats,
+        "buffer_size": _state.samples_in_buffer,
+    }
 
 
 @app.post("/cognition/control/correct")
-async def correct(req: InterventionRequest):
-    """Corrective training signal — supervised example with correct output."""
-    logger.info("Correction received (cycle=%s, reason=%s)", req.cycle_id, req.reason)
-    # TODO: Inject corrective sample into training buffer with high priority
-    return {"accepted": True, "type": "correct"}
+async def correct(req: CorrectRequest):
+    """Corrective training signal — supervised example with the correct label.
+
+    Injects a corrective sample (inputVector, correctCategory) into the buffer
+    3× (standard correction strength) and cancels any pending gradient updates
+    toward the wrong category via the trainer hook.
+    """
+    if _state.buffer is None:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "Buffer not initialized"},
+        )
+
+    if not req.correctCategory:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "correctCategory is required"},
+        )
+
+    try:
+        components = _split_input_vector(req.inputVector)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": str(exc)},
+        )
+
+    _CORRECTION_STRENGTH = 3
+    for _ in range(_CORRECTION_STRENGTH):
+        _state.buffer.add_sample(
+            action_category=req.correctCategory,
+            arbitration_type="TYPE_1",
+            **components,  # type: ignore[arg-type]
+        )
+
+    # Cancel pending updates toward the wrong category (the action that was
+    # taken). No-op in the current synchronous trainer, but the hook is wired.
+    if _state.trainer is not None and req.actionId:
+        _state.trainer.zero_pending_for_category(req.actionId)
+
+    logger.info(
+        "Correction: wrong='%s' -> correct='%s' injected %d× (buffer=%d)",
+        req.actionId, req.correctCategory, _CORRECTION_STRENGTH,
+        _state.samples_in_buffer,
+    )
+    return {
+        "accepted": True,
+        "type": "correct",
+        "correct_category": req.correctCategory,
+        "injected": _CORRECTION_STRENGTH,
+        "buffer_size": _state.samples_in_buffer,
+    }
 
 
 @app.post("/cognition/control/freeze")
 async def freeze_model(model_name: str = "all"):
-    """Freeze model weights — stop training updates on specified model."""
+    """Freeze model weights — suspend training updates on the specified model.
+
+    Sets the trainer freeze flag (weights held fixed, thread kept alive) rather
+    than tearing down the training thread, so unfreeze resumes instantly.
+    """
     if not _state.trainer:
         return {"accepted": False, "error": "Trainer not initialized"}
 
     if model_name == "all":
-        _state.trainer.stop()
-        logger.info("All models frozen (training stopped)")
+        _state.trainer.freeze()
+        logger.info("All models frozen (weight updates suspended)")
     else:
         # Per-model freeze not yet implemented — requires trainer refactor
         logger.info("Model freeze requested for '%s' (per-model freeze not yet implemented)", model_name)
@@ -485,8 +744,8 @@ async def unfreeze_model(model_name: str = "all"):
         return {"accepted": False, "error": "Trainer not initialized"}
 
     if model_name == "all":
-        _state.trainer.start()
-        logger.info("All models unfrozen (training resumed)")
+        _state.trainer.unfreeze()
+        logger.info("All models unfrozen (weight updates resumed)")
 
     return {"accepted": True, "model": model_name, "frozen": False}
 
@@ -521,11 +780,15 @@ async def model_state():
         _state.trainer is not None
         and hasattr(_state.trainer, '_stop_event')
         and not _state.trainer._stop_event.is_set()
+        and not _state.trainer.is_frozen
     )
 
     return {
         "total_parameters": _state.cycle.total_params,
         "training_active": training_active,
+        "training_frozen": (
+            _state.trainer.is_frozen if _state.trainer is not None else False
+        ),
         "training_steps": _state.training_steps,
         "training_loss": _state.training_loss,
         "bootstrap_mode": _state.bootstrap_mode,
