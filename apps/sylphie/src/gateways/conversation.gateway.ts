@@ -270,8 +270,8 @@ export class ConversationGateway
 
       // Ensure OKG Person anchor node exists for this user.
       // WS4 Ticket 3: pass the real isGuardian flag from the JWT (previously
-      // hardcoded to true). Tokenless connections still default to isGuardian=true
-      // (legacy guardian default — Ticket 4 will flip to false).
+      // hardcoded to true). WS4 Ticket 7: tokenless connections resolve to the
+      // guest identity (isGuardian=false) — guardian status requires a signed JWT.
       void this.personModel.ensurePersonNode(user.userId, user.username, user.isGuardian);
       // WS4 Ticket 4: DO NOT call setActivePerson here. The per-connection
       // setActivePerson was the first half of the active-person thrash (Part B.4).
@@ -322,12 +322,13 @@ export class ConversationGateway
     this.logger.log(`Text input: "${data.text}"`);
     const preview = data.text.substring(0, 80);
     const user = this.clientUsers.get(client);
-    // WS4 Ticket 3 — tokenless legacy default: userId='guardian', isGuardian=true.
-    // Ticket 4 will flip tokenless to userId='guest', isGuardian=false once the
-    // gate mints JWTs. Do NOT change these defaults in this ticket.
-    const userId = user?.userId ?? 'guardian';
-    const username = user?.username ?? 'Guardian';
-    const isGuardian = user?.isGuardian ?? true;
+    // WS4 Ticket 7 — atomic flip: tokenless connections are now 'guest', not 'guardian'.
+    // Anonymous (no-token / invalid-token) users become a named non-guardian guest
+    // per build-plan §7.2.2. Guardian status is only reachable via a signed JWT with
+    // isGuardian:true. This lands atomically with the gate JWT minting (gate.ts).
+    const userId = user?.userId ?? 'guest';
+    const username = user?.username ?? 'guest';
+    const isGuardian = user?.isGuardian ?? false;
     vlog('message received', { userId, isGuardian, textPreview: preview, textLength: data.text.length });
 
     // Acknowledge receipt immediately

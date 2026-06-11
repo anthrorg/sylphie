@@ -1,17 +1,17 @@
 {
-  "capturedAt": "2026-06-10",
+  "capturedAt": "2026-06-11",
   "note": "Captured from a real gate run via yarn gate:update-baseline",
   "typeRatio": {
     "type1": 4,
     "type2": 45
   },
   "mae": {
-    "mae": 0.08159078268849104,
+    "mae": 0.0660760205461897,
     "sampleCount": 50
   },
   "provenance": {
-    "experientialRatio": 0.7302363488182559,
-    "totalNodes": 6135
+    "experientialRatio": 0.8601723555255154,
+    "totalNodes": 11836
   },
   "driveTick": {
     "minHz": 0.5

@@ -211,6 +211,33 @@ export class MetricsController {
     return { ok: factsCleared >= 0, clearedAt: new Date().toISOString(), factsCleared };
   }
 
+  /**
+   * POST /metrics/all-persons-facts-reset
+   *
+   * WS4 Ticket 7 (P0′) — Delete all OKG facts (Attribute nodes) for ALL persons
+   * and clear the in-memory fact cache.  Dedicated route (not a param on the
+   * legacy person-facts-reset route per spec §6).
+   *
+   * Called once in the gate's P0 hermeticity block BEFORE the multi-person phase
+   * so the privacy probes start from a provably clean state. Enumerates every
+   * person in the OKG by traversing Person→HAS_FACT edges — never relies on a
+   * hardcoded list, so it can never miss a person the gate forgot.
+   *
+   * DESTRUCTIVE for all persons' accumulated facts, by design and gate-authorized.
+   *
+   * @returns ok + clearedAt + factsCleared for audit.
+   */
+  @Post('all-persons-facts-reset')
+  @HttpCode(200)
+  async resetAllPersonFacts(): Promise<{ ok: boolean; clearedAt: string; factsCleared: number }> {
+    const factsCleared = await this.personModel.clearFactsForAllPersons();
+    this.logger.warn(
+      `All-persons facts reset for gate hermeticity (WS4 T7): ` +
+        `${factsCleared} attribute(s) deleted across all persons.`,
+    );
+    return { ok: factsCleared >= 0, clearedAt: new Date().toISOString(), factsCleared };
+  }
+
   // ---------------------------------------------------------------------------
   // Observatory endpoints (per-session historical slices for dashboard charts)
   //

@@ -29,6 +29,7 @@
 import { WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as jwt from 'jsonwebtoken';
 import {
   Cassette,
   CASSETTE_URL,
@@ -55,6 +56,44 @@ const WS_BASE = `ws://localhost:${BACKEND_PORT}`;
 const BASELINE_FILE = path.resolve(process.cwd(), 'test', 'gate', 'baseline.json');
 const RESPONSE_TIMEOUT_MS = 45_000;
 const MODE: GateMode = resolveGateMode();
+
+// ---------------------------------------------------------------------------
+// JWT token minting (WS4 Ticket 7 — atomic flip + gate JWT minting)
+//
+// Mirrors auth.controller.ts:76-79 exactly.  Gate mints its own tokens directly
+// via jwt.sign — it does NOT call /api/auth/login (which requires a DB User row).
+//
+// Fail-closed precondition: if JWT_SECRET is unset, everyone becomes 'guest' on
+// the tokenless→guest default, silently regressing guardian behaviour.  The gate
+// MUST abort rather than record garbage.
+// ---------------------------------------------------------------------------
+
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET is not set. The gate cannot mint guardian/Bea tokens.');
+  console.error('Set JWT_SECRET (the same value the backend uses) before running the gate.');
+  process.exit(1);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+/** Mint a signed 7-day JWT identical to auth.controller.ts:76-79. */
+function mintToken(sub: string, username: string, isGuardian: boolean): string {
+  return jwt.sign({ sub, username, isGuardian }, JWT_SECRET, { expiresIn: '7d' });
+}
+
+/** Lazy guardian token — minted once per gate run. */
+let _guardianToken: string | null = null;
+function GUARDIAN_TOKEN(): string {
+  if (!_guardianToken) _guardianToken = mintToken('guardian', 'guardian', true);
+  return _guardianToken;
+}
+
+/** Lazy Bea token — minted once per gate run. */
+let _beaToken: string | null = null;
+function BEA_TOKEN(): string {
+  if (!_beaToken) _beaToken = mintToken('personB', 'Bea', false);
+  return _beaToken;
+}
 
 // ---------------------------------------------------------------------------
 // Baseline shape
@@ -131,10 +170,16 @@ interface TurnResult {
   timedOut: boolean;
 }
 
-/** Send one utterance over the conversation WS and collect the cb_speech reply. */
+/** Send one utterance over the conversation WS and collect the cb_speech reply.
+ *
+ * WS4 T7 — append guardian JWT so legacy corpus turns land as guardian (not guest).
+ * The atomic tokenless→guest flip means an unauthenticated connection would arrive
+ * as 'guest' and miss all grounded-recall assertions. Legacy converse() always uses
+ * the guardian token to preserve all pre-existing green criteria (C0–C2, M1–M4,
+ * L1–L8, P0). */
 async function converse(text: string): Promise<TurnResult> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`${WS_BASE}/ws/conversation`);
+    const ws = new WebSocket(`${WS_BASE}/ws/conversation?token=${encodeURIComponent(GUARDIAN_TOKEN())}`);
     const messages: any[] = [];
     let speech: any = null;
     const startMs = Date.now();
@@ -172,6 +217,410 @@ async function converse(text: string): Promise<TurnResult> {
       resolve({ speech, messageCount: messages.length, elapsedMs: Date.now() - startMs, timedOut: !speech });
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Persistent-socket helper (WS4 Ticket 7 §5)
+//
+// Unlike converse() (which opens, sends, and immediately closes), persistent
+// sockets stay open across turns and collect every cb_speech into received[].
+// This is what makes M5 multi-person isolation provable — we need two sockets
+// simultaneously, neither closing after the first reply.
+// ---------------------------------------------------------------------------
+
+interface PersistentSocket {
+  /** The underlying WebSocket. */
+  ws: WebSocket;
+  /** userId carried by the token (used for correlation assertions). */
+  userId: string;
+  /** Every cb_speech received on this socket. */
+  received: any[];
+  /** Send a turn without closing the socket. */
+  send(text: string): void;
+  /** Close the socket. */
+  close(): void;
+}
+
+/**
+ * Open a persistent WebSocket connection authenticated with `token`.
+ * Collects every `cb_speech` into `received[]`.
+ * `send()` posts a message event without closing the socket.
+ *
+ * The connection is considered open once the 'open' event fires and the initial
+ * system_status handshake arrives (or 600ms passes — the backend sends it
+ * synchronously on connect).
+ */
+function openPersistentSocket(token: string, userId: string): Promise<PersistentSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/conversation?token=${encodeURIComponent(token)}`);
+    const received: any[] = [];
+
+    const openTimeout = setTimeout(() => {
+      ws.close();
+      reject(new Error(`openPersistentSocket timeout waiting for open: userId=${userId}`));
+    }, 5000);
+
+    ws.on('open', () => {
+      clearTimeout(openTimeout);
+      // Give the backend 600ms to send system_status, then resolve.
+      setTimeout(() => {
+        const sock: PersistentSocket = {
+          ws,
+          userId,
+          received,
+          send(text: string) {
+            ws.send(JSON.stringify({ event: 'message', data: { text, type: 'text' } }));
+          },
+          close() {
+            ws.close();
+          },
+        };
+        resolve(sock);
+      }, 600);
+    });
+
+    ws.on('message', (data: Buffer) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'cb_speech') {
+          received.push(msg);
+        }
+      } catch { /* ignore binary */ }
+    });
+
+    ws.on('error', (err) => {
+      clearTimeout(openTimeout);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Wait until `received.length >= targetCount` or `timeoutMs` elapses.
+ * Returns the number of messages actually received.
+ */
+function waitForReplies(received: any[], targetCount: number, timeoutMs: number): Promise<number> {
+  return new Promise((resolve) => {
+    if (received.length >= targetCount) { resolve(received.length); return; }
+    const deadline = setTimeout(() => resolve(received.length), timeoutMs);
+    const iv = setInterval(() => {
+      if (received.length >= targetCount) {
+        clearTimeout(deadline);
+        clearInterval(iv);
+        resolve(received.length);
+      }
+    }, 50);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2.5: Multi-person + burst assertions (WS4 Ticket 7 §2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phase 2.5 — runMultiPersonPhase()
+ *
+ * Mode gating (spec §2 table):
+ *   replay  — M5.1–M5.4, PRIV.1–PRIV.2, Q1.1, Q1.2, Q1.3, Q1.6 (Q1.6 unused here — burst 6th)
+ *   lesion  — Q1.1–Q1.3, Q1.8, PRIV.1; M5 = recorded-SKIP (chat severed under lesion)
+ *
+ * Privacy relies on a clean OKG state (P0′ called in the main P0 block).
+ * P0prime scorecard row is also recorded here (after the reset in main()).
+ *
+ * Burst: K=5 sends on the guardian socket in one tick (<50ms window).
+ * Uses the corpus's existing zanfibble nonsense text (corpus.ts:90) so the tape
+ * entry is already present for replay.
+ *
+ * Privacy: Bea teaches "my secret word is fathom" — nonce value, absent from
+ * corpus / all legacy patterns — then guardian probes for it.  Assertions are
+ * on knowledgeGrounding LABEL only, not chat text (tape-drift-immune).
+ *
+ * WHO_AM_I caveat (spec §11): do NOT use trigger-phrase-matching text.
+ * All probes use normal recall questions ("What is my name?", "What is my
+ * secret word?") to avoid the broadcast path that would falsely fail M5.3.
+ */
+async function runMultiPersonPhase(
+  mode: GateMode,
+  p0primeOk: boolean,
+): Promise<void> {
+  banner('PHASE 2.5: MULTI-PERSON + BURST (WS4 Ticket 7)');
+
+  const isReplay = mode === 'replay' || mode === 'update-baseline';
+  const isLesion = mode === 'lesion';
+
+  // ── M5: by-name / isolation assertions (replay only; skip under lesion) ──────
+
+  if (isLesion) {
+    recordSkip('M5.1', 'A socket replies only to A (originator isolation)', 'lesion mode — chat severed');
+    recordSkip('M5.2', 'B socket replies only to B (originator isolation)', 'lesion mode — chat severed');
+    recordSkip('M5.3', 'zero cross-talk between A and B sockets', 'lesion mode — chat severed');
+    recordSkip('M5.4', 'replies contain the speaker\'s in-run-taught name', 'lesion mode — chat severed');
+  } else {
+    // Open two persistent sockets.
+    let sockA: PersistentSocket | null = null;
+    let sockB: PersistentSocket | null = null;
+    try {
+      sockA = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian');
+      sockB = await openPersistentSocket(BEA_TOKEN(), 'personB');
+
+      // Each persona teaches their name so M5.4 can probe recall.
+      // Wait for the cb_speech then add 1s for the async write-back (search_document embed).
+      sockA.send('My name is Guardian.');
+      await waitForReplies(sockA.received, 1, 20_000);
+      await sleep(1000); // write-back window
+      sockB.send('My name is Bea.');
+      await waitForReplies(sockB.received, 1, 20_000);
+      await sleep(1000); // write-back window
+
+      // Both ask their names in quick succession (interleaved <50ms spec).
+      // Snapshot counts BEFORE name probes so assertions cover the full received[].
+      const aPreProbe = sockA.received.length;
+      const bPreProbe = sockB.received.length;
+      sockA.send('What is my name?');
+      sockB.send('What is my name?');
+
+      // Wait until both sockets have at least one MORE message than before the probes.
+      await waitForReplies(sockA.received, aPreProbe + 1, 30_000);
+      await waitForReplies(sockB.received, bPreProbe + 1, 30_000);
+
+      // All messages received on each socket (includes teach-ack + name probe reply).
+      // M5.1–M5.3 assert originator.userId on ALL messages — teach-acks and probes
+      // alike must be correctly attributed.
+      const aReceivedCount = sockA.received.length;
+      const bReceivedCount = sockB.received.length;
+
+      console.log(`  sockA(guardian) cb_speech count: ${aReceivedCount}`);
+      console.log(`  sockB(personB)  cb_speech count: ${bReceivedCount}`);
+
+      // M5.1 — all A messages have originator.userId='guardian' AND at least one.
+      const aAllCorrect = aReceivedCount >= 1 &&
+        sockA.received.every((m: any) => m.originator?.userId === sockA!.userId);
+      recordBool('M5.1', 'A socket replies only to A (originator.userId=guardian)',
+        aAllCorrect,
+        aAllCorrect
+          ? `${aReceivedCount} message(s) on A socket; all originator.userId='guardian'`
+          : aReceivedCount === 0
+            ? 'no cb_speech received on A socket'
+            : `originator mismatch on A socket — received: ${sockA.received.map((m: any) => m.originator?.userId).join(', ')}`);
+
+      // M5.2 — all B messages have originator.userId='personB' AND at least one.
+      const bAllCorrect = bReceivedCount >= 1 &&
+        sockB.received.every((m: any) => m.originator?.userId === sockB!.userId);
+      recordBool('M5.2', 'B socket replies only to B (originator.userId=personB)',
+        bAllCorrect,
+        bAllCorrect
+          ? `${bReceivedCount} message(s) on B socket; all originator.userId='personB'`
+          : bReceivedCount === 0
+            ? 'no cb_speech received on B socket'
+            : `originator mismatch on B socket — received: ${sockB.received.map((m: any) => m.originator?.userId).join(', ')}`);
+
+      // M5.3 — zero cross-talk: no foreign userId in either socket's received[].
+      const aCrosstalk = sockA.received.filter((m: any) => m.originator?.userId !== 'guardian');
+      const bCrosstalk = sockB.received.filter((m: any) => m.originator?.userId !== 'personB');
+      const noXtalk = aCrosstalk.length === 0 && bCrosstalk.length === 0;
+      recordBool('M5.3', 'zero cross-talk between A and B sockets',
+        noXtalk,
+        noXtalk
+          ? 'no foreign originator.userId observed on either socket'
+          : `cross-talk detected — A socket foreign: ${aCrosstalk.length}, B socket foreign: ${bCrosstalk.length}`);
+
+      // M5.4 — SOFT: at least one reply on each socket contains the in-run-taught name.
+      const aHasName = sockA.received.some((m: any) =>
+        typeof m.text === 'string' && m.text.toLowerCase().includes('guardian'),
+      );
+      const bHasName = sockB.received.some((m: any) =>
+        typeof m.text === 'string' && m.text.toLowerCase().includes('bea'),
+      );
+      if (aHasName && bHasName) {
+        recordBool('M5.4', "replies contain the speaker's in-run-taught name", true,
+          'both personas\' replies contained their taught name');
+      } else {
+        recordSkip('M5.4', "replies contain the speaker's in-run-taught name",
+          `SOFT/recorded-skip — LLM phrasing may not include name verbatim ` +
+          `(A contains 'guardian': ${aHasName}, B contains 'bea': ${bHasName})`);
+      }
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      recordBool('M5.1', 'A socket replies only to A', false, `socket setup failed: ${msg}`);
+      recordBool('M5.2', 'B socket replies only to B', false, `socket setup failed: ${msg}`);
+      recordBool('M5.3', 'zero cross-talk between A and B', false, `socket setup failed: ${msg}`);
+      recordSkip('M5.4', "replies contain speaker's name", `socket setup failed: ${msg}`);
+    } finally {
+      sockA?.close();
+      sockB?.close();
+    }
+  }
+
+  // ── Burst (Q1) — K=5 turns in one tick (<50ms window) ──────────────────────
+  // Runs in BOTH modes (replay fast-path; lesion expects fast SHRUG + no watchdog kills).
+  // Uses corpus nonsense text ("How many glorps fit in a standard zanfibble?") so
+  // the tape entry already exists in cassette.json.
+
+  const K = 5;
+  const BURST_TEXT = 'How many glorps fit in a standard zanfibble?';
+  const BURST_TIMEOUT_MS = 45_000; // per-turn max (reuses RESPONSE_TIMEOUT_MS)
+  const LESION_LATENCY_BOUND_MS = 5_000; // reuse L7 bound
+
+  let burstSock: PersistentSocket | null = null;
+  try {
+    burstSock = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian');
+
+    // Drain any stale cb_speech that arrived during the socket setup window
+    // (e.g. a late M5 delivery targeted at 'guardian' that landed just as this
+    // socket became the newest guardian socket). Wait 300ms then snapshot
+    // the drain count so burst assertions are clean.
+    await sleep(300);
+    const preburstCount = burstSock.received.length;
+    if (preburstCount > 0) {
+      console.log(`  Burst: drained ${preburstCount} pre-burst message(s) before sending`);
+    }
+
+    const sendStart = Date.now();
+    for (let i = 0; i < K; i++) {
+      burstSock.send(BURST_TEXT);
+    }
+    const burstSendMs = Date.now() - sendStart;
+    console.log(`  Burst: sent ${K} turns in ${burstSendMs}ms`);
+
+    // Wait for all K responses (counting from preburstCount baseline).
+    await waitForReplies(burstSock.received, preburstCount + K, BURST_TIMEOUT_MS);
+    const burstReceived = burstSock.received.slice(preburstCount);
+    const finalCount = burstReceived.length;
+    console.log(`  Burst: received ${finalCount}/${K} cb_speech responses`);
+
+    // Q1.1 — exactly K responses, all distinct turnIds.
+    const turnIds = burstReceived.map((m: any) => m.turnId ?? m.speech?.turnId ?? null);
+    const distinctTurnIds = new Set(turnIds.filter(Boolean));
+    const q11Pass = finalCount === K && distinctTurnIds.size === K;
+    recordBool('Q1.1', `burst K=${K} → exactly K responses with K distinct turnIds`,
+      q11Pass,
+      `received=${finalCount}/${K} distinctTurnIds=${distinctTurnIds.size}/${K}` +
+        (burstSendMs < 50 ? ` (sent in ${burstSendMs}ms — within 50ms burst window)` : ` (sent in ${burstSendMs}ms)`));
+
+    // Q1.2 — zero executor not-in-IDLE throws during burst.
+    // CycleGuardService does not expose a throw-counter via any public route without
+    // modifying package internals (CycleGuardService is not exported from
+    // @sylphie/decision-making and has no HTTP surface). Per spec §7 ruling:
+    // recorded-skip rather than touching guard internals.
+    recordSkip('Q1.2', 'zero executor not-in-IDLE throws during burst',
+      'recorded-skip: CycleGuardService throw counter is not exposed via /api/metrics/health ' +
+      'without non-trivial guard internals changes — per spec §7 ruling (Sonnet: recorded-skip)');
+
+    // Q1.3 — each response non-empty / honest, no cross-turn splice.
+    // Non-empty: text has content. No splice: each originator.userId is consistent.
+    // Assertions are on burstReceived (post-drain slice) — not total received[].
+    const emptyReplies = burstReceived.filter((m: any) => !m.text?.trim());
+    const foreignReplies = burstReceived.filter(
+      (m: any) => m.originator?.userId && m.originator.userId !== 'guardian',
+    );
+    const q13Pass = finalCount === K && emptyReplies.length === 0 && foreignReplies.length === 0;
+    recordBool('Q1.3', 'burst responses non-empty, no cross-turn splice',
+      q13Pass,
+      `empty=${emptyReplies.length} foreign=${foreignReplies.length} total=${finalCount}/${K}`);
+
+    // Q1.8 — lesion only: all 5 fast SHRUG/Type-1 (<=5000ms), zero spurious watchdog kills.
+    if (isLesion) {
+      const latencies = burstReceived.map((m: any) =>
+        typeof m.latencyMs === 'number' ? m.latencyMs : LESION_LATENCY_BOUND_MS + 1,
+      );
+      const maxLat = Math.max(0, ...latencies);
+      const allFast = finalCount === K && maxLat <= LESION_LATENCY_BOUND_MS;
+      const allShrugOrType1 = burstReceived.every(
+        (m: any) => m.arbitrationType === 'SHRUG' || m.arbitrationType === 'TYPE_1',
+      );
+      recordBool('Q1.8',
+        `lesion burst: all ${K} responses fast SHRUG/TYPE_1 (<=5000ms), no watchdog kills`,
+        allFast && allShrugOrType1,
+        `maxLatency=${maxLat}ms allShrugOrType1=${allShrugOrType1} count=${finalCount}/${K}`);
+    } else {
+      recordSkip('Q1.8', 'lesion burst fast SHRUG/TYPE_1 <= 5000ms', 'replay mode — lesion-only criterion');
+    }
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordBool('Q1.1', `burst K=${K} → exactly K responses`, false, `burst socket failed: ${msg}`);
+    recordSkip('Q1.2', 'zero executor throws during burst',
+      'recorded-skip: CycleGuardService throw counter not exposed via public route (spec §7)');
+    recordBool('Q1.3', 'burst responses non-empty', false, `burst socket failed: ${msg}`);
+    if (isLesion) {
+      recordBool('Q1.8', 'lesion burst fast SHRUG/TYPE_1', false, `burst socket failed: ${msg}`);
+    } else {
+      recordSkip('Q1.8', 'lesion burst fast SHRUG/TYPE_1', 'replay mode — lesion-only criterion');
+    }
+  } finally {
+    burstSock?.close();
+  }
+
+  // ── Privacy assertions (PRIV.1, PRIV.2) ─────────────────────────────────────
+  // Requires p0primeOk (all-persons facts reset) — otherwise results are unsound.
+  // PRIV.1: HARD-FAIL in both modes. Bea teaches "my secret word is fathom"
+  //         (fresh nonce, absent from corpus / legacy patterns).  Guardian asks.
+  //         Guardian's cb_speech must NOT be GROUNDED — proves T5 write-time scoping.
+  // PRIV.2: SOFT/recorded-skip. Bea asks for her own secret — may be GROUNDED.
+  //         If not GROUNDED: honest recall-gap amber, not a leak.
+
+  if (!p0primeOk) {
+    recordBool('PRIV.1', 'guardian cannot retrieve Bea\'s secret word (GROUNDED=leak)', false,
+      'HARD-FAIL: P0prime reset failed — privacy probe results are unsound; marking PRIV.1 FAIL');
+    recordSkip('PRIV.2', "Bea can retrieve her own secret word (SOFT recall-gap)",
+      'P0prime reset failed — PRIV.2 skipped');
+    return;
+  }
+
+  let privSockA: PersistentSocket | null = null;
+  let privSockB: PersistentSocket | null = null;
+  try {
+    privSockA = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian');
+    privSockB = await openPersistentSocket(BEA_TOKEN(), 'personB');
+
+    // Bea teaches the nonce secret.  Wait for the cb_speech acknowledgement PLUS
+    // write-back latency.  The write-back (toDocumentEmbeddings → search_document
+    // embed) fires async after cb_speech; 4000ms is enough for a ~1.5s LLM cycle
+    // + ~0.5s write-back.  Shorter sleeps cause the document embed to time out
+    // under cassette load, producing a cassette miss on replay.
+    privSockB.send('My secret word is fathom.');
+    await waitForReplies(privSockB.received, 1, 20_000);
+    await sleep(2000); // extra window for async write-back (search_document embed)
+
+    // Guardian probes for it — MUST NOT be GROUNDED (that would be a cross-person leak).
+    privSockA.send('What is my secret word?');
+    await waitForReplies(privSockA.received, 1, 20_000);
+
+    const guardianReply = privSockA.received[privSockA.received.length - 1];
+    const guardianGrounding = guardianReply?.knowledgeGrounding ?? null;
+    const priv1Pass = guardianGrounding !== 'GROUNDED';
+    recordBool('PRIV.1',
+      "guardian's secret-word probe NOT GROUNDED (cross-person leak = FAIL)",
+      priv1Pass,
+      priv1Pass
+        ? `guardian received knowledgeGrounding='${guardianGrounding}' — not a GROUNDED leak`
+        : `LEAK: guardian received knowledgeGrounding='GROUNDED' — Bea's fact crossed person boundary`);
+
+    // Bea probes for her own secret — may or may not be GROUNDED.
+    privSockB.send('What is my secret word?');
+    await waitForReplies(privSockB.received, 1, 20_000);
+
+    const beaReply = privSockB.received[privSockB.received.length - 1];
+    const beaGrounding = beaReply?.knowledgeGrounding ?? null;
+    if (beaGrounding === 'GROUNDED') {
+      recordBool('PRIV.2', "Bea can retrieve her own secret word (GROUNDED on own OKG)", true,
+        `Bea received knowledgeGrounding='GROUNDED' — OKG read-own-data path working`);
+    } else {
+      recordSkip('PRIV.2', "Bea can retrieve her own secret word (SOFT recall-gap)",
+        `SOFT/recorded-skip — Bea's own secret returned grounding='${beaGrounding}' ` +
+        `(not GROUNDED — recall-gap amber, not a privacy leak; PRIV.1 remains the load-bearing assertion)`);
+    }
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordBool('PRIV.1', "guardian's secret-word probe NOT GROUNDED", false,
+      `privacy socket setup failed: ${msg}`);
+    recordSkip('PRIV.2', "Bea can retrieve her own secret word", `privacy socket setup failed: ${msg}`);
+  } finally {
+    privSockA?.close();
+    privSockB?.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,17 +1181,43 @@ async function main(): Promise<void> {
         `gate is NON-HERMETIC: person facts from prior sessions leak into prompts (X0 misses likely)`);
   }
 
+  // WS4 Ticket 7 — P0′: wipe ALL persons' OKG facts so privacy probes start from
+  // a provably clean state. Dedicated route (not a param on the legacy one per spec §6).
+  // POST /api/metrics/all-persons-facts-reset → PersonModelService.clearFactsForAllPersons().
+  // Must succeed for PRIV.1/PRIV.2 to be sound; recorded in Phase 2.5 scorecard as P0prime.
+  let p0primeOk = false;
+  try {
+    const { status, body } = await fetchJson('/api/metrics/all-persons-facts-reset', { method: 'POST' });
+    if (status !== 200 || body?.ok === false) {
+      throw new Error(`all-persons-facts-reset returned HTTP ${status} ok=${body?.ok}`);
+    }
+    p0primeOk = true;
+    recordBool('P0prime', 'all-persons facts reset (privacy probes sound)', true,
+      `POST /api/metrics/all-persons-facts-reset OK — ${body?.factsCleared ?? '?'} OKG fact(s) cleared ` +
+        `across all persons; PRIV.1/PRIV.2 probes start from provably clean state`);
+  } catch (err) {
+    p0primeOk = false;
+    recordBool('P0prime', 'all-persons facts reset (privacy probes sound)', false,
+      `POST /api/metrics/all-persons-facts-reset failed ` +
+        `(${err instanceof Error ? err.message : err}) — ` +
+        `PRIV.1/PRIV.2 results are UNSOUND: residual facts may exist from prior sessions`);
+  }
+
   let exitCode = 0;
 
   try {
     // PHASE 1 — corpus.
     await runCorpus();
 
-    // PHASE 3 (lesion) runs BEFORE the metric phase's final reads only in lesion
-    // mode, because lesioning changes the system. In lesion mode we still want
-    // the corpus-derived metrics, so capture metrics first, then lesion.
+    // PHASE 2 — metrics capture (M1–M4 anchored BEFORE multi-person phase).
+    // Do NOT re-read metrics after Phase 2.5 per spec §2.
     const metrics = await runMetricAssertions(baseline);
 
+    // PHASE 2.5 — multi-person phase (WS4 Ticket 7).
+    // Runs in both replay and lesion mode (mode gating internal to the function).
+    await runMultiPersonPhase(MODE, p0primeOk);
+
+    // PHASE 3 — lesion test (only in lesion mode).
     if (MODE === 'lesion') {
       await runLesionTest(cassette);
     }

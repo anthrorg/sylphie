@@ -260,20 +260,20 @@ export class CommunicationService implements OnModuleInit {
    *
    * @param text        Raw text from the user.
    * @param sessionId   Session identifier for event correlation.
-   * @param userId      PostgreSQL User.id (defaults to 'guardian' — legacy tokenless default).
-   * @param username    Display name of the speaker (defaults to 'Guardian').
+   * @param userId      PostgreSQL User.id (defaults to 'guest' — WS4 T7 tokenless default).
+   * @param username    Display name of the speaker (defaults to 'guest').
    * @param isGuardian  Whether the speaker holds guardian status (WS4 Ticket 3).
-   *                    Defaults to true for the legacy tokenless guardian default.
-   *                    Ticket 4 will flip tokenless to false; do NOT change the default here yet.
+   *                    WS4 T7 atomic flip: tokenless connections default to false.
+   *                    Guardian status is only reachable via a signed JWT with isGuardian:true.
    * @param socketId    WebSocket connection ID for targeted delivery (Ticket 4).
    * @returns The minted turnId.
    */
   intakeTurn(
     text: string,
     sessionId: string,
-    userId = 'guardian',
-    username = 'Guardian',
-    isGuardian = true,
+    userId = 'guest',
+    username = 'guest',
+    isGuardian = false,
     socketId?: string,
   ): string {
     const turnId = randomUUID();
