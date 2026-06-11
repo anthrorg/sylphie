@@ -283,9 +283,15 @@ export class CommunicationService implements OnModuleInit {
       'full_conversation_history',
       this.conversationHistory.getHistory(),
     );
+    // WS4 Ticket 4: use getPersonModelForTurn(userId) — the explicit-userId
+    // accessor — instead of getActivePersonModel(). This is cycle-bound code
+    // where we know exactly which speaker this turn belongs to. The global
+    // activePersonId slot is still updated inside parseInput() as the idle
+    // fallback, but we key the tickSampler slot off the turn's own userId so
+    // concurrent turns don't clobber each other's person-model context.
     this.tickSampler.update(
       'person_model',
-      this.personModel.getActivePersonModel(),
+      this.personModel.getPersonModelForTurn(userId),
     );
     this.tickSampler.update('speaker_name', username);
 
@@ -444,6 +450,9 @@ export class CommunicationService implements OnModuleInit {
     const latencyMs = Date.now() - startMs;
 
     // Emit delivery directly (bypasses decision-making executor)
+    // TODO(Ticket 6): thread originator onto this delivery — without it the
+    // WHO_AM_I reply BROADCASTS to all sockets (privacy-scope leak; the
+    // content itself is correctly per-userId, mythos T4 audit 2026-06-10).
     const delivery: DeliveryPayload = {
       type: 'cb_speech',
       text: responseText,
@@ -602,8 +611,12 @@ export class CommunicationService implements OnModuleInit {
     // Add assistant response to conversation history
     if (response.text) {
       this.conversationHistory.addAssistantMessage(response.text);
-      const activeId = this.personModel.getActivePersonId() ?? 'guardian';
-      this.personModel.recordInteraction(activeId);
+      // WS4 Ticket 4: key recordInteraction off the turn's originator userId,
+      // not the global activePersonId (which may have been clobbered by a
+      // concurrent turn). For self-tick cycles (no originator), fall back to
+      // the idle activePersonId — same behavior as before Ticket 4.
+      const interactingId = response.originator?.userId ?? this.personModel.getActivePersonId() ?? 'guardian';
+      this.personModel.recordInteraction(interactingId);
     }
 
     // Store pending turn for guardian feedback correlation

@@ -62,7 +62,24 @@ export class PersonModelService implements OnModuleInit {
   /** In-memory cache of person facts. Synced from OKG on read, written through on write. */
   private readonly cache = new Map<string, PersonFact[]>();
 
-  /** The current active person (who Sylphie is talking to right now). */
+  /**
+   * Idle/self-tick fallback — the last person Sylphie spoke with.
+   *
+   * WS4 Ticket 4: this field is NO LONGER used during an active inbound turn.
+   * Cycle-bound reads use getPersonModelForTurn(userId) with the explicit userId
+   * from the in-flight InboundTurn's originator (set via currentTurnContext in
+   * DecisionMakingService). This eliminates the active-person thrash (Part B.4)
+   * where two concurrent turns would clobber the global slot.
+   *
+   * The field is retained for:
+   *   1. Self-initiated tick cycles (no InboundTurn) — the context builder in
+   *      CommunicationService.intakeTurn() still writes it so the person-model
+   *      tickSampler slot reflects a plausible speaker for background Sylphie
+   *      utterances.
+   *   2. PerceptionGateway.processFaceFrame() — face snapshots associate with
+   *      whoever was last "active" when no turn is in flight.
+   *   3. clear() / reset paths.
+   */
   private activePersonId: string | null = null;
 
   /** Interaction counts (in-memory, not critical to persist). */
@@ -358,6 +375,11 @@ export class PersonModelService implements OnModuleInit {
 
   /**
    * Get the model for the currently active person, if any.
+   *
+   * WS4 Ticket 4: use getPersonModelForTurn(userId) during an active inbound
+   * turn. This method is kept only as an idle/self-tick fallback — when no
+   * InboundTurn is in flight, there is no per-turn userId and the global
+   * activePersonId is the best available context.
    */
   getActivePersonModel(): PersonModelSummary | null {
     if (!this.activePersonId) return null;
@@ -365,15 +387,38 @@ export class PersonModelService implements OnModuleInit {
   }
 
   /**
-   * Set the active person (who Sylphie is currently talking to).
+   * WS4 Ticket 4 — Per-turn speaker context accessor.
+   *
+   * Returns the person model for an EXPLICIT userId, bypassing the global
+   * mutable activePersonId slot. Call this from cycle-bound code where the
+   * speaker is known (i.e., from an InboundTurn's userId field).
+   *
+   * This is the correct accessor for all code that runs inside a decision
+   * cycle triggered by an inbound turn (e.g., intakeTurn, handleCycleResponse).
+   *
+   * @param userId - The exact userId of the turn's speaker.
+   * @returns The person model summary, or null if no facts are known for this user.
    */
-  setActivePerson(personId: string): void {
-    this.activePersonId = personId;
-    vlog('active person set', { personId });
+  getPersonModelForTurn(userId: string): PersonModelSummary | null {
+    return this.getPersonModel(userId);
   }
 
   /**
-   * Get the active person ID.
+   * Set the active person (idle/self-tick fallback).
+   *
+   * WS4 Ticket 4: do NOT call this from handleMessage or handleConnection in
+   * ConversationGateway. Those two call sites were the source of the
+   * active-person thrash (B.4). This method is retained only for:
+   *   - parseInput() → sets the fallback so self-tick cycles see a plausible speaker
+   *   - clear() reset paths
+   */
+  setActivePerson(personId: string): void {
+    this.activePersonId = personId;
+    vlog('active person set (idle fallback)', { personId });
+  }
+
+  /**
+   * Get the active person ID (idle/self-tick fallback).
    */
   getActivePersonId(): string | null {
     return this.activePersonId;

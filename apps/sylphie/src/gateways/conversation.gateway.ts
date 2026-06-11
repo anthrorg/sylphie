@@ -46,6 +46,18 @@ interface ConnectedUser {
   isGuardian: boolean;
 }
 
+/**
+ * WS4 Ticket 4 — Routing decision table for delivery payloads.
+ *
+ * TARGETED  — originator present + socket alive: send to that one socket only.
+ * USER_FALLBACK — originator present, socketId stale or absent: look up the
+ *               user's current socket by userId; send if found, log-drop if not.
+ * BROADCAST — no originator (self-initiated tick / ambient utterance): broadcast
+ *             to all connected sockets. Self-tick emissions are ambient — no one
+ *             "asked" for them, so all connected observers see them.
+ */
+type DeliveryRoute = 'TARGETED' | 'USER_FALLBACK' | 'BROADCAST';
+
 @WebSocketGateway({ path: '/ws/conversation' })
 export class ConversationGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
@@ -64,6 +76,21 @@ export class ConversationGateway
    * threaded onto InboundTurn.socketId for future routing.
    */
   private readonly clientSocketIds = new Map<WebSocket, string>();
+
+  /**
+   * WS4 Ticket 4: reverse map from socketId → WebSocket client.
+   * Populated in handleConnection, removed in handleDisconnect.
+   * Used for O(1) targeted delivery by socketId.
+   */
+  private readonly socketIdToClient = new Map<string, WebSocket>();
+
+  /**
+   * WS4 Ticket 4: map from userId → current WebSocket client.
+   * Used as the userId fallback when the originator's socketId is stale
+   * (the user reconnected between turn intake and delivery).
+   * One entry per userId — the most-recently-connected socket for that user.
+   */
+  private readonly userIdToClient = new Map<string, WebSocket>();
 
   /** Monotonic counter for connection IDs. */
   private socketIdCounter = 0;
@@ -84,21 +111,121 @@ export class ConversationGateway
     // response, it arrives here for WebSocket delivery.
     this.communication.delivery$.subscribe({
       next: (delivery) => {
-        // Clear thinking indicator
+        // WS4 Ticket 4: clear thinking indicator — this is a global state event,
+        // broadcast to all so every observer's UI reflects that Sylphie stopped thinking.
         this.broadcast({ type: 'thinking_indicator', is_thinking: false });
 
-        // Send the response to all connected clients
-        this.broadcast(delivery);
-        vlog('delivery broadcast', {
-          turnId: (delivery as any).turnId,
-          textLength: typeof (delivery as any).text === 'string' ? (delivery as any).text.length : undefined,
-          clients: this.clients.size,
-        });
+        // WS4 Ticket 4: TARGETED DELIVERY.
+        // cb_speech is a turn-scoped event — route it to the originator's socket only.
+        // Self-tick emissions (no originator) are ambient utterances → broadcast.
+        // See routing decision table in DeliveryRoute type above.
+        this.routeDelivery(delivery);
       },
       error: (err) => {
         this.logger.error(`delivery$ stream error: ${err}`);
       },
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS4 Ticket 4 — Targeted Delivery
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Route a delivery payload to the correct socket(s).
+   *
+   * Routing decision table:
+   *
+   *   TARGETED      — originator.socketId present AND socket alive in
+   *                   socketIdToClient → send to that one socket only.
+   *
+   *   USER_FALLBACK — originator present but socketId absent or stale
+   *                   (user reconnected between intake and delivery) →
+   *                   look up userId in userIdToClient; send if found;
+   *                   log-drop if the user has disconnected entirely.
+   *                   CANON theater prohibition: a dropped delivery is
+   *                   logged, never faked as delivered.
+   *
+   *   BROADCAST     — no originator (self-initiated tick / ambient
+   *                   utterance) → send to every connected socket.
+   *                   Self-tick emissions are ambient; all observers
+   *                   should see them. This preserves today's behavior
+   *                   for drive-pressure cycles.
+   *
+   * @param delivery - The DeliveryPayload from CommunicationService.
+   */
+  routeDelivery(delivery: unknown): void {
+    const originator = (delivery as any).originator as
+      | { socketId?: string; userId?: string }
+      | undefined;
+
+    if (!originator) {
+      // No originator → self-initiated tick or trigger-phrase bypass without
+      // an in-flight turn. Broadcast: these are ambient Sylphie utterances.
+      this.broadcast(delivery);
+      vlog('delivery broadcast (no originator — ambient/self-tick)', {
+        turnId: (delivery as any).turnId,
+        clients: this.clients.size,
+      });
+      return;
+    }
+
+    const { socketId, userId } = originator;
+
+    // Try TARGETED delivery first: socketId → live socket.
+    if (socketId) {
+      const target = this.socketIdToClient.get(socketId);
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(JSON.stringify(delivery));
+        vlog('delivery TARGETED (socketId hit)', {
+          turnId: (delivery as any).turnId,
+          socketId,
+          userId: userId ?? null,
+        });
+        return;
+      }
+      // Socket is gone — fall through to userId lookup.
+      vlog('delivery socketId stale, trying userId fallback', {
+        turnId: (delivery as any).turnId,
+        socketId,
+        userId: userId ?? null,
+      });
+    }
+
+    // USER_FALLBACK: userId → current socket for that user.
+    if (userId) {
+      const target = this.userIdToClient.get(userId);
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(JSON.stringify(delivery));
+        vlog('delivery USER_FALLBACK (userId hit)', {
+          turnId: (delivery as any).turnId,
+          userId,
+        });
+        return;
+      }
+      // User has disconnected entirely — log and drop.
+      // CANON theater prohibition: a dropped delivery must be logged,
+      // never faked as delivered.
+      this.logger.warn(
+        `[Ticket 4] Delivery dropped — originator disconnected: ` +
+        `userId=${userId ?? 'unknown'} socketId=${socketId ?? 'none'} ` +
+        `turnId=${(delivery as any).turnId ?? 'unknown'}`,
+      );
+      vlog('delivery DROPPED (originator disconnected)', {
+        turnId: (delivery as any).turnId,
+        userId,
+        socketId: socketId ?? null,
+      });
+      return;
+    }
+
+    // Originator present but no socketId or userId — should not happen in
+    // well-formed turns; fall back to broadcast with a warning.
+    this.logger.warn(
+      `[Ticket 4] Delivery originator has no socketId or userId — falling back to broadcast. ` +
+      `turnId=${(delivery as any).turnId ?? 'unknown'}`,
+    );
+    this.broadcast(delivery);
   }
 
   // ---------------------------------------------------------------------------
@@ -127,22 +254,30 @@ export class ConversationGateway
     // Assign a stable socket ID for this connection (Ticket 3).
     const socketId = `sock-${++this.socketIdCounter}`;
     this.clientSocketIds.set(client, socketId);
+    // WS4 Ticket 4: populate reverse maps for targeted delivery.
+    this.socketIdToClient.set(socketId, client);
     this.clients.add(client);
 
     if (user) {
       this.clientUsers.set(client, user);
+      // WS4 Ticket 4: track the current socket for this userId (newest wins).
+      this.userIdToClient.set(user.userId, client);
       this.logger.log(
         `Conversation client connected: ${user.username} (${user.userId}) ` +
         `(${this.clients.size} total)`,
       );
-      vlog('client connected', { userId: user.userId, username: user.username, totalClients: this.clients.size });
+      vlog('client connected', { userId: user.userId, username: user.username, socketId, totalClients: this.clients.size });
 
       // Ensure OKG Person anchor node exists for this user.
       // WS4 Ticket 3: pass the real isGuardian flag from the JWT (previously
       // hardcoded to true). Tokenless connections still default to isGuardian=true
       // (legacy guardian default — Ticket 4 will flip to false).
       void this.personModel.ensurePersonNode(user.userId, user.username, user.isGuardian);
-      this.personModel.setActivePerson(user.userId);
+      // WS4 Ticket 4: DO NOT call setActivePerson here. The per-connection
+      // setActivePerson was the first half of the active-person thrash (Part B.4).
+      // Per-turn speaker context is now bound at intakeTurn() time from the
+      // InboundTurn's userId — no global mutable slot needed.
+      // setActivePerson() remains only as an idle/self-tick fallback.
     } else {
       this.logger.log(`Conversation client connected (${this.clients.size} total)`);
       vlog('client connected (anonymous)', { totalClients: this.clients.size });
@@ -153,11 +288,26 @@ export class ConversationGateway
 
   handleDisconnect(client: WebSocket): void {
     const user = this.clientUsers.get(client);
+    const socketId = this.clientSocketIds.get(client);
+
     this.clients.delete(client);
     this.clientUsers.delete(client);
     this.clientSocketIds.delete(client);
+
+    // WS4 Ticket 4: clean up reverse maps.
+    if (socketId) {
+      this.socketIdToClient.delete(socketId);
+    }
+    if (user) {
+      // Only remove the userId entry if it still points to THIS client
+      // (a reconnect may have already replaced it with a newer socket).
+      if (this.userIdToClient.get(user.userId) === client) {
+        this.userIdToClient.delete(user.userId);
+      }
+    }
+
     this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
-    vlog('client disconnected', { userId: user?.userId ?? 'anonymous', totalClients: this.clients.size });
+    vlog('client disconnected', { userId: user?.userId ?? 'anonymous', socketId: socketId ?? null, totalClients: this.clients.size });
   }
 
   // ---------------------------------------------------------------------------
@@ -183,14 +333,20 @@ export class ConversationGateway
     // Acknowledge receipt immediately
     client.send(JSON.stringify({ type: 'input_ack' }));
 
-    // Show thinking indicator while the executor processes
+    // Show thinking indicator while the executor processes.
+    // WS4 Ticket 4: thinking_indicator is a global ambient event — broadcast.
+    // It signals "Sylphie is processing something" to all observers, not just
+    // the current speaker. Ticket 6 will scope this to the active turn's socket.
     this.broadcast({ type: 'thinking_indicator', is_thinking: true });
     vlog('thinking indicator sent', { is_thinking: true });
 
     const sessionId = `session-${userId}-${Date.now()}`;
 
-    // Set active person so the person model is included in LLM context
-    this.personModel.setActivePerson(userId);
+    // WS4 Ticket 4: DO NOT call setActivePerson here. This was the second half
+    // of the active-person thrash (B.4): two concurrent messages would clobber
+    // the global activePersonId slot, causing one turn's cycle to run against
+    // the other speaker's person model. Per-turn speaker context is now bound
+    // at intakeTurn() → runCycleForTurn() from the InboundTurn's userId field.
 
     // Check for trigger phrases — these short-circuit the normal pipeline
     // and produce an immediate response (e.g., "Who am I?" → OKG lookup).
