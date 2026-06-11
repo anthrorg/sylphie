@@ -36,6 +36,14 @@ const vlog = verboseFor('Communication');
 interface ConnectedUser {
   userId: string;
   username: string;
+  /**
+   * Whether this user holds guardian status (WS4 Ticket 3).
+   * Populated from the verified JWT `isGuardian` claim.
+   * Defaults to false for non-guardian authenticated users.
+   * Tokenless connections default to true (legacy guardian default — Ticket 4
+   * will flip tokenless connections to isGuardian=false).
+   */
+  isGuardian: boolean;
 }
 
 @WebSocketGateway({ path: '/ws/conversation' })
@@ -49,6 +57,16 @@ export class ConversationGateway
 
   /** Map from WebSocket client to authenticated user identity. */
   private readonly clientUsers = new Map<WebSocket, ConnectedUser>();
+
+  /**
+   * WS4 Ticket 3: stable socket IDs for each connection.
+   * Assigned at handleConnection; used for targeted delivery (Ticket 4) and
+   * threaded onto InboundTurn.socketId for future routing.
+   */
+  private readonly clientSocketIds = new Map<WebSocket, string>();
+
+  /** Monotonic counter for connection IDs. */
+  private socketIdCounter = 0;
 
   constructor(
     private readonly communication: CommunicationService,
@@ -106,6 +124,9 @@ export class ConversationGateway
       }
     }
 
+    // Assign a stable socket ID for this connection (Ticket 3).
+    const socketId = `sock-${++this.socketIdCounter}`;
+    this.clientSocketIds.set(client, socketId);
     this.clients.add(client);
 
     if (user) {
@@ -116,8 +137,11 @@ export class ConversationGateway
       );
       vlog('client connected', { userId: user.userId, username: user.username, totalClients: this.clients.size });
 
-      // Ensure OKG Person anchor node exists for this user
-      void this.personModel.ensurePersonNode(user.userId, user.username, true);
+      // Ensure OKG Person anchor node exists for this user.
+      // WS4 Ticket 3: pass the real isGuardian flag from the JWT (previously
+      // hardcoded to true). Tokenless connections still default to isGuardian=true
+      // (legacy guardian default — Ticket 4 will flip to false).
+      void this.personModel.ensurePersonNode(user.userId, user.username, user.isGuardian);
       this.personModel.setActivePerson(user.userId);
     } else {
       this.logger.log(`Conversation client connected (${this.clients.size} total)`);
@@ -131,6 +155,7 @@ export class ConversationGateway
     const user = this.clientUsers.get(client);
     this.clients.delete(client);
     this.clientUsers.delete(client);
+    this.clientSocketIds.delete(client);
     this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
     vlog('client disconnected', { userId: user?.userId ?? 'anonymous', totalClients: this.clients.size });
   }
@@ -147,9 +172,13 @@ export class ConversationGateway
     this.logger.log(`Text input: "${data.text}"`);
     const preview = data.text.substring(0, 80);
     const user = this.clientUsers.get(client);
+    // WS4 Ticket 3 — tokenless legacy default: userId='guardian', isGuardian=true.
+    // Ticket 4 will flip tokenless to userId='guest', isGuardian=false once the
+    // gate mints JWTs. Do NOT change these defaults in this ticket.
     const userId = user?.userId ?? 'guardian';
-    const username = user?.username ?? 'someone';
-    vlog('message received', { userId, textPreview: preview, textLength: data.text.length });
+    const username = user?.username ?? 'Guardian';
+    const isGuardian = user?.isGuardian ?? true;
+    vlog('message received', { userId, isGuardian, textPreview: preview, textLength: data.text.length });
 
     // Acknowledge receipt immediately
     client.send(JSON.stringify({ type: 'input_ack' }));
@@ -188,8 +217,11 @@ export class ConversationGateway
         //
         // The turnId returned is the same id that will appear on the CycleResponse,
         // making guardian feedback and log correlation possible.
-        const turnId = this.communication.intakeTurn(data.text, sessionId, userId, username);
-        vlog('turn enqueued via intakeTurn', { turnId, userId });
+        // WS4 Ticket 3: pass isGuardian and socketId through to intakeTurn so
+        // identity is threaded onto the InboundTurn and CycleResponse originator.
+        const socketId = this.clientSocketIds.get(client);
+        const turnId = this.communication.intakeTurn(data.text, sessionId, userId, username, isGuardian, socketId);
+        vlog('turn enqueued via intakeTurn', { turnId, userId, isGuardian, socketId });
       });
   }
 
@@ -240,8 +272,13 @@ export class ConversationGateway
       const secret = this.configService.get<string>('JWT_SECRET');
       if (!secret) return null;
 
-      const payload = jwt.verify(token, secret) as { sub: string; username: string };
-      return { userId: payload.sub, username: payload.username };
+      // WS4 Ticket 3: read isGuardian from the JWT payload.
+      // The login endpoint (auth.controller.ts:76-79) includes isGuardian in the
+      // signed JWT from the User.isGuardian DB column. Previously this was dropped;
+      // now it's threaded through to ConnectedUser and all downstream consumers.
+      // Default to false: a token that omits the claim is non-guardian.
+      const payload = jwt.verify(token, secret) as { sub: string; username: string; isGuardian?: boolean };
+      return { userId: payload.sub, username: payload.username, isGuardian: payload.isGuardian ?? false };
     } catch {
       return null; // Invalid or missing token — proceed as anonymous
     }

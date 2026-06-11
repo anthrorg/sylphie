@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -86,17 +86,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   }
 
   /**
-   * WS4 Ticket 2 — turnId threading.
+   * WS4 Ticket 3 — atomic turn context (replaces the bare currentQueueTurnId).
    *
-   * Holds the turnId minted at gateway intake for the cycle currently in flight.
-   * Set by runCycleForTurn() before calling processInput(); cleared after emit.
-   * Self-initiated ticks (no originator) leave this null, and processInput()
-   * generates a fresh randomUUID() for them (no correlation needed).
+   * Carries the turnId AND originator atomically so a zombie cycle cannot emit
+   * the successor turn's originator (same epoch-fence-ordered discipline as the
+   * zombie guard). Set by runCycleForTurn() before calling processInput();
+   * cleared in the finally block after the cycle completes.
    *
-   * CANON Theater Prohibition: one CycleResponse per admitted turn, carrying the
-   * intake turnId so Communication can correlate guardian feedback correctly.
+   * Self-initiated ticks have no originator and leave this null;
+   * processInput() generates a fresh randomUUID() for the turnId and
+   * omits the originator on the emitted CycleResponse.
+   *
+   * CANON Theater Prohibition: one CycleResponse per admitted turn, carrying
+   * the intake turnId and originator so Communication can correlate guardian
+   * feedback and (Ticket 4) route targeted delivery correctly.
    */
-  private currentQueueTurnId: string | null = null;
+  private currentTurnContext: { turnId: string; originator: TurnOriginator } | null = null;
 
   /**
    * Gap types accumulated from SHRUG arbitration results across recent cycles.
@@ -220,6 +225,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.emitWatchdogShrug(turnId, message, epoch);
       },
       this.executorEngine,
+      // Pre-fix (WS4 T3 pre-fix): isExternallyBusy — tells drainNext() when a
+      // self-tick is in flight so it doesn't start a concurrent queue cycle.
+      // Spec invariant I1/N4: exactly one cycle at a time regardless of trigger source.
+      () => this.selfTickInFlight,
     );
 
     this.startTickLoop();
@@ -269,11 +278,20 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.tickSampler.injectSyntheticText(turn.text);
       }
 
-      // WS4 Ticket 2 — turnId threading.
+      // WS4 Ticket 3 — atomic turn context (turnId + originator).
       //
-      // Store the intake turnId so processInput() can emit it on responseSubject.next
-      // instead of minting a fresh randomUUID(). Cleared in the finally block below.
-      this.currentQueueTurnId = turn.turnId;
+      // Store the intake turnId and originator so processInput() can emit both
+      // on responseSubject.next. The originator derives from the InboundTurn's
+      // identity fields (populated from the gateway JWT in Ticket 3).
+      // Cleared in the finally block below.
+      this.currentTurnContext = {
+        turnId: turn.turnId,
+        originator: {
+          userId: turn.userId ?? 'guardian',
+          socketId: turn.socketId,
+          isGuardian: turn.isGuardian,
+        },
+      };
 
       const frame = await this.tickSampler.sample();
 
@@ -296,8 +314,8 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Re-catch here so CycleGuard's finally always runs.
       return false;
     } finally {
-      // Always clear so a subsequent self-tick doesn't pick up a stale turnId.
-      this.currentQueueTurnId = null;
+      // Always clear so a subsequent self-tick doesn't pick up a stale context.
+      this.currentTurnContext = null;
     }
   }
 
@@ -630,6 +648,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       this.logger.error(`Tick cycle failed: ${err}`);
     } finally {
       this.selfTickInFlight = false;
+      // Pre-fix (WS4 T3 pre-fix): notify CycleGuard that the self-tick is done
+      // so any turns queued during this self-tick can resume draining.
+      // Without this, a queue turn arriving mid-self-tick would be held by
+      // drainNext()'s isExternallyBusy check and never re-triggered.
+      this.cycleGuard.notifyExternalComplete();
     }
   }
 
@@ -1249,6 +1272,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               `type2-novel-${Date.now()}`)
           : 'SHRUG';
 
+      // WS4 Ticket 3 — speaker attribution on episodic memory.
+      // currentTurnContext carries the speaker identity from the in-flight InboundTurn.
+      // Self-initiated ticks have no currentTurnContext; speakerId/speakerIsGuardian
+      // are omitted so episodes correctly reflect no human speaker.
       await this.episodicMemory.encode(
         {
           driveSnapshot,
@@ -1257,6 +1284,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           contextFingerprint,
           attention,
           arousal,
+          ...(this.currentTurnContext !== null ? {
+            speakerId: this.currentTurnContext.originator.userId,
+            speakerIsGuardian: this.currentTurnContext.originator.isGuardian,
+          } : {}),
         },
         encodingDepth,
       );
@@ -1501,11 +1532,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           knowledgeGrounding: responseGrounding,
           ...(responseTokens ? { tokens: responseTokens } : {}),
         });
-        // WS4 Ticket 2 — use the intake turnId (minted at the gateway boundary)
-        // so Communication can correlate guardian feedback to the originating turn.
-        // Self-initiated ticks have no originator and keep a generated UUID.
+        // WS4 Ticket 3 — use the atomic turn context (turnId + originator).
+        // currentTurnContext carries both atomically so a zombie cannot emit
+        // the successor's originator. Self-initiated ticks have no context and
+        // generate a fresh UUID; originator is absent.
+        const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
+        const emitOriginator = this.currentTurnContext?.originator;
         this.responseSubject.next({
-          turnId: this.currentQueueTurnId ?? randomUUID(),
+          turnId: emitTurnId,
+          ...(emitOriginator !== undefined ? { originator: emitOriginator } : {}),
           text: responseText,
           arbitrationType: emittedArbitrationType,
           actionId: emittedActionId,

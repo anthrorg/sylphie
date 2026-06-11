@@ -772,3 +772,159 @@ describe('Invariants', () => {
     guard.destroy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pre-fix: drainNext vs selfTickInFlight race
+//
+// Invariant: exactly one cycle at a time regardless of trigger source (I1/N4).
+// A queue turn arriving mid-self-tick must NOT start a concurrent cycle.
+// After the self-tick completes (notifyExternalComplete()), the queued turn
+// must drain and receive a response (not be stranded forever).
+// ---------------------------------------------------------------------------
+
+describe('Pre-fix — drainNext vs selfTickInFlight race', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('queued turn does not start while self-tick is in flight', async () => {
+    // Simulate: self-tick holds the mutex (isExternallyBusy returns true),
+    // a queue turn arrives, drainNext defers; no concurrent cycle fires.
+
+    let selfTickInFlight = true; // external self-tick is running
+    let maxConcurrent = 0;
+    let concurrent = 0;
+    const responses: string[] = [];
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'IDLE', forceIdle: jest.fn() };
+
+    guard.register(
+      async (turn, _epoch) => {
+        concurrent++;
+        if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+        await Promise.resolve();
+        responses.push(turn.turnId);
+        concurrent--;
+        return true;
+      },
+      () => {},
+      mockExecutor as any,
+      // isExternallyBusy — simulates selfTickInFlight flag
+      () => selfTickInFlight,
+    );
+
+    // Enqueue a turn while self-tick is in flight.
+    const turn = makeTurn({ turnId: 'queued-while-self-tick' });
+    guard.enqueue(turn);
+
+    // Flush microtasks — drainNext should defer because isExternallyBusy.
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // No cycle should have started yet (self-tick is still in flight).
+    expect(responses).toHaveLength(0);
+    expect(maxConcurrent).toBe(0);
+
+    // Self-tick finishes — clears the flag and calls notifyExternalComplete().
+    selfTickInFlight = false;
+    guard.notifyExternalComplete();
+
+    // Now the queued turn should drain.
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0]).toBe('queued-while-self-tick');
+    // Never two concurrent cycles.
+    expect(maxConcurrent).toBe(1);
+
+    guard.destroy();
+  });
+
+  it('queued turns are NOT stranded when self-tick completes (re-drain fires)', async () => {
+    // This test verifies the re-drain: if notifyExternalComplete() is NOT called,
+    // the turn would be stranded. WITH the call, it resumes.
+    // Indirectly tests that the seam in DecisionMakingService.onTick finally
+    // calling notifyExternalComplete() is wired correctly.
+
+    let selfTickInFlight = true;
+    const responses: string[] = [];
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'IDLE', forceIdle: jest.fn() };
+
+    guard.register(
+      async (turn, _epoch) => {
+        responses.push(turn.turnId);
+        return true;
+      },
+      () => {},
+      mockExecutor as any,
+      () => selfTickInFlight,
+    );
+
+    // Enqueue 3 turns while self-tick is in flight.
+    guard.enqueue(makeTurn({ turnId: 't1' }));
+    guard.enqueue(makeTurn({ turnId: 't2' }));
+    guard.enqueue(makeTurn({ turnId: 't3' }));
+
+    // Flush — all deferred.
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+    expect(responses).toHaveLength(0); // stranded
+
+    // Self-tick ends; notify.
+    selfTickInFlight = false;
+    guard.notifyExternalComplete();
+
+    // All 3 should drain now.
+    for (let i = 0; i < 30; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    expect(responses).toHaveLength(3);
+    expect(responses).toContain('t1');
+    expect(responses).toContain('t2');
+    expect(responses).toContain('t3');
+
+    guard.destroy();
+  });
+
+  it('queue turn starts immediately when no self-tick is in flight', async () => {
+    // Baseline: when isExternallyBusy returns false, normal drain behavior.
+    const responses: string[] = [];
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'IDLE', forceIdle: jest.fn() };
+
+    guard.register(
+      async (turn, _epoch) => {
+        responses.push(turn.turnId);
+        return true;
+      },
+      () => {},
+      mockExecutor as any,
+      () => false, // no self-tick
+    );
+
+    const turn = makeTurn({ turnId: 'immediate-drain' });
+    guard.enqueue(turn);
+
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0]).toBe('immediate-drain');
+
+    guard.destroy();
+  });
+});

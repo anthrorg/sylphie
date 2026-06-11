@@ -248,13 +248,24 @@ export class CommunicationService implements OnModuleInit {
    * turn once identity threading lands. The commented fields on InboundTurn are
    * the seams.
    *
-   * @param text      Raw text from the user.
-   * @param sessionId Session identifier for event correlation.
-   * @param userId    PostgreSQL User.id (defaults to 'guardian' until Ticket 3).
-   * @param username  Display name of the speaker (defaults to 'someone').
+   * @param text        Raw text from the user.
+   * @param sessionId   Session identifier for event correlation.
+   * @param userId      PostgreSQL User.id (defaults to 'guardian' — legacy tokenless default).
+   * @param username    Display name of the speaker (defaults to 'Guardian').
+   * @param isGuardian  Whether the speaker holds guardian status (WS4 Ticket 3).
+   *                    Defaults to true for the legacy tokenless guardian default.
+   *                    Ticket 4 will flip tokenless to false; do NOT change the default here yet.
+   * @param socketId    WebSocket connection ID for targeted delivery (Ticket 4).
    * @returns The minted turnId.
    */
-  intakeTurn(text: string, sessionId: string, userId = 'guardian', username = 'someone'): string {
+  intakeTurn(
+    text: string,
+    sessionId: string,
+    userId = 'guardian',
+    username = 'Guardian',
+    isGuardian = true,
+    socketId?: string,
+  ): string {
     const turnId = randomUUID();
     const now = Date.now();
 
@@ -281,14 +292,19 @@ export class CommunicationService implements OnModuleInit {
     // Step 4: record arrival so self-tick 30s suppression guard stays accurate.
     this.tickSampler.recordInputArrival();
 
-    // Step 5: construct the turn. Text travels here — NOT in the global slot.
+    // Step 5: construct the turn with full identity (WS4 Ticket 3).
+    // userId, username, socketId, isGuardian are now populated from the gateway JWT.
+    // CANON provenance-required: userId must be the real speaker id from the
+    // verified JWT, never falsely defaulted to guardian for a tokened non-guardian.
     const turn: InboundTurn = {
       turnId,
-      isGuardian: false, // Ticket 3 will populate from JWT isGuardian claim
+      isGuardian,
       receivedAt: now,
       enqueuedAt: now,
       text,
-      // userId, username, socketId — Ticket 3 extension slots (leave commented)
+      userId,
+      username,
+      socketId,
     };
 
     // Step 6: enqueue through the concurrency guard.
@@ -298,6 +314,8 @@ export class CommunicationService implements OnModuleInit {
       turnId,
       textPreview: text.substring(0, 80),
       userId,
+      isGuardian,
+      socketId: socketId ?? null,
     });
 
     return turnId;
@@ -539,11 +557,15 @@ export class CommunicationService implements OnModuleInit {
       }
     }
 
-    // Emit delivery payload for the gateway
+    // Emit delivery payload for the gateway.
+    // WS4 Ticket 3: thread originator from CycleResponse → DeliveryPayload.
+    // Self-initiated ticks have no originator; absent originator is valid and
+    // downstream consumers (gateway, Ticket 4 targeted delivery) must handle it.
     const delivery: DeliveryPayload = {
       type: 'cb_speech',
       text: response.text,
       turnId: response.turnId,
+      ...(response.originator !== undefined ? { originator: response.originator } : {}),
       ...(audioBase64 ? { audioBase64, audioFormat } : {}),
       isGrounded,
       arbitrationType: response.arbitrationType,
@@ -555,6 +577,7 @@ export class CommunicationService implements OnModuleInit {
 
     vlog('response delivered', {
       turnId: response.turnId,
+      originator: response.originator ?? null,
       arbitrationType: response.arbitrationType,
       isGrounded,
       voiceCacheHit,

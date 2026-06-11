@@ -11,20 +11,33 @@
  */
 
 /**
- * Minimum per-turn identity for Ticket 1.
+ * Per-turn identity and content for the CycleGuard queue.
  *
- * Tickets 2/3 will replace the opaque `payload` with `text: string` and add
- * `userId`, `username`, `socketId` once identity threading lands. The `isGuardian`
- * flag is wired now so the two-lane queue can operate from day one, even though
- * Ticket 3 is what populates it from a real JWT claim.
+ * WS4 Ticket 1: turnId + isGuardian + receivedAt/enqueuedAt wired so the
+ * two-lane queue can operate and declines are addressed.
+ *
+ * WS4 Ticket 2: `text` added so each queued turn carries its own text,
+ * preventing the text-smear defect where burst turns clobber a shared slot.
+ *
+ * WS4 Ticket 3: `userId`, `username`, `socketId` added so identity is
+ * available throughout the full cycle pipeline. Populated from the verified
+ * JWT at the gateway boundary via intakeTurn(). The `isGuardian` flag is now
+ * populated from the JWT `isGuardian` claim (previously always false).
+ *
+ * IMPORTANT: The tokenless legacy default (userId='guardian', isGuardian=true)
+ * is preserved for backward compatibility with the gate until Ticket 4 lands
+ * the full guest-default flip. Ticket 4 will change the default to
+ * userId='guest', isGuardian=false.
  */
 export interface InboundTurn {
   /** Stable identifier for this turn, minted at intake. */
   turnId: string;
 
   /**
-   * Whether this turn originates from the guardian (authenticated Jim).
-   * Defaults to false. Ticket 3 will populate from the JWT isGuardian claim.
+   * Whether this turn originates from the guardian (authenticated).
+   * Populated from the JWT `isGuardian` claim (WS4 Ticket 3).
+   * Tokenless connections default to true for legacy compatibility (Ticket 4
+   * will flip this to false once the gate mints guardian JWTs).
    * Guardian turns are never evicted and always drain first.
    */
   isGuardian: boolean;
@@ -50,9 +63,26 @@ export interface InboundTurn {
    */
   text: string;
 
-  // ----- Extension slots for Ticket 3 ---------------------------------------
-  // userId?: string;
-  // username?: string;
-  // socketId?: string;
-  // -------------------------------------------------------------------------
+  // ----- Identity fields (WS4 Ticket 3) -------------------------------------
+
+  /**
+   * PostgreSQL User.id for this turn's speaker.
+   * Populated from the verified JWT `sub` claim at the gateway boundary.
+   * Tokenless connections default to 'guardian' (legacy — Ticket 4 changes to 'guest').
+   */
+  userId?: string;
+
+  /**
+   * Display name of the speaker.
+   * Populated from the verified JWT `username` claim.
+   * Tokenless connections default to 'Guardian' (legacy).
+   */
+  username?: string;
+
+  /**
+   * The WebSocket socket ID of the connection that sent this turn.
+   * Populated at intake (gateway assigns a connection-local id).
+   * Used for targeted delivery in Ticket 4; carried here for future use.
+   */
+  socketId?: string;
 }

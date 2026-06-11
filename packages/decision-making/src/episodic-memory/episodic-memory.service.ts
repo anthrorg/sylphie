@@ -209,6 +209,10 @@ export class EpisodicMemoryService implements IEpisodicMemoryService, OnModuleIn
       ageWeight,
       encodingDepth: effectiveDepth,
       contextFingerprint: input.contextFingerprint,
+      // WS4 T3: persist speaker attribution (absent for self-initiated cycles).
+      ...(input.speakerId !== undefined
+        ? { speakerId: input.speakerId, speakerIsGuardian: input.speakerIsGuardian ?? false }
+        : {}),
     };
 
     // Write to the ring buffer at head, then advance.

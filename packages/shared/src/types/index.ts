@@ -82,6 +82,7 @@ export {
   type InputParseResult,
   type DeliveryPayload,
   type KnowledgeGrounding,
+  type TurnOriginator,
 } from './communication.types';
 
 // Confidence types

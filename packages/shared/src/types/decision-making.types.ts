@@ -75,6 +75,29 @@ export interface EpisodeInput {
    * Either attention OR arousal exceeding 0.60 is sufficient.
    */
   readonly arousal: number;
+
+  /**
+   * Identity of the speaker who triggered this episode (WS4 Ticket 3).
+   *
+   * Set from the in-flight turn's userId at the encode call site in
+   * DecisionMakingService. Absent for self-initiated cycles (autonomous
+   * research, drive-pressure ticks) which have no human speaker.
+   *
+   * Text-attribution need (2026-04-09): episodes must carry speaker identity
+   * so memory is attributed to the actual speaker, not defaulted to guardian.
+   * CANON provenance-required: this must be the real speaker id from the
+   * verified JWT, never falsely defaulted.
+   */
+  readonly speakerId?: string;
+
+  /**
+   * Whether the speaker holds guardian status (WS4 Ticket 3).
+   *
+   * Carried alongside speakerId so the episodic-memory path can correctly
+   * label the episode's provenance tier (guardian vs non-guardian). Required
+   * for the ×2/×3 guardian-asymmetry scoring on prediction accuracy.
+   */
+  readonly speakerIsGuardian?: boolean;
 }
 
 /**
@@ -120,6 +143,16 @@ export interface Episode {
 
   /** Context fingerprint for Jaccard/cosine similarity matching. */
   readonly contextFingerprint: string;
+
+  /**
+   * Speaker identity for conversation-triggered episodes (WS4 Ticket 3,
+   * text-attribution need 2026-04-09). Absent for self-initiated cycles.
+   * CANON provenance-required: the real verified speaker, never defaulted.
+   */
+  readonly speakerId?: string;
+
+  /** Guardian status of the speaker, persisted with the episode (Std 5 tier). */
+  readonly speakerIsGuardian?: boolean;
 }
 
 // ---------------------------------------------------------------------------

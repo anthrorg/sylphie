@@ -36,6 +36,32 @@ import type { ArbitrationResult } from './action.types';
 export type KnowledgeGrounding = 'GROUNDED' | 'LLM_ASSISTED' | 'UNKNOWN';
 
 // ---------------------------------------------------------------------------
+// Originator — identity of the speaker who triggered a cycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Identity of the turn originator (the person who sent the message that
+ * triggered this cycle).
+ *
+ * WS4 Ticket 3: carried on CycleResponse and DeliveryPayload so downstream
+ * consumers (gateway, Communication) know who to respond to.
+ *
+ * Self-initiated ticks (drive-pressure cycles, autonomous research) have no
+ * originator — the `originator` field is absent/undefined for those cycles.
+ *
+ * CANON (provenance-required): userId is always the real speaker identity from
+ * the verified JWT, never defaulted to guardian for a tokened non-guardian user.
+ */
+export interface TurnOriginator {
+  /** PostgreSQL User.id for the speaker. */
+  readonly userId: string;
+  /** WebSocket socket ID of the originating connection (Ticket 4 targeted delivery). */
+  readonly socketId?: string;
+  /** Whether the speaker holds guardian status per their verified JWT. */
+  readonly isGuardian: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // CycleResponse — Decision Making → Communication handoff
 // ---------------------------------------------------------------------------
 
@@ -52,6 +78,20 @@ export type KnowledgeGrounding = 'GROUNDED' | 'LLM_ASSISTED' | 'UNKNOWN';
 export interface CycleResponse {
   /** UUID for this response turn. Used for guardian feedback correlation. */
   readonly turnId: string;
+
+  /**
+   * Identity of the turn originator (WS4 Ticket 3).
+   *
+   * Present when this cycle was triggered by an inbound queued turn.
+   * Absent (undefined) for self-initiated ticks (drive-pressure cycles,
+   * autonomous research) — no speaker exists for those.
+   *
+   * Epoch-fence ordered: originator travels atomically with turnId as part
+   * of the currentTurnContext captured before cycle start (same epoch-fence
+   * discipline as the zombie guard so a late-resolving zombie can't emit
+   * the successor's originator).
+   */
+  readonly originator?: TurnOriginator;
 
   /** LLM-generated response text. Empty string for SHRUG. */
   readonly text: string;
@@ -190,6 +230,16 @@ export interface DeliveryPayload {
 
   /** Turn ID for guardian feedback correlation. */
   readonly turnId: string;
+
+  /**
+   * Identity of the turn originator (WS4 Ticket 3).
+   *
+   * Present when this delivery corresponds to an inbound queued turn.
+   * Absent for self-initiated cycle deliveries and trigger-phrase bypasses.
+   * Downstream consumers (gateway, Ticket 4 targeted delivery) use this to
+   * route responses to the correct socket.
+   */
+  readonly originator?: TurnOriginator;
 
   /** Base64-encoded TTS audio, if synthesized. */
   readonly audioBase64?: string;

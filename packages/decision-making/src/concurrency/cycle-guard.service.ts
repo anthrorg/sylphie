@@ -103,6 +103,21 @@ export type CycleRunnerFn = (turn: InboundTurn, myEpoch: number) => Promise<bool
  */
 export type ShrugEmitterFn = (turnId: string, message: string, epoch: number) => void;
 
+/**
+ * Callback consulted by drainNext() to determine if an externally-managed
+ * cycle is in flight (i.e. a self-tick in DecisionMakingService).
+ *
+ * Pre-fix (WS4 T3 pre-fix): drainNext() previously only checked its own
+ * `tickInFlight`, but self-ticks set a separate `selfTickInFlight` flag in
+ * DecisionMakingService. A queue turn arriving mid-self-tick could start a
+ * concurrent cycle and trip the :674 executor throw (I1/N4 invariant violation).
+ *
+ * With this callback, drainNext() defers when either flag is true. The caller
+ * is responsible for calling `notifyExternalComplete()` when the self-tick
+ * finishes so stranded queue turns resume draining.
+ */
+export type IsExternallyBusyFn = () => boolean;
+
 // ---------------------------------------------------------------------------
 // CycleGuardService
 // ---------------------------------------------------------------------------
@@ -196,6 +211,15 @@ export class CycleGuardService {
   /** Executor engine reference for forceIdle() in watchdog recovery. */
   private executorEngine: IExecutorEngine | null = null;
 
+  /**
+   * Pre-fix (WS4 T3 pre-fix): optional callback checked by drainNext().
+   * Returns true when an externally-managed cycle (self-tick) is in flight.
+   * drainNext() defers when this returns true; the caller calls
+   * notifyExternalComplete() when the external cycle finishes so queued
+   * turns resume.
+   */
+  private isExternallyBusy: IsExternallyBusyFn | null = null;
+
   constructor(
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
@@ -209,15 +233,35 @@ export class CycleGuardService {
   /**
    * Register the cycle runner and SHRUG emitter callbacks.
    * Must be called before any turns are enqueued.
+   *
+   * @param isExternallyBusy - Optional. Callback returning true when a
+   *   self-tick (or other externally-managed cycle) is in flight. drainNext()
+   *   defers while this returns true, preventing concurrent cycles (pre-fix).
    */
   register(
     cycleRunner: CycleRunnerFn,
     shrugEmitter: ShrugEmitterFn,
     executorEngine: IExecutorEngine,
+    isExternallyBusy?: IsExternallyBusyFn,
   ): void {
     this.cycleRunner = cycleRunner;
     this.shrugEmitter = shrugEmitter;
     this.executorEngine = executorEngine;
+    this.isExternallyBusy = isExternallyBusy ?? null;
+  }
+
+  /**
+   * Notify the guard that an externally-managed cycle (self-tick) has
+   * completed and queued turns should resume draining.
+   *
+   * Call this from the `finally` block of self-tick execution (onTick).
+   * Without this, turns queued during a self-tick would wait indefinitely
+   * for a drainNext() trigger that never comes.
+   */
+  notifyExternalComplete(): void {
+    // Attempt to drain on the next microtask so the caller's `finally` has
+    // fully released selfTickInFlight before isExternallyBusy() is consulted.
+    void Promise.resolve().then(() => this.drainNext());
   }
 
   // ---------------------------------------------------------------------------
@@ -363,10 +407,18 @@ export class CycleGuardService {
    * One pop → one cycle → one response. Serial.
    *
    * In degraded mode: skip LLM cycles; use the probe scheduling instead.
+   *
+   * Pre-fix (WS4 T3 pre-fix): also defers when an external cycle (self-tick)
+   * is in flight via the isExternallyBusy callback. The caller calls
+   * notifyExternalComplete() when the external cycle finishes.
    */
   private drainNext(): void {
     if (this.tickInFlight) {
       return; // Cycle in flight — drain will be called from its finally block.
+    }
+    // Pre-fix: defer when a self-tick is in flight to preserve I1 invariant.
+    if (this.isExternallyBusy?.()) {
+      return; // External cycle in flight — notifyExternalComplete() will re-drain.
     }
     if (this.normalLane.length === 0 && this.guardianLane.length === 0) {
       return; // Empty queue — nothing to do.
