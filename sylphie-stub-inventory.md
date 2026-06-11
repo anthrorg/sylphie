@@ -134,6 +134,18 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 
 ---
 
+### 2.8 Learning pipeline leaks person-fact values into shared WKG (2026-06-10)
+
+**Where:** `packages/learning/src/pipeline/` — `upsert-entities.service.ts:128` (mints `entity-<uuid8>` from conversation proper nouns), `extract-edges.service.ts:139` (MERGEs RELATED_TO), edge-refinement (reclassifies to OWNS/KNOWS/LIVES_AT), `conversation-entry.service.ts:160` (MENTIONS).
+
+**What:** WS4 Ticket 5 closed the *fast-fact* privacy leak (speaker facts no longer dual-write to WKG; latent patterns person-scoped). But the slow 60s learning cycle independently re-extracts spoken proper nouns from conversation transcripts into the shared WKG — e.g. `entity-dog-max` (label "Max") with `person-guardian -[OWNS]->` edges at INFERENCE/0.3. Found live by mythos during T5 verification: these entities are the TOP fulltext hit in `matchEntities` (`wkg-context.service.ts:629`), so **Person B asking "what kind of animal is Max?" can ground a GROUNDED Type-2 reply off Person A's dog**. The replay-demotion (T5 §3.2) covers cached patterns once the predicate fix lands, but a fresh TYPE_2 turn still grounds off the WKG node directly.
+
+**Impact:** Same CANON three-graph-isolation breach the T5 contract fixed, one layer down. The privacy wall is HALF-closed until this lands. Invisible to the gate (single-person corpus).
+
+**Fix complexity:** Medium — design question for **atlas** (person-scope WKG entity nodes? exclude OKG-sourced proper nouns from `matchEntities` grounding? speaker-tag conversation-derived entities at extraction time?). Tracked for WS4-T5-followup / WS5. Do NOT close WS4 claiming the privacy wall is whole without this.
+
+---
+
 ## TIER 3 — MEDIUM: Silent Degradation
 
 ### 3.1 CommunicationService theater check is flag-only

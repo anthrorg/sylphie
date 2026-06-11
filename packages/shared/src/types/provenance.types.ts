@@ -93,3 +93,54 @@ export function resolveBaseConfidence(provenance: ProvenanceSource): number {
       return PROVENANCE_BASE_CONFIDENCE.SENSOR;
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// WS4 Ticket 5 (§1) — OKG self-fact tiering (guardian-aware, identity-blind)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The `source` field carried by an extracted OKG fact. */
+export type OkgFactSource = 'self_reported' | 'observed' | 'inferred';
+
+/**
+ * The confidence/provenance tier a single OKG Attribute write should carry.
+ * `provenanceType` is the free-form provenance_type string stamped on the
+ * Attribute node (no DB enum — see the WS4-T5 graph contract §0.5).
+ */
+export interface OkgFactTier {
+  readonly confidence: number;
+  readonly provenanceType: 'GUARDIAN' | 'SELF_REPORTED' | 'OBSERVED' | 'INFERENCE';
+}
+
+/**
+ * Derive the OKG self-fact write tier from `(source, isGuardian)` — NEVER from
+ * an identity string. This is the CANON fix for Standards 3 and 5 (WS4-T5 §1):
+ *
+ *   (a) self_reported && isGuardian  → 0.90 / GUARDIAN
+ *       A guardian's self-knowledge is guardian-confirmed by definition; 0.90
+ *       is the legitimate guardian exception to the 0.60 ceiling (Std 5).
+ *   (b) self_reported && !isGuardian → 0.60 / SELF_REPORTED
+ *       0.60 is exactly the Standard-3 ceiling: an unconfirmed self-report is
+ *       the strongest non-guardian evidence; lower would suppress legitimate
+ *       guest recall. SELF_REPORTED is a new OKG-scoped label — GUARDIAN would
+ *       re-introduce the Std-5 violation; INFERENCE would lie about provenance.
+ *   (c) observed                     → 0.60 / OBSERVED
+ *   (d) inferred (or any other)      → 0.60 / INFERENCE
+ *
+ * Guardian status NEVER lifts (c)/(d) above the 0.60 ceiling — the 0.90
+ * exception is reserved for a guardian's own self-report (a), the only case
+ * where guardian-confirmation is intrinsic to the evidence.
+ *
+ * Pure and deterministic: this is the unit-tested core (WS4-T5 §6 A2/A3).
+ */
+export function deriveOkgFactTier(source: OkgFactSource | string, isGuardian: boolean): OkgFactTier {
+  const isSelfReported = source === 'self_reported';
+  if (isSelfReported) {
+    return isGuardian
+      ? { confidence: 0.9, provenanceType: 'GUARDIAN' }
+      : { confidence: 0.6, provenanceType: 'SELF_REPORTED' };
+  }
+  if (source === 'observed') {
+    return { confidence: 0.6, provenanceType: 'OBSERVED' };
+  }
+  return { confidence: 0.6, provenanceType: 'INFERENCE' };
+}

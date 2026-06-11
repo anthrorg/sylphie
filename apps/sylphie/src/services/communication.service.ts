@@ -149,11 +149,21 @@ export class CommunicationService implements OnModuleInit {
    * "My name is Jim" are written immediately to both the OKG (person model)
    * and WKG (world knowledge), bypassing the 60s learning cycle.
    *
-   * @param text      - Raw text from the user.
-   * @param sessionId - Session identifier for event correlation.
-   * @param userId    - PostgreSQL User.id for OKG person attribution.
+   * @param text       - Raw text from the user.
+   * @param sessionId  - Session identifier for event correlation.
+   * @param userId     - PostgreSQL User.id for OKG person attribution.
+   * @param isGuardian - Whether the speaker holds verified-JWT guardian status
+   *                     (WS4 Ticket 5 §1). Threaded to writeFastFacts → writeFact
+   *                     so OKG self-facts are tiered by the actual speaker's
+   *                     guardian status, not identity-string matching. Defaults to
+   *                     true to preserve legacy tokenless-guardian behavior.
    */
-  parseInput(text: string, sessionId: string, userId: string = 'guardian'): InputParseResult {
+  parseInput(
+    text: string,
+    sessionId: string,
+    userId: string = 'guardian',
+    isGuardian = true,
+  ): InputParseResult {
     const parsedAt = new Date();
     const entities = extractEntities(text);
     const inputType = classifyInput(text);
@@ -188,8 +198,8 @@ export class CommunicationService implements OnModuleInit {
       this.logger.log(
         `Fast facts detected: ${extractedFacts.map((f) => `${f.key}="${f.value}"`).join(', ')}`,
       );
-      // Fire-and-forget: write to OKG and WKG in parallel
-      void this.writeFastFacts(userId, extractedFacts);
+      // Fire-and-forget: write speaker facts to OKG (tiered by guardian status).
+      void this.writeFastFacts(userId, extractedFacts, isGuardian);
     }
 
     // Guardian Teaching Detection: check if this is a teaching/planning request.
@@ -269,8 +279,10 @@ export class CommunicationService implements OnModuleInit {
     const turnId = randomUUID();
     const now = Date.now();
 
-    // Step 2: parse input (entity extraction, fast-fact writes, history, etc.)
-    this.parseInput(text, sessionId, userId);
+    // Step 2: parse input (entity extraction, fast-fact writes, history, etc.).
+    // WS4 Ticket 5 §1: thread the turn's verified isGuardian so OKG self-facts
+    // are tiered by the actual speaker, never re-derived from userId.
+    this.parseInput(text, sessionId, userId, isGuardian);
 
     // Step 3: update tickSampler context slots so the cycle has fresh context.
     // These are additive slots (history accumulates); the last-written value before
@@ -706,26 +718,33 @@ export class CommunicationService implements OnModuleInit {
    * spoken, not after a 60-second learning cycle.
    *
    * Routing by fact.target:
-   *   'speaker' → OKG (Person anchor → HAS_FACT → Attribute) + WKG
-   *   'sylphie' → Self KG (CoBeing anchor → HAS_FACT → Attribute) + WKG
+   *   'speaker' → OKG ONLY (Person anchor → HAS_FACT → Attribute), tiered by
+   *               the speaker's guardian status (WS4 Ticket 5 §1/§2.1).
+   *   'sylphie' → Self KG (CoBeing anchor → HAS_FACT → Attribute) + WKG CoBeing.
+   *
+   * WS4 Ticket 5 §2.1 (CANON-blocking): the speaker→WKG dual-write was DELETED.
+   * Self-reported personal facts are person facts, not world facts, regardless of
+   * speaker. They belong only on the speaker's OKG anchor. The old dual-write
+   * stamped every speaker's WKG value-Entity GUARDIAN/0.90 and let person A's
+   * value-Entity ground person B's question GROUNDED — the three-graph isolation
+   * breach this ticket fixes. No world path replaces it (deferred to WS5-T1).
+   *
+   * @param isGuardian - The speaker's verified guardian status, threaded to
+   *                     personModel.writeFact for the §1 confidence/provenance tier.
    */
   private async writeFastFacts(
     userId: string,
     facts: import('./person-model.service').ExtractedFact[],
+    isGuardian = true,
   ): Promise<void> {
     const writes: Promise<void>[] = [];
 
     for (const fact of facts) {
       if (fact.target === 'speaker') {
-        // Speaker facts → OKG + WKG
+        // Speaker facts → OKG ONLY (no WKG dual-write — §2.1).
         writes.push(
-          this.personModel.writeFact(userId, fact).catch((err) => {
+          this.personModel.writeFact(userId, fact, isGuardian).catch((err) => {
             this.logger.warn(`OKG fast-fact write failed: ${err}`);
-          }),
-        );
-        writes.push(
-          this.writeFactToWkg(userId, fact).catch((err) => {
-            this.logger.warn(`WKG fast-fact write failed: ${err}`);
           }),
         );
       } else if (fact.target === 'sylphie') {
@@ -744,61 +763,6 @@ export class CommunicationService implements OnModuleInit {
     }
 
     await Promise.all(writes);
-  }
-
-  /**
-   * Write a single fact to the WKG as an entity + relationship.
-   *
-   * Example: "My name is Jim" creates:
-   *   (speaker:Entity {label: <userId>}) -[HAS_NAME]-> (value:Entity {label: "Jim"})
-   */
-  private async writeFactToWkg(
-    userId: string,
-    fact: import('./person-model.service').ExtractedFact,
-  ): Promise<void> {
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
-    try {
-      const relType = factKeyToRelType(fact.key);
-      await session.run(
-        `MERGE (speaker:Entity {label: $userId})
-         ON CREATE SET
-           speaker.node_id = $speakerNodeId,
-           speaker.node_type = 'Person',
-           speaker.schema_level = 'instance',
-           speaker.provenance_type = 'GUARDIAN',
-           speaker.confidence = 0.90,
-           speaker.created_at = datetime()
-         MERGE (value:Entity {label: $value})
-         ON CREATE SET
-           value.node_id = $valueNodeId,
-           value.node_type = 'Entity',
-           value.schema_level = 'instance',
-           value.provenance_type = 'GUARDIAN',
-           value.confidence = 0.90,
-           value.created_at = datetime()
-         MERGE (speaker)-[r:${relType}]->(value)
-         ON CREATE SET
-           r.confidence = 0.90,
-           r.provenance_type = 'GUARDIAN',
-           r.source = $source,
-           r.raw_text = $rawText,
-           r.created_at = datetime()
-         ON MATCH SET
-           r.confidence = CASE WHEN 0.90 > r.confidence THEN 0.90 ELSE r.confidence END,
-           r.updated_at = datetime()`,
-        {
-          userId,
-          speakerNodeId: `person-${userId.substring(0, 8)}`,
-          value: fact.value,
-          valueNodeId: `entity-${fact.key}-${fact.value.toLowerCase().replace(/\s+/g, '-').substring(0, 20)}`,
-          source: fact.source,
-          rawText: fact.rawText,
-        },
-      );
-      this.logger.log(`WKG fast-fact: (${userId}) -[${relType}]-> "${fact.value}"`);
-    } finally {
-      await session.close();
-    }
   }
 
   /**

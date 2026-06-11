@@ -55,6 +55,17 @@ export interface LearnedPattern {
    * existed (those fall back to the entityIds heuristic in groundingForCachedPattern).
    */
   readonly knowledgeGrounding: KnowledgeGrounding | null;
+  /**
+   * WS4 Ticket 5 (§3.1) — whose OKG backs a GROUNDED claim from this pattern.
+   *   null     = world-scoped (WKG-grounded, or non-GROUNDED); may replay GROUNDED
+   *              to anyone.
+   *   non-null = OKG-scoped to that personId; replaying GROUNDED to a DIFFERENT
+   *              person is demoted to UNKNOWN at the latent-replay check
+   *              (decision-making.service.ts), so person A's private fact never
+   *              grounds person B's question.
+   * Legacy rows are NULL (world-scoped) — deliberate; see ensureSchema() comment.
+   */
+  readonly groundingPersonId: string | null;
 }
 
 /** Result of a single-modality latent space search. */
@@ -91,6 +102,12 @@ export interface NewPattern {
    * groundingForCachedPattern to fall back to the entityIds heuristic.
    */
   readonly knowledgeGrounding?: KnowledgeGrounding;
+  /**
+   * WS4 Ticket 5 (§3.1) — person scope for a GROUNDED claim. Optional; defaults
+   * to null (world-scoped). Set to the current speaker's personId when the
+   * GROUNDED verdict could not be PROVEN WKG-backed (the conservative rule).
+   */
+  readonly groundingPersonId?: string | null;
 }
 
 /** Options for writeMultiModal (everything except per-modality fields). */
@@ -110,6 +127,8 @@ interface HotEntry {
   useCount: number;
   entityIds: string[];
   knowledgeGrounding: KnowledgeGrounding | null;
+  /** WS4 Ticket 5 (§3.1) — person scope; null = world-scoped. */
+  groundingPersonId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +395,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       useCount: 0,
       entityIds: [...pattern.entityIds],
       knowledgeGrounding: pattern.knowledgeGrounding ?? null,
+      groundingPersonId: pattern.groundingPersonId ?? null,
     });
 
     vlog('latent write', {
@@ -399,8 +419,9 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         `INSERT INTO learned_patterns
            (id, modality, stimulus_embedding, response_text, procedure_id, confidence,
             use_count, recent_mae, deliberation_summary, entity_ids,
-            created_at, last_used_at, session_id, knowledge_grounding)
-         VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            created_at, last_used_at, session_id, knowledge_grounding,
+            grounding_person_id)
+         VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           id,
           pattern.modality,
@@ -416,6 +437,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
           null,
           pattern.sessionId ?? null,
           pattern.knowledgeGrounding ?? null,
+          pattern.groundingPersonId ?? null,
         ],
       ).then(() => {
         // Remove from pending list on success
@@ -591,6 +613,23 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         ADD COLUMN IF NOT EXISTS knowledge_grounding TEXT
       `);
 
+      // WS4 Ticket 5 (§3.1/§3.4) — person scope for GROUNDED replay isolation.
+      // Additive, nullable, no default. NULL = world-scoped; non-null = OKG-scoped
+      // to that personId.
+      //
+      // Existing rows are NULL = world-scoped, and this is DELIBERATE, not an
+      // oversight: legacy rows predate multi-person operation (guardian-only
+      // sessions), so treating them as person-scoped would lobotomize the entire
+      // warm layer the instant a second person connects — for zero privacy
+      // benefit, since those patterns were never grounded off a non-guardian's
+      // private OKG. The conservative-when-ambiguous rule applies only to NEW
+      // writes (decision-making.service.ts write-time scoping); for the historical
+      // corpus, world-scoped is both safe and correct.
+      await this.timescale.query(`
+        ALTER TABLE learned_patterns
+        ADD COLUMN IF NOT EXISTS grounding_person_id TEXT
+      `);
+
       await this.timescale.query(`
         CREATE INDEX IF NOT EXISTS learned_patterns_embedding_idx
         ON learned_patterns
@@ -633,10 +672,12 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         use_count: number;
         entity_ids: string[] | null;
         knowledge_grounding: string | null;
+        grounding_person_id: string | null;
       }>(
         `SELECT id, COALESCE(modality, 'fused') AS modality,
                 stimulus_embedding::text, response_text, procedure_id,
-                confidence, use_count, entity_ids, knowledge_grounding
+                confidence, use_count, entity_ids, knowledge_grounding,
+                grounding_person_id
          FROM learned_patterns
          ORDER BY use_count DESC, last_used_at DESC NULLS LAST
          LIMIT $1`,
@@ -658,6 +699,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
             knowledgeGrounding: isValidGrounding(row.knowledge_grounding)
               ? row.knowledge_grounding
               : null,
+            groundingPersonId: row.grounding_person_id ?? null,
           });
         }
       }
@@ -694,6 +736,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       lastUsedAt: null,
       sessionId: null,
       knowledgeGrounding: entry.knowledgeGrounding,
+      groundingPersonId: entry.groundingPersonId,
     };
   }
 }
@@ -708,4 +751,33 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
  */
 function isValidGrounding(v: string | null): v is KnowledgeGrounding {
   return v === 'GROUNDED' || v === 'LLM_ASSISTED' || v === 'UNKNOWN';
+}
+
+/**
+ * WS4 Ticket 5 (§3.2) — replay-time person-scope demotion (PURE).
+ *
+ * Single source of truth for the privacy invariant: a pattern whose GROUNDED
+ * claim is backed by person A's private OKG must not replay GROUNDED to person B.
+ * The decision-making latent-replay path calls this BEFORE applyOkgRecallGrounding,
+ * so an honest re-ground off the CURRENT speaker's own facts can still happen.
+ *
+ * Demotes (GROUNDED → UNKNOWN), never suppresses — the cached reflex still fires;
+ * only the borrowed grounding is stripped (theater prohibition / no behavior cliff).
+ *
+ * @param grounding        The base grounding from groundingForCachedPattern().
+ * @param groundingPersonId The pattern's person scope (null = world-scoped).
+ * @param currentPersonId  The current speaker's personId (null = unknown speaker).
+ * @returns { grounding, demoted } — demoted=true iff a GROUNDED was stripped.
+ */
+export function applyPersonScopeDemotion(
+  grounding: KnowledgeGrounding,
+  groundingPersonId: string | null,
+  currentPersonId: string | null,
+): { grounding: KnowledgeGrounding; demoted: boolean } {
+  // World-scoped (null) replays to anyone; a matching personId replays to its owner.
+  const personScopeOk = groundingPersonId === null || groundingPersonId === currentPersonId;
+  if (grounding === 'GROUNDED' && !personScopeOk) {
+    return { grounding: 'UNKNOWN', demoted: true };
+  }
+  return { grounding, demoted: false };
 }

@@ -45,8 +45,11 @@ export {
   type CoreProvenanceSource,
   type ExtendedProvenanceSource,
   type ProvenanceSource,
+  type OkgFactSource,
+  type OkgFactTier,
   PROVENANCE_BASE_CONFIDENCE,
   resolveBaseConfidence,
+  deriveOkgFactTier,
 } from './provenance.types';
 
 // Event types

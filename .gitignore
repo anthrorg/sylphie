@@ -40,6 +40,9 @@ logs/
 # PKG sync cursor
 packages/sylphie-pkg/.last-sync-commit
 
+# Data backups (e.g. pre-migration Neo4j dumps) — never in source history
+backups/
+
 # Python
 .venv/
 **/.venv/

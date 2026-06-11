@@ -94,6 +94,28 @@ export interface DeliberationResult {
    */
   readonly groundingProvenance?: string | null;
 
+  /**
+   * WS4 Ticket 5 (§3.1) — which knowledge SOURCE produced a GROUNDED verdict.
+   *
+   *   'OKG'  → grounding came from a taught person-model fact (the current
+   *            speaker's PRIVATE self-knowledge). A pattern written off this
+   *            verdict MUST be person-scoped — only that speaker may hear it
+   *            replayed GROUNDED.
+   *   'WKG'  → grounding came from shared world-knowledge context (a real
+   *            fact or a topical, non-base-context entity). World-scoped:
+   *            anyone may hear it replayed GROUNDED.
+   *   null   → not GROUNDED, OR the source is genuinely ambiguous/mixed. Per
+   *            the §3.1 conservative-when-ambiguous rule, the write site
+   *            person-scopes on null-with-GROUNDED — NEVER world-scopes.
+   *
+   * This is the AUTHORITATIVE discriminator the latent write-time scoper
+   * consumes. It is derived from WHICH cascade rule fired, not re-derived
+   * from ambient WKG context (the bug mythos caught: an unrelated topical
+   * entity present alongside an OKG-grounded verdict would flip an OKG fact
+   * to world-scope). Set at every point grounding becomes GROUNDED.
+   */
+  readonly groundedBy?: 'OKG' | 'WKG' | null;
+
   /** New entity names discovered during deliberation. */
   readonly discoveredEntities: readonly string[];
 
@@ -348,6 +370,12 @@ export class DeliberationService {
         );
       }
 
+      // WS4 Ticket 5 (§3.1) — discriminate the GROUNDED source for write-time
+      // person-scoping. Computed from WHICH cascade rule fired, not ambient WKG.
+      const groundedBy = discriminateGroundedBy(
+        knowledgeGrounding, wkg, responseText, personModel?.knownFacts, groundingProvenance,
+      );
+
       vlog('deliberation short-circuit', {
         intent: monologueParsed.intent,
         latencyMs: totalLatencyMs,
@@ -377,6 +405,7 @@ export class DeliberationService {
         rationale: monologueParsed.thought ?? 'Resolved by inner monologue',
         knowledgeGrounding,
         groundingProvenance,
+        groundedBy,
         candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
         trace: {
           innerMonologue,
@@ -709,6 +738,12 @@ export class DeliberationService {
       );
     }
 
+    // WS4 Ticket 5 (§3.1) — discriminate the GROUNDED source for write-time
+    // person-scoping. Read off the cascade rule that fired, not ambient WKG.
+    const groundedBy = discriminateGroundedBy(
+      knowledgeGrounding, wkg, finalResponseText, personModel?.knownFacts, groundingProvenance,
+    );
+
     // Extract any new entity names mentioned in the response
     const discoveredEntities = extractNewEntities(finalResponseText, wkg);
 
@@ -718,6 +753,7 @@ export class DeliberationService {
       rationale,
       knowledgeGrounding,
       groundingProvenance,
+      groundedBy,
       candidates,
       trace: {
         innerMonologue,
@@ -1325,6 +1361,45 @@ export function inferGrounding(
     return 'GROUNDED';
   }
   return 'LLM_ASSISTED';
+}
+
+/**
+ * WS4 Ticket 5 (§3.1) — discriminate WHICH knowledge source grounded a verdict.
+ *
+ * This mirrors the EXACT priority cascade `inferGrounding`/the short-circuit
+ * path use (OKG person-fact recall wins over topical WKG), so the source is
+ * read off the SAME rule that produced the GROUNDED verdict — not re-derived
+ * from ambient context. That is the whole point: a verdict can be
+ * GROUNDED-because-of-OKG while the WKG context independently contains an
+ * unrelated topical entity. Re-deriving "is there a topical entity?" would
+ * mislabel that OKG fact as WKG-backed and world-scope a private fact (the bug
+ * mythos live-verified). Discriminating by rule precedence cannot.
+ *
+ * Priority (highest first), matching the grounding cascade:
+ *   1. `okgProvenance` non-null (applyOkgRecallGrounding upgraded it) → 'OKG'.
+ *   2. `personFactRecalled` (a taught fact VALUE surfaced in the reply) → 'OKG'.
+ *   3. real WKG fact or topical (non-base) entity → 'WKG'.
+ *   4. anything else GROUNDED (e.g. LLM tag we couldn't attribute) → null
+ *      → the write site person-scopes (conservative-when-ambiguous).
+ *
+ * Returns null when grounding !== 'GROUNDED'.
+ */
+export function discriminateGroundedBy(
+  grounding: KnowledgeGrounding,
+  wkg: WkgContext,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+  okgProvenance: string | null,
+): 'OKG' | 'WKG' | null {
+  if (grounding !== 'GROUNDED') return null;
+  // Rule 1 + 2 — OKG person-fact recall (private self-knowledge).
+  if (okgProvenance) return 'OKG';
+  if (personFactRecalled(knownFacts, responseText)) return 'OKG';
+  // Rule 3 — shared world-knowledge backing.
+  if (wkg.facts.length > 0 || hasTopicalEntity(wkg)) return 'WKG';
+  // Rule 4 — GROUNDED but source unattributable (e.g. an LLM grounding tag the
+  // arbiter attached that survived re-verification). Ambiguous → person-scope.
+  return null;
 }
 
 // ---------------------------------------------------------------------------

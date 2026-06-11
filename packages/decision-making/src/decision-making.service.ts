@@ -64,9 +64,9 @@ import { ActionHandlerRegistryService, type ActionCycleContext } from './action-
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
-import { LatentSpaceService, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
+import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
-import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding } from './deliberation/deliberation.service';
+import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding, discriminateGroundedBy } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { isDocumentEncoder } from './inputs/encoders/text.encoder';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
@@ -1019,7 +1019,36 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // mapped to UNKNOWN here (not at write time) because this is a pure
           // reflex replay — the LLM is not involved, so claiming it was
           // LLM_ASSISTED would be inaccurate (L2: no LLM_ASSISTED under lesion).
-          const latentBaseGrounding = groundingForCachedPattern(latentMatch.pattern);
+          let latentBaseGrounding = groundingForCachedPattern(latentMatch.pattern);
+
+          // ── WS4 Ticket 5 (§3.2) — replay-time person-scope demotion ────────
+          // INVARIANT: a pattern whose GROUNDED claim is backed by person A's
+          // private OKG must NOT replay GROUNDED to person B. World/WKG-grounded
+          // patterns (groundingPersonId === null) may replay GROUNDED to anyone.
+          //
+          // We demote (GROUNDED → UNKNOWN), we do NOT suppress: the cached reflex
+          // still fires this turn (theater prohibition / no behavior cliff) — we
+          // only strip the BORROWED grounding. Crucially this runs BEFORE
+          // applyOkgRecallGrounding below, so if person B genuinely has the same
+          // fact in B's OWN OKG, the re-ground re-GROUNDs it honestly off B's facts
+          // and the demotion has cost nothing. The demotion only removes A's
+          // grounding that B was never entitled to hear.
+          const currentPersonId =
+            (frame.raw['person_model'] as { personId?: string } | null | undefined)?.personId ?? null;
+          const patternGpid = latentMatch.pattern.groundingPersonId; // null = world-scoped
+          const scopeResult = applyPersonScopeDemotion(
+            latentBaseGrounding,
+            patternGpid,
+            currentPersonId,
+          );
+          latentBaseGrounding = scopeResult.grounding;
+          if (scopeResult.demoted) {
+            this.logger.warn(
+              `LATENT_PERSON_SCOPE_DEMOTION: pattern ${latentMatch.pattern.id.substring(0, 8)} ` +
+                `grounded for person ${patternGpid} but replayed to ${currentPersonId ?? 'unknown'} — ` +
+                `demoted GROUNDED→UNKNOWN (reflex still fires).`,
+            );
+          }
 
           // Defense-in-depth OKG recall attribution for Type 1 fact-recall hits:
           // the stored pattern may carry LLM_ASSISTED/UNKNOWN from when it was
@@ -1066,6 +1095,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             confidence: deliberationResult.confidence,
             knowledgeGrounding: deliberationResult.knowledgeGrounding,
             groundingProvenance: deliberationResult.groundingProvenance ?? null,
+            groundedBy: deliberationResult.groundedBy ?? null,
             degradedNoLlm: deliberationResult.degradedNoLlm,
           });
         } else if (procedureData !== null && (this.llm === null || this.llm.isAvailable())) {
@@ -1098,6 +1128,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               );
               result['knowledgeGrounding'] = procedureGrounding;
               if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
+              // WS4 Ticket 5 (§3.1) — source discriminator for write-time scoping.
+              // The procedure base grounding is computed against an EMPTY WKG
+              // context (groundingForCachedResponse), so the ONLY way this path
+              // reaches GROUNDED is an OKG-recall upgrade. discriminateGroundedBy
+              // confirms this from the cascade (empty WKG → never 'WKG'); a
+              // GROUNDED here is therefore 'OKG' (person-scoped).
+              result['groundedBy'] = discriminateGroundedBy(
+                procedureGrounding,
+                { entities: [], facts: [], relationships: [], procedures: [], summary: '' },
+                procedureResponseText,
+                procedurePersonModel?.knownFacts,
+                procedureProvenance,
+              );
             }
             executionResults.push(result);
           }
@@ -1138,6 +1181,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              groundedBy: deliberationResult.groundedBy ?? null,
               actionResult,
             });
           } else {
@@ -1150,6 +1194,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              groundedBy: deliberationResult.groundedBy ?? null,
               degradedNoLlm: deliberationResult.degradedNoLlm,
             });
           }
@@ -1214,6 +1259,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
               actionResult,
             });
@@ -1226,6 +1272,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
               degradedNoLlm: deliberationResult.degradedNoLlm,
             });
@@ -1338,6 +1385,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // verified. LLM_ASSISTED is the honest, conservative floor.
       let responseGrounding: KnowledgeGrounding = 'LLM_ASSISTED';
       let responseGroundingProvenance: string | null = null;
+      // WS4 Ticket 5 (§3.1) — which source produced a GROUNDED verdict, threaded
+      // from the deliberation/procedure path that produced this turn's response.
+      // Authoritative input to the write-time person-scoper below.
+      let responseGroundedBy: 'OKG' | 'WKG' | null = null;
       let responseDegradedNoLlm = false;
 
       for (const result of executionResults) {
@@ -1352,6 +1403,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // Thread OKG provenance reference (Standard 1: GROUNDED must carry the node id).
           if (typeof result['groundingProvenance'] === 'string') {
             responseGroundingProvenance = result['groundingProvenance'];
+          }
+          // WS4 Ticket 5 (§3.1): thread the GROUNDED source discriminator. Only a
+          // string value 'OKG'/'WKG' overrides; an absent/null key leaves it null
+          // (ambiguous → person-scoped at the write site below).
+          if (result['groundedBy'] === 'OKG' || result['groundedBy'] === 'WKG') {
+            responseGroundedBy = result['groundedBy'];
+          } else if (result['groundedBy'] === null) {
+            responseGroundedBy = null;
           }
           // Did deliberation degrade because the LLM was unavailable? If so this
           // turn is an honest no-LLM SHRUG, not the TYPE_2 arbitration chose.
@@ -1428,6 +1487,49 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           const wkgCtx = await this.wkgContext.getContextForFrame(frame);
           const entityIds = wkgCtx.entities.map((e) => e.nodeId);
 
+          // ── WS4 Ticket 5 (§3.1) — write-time person-scoping ────────────────
+          // Decide whether a GROUNDED claim this pattern would replay is
+          // world-knowledge (anyone may hear it) or backed by THIS speaker's
+          // private OKG (only they may hear it grounded).
+          //
+          // DISCRIMINATE BY VERDICT SOURCE, NOT AMBIENT CONTEXT (mythos's fix).
+          // The grounding verdict is produced by a PRIORITY-ORDERED cascade
+          // (deliberation.service.ts) where OKG person-fact recall WINS over
+          // topical-WKG backing. A verdict can therefore be GROUNDED-because-of-OKG
+          // while the WKG context independently contains an UNRELATED topical
+          // entity (e.g. a stray capitalized word matched as an :Entity). The old
+          // predicate re-derived backing from that ambient WKG context — so the
+          // mere PRESENCE of any topical entity flipped an OKG person-fact to
+          // world-scope and leaked it cross-person (mythos live-verified: the
+          // "Your name is Jim" trio stored grounding_person_id=NULL because an
+          // unrelated "Remind" entity was in context).
+          //
+          // The fix threads `responseGroundedBy` ('OKG' | 'WKG' | null) from the
+          // exact point the cascade decided which rule fired. We world-scope ONLY
+          // when the source was provably 'WKG'. Every other case — 'OKG', or a
+          // null/ambiguous/mixed source on a GROUNDED verdict — person-scopes to
+          // the current speaker.
+          //
+          // CONSERVATIVE-WHEN-AMBIGUOUS RULE (§3.1): ambiguity → person-scope,
+          // NEVER world-scope. The asymmetry is intentional: a false person-scope
+          // costs at most one re-deliberation when person B later asks the same
+          // world fact; a false world-scope LEAKS a person fact across the privacy
+          // wall. We pay the cheap error, never the expensive one.
+          const currentSpeakerId =
+            (frame.raw['person_model'] as { personId?: string } | null | undefined)?.personId ?? null;
+          let groundingPersonId: string | null = null;
+          if (responseGrounding === 'GROUNDED') {
+            // World-scope (null) ONLY for a provably-WKG-sourced verdict. OKG and
+            // any ambiguous/unknown source → person-scope to the current speaker.
+            groundingPersonId = responseGroundedBy === 'WKG' ? null : currentSpeakerId;
+            if (groundingPersonId !== null) {
+              this.logger.debug(
+                `Latent write-time person-scope: pattern GROUNDED via ` +
+                  `${responseGroundedBy ?? 'ambiguous'} source — scoping to speaker ${groundingPersonId}.`,
+              );
+            }
+          }
+
           // nomic asymmetry: the per-turn frame embeddings are QUERIES
           // (`search_query:`), but a stored pattern is a DOCUMENT
           // (`search_document:`). Re-embed the text STIMULUS as a document so a
@@ -1451,6 +1553,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               // of inferring it from entityIds which may include non-fact base-context
               // nodes (Drive/CoBeing) that don't constitute provenance evidence.
               knowledgeGrounding: responseGrounding,
+              // WS4 Ticket 5 (§3.1) — whose OKG backs a GROUNDED replay. null =
+              // world-scoped (proven WKG-backed); non-null = scoped to this speaker.
+              groundingPersonId,
             },
           );
           const primaryPatternId = latentPatternIds[0] ?? randomUUID();

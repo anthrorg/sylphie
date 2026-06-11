@@ -20,7 +20,7 @@
  */
 
 import { Injectable, Logger, Optional, Inject, OnModuleInit } from '@nestjs/common';
-import { Neo4jService, Neo4jInstanceName, type PersonModelSummary, verboseFor } from '@sylphie/shared';
+import { Neo4jService, Neo4jInstanceName, type PersonModelSummary, verboseFor, deriveOkgFactTier } from '@sylphie/shared';
 
 const vlog = verboseFor('Communication');
 
@@ -183,14 +183,42 @@ export class PersonModelService implements OnModuleInit {
    * Write a fact about a person to the OKG immediately.
    * Creates or updates an Attribute node and links it to the Person anchor.
    *
-   * @param userId - The PostgreSQL User.id this fact is about.
-   * @param fact   - The extracted fact to persist.
+   * WS4 Ticket 5 (§1) — guardian-aware tiering. Confidence and provenance_type
+   * derive from `(fact.source, isGuardian)`, NEVER from identity-string matching
+   * (`userId === 'guardian'`). This is the CANON fix for Standards 3 and 5:
+   *
+   *   (a) Guardian self-fact (self_reported && isGuardian) → 0.90 / GUARDIAN.
+   *       A guardian's self-knowledge is guardian-confirmed by definition; 0.90
+   *       is the legitimate guardian exception to the 0.60 ceiling.
+   *   (b) Non-guardian self-fact (self_reported && !isGuardian) → 0.60 / SELF_REPORTED.
+   *       0.60 is exactly the Standard-3 ceiling: an unconfirmed self-report is the
+   *       strongest non-guardian evidence; lower would suppress legitimate guest
+   *       recall. SELF_REPORTED is a new provenance label (OKG-scoped): GUARDIAN
+   *       would re-introduce the Standard-5 violation this ticket fixes, and
+   *       INFERENCE would lie about provenance.
+   *   (c) Observed / inferred (source !== self_reported) → 0.60 / OBSERVED|INFERENCE.
+   *
+   * Legacy tokenless-guardian compatibility: callers that omit isGuardian default
+   * to true, preserving the pre-Ticket-7 behavior where only Jim can reach a
+   * tokenless localhost session. When Ticket 7 flips tokenless→guest, the same code
+   * path produces tier (b) with zero change here, because tiering is computed from
+   * the turn's isGuardian flag, never re-derived from userId.
+   *
+   * @param userId     - The PostgreSQL User.id this fact is about.
+   * @param fact       - The extracted fact to persist.
+   * @param isGuardian - Whether the speaker holds verified-JWT guardian status.
+   *                     Defaults to true (legacy tokenless-guardian behavior).
    */
-  async writeFact(userId: string, fact: ExtractedFact): Promise<void> {
+  async writeFact(userId: string, fact: ExtractedFact, isGuardian = true): Promise<void> {
+    // Tier (confidence, provenance_type) derived from (source, isGuardian),
+    // NEVER from identity-string matching. Pure CANON rule lives in @sylphie/shared
+    // (deriveOkgFactTier) and is unit-tested there (WS4-T5 §6 A2/A3).
+    const { confidence, provenanceType } = deriveOkgFactTier(fact.source, isGuardian);
+
     const personFact: PersonFact = {
       key: fact.key,
       value: fact.value,
-      confidence: fact.source === 'self_reported' ? 0.90 : 0.60,
+      confidence,
       source: fact.source,
       learnedAt: new Date(),
     };
@@ -218,12 +246,14 @@ export class PersonModelService implements OnModuleInit {
            a.key = $key,
            a.value = $value,
            a.confidence = $confidence,
+           a.provenance_type = $provenance,
            a.source = $source,
            a.learned_at = datetime(),
            a.raw_text = $rawText
          ON MATCH SET
            a.value = $value,
            a.confidence = CASE WHEN $confidence > a.confidence THEN $confidence ELSE a.confidence END,
+           a.provenance_type = $provenance,
            a.source = $source,
            a.updated_at = datetime(),
            a.raw_text = $rawText
@@ -234,12 +264,16 @@ export class PersonModelService implements OnModuleInit {
           key: fact.key,
           value: fact.value,
           confidence: personFact.confidence,
+          provenance: provenanceType,
           source: fact.source,
           rawText: fact.rawText,
         },
       );
-      this.logger.log(`OKG fact written: ${fact.key}="${fact.value}" for user ${userId}`);
-      vlog('fact written to OKG', { userId, key: fact.key, value: fact.value, source: fact.source, target: fact.target });
+      this.logger.log(
+        `OKG fact written: ${fact.key}="${fact.value}" for user ${userId} ` +
+          `(confidence=${personFact.confidence}, provenance=${provenanceType}, guardian=${isGuardian})`,
+      );
+      vlog('fact written to OKG', { userId, key: fact.key, value: fact.value, source: fact.source, target: fact.target, provenanceType, isGuardian });
     } catch (err) {
       this.logger.warn(`OKG fact write failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -332,6 +366,51 @@ export class PersonModelService implements OnModuleInit {
       return cleared;
     } catch (err) {
       this.logger.warn(`OKG fact clear failed: ${err instanceof Error ? err.message : String(err)}`);
+      return -1;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Delete ALL stored facts for EVERY person — OKG Attribute nodes plus the
+   * in-memory fact cache and interaction counts. Person anchor nodes themselves
+   * are preserved.
+   *
+   * WS4 Ticket 5 (§4) — P0′ multi-person gate reset. clearFactsForPerson() wipes
+   * one named person; once a second person can connect, the gate's hermeticity
+   * step must wipe the WHOLE OKG corpus or replay non-determinism returns (any
+   * fact accumulated by a non-guardian person between cassette record and replay
+   * leaks into LLM prompts and causes a cassette miss). This is corpus-independent
+   * — it enumerates no persons, so it cannot miss a person the gate forgot to list.
+   *
+   * NOT wired into the gate here — Ticket 7 calls it once in the hermeticity step.
+   *
+   * @returns Number of Attribute nodes deleted (-1 if Neo4j unavailable).
+   */
+  async clearFactsForAllPersons(): Promise<number> {
+    this.cache.clear();
+    this.interactionCounts.clear();
+
+    if (!this.neo4j) return -1;
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    try {
+      const result = await session.run(
+        `MATCH (p:Person)-[:HAS_FACT]->(a:Attribute)
+         DETACH DELETE a
+         RETURN count(a) AS cleared`,
+      );
+      const raw = result.records[0]?.get('cleared');
+      const cleared = typeof raw === 'number' ? raw
+        : (raw && typeof raw.toNumber === 'function') ? raw.toNumber() : 0;
+      this.logger.warn(
+        `OKG facts cleared for ALL persons: ${cleared} attribute(s) deleted ` +
+          `(gate hermeticity / authorized multi-person reset). Anchors preserved.`,
+      );
+      return cleared;
+    } catch (err) {
+      this.logger.warn(`OKG all-persons fact clear failed: ${err instanceof Error ? err.message : String(err)}`);
       return -1;
     } finally {
       await session.close();
