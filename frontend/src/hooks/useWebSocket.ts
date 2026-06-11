@@ -194,6 +194,7 @@ export function useConversationWebSocket() {
   const addMessage = useAppStore((s) => s.addMessage)
   const incrementTurns = useAppStore((s) => s.incrementTurns)
   const setThinking = useAppStore((s) => s.setThinking)
+  const setQueuePosition = useAppStore((s) => s.setQueuePosition)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -266,6 +267,20 @@ export function useConversationWebSocket() {
           // thinking_indicator is a flag, not a message — update state, don't add to feed.
           if (message.type === 'thinking_indicator') {
             setThinking(!!message.is_thinking)
+            // WS4 Ticket 6: clear queue position when Sylphie starts processing our
+            // turn (thinking indicator on our socket means we are now being served).
+            if (message.is_thinking) {
+              setQueuePosition(null)
+            }
+            return
+          }
+
+          // WS4 Ticket 6 — queue_position: this socket's turn is queued at position N.
+          // Received only when this socket has a turn waiting behind others.
+          // Cleared when thinking_indicator arrives (our turn is being served) or
+          // when cb_speech arrives (response delivered).
+          if (message.type === 'queue_position') {
+            setQueuePosition(typeof message.position === 'number' ? message.position : null)
             return
           }
 
@@ -285,6 +300,8 @@ export function useConversationWebSocket() {
           // cobeing-v1 sends Sylphie's replies as 'cb_speech'; native protocol sends 'response'.
           // Both count as completed turns for session statistics and stasis detection.
           if (message.type === 'response' || message.type === 'cb_speech') {
+            // WS4 Ticket 6: clear any residual queue position — our turn was served.
+            setQueuePosition(null)
             incrementTurns()
 
             // If the response carries inline TTS audio, dispatch a CustomEvent
@@ -330,7 +347,7 @@ export function useConversationWebSocket() {
       setWsState('conversation', 'reconnecting')
       scheduleReconnect()
     }
-  }, [setWsState, addMessage, incrementTurns])
+  }, [setWsState, addMessage, incrementTurns, setThinking, setQueuePosition])
 
   const scheduleReconnect = useCallback(() => {
     const delay = computeBackoffDelay(reconnectAttemptRef.current)

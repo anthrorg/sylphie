@@ -48,8 +48,10 @@ const vlog = verboseFor('Communication');
 import {
   DECISION_MAKING_SERVICE,
   TickSamplerService,
+  CycleGuardService,
   type IDecisionMakingService,
   type InboundTurn,
+  type QueuePositionSnapshot,
 } from '@sylphie/decision-making';
 import {
   DRIVE_STATE_READER,
@@ -77,6 +79,22 @@ export class CommunicationService implements OnModuleInit {
   /** Observable stream of delivery payloads. Gateway subscribes. */
   get delivery$(): Observable<DeliveryPayload> {
     return this.deliverySubject.asObservable();
+  }
+
+  /**
+   * WS4 Ticket 6 — Queue-position update stream.
+   *
+   * Proxies CycleGuardService.queuePositionUpdates$ so the gateway can subscribe
+   * without a direct dependency on the concurrency guard internals.
+   *
+   * Emits after every enqueue and every drain. The gateway subscribes and sends
+   * honest `queue_position` messages to each waiting turn's socket using the
+   * existing routeDelivery path.
+   *
+   * Lazily resolved from `this.cycleGuard` once `onModuleInit` completes.
+   */
+  get queuePositionUpdates$(): Observable<QueuePositionSnapshot> {
+    return this.cycleGuard.queuePositionUpdates$;
   }
 
   /**
@@ -115,6 +133,10 @@ export class CommunicationService implements OnModuleInit {
     // TickSamplerService is exported from DecisionMakingModule and resolved by
     // NestJS DI from the global provider set.
     private readonly tickSampler: TickSamplerService,
+
+    // WS4 Ticket 6: injected so we can proxy queuePositionUpdates$ to the gateway
+    // without the gateway taking a hard dependency on the DM-internal concurrency guard.
+    private readonly cycleGuard: CycleGuardService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -352,11 +374,20 @@ export class CommunicationService implements OnModuleInit {
    *
    * Current triggers:
    *   - "Who am I?" → Retrieve OKG person model, LLM summarizes all known facts.
+   *
+   * WS4 Ticket 6: `socketId` and `isGuardian` are now accepted so `handleWhoAmI`
+   * can construct a proper `TurnOriginator` and route the reply to the asker's
+   * socket only — closing the privacy-scope leak identified in the Ticket 4 audit.
+   *
+   * @param socketId   - WebSocket connection ID of the requesting client (Ticket 6).
+   * @param isGuardian - Whether the requesting user holds guardian status (Ticket 6).
    */
   async handleTriggerPhrase(
     text: string,
     sessionId: string,
     userId: string,
+    socketId?: string,
+    isGuardian?: boolean,
   ): Promise<boolean> {
     const trigger = detectTriggerPhrase(text);
     if (!trigger) return false;
@@ -379,7 +410,9 @@ export class CommunicationService implements OnModuleInit {
     this.personModel.recordInteraction(userId);
 
     if (trigger === 'WHO_AM_I') {
-      await this.handleWhoAmI(sessionId, userId, startMs);
+      // WS4 Ticket 6: pass socketId and isGuardian so handleWhoAmI can attach
+      // a proper TurnOriginator and route the reply to the asker only.
+      await this.handleWhoAmI(sessionId, userId, startMs, socketId, isGuardian ?? false);
     }
 
     return true;
@@ -391,11 +424,16 @@ export class CommunicationService implements OnModuleInit {
    * Loads all OKG facts for the speaker, sends them to the LLM with a prompt
    * to present everything Sylphie knows about this person, and emits the
    * response directly on delivery$.
+   *
+   * WS4 Ticket 6: socketId + isGuardian are accepted so the delivery can be
+   * routed to the asker's socket only — closing the privacy-scope leak from T4.
    */
   private async handleWhoAmI(
     sessionId: string,
     userId: string,
     startMs: number,
+    socketId?: string,
+    isGuardian = false,
   ): Promise<void> {
     const turnId = `trigger-who-am-i-${randomUUID().substring(0, 8)}`;
 
@@ -461,14 +499,20 @@ export class CommunicationService implements OnModuleInit {
 
     const latencyMs = Date.now() - startMs;
 
-    // Emit delivery directly (bypasses decision-making executor)
-    // TODO(Ticket 6): thread originator onto this delivery — without it the
-    // WHO_AM_I reply BROADCASTS to all sockets (privacy-scope leak; the
-    // content itself is correctly per-userId, mythos T4 audit 2026-06-10).
+    // Emit delivery directly (bypasses decision-making executor).
+    // WS4 Ticket 6: originator is now threaded onto the delivery so the gateway
+    // routes the WHO_AM_I reply to the asker's socket only — closing the privacy-
+    // scope leak identified in the T4 audit (mythos, 2026-06-10). The originator
+    // carries userId + socketId so routeDelivery() can target the exact socket.
     const delivery: DeliveryPayload = {
       type: 'cb_speech',
       text: responseText,
       turnId,
+      originator: {
+        userId,
+        socketId,
+        isGuardian,
+      },
       isGrounded: true,
       arbitrationType: 'TYPE_2',
       latencyMs,

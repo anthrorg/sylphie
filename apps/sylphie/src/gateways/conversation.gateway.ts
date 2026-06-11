@@ -125,6 +125,27 @@ export class ConversationGateway
         this.logger.error(`delivery$ stream error: ${err}`);
       },
     });
+
+    // WS4 Ticket 6: subscribe to queue-position updates from CycleGuard.
+    // When a turn enqueues behind others, or when the queue drains, each waiting
+    // speaker's socket gets an honest `queue_position` message with their current
+    // 1-based position. Positions are recomputed per drain — never promised to be
+    // stable (guardian preemption can shift them).
+    this.communication.queuePositionUpdates$.subscribe({
+      next: (snapshot) => {
+        for (const entry of snapshot.positions) {
+          const msg = JSON.stringify({
+            type: 'queue_position',
+            position: entry.position,
+            turnId: entry.turnId,
+          });
+          this.sendToSocket(entry.socketId, entry.userId, msg);
+        }
+      },
+      error: (err) => {
+        this.logger.error(`queuePositionUpdates$ stream error: ${err}`);
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -334,12 +355,14 @@ export class ConversationGateway
     // Acknowledge receipt immediately
     client.send(JSON.stringify({ type: 'input_ack' }));
 
-    // Show thinking indicator while the executor processes.
-    // WS4 Ticket 4: thinking_indicator is a global ambient event — broadcast.
-    // It signals "Sylphie is processing something" to all observers, not just
-    // the current speaker. Ticket 6 will scope this to the active turn's socket.
-    this.broadcast({ type: 'thinking_indicator', is_thinking: true });
-    vlog('thinking indicator sent', { is_thinking: true });
+    // WS4 Ticket 6: scope the thinking_indicator to the originating socket only.
+    // Only this speaker's turn is now in-flight (or about to be enqueued); the
+    // indicator is personal feedback, not a broadcast "Sylphie is thinking" to
+    // everyone. Self-tick and ambient thinking (no originator) continue to
+    // broadcast (see onModuleInit delivery$ handler). The "done" indicator
+    // (is_thinking: false) stays broadcast so all observer UIs clear the spinner.
+    client.send(JSON.stringify({ type: 'thinking_indicator', is_thinking: true }));
+    vlog('thinking indicator sent (scoped to originator socket)', { is_thinking: true, userId });
 
     const sessionId = `session-${userId}-${Date.now()}`;
 
@@ -351,7 +374,10 @@ export class ConversationGateway
 
     // Check for trigger phrases — these short-circuit the normal pipeline
     // and produce an immediate response (e.g., "Who am I?" → OKG lookup).
-    void this.communication.handleTriggerPhrase(data.text, sessionId, userId)
+    // WS4 Ticket 6: pass socketId and isGuardian so handleWhoAmI can attach
+    // a proper TurnOriginator and route the reply to the asker only.
+    const socketIdForTrigger = this.clientSocketIds.get(client);
+    void this.communication.handleTriggerPhrase(data.text, sessionId, userId, socketIdForTrigger, isGuardian)
       .then((handled) => {
         if (handled) {
           this.logger.log(`Trigger phrase handled: "${data.text}"`);
@@ -406,6 +432,40 @@ export class ConversationGateway
         client.send(message);
       }
     }
+  }
+
+  /**
+   * WS4 Ticket 6 — Send a pre-serialized message to a specific socket.
+   *
+   * Tries socketId first (exact targeted delivery), falls back to userId lookup
+   * (reconnect tolerance). If neither resolves, the notification is silently
+   * dropped (the turn will complete normally; the UX feedback is just missing).
+   *
+   * This is used only for informational notifications (queue_position). If the
+   * recipient is not reachable, there is no need to log a warning — a missed
+   * position update is not a correctness failure.
+   *
+   * @param socketId - WebSocket connection ID from the InboundTurn.
+   * @param userId   - Speaker's userId fallback.
+   * @param message  - Pre-serialized JSON string to send.
+   */
+  private sendToSocket(socketId: string | undefined, userId: string | undefined, message: string): void {
+    // Try targeted delivery by socketId first.
+    if (socketId) {
+      const target = this.socketIdToClient.get(socketId);
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(message);
+        return;
+      }
+    }
+    // Fall back to userId → current socket.
+    if (userId) {
+      const target = this.userIdToClient.get(userId);
+      if (target && target.readyState === WebSocket.OPEN) {
+        target.send(message);
+      }
+    }
+    // No socket found — drop silently. Position update is informational only.
   }
 
   // ---------------------------------------------------------------------------

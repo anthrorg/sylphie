@@ -59,6 +59,7 @@ import {
   CONTRADICTION_SCANNER,
   DECISION_MAKING_SERVICE,
   WORKING_MEMORY_SERVICE,
+  MOOD_BLEED_MONITOR_SERVICE,
 } from './decision-making.tokens';
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ import { DecisionEventLoggerService } from './logging/decision-event-logger.serv
 import { ShrugImperativeService } from './shrug/shrug-imperative.service';
 import { Type1TrackerService } from './graduation/type1-tracker.service';
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
+import { MoodBleedMonitorService } from './monitoring/mood-bleed-monitor.service';
 import { ContradictionScannerService } from './arbitration/contradiction-scanner.service';
 import { DecisionMakingService } from './decision-making.service';
 import { OllamaLlmService } from './llm/ollama-llm.service';
@@ -176,6 +178,10 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
       useClass: AttractorMonitorService,
     },
     {
+      provide: MOOD_BLEED_MONITOR_SERVICE,
+      useClass: MoodBleedMonitorService,
+    },
+    {
       provide: CONTRADICTION_SCANNER,
       useClass: ContradictionScannerService,
     },
@@ -269,6 +275,11 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     SceneEncoder,
     SensoryFusionService,
     TickSamplerService,
+
+    // WS4 Ticket 6: CycleGuardService exported so CommunicationService can
+    // subscribe to queuePositionUpdates$ and relay queue-position notifications
+    // to waiting speakers via the gateway's routed send.
+    CycleGuardService,
   ],
 })
 export class DecisionMakingModule {}

@@ -323,6 +323,7 @@ export const ConversationPanel: React.FC = () => {
   // feed on every telemetry tick.
   const messages = useAppStore((s) => s.messages)
   const isThinking = useAppStore((s) => s.isThinking)
+  const queuePosition = useAppStore((s) => s.queuePosition)
   const wsConnectionState = useAppStore((s) => s.wsState.conversation)
   const addMessage = useAppStore((s) => s.addMessage)
   const { sendMessage, sendTextMessage } = useConversationWebSocket()
@@ -444,6 +445,32 @@ export const ConversationPanel: React.FC = () => {
                 <span />
                 <span />
               </Box>
+            </Box>
+          </Box>
+        )}
+
+        {/* WS4 Ticket 6 — Queue position indicator.
+            Shown when this socket has a turn waiting behind others.
+            Hidden when isThinking (we are being served) or when position is null. */}
+        {queuePosition !== null && !isThinking && (
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-start',
+              mb: 1.5,
+            }}
+          >
+            <Box
+              sx={{
+                p: '6px 14px',
+                borderRadius: 2,
+                bgcolor: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                color: 'rgba(255,255,255,0.45)',
+                fontSize: '0.78rem',
+              }}
+            >
+              Position {queuePosition} in queue…
             </Box>
           </Box>
         )}

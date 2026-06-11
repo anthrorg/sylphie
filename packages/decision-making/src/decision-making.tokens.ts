@@ -164,6 +164,19 @@ export const ATTRACTOR_MONITOR_SERVICE = Symbol('ATTRACTOR_MONITOR_SERVICE');
 export const CONTRADICTION_SCANNER = Symbol('CONTRADICTION_SCANNER');
 
 /**
+ * Injection token for MoodBleedMonitorService.
+ * INTERNAL TO DecisionMakingModule ONLY. Not exported from index.ts.
+ *
+ * Tick-driven observer that detects the HOSTILE_INTERLOCUTOR_MOOD_BLEED
+ * attractor pattern: a single speaker whose turns are measurably and
+ * disproportionately elevating Sylphie's negative affect drives (Anxiety,
+ * Sadness, Guilt) relative to all other speakers and ambient baseline drift.
+ *
+ * WS4 Ticket 8. Pure observer: zero write paths. Logging/observability only.
+ */
+export const MOOD_BLEED_MONITOR_SERVICE = Symbol('MOOD_BLEED_MONITOR_SERVICE');
+
+/**
  * Injection token for IWorkingMemoryService.
  * INTERNAL TO DecisionMakingModule ONLY. Not exported from index.ts.
  *

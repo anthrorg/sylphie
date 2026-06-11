@@ -58,7 +58,9 @@ import {
   ACTION_HANDLER_REGISTRY,
   ATTRACTOR_MONITOR_SERVICE,
   TENSOR_INFERENCE_SERVICE,
+  MOOD_BLEED_MONITOR_SERVICE,
 } from './decision-making.tokens';
+import { MoodBleedMonitorService } from './monitoring/mood-bleed-monitor.service';
 import { ProcessInputService } from './process-input/process-input.service';
 import { ActionHandlerRegistryService, type ActionCycleContext } from './action-handlers/action-handler-registry.service';
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
@@ -181,6 +183,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
     @Inject(ATTRACTOR_MONITOR_SERVICE)
     private readonly attractorMonitor: AttractorMonitorService,
+
+    // WS4 Ticket 8: Mood-bleed monitor — tick-driven hostile-interlocutor detector.
+    // Optional so the loop degrades gracefully if the service is unavailable.
+    @Optional()
+    @Inject(MOOD_BLEED_MONITOR_SERVICE)
+    private readonly moodBleedMonitor: MoodBleedMonitorService | null,
 
     private readonly tickSampler: TickSamplerService,
 
@@ -306,6 +314,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const snapshot = this.driveStateReader.getCurrentState();
       this.streamLogger.logFrame(frame, snapshot, snapshot.sessionId);
 
+      // WS4 Ticket 8: Notify mood-bleed monitor of cycle start.
+      // Exception-isolated: a monitor failure must never break a cycle.
+      try {
+        this.moodBleedMonitor?.onCycleStart(this.currentTurnContext.originator, snapshot);
+      } catch (monitorErr) {
+        this.logger.warn(`MoodBleedMonitor.onCycleStart failed: ${monitorErr}`);
+      }
+
       await this.processInput(frame, myEpoch);
       return true;
     } catch (err) {
@@ -314,6 +330,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Re-catch here so CycleGuard's finally always runs.
       return false;
     } finally {
+      // WS4 Ticket 8: Notify mood-bleed monitor of cycle end (before context clear).
+      // Exception-isolated: a monitor failure must never prevent context cleanup.
+      try {
+        this.moodBleedMonitor?.onCycleEnd();
+      } catch (monitorErr) {
+        this.logger.warn(`MoodBleedMonitor.onCycleEnd failed: ${monitorErr}`);
+      }
       // Always clear so a subsequent self-tick doesn't pick up a stale context.
       this.currentTurnContext = null;
     }
@@ -642,11 +665,27 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const snapshot = this.driveStateReader.getCurrentState();
       this.streamLogger.logFrame(frame, snapshot, snapshot.sessionId);
 
+      // WS4 Ticket 8: Notify mood-bleed monitor of self-tick cycle start.
+      // originator=null excludes self-ticks from speaker ledgers and baseline.
+      // Exception-isolated: a monitor failure must never break a self-tick.
+      try {
+        this.moodBleedMonitor?.onCycleStart(null, snapshot);
+      } catch (monitorErr) {
+        this.logger.warn(`MoodBleedMonitor.onCycleStart (self-tick) failed: ${monitorErr}`);
+      }
+
       // Self-ticks pass no epoch — they bypass CycleGuard and are never zombied.
       await this.processInput(frame);
     } catch (err) {
       this.logger.error(`Tick cycle failed: ${err}`);
     } finally {
+      // WS4 Ticket 8: Notify mood-bleed monitor of cycle end.
+      // Exception-isolated: monitor failure must not prevent reset of selfTickInFlight.
+      try {
+        this.moodBleedMonitor?.onCycleEnd();
+      } catch (monitorErr) {
+        this.logger.warn(`MoodBleedMonitor.onCycleEnd (self-tick) failed: ${monitorErr}`);
+      }
       this.selfTickInFlight = false;
       // Pre-fix (WS4 T3 pre-fix): notify CycleGuard that the self-tick is done
       // so any turns queued during this self-tick can resume draining.

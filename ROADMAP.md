@@ -91,9 +91,12 @@ Turn accumulated knowledge into compounding capability.
 - Instrument spreading-activation payoff and the experiential-provenance ratio shift.
 - Related: `mood-congruent-episodic-retrieval`, `theater-prohibition-real-validation`.
 
-#### WS4 — Presence (one mind, many people)
-The capability in `sylphie-chat-architecture.md`. A unified interlocutor queue: one mind, serial attention, per-person memory, addressed replies. Forks are decided (Part F of that doc). Shares plumbing with the flagged text-attribution need.
-- Related: `decision-cycle-concurrency-guard`.
+#### WS4 — Presence (one mind, many people) — ✅ CLOSED-WITH-RESIDUALS (2026-06-11)
+All 8 tickets delivered and mythos-verified (T1 322adc7 · T2 9654b35 · T3 d3d4f2c · T4 5d8aba7 · T5 7d62393 · T7 7ec0fed · T6+T8 final commit). Plan + binding specs: `wiki/ws4-build-plan.md`, `wiki/ws4-t1-concurrency-guard-spec.md`, `wiki/ws4-t5-graph-contract.md`, `wiki/ws4-t7-gate-harness-spec.md`, `wiki/ws4-t8-mood-bleed-monitor-spec.md`.
+
+The done-state line — "Person B joins; she answers both individually, by name" — is **provable**: gate rows M5.1–M5.4 green on two persistent JWT sockets; replay 19/0/3, lesion 24/0/6, cassette misses=0. Delivered: serialized two-lane turn queue with watchdog + epoch zombie-fence (closes `decision-cycle-concurrency-guard`); per-turn text/turnId/identity threading (closed the April text-attribution need); targeted delivery; per-person OKG privacy with guardian-aware provenance tiering (fixed live Std-3/Std-5 violations); tokenless→guest with JWT-only guardian status; queue UX; hostile-interlocutor mood-bleed attractor monitor (observability-only).
+
+**Honest residuals carried forward:** privacy wall is sound on the cross-person GROUNDED-leak axis (PRIV.1) but the own-fact recall axis is amber (PRIV.2 — `grounded-okg-recall-retrieval`); learning-pipeline WKG person-fact leak (stub inventory 2.8, atlas); `ws5-t1-world-fact-promotion` (new stub); supervisor `attractor_alert` wiring still deferred; **Drive-Engine requisite-variety gap — no rules move Anxiety/Guilt on hostile interlocutor text, so the T8 monitor is wired-and-evaluating but currently silent** (`drive-engine-hostility-appraisal-gap`, drive/ashby); T8 thresholds await real multi-person calibration; legacy-pattern rescope (optional); 2 stale jest suites (compile-only type drift, 0 real failures).
 
 #### WS5 — Grounding payoff *(later)*
 Perception that visibly changes behavior; multimodal episodic memory she can recall. Staged after the loop is proven.

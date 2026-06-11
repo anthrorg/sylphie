@@ -83,6 +83,32 @@ export interface TurnCompletedEvent {
   epochAtCompletion: number;
 }
 
+/**
+ * WS4 Ticket 6 — Queue-position snapshot.
+ *
+ * Emitted after every enqueue and after every drain (when the queue advances).
+ * Subscribers use this to send honest `queue_position` messages to waiting
+ * speakers. Positions are 1-indexed (position 1 = next to be served).
+ *
+ * CANON (Theater Prohibition): positions are recomputed from the live queue at
+ * emit time — never cached, never invented. Guardian-lane preemption means
+ * positions can change between enqueue and drain; recipients must treat these
+ * as "current estimate", not a promise.
+ */
+export interface QueuePositionSnapshot {
+  /** Ordered list of waiting turns with their current 1-based positions. */
+  readonly positions: ReadonlyArray<{
+    /** The waiting turn's ID. */
+    readonly turnId: string;
+    /** The speaker's userId (undefined for anonymous/self-tick). */
+    readonly userId?: string;
+    /** The speaker's socket ID (for targeted notification delivery). */
+    readonly socketId?: string;
+    /** 1-based position in the combined queue (guardian lane first). */
+    readonly position: number;
+  }>;
+}
+
 /** Emitted when circuit breaker state changes. */
 export interface BreakerStateEvent {
   type: 'ENTER' | 'EXIT';
@@ -194,11 +220,32 @@ export class CycleGuardService {
   private readonly watchdogKill$ = new Subject<WatchdogKillEvent>();
   private readonly completed$ = new Subject<TurnCompletedEvent>();
   private readonly breakerState$ = new Subject<BreakerStateEvent>();
+  /** WS4 Ticket 6: emits after every enqueue and every drain. */
+  private readonly queuePositions$ = new Subject<QueuePositionSnapshot>();
 
   get turnDeclined$(): Observable<TurnDeclinedEvent> { return this.declined$.asObservable(); }
   get cycleWatchdogKill$(): Observable<WatchdogKillEvent> { return this.watchdogKill$.asObservable(); }
   get cycleCompleted$(): Observable<TurnCompletedEvent> { return this.completed$.asObservable(); }
   get circuitBreakerState$(): Observable<BreakerStateEvent> { return this.breakerState$.asObservable(); }
+
+  /**
+   * WS4 Ticket 6 — Queue-position updates.
+   *
+   * Emits after every enqueue (when a turn joins the waiting queue) and after
+   * every drain (when the queue advances and waiting positions shift). Subscribers
+   * send honest `queue_position` messages to waiting speakers so they know where
+   * they stand.
+   *
+   * Positions are recomputed from the live queue at emit time (CANON theater
+   * prohibition: never invent a position). Guardian-lane preemption means a
+   * non-guardian's position can increase; the message is explicit about that.
+   *
+   * NOTE: Only emitted when there are actual waiting turns (queue non-empty).
+   * An empty-queue snapshot is not emitted — there is nothing to notify.
+   */
+  get queuePositionUpdates$(): Observable<QueuePositionSnapshot> {
+    return this.queuePositions$.asObservable();
+  }
 
   // ── Registered callbacks ──────────────────────────────────────────────────
 
@@ -292,6 +339,14 @@ export class CycleGuardService {
     }
 
     this.admit(turn);
+    // WS4 Ticket 6: notify waiting speakers of their position after admission.
+    // Only emit if a cycle is already in flight — if the mutex is free, drainNext()
+    // will pop this turn immediately and it will never actually "wait". Emitting a
+    // position for a turn that starts processing in the same microtask would produce
+    // a spurious "Position 1 in queue" flash for turns that are served right away.
+    if (this.tickInFlight || this.isExternallyBusy?.()) {
+      this.emitQueuePositions();
+    }
     this.drainNext();
   }
 
@@ -379,6 +434,10 @@ export class CycleGuardService {
 
     // Now admit the arriving turn.
     this.admit(arriving);
+    // WS4 Ticket 6: notify waiting speakers of updated positions. In overflow, there
+    // is always a cycle in flight (otherwise the queue wouldn't be full), so this is
+    // always meaningful to emit.
+    this.emitQueuePositions();
     this.drainNext();
   }
 
@@ -426,6 +485,11 @@ export class CycleGuardService {
 
     const turn = this.popNext();
     if (!turn) return;
+
+    // WS4 Ticket 6: after popping a turn (queue advanced), notify remaining
+    // waiters so their position numbers reflect the new queue state.
+    // This fires even in degraded mode — positions are always honest.
+    this.emitQueuePositions();
 
     // In degraded mode, emit an honest SHRUG rather than attempting a full cycle.
     if (this.isDegradedMode && !this.isProbing) {
@@ -824,6 +888,43 @@ export class CycleGuardService {
   }
 
   // ---------------------------------------------------------------------------
+  // WS4 Ticket 6 — Queue-position notification seam (additive only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emit a queue-position snapshot to all subscribers.
+   *
+   * Called after every admit (enqueue) and after every drain (popNext).
+   * Only emits when at least one turn is waiting — an empty queue means no one
+   * needs a position update.
+   *
+   * CANON (Theater Prohibition): positions are computed from the LIVE queue at
+   * call time. Never cached, never speculative. Guardian-lane preemption means
+   * a non-guardian's position can shift between an enqueue and drain emit.
+   *
+   * ADDITIVE: this method only reads queue state and emits on an observable.
+   * It does NOT touch mutex, watchdog, epoch, or any cycle logic.
+   */
+  private emitQueuePositions(): void {
+    const total = this.guardianLane.length + this.normalLane.length;
+    if (total === 0) {
+      // Nothing is waiting — no notification needed.
+      return;
+    }
+
+    // Build ordered list: guardian lane first (FIFO within lane), then normal.
+    const combined: InboundTurn[] = [...this.guardianLane, ...this.normalLane];
+    const positions = combined.map((turn, index) => ({
+      turnId: turn.turnId,
+      userId: turn.userId,
+      socketId: turn.socketId,
+      position: index + 1, // 1-based
+    }));
+
+    this.queuePositions$.next({ positions });
+  }
+
+  // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
 
@@ -837,6 +938,7 @@ export class CycleGuardService {
     this.watchdogKill$.complete();
     this.completed$.complete();
     this.breakerState$.complete();
+    this.queuePositions$.complete();
   }
 
   // ---------------------------------------------------------------------------

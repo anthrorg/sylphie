@@ -12,6 +12,14 @@ export { DecisionMakingModule } from './decision-making.module';
  */
 export type { InboundTurn } from './concurrency/inbound-turn';
 
+/**
+ * WS4 Ticket 6 — CycleGuardService and queue-position types.
+ * Exported so CommunicationService can inject CycleGuardService and subscribe
+ * to queuePositionUpdates$ to relay queue-position notifications to waiting speakers.
+ */
+export { CycleGuardService } from './concurrency/cycle-guard.service';
+export type { QueuePositionSnapshot } from './concurrency/cycle-guard.service';
+
 /** The sole public injection token for this subsystem. */
 export { DECISION_MAKING_SERVICE } from './decision-making.tokens';
 
@@ -33,6 +41,14 @@ export type { ArbitrationMetrics } from './arbitration/arbitration.service';
 export { ATTRACTOR_MONITOR_SERVICE } from './decision-making.tokens';
 export { AttractorMonitorService } from './monitoring/attractor-monitor.service';
 export type { DetectorResult } from './monitoring/attractor-monitor.service';
+
+/**
+ * Mood-bleed monitor token and concrete class.
+ * WS4 Ticket 8 — Hostile-Interlocutor Mood-Bleed Attractor Alert.
+ * Exported so external consumers can inject and interrogate via getStatus().
+ */
+export { MOOD_BLEED_MONITOR_SERVICE } from './decision-making.tokens';
+export { MoodBleedMonitorService } from './monitoring/mood-bleed-monitor.service';
 
 /** Public interface types for consumers. */
 export type { IDecisionMakingService, ITensorInferenceService, TensorInferenceResult, PanelContext } from './interfaces/decision-making.interfaces';

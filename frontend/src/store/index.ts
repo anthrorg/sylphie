@@ -83,6 +83,12 @@ interface AppState {
   // Conversation
   messages: ConversationMessage[]
   isThinking: boolean
+  /**
+   * WS4 Ticket 6 — Queue position for this socket.
+   * null means this socket is not currently waiting in the queue.
+   * A number (1-based) means this socket's turn is queued at that position.
+   */
+  queuePosition: number | null
 
   // Session info
   sessionStats: SessionStats
@@ -146,6 +152,8 @@ interface AppState {
   setPkgStats: (stats: GraphStats) => void
   addMessage: (message: ConversationMessage) => void
   setThinking: (thinking: boolean) => void
+  /** WS4 Ticket 6: update the queue position for this socket (null = not waiting). */
+  setQueuePosition: (position: number | null) => void
   setSessionStats: (stats: Partial<SessionStats>) => void
   incrementTurns: () => void
   resetStasisCount: () => void
@@ -232,6 +240,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   messages: [],
   isThinking: false,
+  queuePosition: null,
 
   sessionStats: {
     session_cost_usd: 0,
@@ -331,6 +340,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 
   setThinking: (thinking) => set({ isThinking: thinking }),
+  setQueuePosition: (position) => set({ queuePosition: position }),
 
   setSessionStats: (stats) =>
     set((prev) => ({
