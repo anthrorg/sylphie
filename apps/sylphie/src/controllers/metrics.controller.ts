@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Inject, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Logger, Post, Query } from '@nestjs/common';
 import {
   ARBITRATION_SERVICE,
   ArbitrationService,
@@ -6,9 +6,11 @@ import {
   AttractorMonitorService,
   LatentSpaceService,
   ModalityRegistryService,
+  WkgContextService,
   isDocumentEncoder,
 } from '@sylphie/decision-making';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
+import { LEARNING_SERVICE, type ILearningService } from '@sylphie/learning';
 import {
   Neo4jService,
   Neo4jInstanceName,
@@ -26,6 +28,21 @@ import type {
   MeanDriveResolutionTime,
   HealthMetrics,
 } from '@sylphie/shared';
+
+/**
+ * WS3 T4 — post-decay state of a C3 gate-fixture node, as read by /metrics/c3-inspect.
+ * Carries both timestamps so the gate can run the write-recency guard
+ * (treatment.updatedAt must equal control.updatedAt).
+ */
+interface C3NodeState {
+  nodeId: string;
+  confidence: number;
+  retrievalCount: number;
+  hasLastRetrieval: boolean;
+  lastRetrievalAt: string | null;
+  updatedAt: string | null;
+  createdAt: string | null;
+}
 
 /**
  * MetricsController — CANON §Development Metrics health endpoint.
@@ -69,6 +86,16 @@ export class MetricsController {
     private readonly latentSpace: LatentSpaceService,
     private readonly personModel: PersonModelService,
     private readonly modalityRegistry: ModalityRegistryService,
+
+    // WS3 T2/T4 — the REAL knowledge use→reinforce service. The C3 gate seam
+    // drives reinforceFactNode() through this, never re-implementing ACT-R math.
+    private readonly wkgContext: WkgContextService,
+
+    // WS3 T3/T4 — the REAL decay cycle. The C3 gate runs an actual decay pass
+    // (LEARNING_SERVICE.runDecayCycle) so the divergence it measures is produced
+    // by production decay code reading the production last_retrieval_at field.
+    @Inject(LEARNING_SERVICE)
+    private readonly learning: ILearningService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -298,6 +325,363 @@ export class MetricsController {
         `${factsCleared} attribute(s) deleted across all persons.`,
     );
     return { ok: factsCleared >= 0, clearedAt: new Date().toISOString(), factsCleared };
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS3 T4 — C3 compounding gate seam (hermetic) + T5 live-Neo4j provenance probe
+  //
+  // These routes let the Provability Gate prove the WS3 thesis — that a
+  // recalled-and-used fact node STRENGTHENS relative to a never-recalled control,
+  // capped at the 0.60 ceiling (Std 3) — against the LIVE Neo4j WORLD instance,
+  // exercising the REAL T2 (reinforceFactNode) and T3 (runDecayCycle) code.
+  //
+  // Why a dedicated seam rather than driving reinforcement purely through the
+  // conversation corpus: the live reinforce path fires only when (a) the turn is
+  // a recall question recallKeyForQuestion() recognizes, (b) the OKG misses so it
+  // falls to a topical WORLD entity, AND (c) the entity's label surfaces VERBATIM
+  // in the LLM response so the C2 honesty guard flips the label to GROUNDED. That
+  // chain is real but brittle to drive deterministically on a WORLD-seeded entity
+  // through a hermetic cassette, and a "the value happened to appear in the prose"
+  // pass would be green-for-the-wrong-reason. So C3 splits the proof honestly:
+  //
+  //   • C3 (this seam) proves the COMPOUNDING MECHANISM end-to-end through the
+  //     real T2 + T3 services: seed two byte-identical WORLD nodes, reinforce ONLY
+  //     the treatment via reinforceFactNode() N times (the exact method the live
+  //     cycle calls), run the real decay cycle, and observe the divergence.
+  //   • C3PROV / T5 proves the LIVE RETRIEVAL→PROVENANCE chain on the conversation
+  //     WS path: a GROUNDED recall turn carries a groundingProvenance node id that
+  //     ACTUALLY EXISTS in the correct live Neo4j instance (verified via
+  //     /metrics/node-exists).
+  //
+  // What remains for the mythos live-smoke: observe a WORLD-entity recall turn
+  // that genuinely routes retrieveWkgRecall → GROUNDED → reinforceFactNode in one
+  // live conversation cycle (the brittle (a)+(b)+(c) chain above), closing the
+  // last gap between "mechanism proven" and "the conversation path drives it".
+  //
+  // WRITE-RECENCY GUARD (the false-positive this seam is built to refute): the
+  // divergence MUST come from reinforcement, not from the treatment being written
+  // more recently. So c3-seed writes BOTH nodes with byte-identical created_at,
+  // updated_at, confidence, and provenance_type. reinforceFactNode() sets
+  // last_retrieval_at / retrieval_count / reinforced_at / confidence — it NEVER
+  // touches updated_at (verified: wkg-context.service.ts SET clause). The decay
+  // query coalesces last_retrieval_at → updated_at → created_at, so after a
+  // decay cycle the control decays from its (old, shared) updated_at while the
+  // treatment decays from its fresh last_retrieval_at AND carries ACT-R growth.
+  // c3-inspect returns updated_at for both nodes so the gate can ASSERT they
+  // remained equal (proving reinforce introduced no write-recency artifact).
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /metrics/c3-seed
+   *
+   * Seed two matched WORLD fact nodes — a control and a treatment — at IDENTICAL
+   * starting confidence, provenance, and timestamps, `ageHours` in the past so a
+   * single decay cycle actually applies (decay needs > MIN_HOURS_BEFORE_DECAY).
+   * Deletes any prior nodes with these ids first, so the seam is idempotent and
+   * the gate starts from a known state every run.
+   *
+   * Both nodes carry node_id (so reinforceFactNode's `MATCH (n {node_id})` finds
+   * them), :Entity, schema_level='instance', and INFERENCE provenance (so they sit
+   * below the 0.60 ceiling and are eligible to strengthen toward it via recall).
+   *
+   * PRUNE-IMMUNITY (so C3.2 always has a control to compare): the decay cycle also
+   * PRUNES orphaned :Entity nodes whose confidence falls below 0.10. A never-recalled
+   * control at 0.30 aged 48h would decay to ~0.07 and be GC'd — leaving nothing to
+   * diverge from (observed live during the first smoke run). We give BOTH nodes an
+   * IDENTICAL anchor relationship to a shared fixture node, so `NOT EXISTS {(n)--()}`
+   * is false for both → neither is pruned. The anchor is matched, so it introduces
+   * no asymmetry; it only removes the prune threshold as a confound. The control can
+   * then decay toward (but survive at) a low confidence the treatment diverges above.
+   *
+   * Idempotent + hermetic. Returns the seeded values for audit.
+   */
+  @Post('c3-seed')
+  @HttpCode(200)
+  async c3Seed(
+    @Body() body: { confidence?: number; ageHours?: number },
+  ): Promise<{
+    ok: boolean;
+    seededAt: string;
+    controlId: string;
+    treatmentId: string;
+    confidence: number;
+    provenanceType: string;
+    ageHours: number;
+  }> {
+    const confidence = typeof body?.confidence === 'number' ? body.confidence : 0.30;
+    const ageHours = typeof body?.ageHours === 'number' ? body.ageHours : 48;
+    const controlId = 'ws3-c3-control';
+    const treatmentId = 'ws3-c3-treatment';
+    const anchorId = 'ws3-c3-anchor';
+    const provenanceType = 'INFERENCE';
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      // Single statement so BOTH nodes get the SAME datetime() instant for
+      // created_at/updated_at — no per-node clock skew that could itself read as
+      // write-recency. Delete-then-create makes the seam idempotent. Both fact
+      // nodes get an identical FIXTURE_ANCHOR edge to a shared anchor so the
+      // decay cycle's orphan-prune can never remove the control (matched edge →
+      // zero asymmetry; it only neutralizes the prune-threshold confound).
+      await session.run(
+        `WITH datetime() - duration({hours: $ageHours}) AS ts
+         CALL {
+           WITH ts
+           MATCH (old) WHERE old.node_id IN [$controlId, $treatmentId, $anchorId] DETACH DELETE old
+         }
+         CREATE (a:Entity {
+           node_id: $anchorId, name: 'ws3-c3-anchor', entityType: 'GateFixture',
+           schema_level: 'instance', provenance_type: $provenanceType,
+           confidence: 0.95, retrieval_count: 0, created_at: ts, updated_at: ts
+         })
+         CREATE (c:Entity {
+           node_id: $controlId, name: 'ws3-c3-control', entityType: 'GateFixture',
+           schema_level: 'instance', provenance_type: $provenanceType,
+           confidence: $confidence, retrieval_count: 0,
+           created_at: ts, updated_at: ts
+         })
+         CREATE (t:Entity {
+           node_id: $treatmentId, name: 'ws3-c3-treatment', entityType: 'GateFixture',
+           schema_level: 'instance', provenance_type: $provenanceType,
+           confidence: $confidence, retrieval_count: 0,
+           created_at: ts, updated_at: ts
+         })
+         CREATE (c)-[:FIXTURE_ANCHOR]->(a)
+         CREATE (t)-[:FIXTURE_ANCHOR]->(a)
+         RETURN c.node_id AS c, t.node_id AS t`,
+        { controlId, treatmentId, anchorId, confidence, provenanceType, ageHours },
+      );
+      this.logger.warn(
+        `WS3 C3 seed: control='${controlId}' + treatment='${treatmentId}' ` +
+          `seeded identically (confidence=${confidence}, provenance=${provenanceType}, ` +
+          `created_at/updated_at = now - ${ageHours}h).`,
+      );
+      return {
+        ok: true, seededAt: new Date().toISOString(),
+        controlId, treatmentId, confidence, provenanceType, ageHours,
+      };
+    } catch (err) {
+      this.logger.error('c3Seed failed', err);
+      return {
+        ok: false, seededAt: new Date().toISOString(),
+        controlId, treatmentId, confidence, provenanceType, ageHours,
+      };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * POST /metrics/c3-reinforce   { "times": 12 }
+   *
+   * Reinforce the TREATMENT node `times` via the REAL WS3 T2 path
+   * (WkgContextService.reinforceFactNode(nodeId, 'WKG')) — the identical method
+   * the live cognitive cycle invokes on a grounded recall-and-use. The control is
+   * left untouched. No bespoke confidence math here (Std 6): the ACT-R recompute
+   * and the 0.60 ceiling clamp both live inside reinforceFactNode().
+   *
+   * Returns the reinforcement audit (old/new confidence, final retrieval_count)
+   * so the gate can confirm retrieval_count advanced and confidence respected the
+   * ceiling at the SOURCE, not just post-decay.
+   */
+  @Post('c3-reinforce')
+  @HttpCode(200)
+  async c3Reinforce(
+    @Body() body: { times?: number },
+  ): Promise<{
+    ok: boolean;
+    treatmentId: string;
+    reinforced: number;
+    oldConfidence: number | null;
+    newConfidence: number | null;
+    retrievalCount: number | null;
+  }> {
+    const times = Math.max(1, Math.min(100, typeof body?.times === 'number' ? body.times : 12));
+    const treatmentId = 'ws3-c3-treatment';
+
+    let oldConfidence: number | null = null;
+    let newConfidence: number | null = null;
+    let retrievalCount: number | null = null;
+    let reinforced = 0;
+
+    for (let i = 0; i < times; i++) {
+      const r = await this.wkgContext.reinforceFactNode(treatmentId, 'WKG');
+      if (!r) {
+        this.logger.warn(`c3Reinforce: reinforceFactNode returned null on iteration ${i} (node missing?)`);
+        break;
+      }
+      if (oldConfidence === null) oldConfidence = r.oldConfidence;
+      newConfidence = r.newConfidence;
+      retrievalCount = r.retrievalCount;
+      reinforced++;
+    }
+
+    this.logger.warn(
+      `WS3 C3 reinforce: treatment='${treatmentId}' reinforced ${reinforced}/${times}x via T2 ` +
+        `reinforceFactNode — confidence ${oldConfidence ?? '?'} -> ${newConfidence ?? '?'}, ` +
+        `retrieval_count -> ${retrievalCount ?? '?'} (ceiling 0.60).`,
+    );
+
+    return {
+      ok: reinforced > 0,
+      treatmentId, reinforced, oldConfidence, newConfidence, retrievalCount,
+    };
+  }
+
+  /**
+   * POST /metrics/decay-now
+   *
+   * Run a single REAL decay cycle (LEARNING_SERVICE.runDecayCycle → the WS3 T3
+   * ConfidenceDecayService over WORLD). This is the production decay code reading
+   * the production coalesce(last_retrieval_at, updated_at, created_at) ordering —
+   * the gate does not simulate decay, it triggers it.
+   *
+   * @returns the decay cycle result for audit.
+   */
+  @Post('decay-now')
+  @HttpCode(200)
+  async decayNow(): Promise<{ ok: boolean; ranAt: string; result: unknown }> {
+    try {
+      const result = await this.learning.runDecayCycle();
+      this.logger.warn(`WS3 C3 decay-now: ran a real decay cycle — ${JSON.stringify(result)}`);
+      return { ok: true, ranAt: new Date().toISOString(), result };
+    } catch (err) {
+      this.logger.error('decayNow failed', err);
+      return { ok: false, ranAt: new Date().toISOString(), result: String(err) };
+    }
+  }
+
+  /**
+   * GET /metrics/c3-inspect
+   *
+   * Read the post-decay state of the control + treatment WORLD nodes the C3 gate
+   * seam created. Returns confidence, retrieval_count, and BOTH timestamps
+   * (updated_at + last_retrieval_at) for each so the gate can assert:
+   *   (a) treatment retrieval_count > 0 and last_retrieval_at set; control: neither.
+   *   (b) treatment confidence STRICTLY GREATER than control after decay.
+   *   (c) treatment confidence never exceeds 0.60 (Std 3 ceiling).
+   *   (d) WRITE-RECENCY GUARD: treatment.updated_at == control.updated_at — proves
+   *       the divergence is reinforcement, not a more-recent write on treatment.
+   */
+  @Get('c3-inspect')
+  async c3Inspect(): Promise<{
+    ok: boolean;
+    control: C3NodeState | null;
+    treatment: C3NodeState | null;
+  }> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      const read = async (nodeId: string): Promise<C3NodeState | null> => {
+        const res = await session.run(
+          `MATCH (n {node_id: $nodeId})
+           RETURN n.confidence AS confidence,
+                  coalesce(n.retrieval_count, 0) AS retrievalCount,
+                  n.last_retrieval_at IS NOT NULL AS hasLastRetrieval,
+                  toString(n.last_retrieval_at) AS lastRetrievalAt,
+                  toString(n.updated_at) AS updatedAt,
+                  toString(n.created_at) AS createdAt`,
+          { nodeId },
+        );
+        const rec = res.records[0];
+        if (!rec) return null;
+        const toNum = (v: unknown): number =>
+          typeof v === 'number' ? v
+            : v && typeof v === 'object' && 'toNumber' in v ? (v as { toNumber(): number }).toNumber()
+            : 0;
+        return {
+          nodeId,
+          confidence: typeof rec.get('confidence') === 'number' ? (rec.get('confidence') as number) : toNum(rec.get('confidence')),
+          retrievalCount: toNum(rec.get('retrievalCount')),
+          hasLastRetrieval: rec.get('hasLastRetrieval') === true,
+          lastRetrievalAt: (rec.get('lastRetrievalAt') as string | null) ?? null,
+          updatedAt: (rec.get('updatedAt') as string | null) ?? null,
+          createdAt: (rec.get('createdAt') as string | null) ?? null,
+        };
+      };
+
+      const control = await read('ws3-c3-control');
+      const treatment = await read('ws3-c3-treatment');
+      return { ok: control !== null && treatment !== null, control, treatment };
+    } catch (err) {
+      this.logger.error('c3Inspect failed', err);
+      return { ok: false, control: null, treatment: null };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * POST /metrics/c3-cleanup
+   *
+   * Remove the C3 gate-fixture nodes so the seam leaves no residue in the live
+   * graph (keeps the experiential-provenance census honest across runs).
+   */
+  @Post('c3-cleanup')
+  @HttpCode(200)
+  async c3Cleanup(): Promise<{ ok: boolean; deleted: number }> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      const res = await session.run(
+        `MATCH (n) WHERE n.node_id IN ['ws3-c3-control', 'ws3-c3-treatment', 'ws3-c3-anchor']
+         DETACH DELETE n RETURN count(n) AS deleted`,
+      );
+      const rec = res.records[0];
+      const deleted = rec ? (rec.get('deleted') as { toNumber(): number }).toNumber() : 0;
+      return { ok: true, deleted };
+    } catch (err) {
+      this.logger.error('c3Cleanup failed', err);
+      return { ok: false, deleted: 0 };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * GET /metrics/node-exists?nodeId=<id>&source=WORLD|OTHER
+   *
+   * WS3 T5 — the deferred C1 provenance verification (ROADMAP.md:73). Given a
+   * groundingProvenance node id carried by a GROUNDED recall turn, assert the node
+   * ACTUALLY EXISTS in the correct live Neo4j instance:
+   *   - WORLD (WKG source): match on `node_id`.
+   *   - OTHER (OKG source): match on the deterministic `attr_id` Attribute key.
+   * `source` should be the turn's responseGroundedBy ('WKG' → WORLD, 'OKG' →
+   * OTHER). Defaults to WORLD when omitted. Read-only; never writes.
+   *
+   * This closes the gap C1 left open: C1 proved the response CARRIES a node id,
+   * but never proved that id resolves to a real node in the live graph. T5 does.
+   */
+  @Get('node-exists')
+  async nodeExists(
+    @Query('nodeId') nodeId?: string,
+    @Query('source') source?: string,
+  ): Promise<{ ok: boolean; nodeId: string | null; instance: string; exists: boolean; label: string | null }> {
+    const id = (nodeId ?? '').trim();
+    const src = (source ?? 'WORLD').toUpperCase();
+    const isOkg = src === 'OTHER' || src === 'OKG';
+    const instance = isOkg ? Neo4jInstanceName.OTHER : Neo4jInstanceName.WORLD;
+    if (!id) {
+      return { ok: false, nodeId: null, instance, exists: false, label: null };
+    }
+    // OKG nodes key on attr_id; WORLD nodes key on node_id (mirrors reinforceFactNode).
+    const matchClause = isOkg
+      ? 'MATCH (n:Attribute {attr_id: $id})'
+      : 'MATCH (n {node_id: $id})';
+    const session = this.neo4j.getSession(instance, 'READ');
+    try {
+      const res = await session.run(
+        `${matchClause} RETURN coalesce(n.name, n.value, n.label, n.node_id, n.attr_id) AS label LIMIT 1`,
+        { id },
+      );
+      const rec = res.records[0];
+      const exists = !!rec;
+      const label = exists ? ((rec!.get('label') as string | null) ?? null) : null;
+      return { ok: true, nodeId: id, instance: String(instance), exists, label };
+    } catch (err) {
+      this.logger.error('nodeExists failed', err);
+      return { ok: false, nodeId: id, instance: String(instance), exists: false, label: null };
+    } finally {
+      await session.close();
+    }
   }
 
   // ---------------------------------------------------------------------------

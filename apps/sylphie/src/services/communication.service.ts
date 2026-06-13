@@ -638,6 +638,16 @@ export class CommunicationService implements OnModuleInit {
       llmCalled: response.arbitrationType === 'TYPE_2',
       costUsd: 0, // Local Ollama
       knowledgeGrounding: response.knowledgeGrounding,
+      // WS3 T5: forward the grounding provenance node id + its source so a
+      // consumer (the Provability Gate, the frontend badge) can verify the id
+      // resolves to a real node in the correct live Neo4j instance. Previously
+      // CycleResponse carried these but cb_speech dropped them — T5's assertion
+      // is on the delivered payload, so without this forward there was nothing
+      // to verify even when the cycle had a real provenance id.
+      ...(response.groundingProvenance != null
+        ? { groundingProvenance: response.groundingProvenance }
+        : {}),
+      ...(response.groundedBy != null ? { groundedBy: response.groundedBy } : {}),
     };
 
     vlog('response delivered', {

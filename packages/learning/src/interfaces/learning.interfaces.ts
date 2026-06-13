@@ -66,6 +66,18 @@ export interface ILearningService {
    * @returns Summary of what the cycle did, or a no-op summary if skipped.
    */
   forceCycle(): Promise<MaintenanceCycleResult>;
+
+  /**
+   * Run a single confidence-decay + pruning cycle on the WORLD knowledge graph.
+   *
+   * Normally fired on the internal decay timer; exposed on the facade so the
+   * Provability Gate's WS3 C3 compounding seam can trigger a deterministic decay
+   * pass (it is the same production T3 path — ConfidenceDecayService.runDecayCycle
+   * reading coalesce(last_retrieval_at, updated_at, created_at)).
+   *
+   * @returns Summary of decay and pruning actions.
+   */
+  runDecayCycle(): Promise<DecayCycleResult>;
 }
 
 // ---------------------------------------------------------------------------

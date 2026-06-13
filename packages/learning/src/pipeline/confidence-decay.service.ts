@@ -18,11 +18,24 @@
  *      that have no relationships. Structural nodes (Drive, CoBeing,
  *      ActionProcedure) are never pruned.
  *
- * The decay formula is a simplified ACT-R model that uses the node's
- * updated_at (or created_at) timestamp in place of lastRetrievalAt, since
- * retrieval counts are not yet tracked on nodes. The per-provenance decay
- * rates ensure GUARDIAN knowledge decays slowest and LLM_GENERATED decays
- * fastest, matching the epistemic trust hierarchy.
+ * The decay formula is a simplified ACT-R model keyed on the node's *last use*.
+ * As of WS3 T3 it reads `last_retrieval_at` (written by the knowledge
+ * use→reinforce edge — WkgContextService.reinforceFactNode), falling back to
+ * `updated_at` then `created_at` via coalesce(). This fallback is load-bearing:
+ * a node that has never been reinforced has no `last_retrieval_at`, so it keeps
+ * decaying from its last write exactly as before (no behavior change); a
+ * reinforced node now decays from its last *use*, not its last *write*, which
+ * is what makes used knowledge durable and unused knowledge fade — the
+ * compounding dynamic. The per-provenance decay rates ensure GUARDIAN knowledge
+ * decays slowest and LLM_GENERATED decays fastest, matching the epistemic trust
+ * hierarchy.
+ *
+ * Scope (WS3 T3): decay runs only against Neo4jInstanceName.WORLD (WKG), where
+ * decay already existed and where T2 reinforces WKG fact nodes. OKG self-facts
+ * in the OTHER instance are NOT decayed by this service (they never were); see
+ * stub inventory §2.11 for why OTHER decay is deferred to T4 gate-design
+ * (guardian/identity facts must not silently fade, and the prune protections
+ * here target :Entity orphans, not :Attribute self-facts).
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -106,8 +119,7 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
            AND n.schema_level <> 'schema'
            AND NOT n:Drive AND NOT n:CoBeing
          WITH n,
-              CASE WHEN n.updated_at IS NOT NULL THEN n.updated_at
-                   ELSE n.created_at END AS lastActivity
+              coalesce(n.last_retrieval_at, n.updated_at, n.created_at) AS lastActivity
          WHERE lastActivity IS NOT NULL
          WITH n, lastActivity,
               (datetime().epochMillis - lastActivity.epochMillis) / 3600000.0 AS hoursSince,
@@ -146,6 +158,13 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
   /**
    * Apply time-based confidence decay to all edges in WORLD.
    * Same formula and provenance-based rates as node decay.
+   *
+   * WS3 T3 note: edges intentionally do NOT read `last_retrieval_at`. T2's
+   * use→reinforce edge reinforces fact *nodes* only — no edge in WORLD ever
+   * carries `last_retrieval_at` — so a coalesce including it would be inert
+   * (always null, always falling through to updated_at). The retrieval-aware
+   * coalesce is added to edges only if/when edge reinforcement is implemented;
+   * until then this keeps decaying edges from their last write, unchanged.
    */
   private async decayEdges(): Promise<number> {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');

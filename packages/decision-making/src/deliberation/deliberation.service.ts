@@ -34,6 +34,7 @@ import {
 
 const vlog = verboseFor('Deliberation');
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
+import { applyRecallGroundingFromRetrieval, type RecallRetrieval } from './recall-retrieval';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
 import { ContextWindowService } from './context-window.service';
@@ -212,11 +213,18 @@ export class DeliberationService {
    *
    * @param frame   - The current sensory frame (carries raw input + embedding).
    * @param context - Cognitive context (drive state, episodes, gap types).
+   * @param recallRetrieval - (WS3 T1) the fact node resolved by the cycle's
+   *   pre-arbitration recall retrieval, or null. When present, the grounding
+   *   sites below consume this once-resolved node id instead of re-deriving OKG
+   *   recall provenance post-hoc — so the procedure path and this path agree on
+   *   the SAME grounding node. Null for non-recall turns (legacy post-hoc helper
+   *   remains as the transitional fallback for those).
    * @returns DeliberationResult with the response and full reasoning trace.
    */
   async deliberate(
     frame: SensoryFrame,
     context: CognitiveContext,
+    recallRetrieval: RecallRetrieval | null = null,
   ): Promise<DeliberationResult> {
     if (!this.llm || !this.llm.isAvailable()) {
       vlog('deliberation aborted: LLM unavailable');
@@ -354,27 +362,40 @@ export class DeliberationService {
         knowledgeGrounding = 'UNKNOWN';
       }
 
-      // Deterministic OKG recall grounding (CANON Standard 1 + 4). Only upgrades
-      // to GROUNDED when the question maps to a fact key, the fact node exists in
-      // the OKG, AND the value appears in the response. Unknowables return null →
-      // grounding stays UNKNOWN/LLM_ASSISTED. The LLM never self-asserts GROUNDED.
-      const shortCircuitOkg = applyOkgRecallGrounding(
-        personModel?.personId, rawText, responseText, personModel?.knownFacts, knowledgeGrounding,
-      );
-      knowledgeGrounding = shortCircuitOkg.grounding;
-      let groundingProvenance: string | null = shortCircuitOkg.provenance;
-      if (shortCircuitOkg.provenance) {
-        this.logger.debug(
-          `OKG recall grounded (short-circuit): provenance="${shortCircuitOkg.provenance}" ` +
-            `response="${responseText.substring(0, 60)}"`,
+      // ── WS3 Ticket T1 — grounding from the PRE-ARBITRATION recall retrieval ─
+      // When the cycle resolved a recall fact node before arbitration, the label
+      // is upgraded to GROUNDED off that ONCE-resolved node id (with the value-
+      // surfaced honesty guard inside applyRecallGroundingFromRetrieval), and the
+      // node id flows out as provenance. Non-recall turns (retrieval === null)
+      // fall back to the legacy post-hoc helper — TRANSITIONAL: that helper only
+      // ever upgrades via OKG recall, which the pre-arbitration step now owns, so
+      // for recall turns it is a no-op; it remains only to avoid regressing any
+      // non-recall path that historically depended on it.
+      let groundingProvenance: string | null;
+      let groundedBy: 'OKG' | 'WKG' | null;
+      if (recallRetrieval) {
+        const applied = applyRecallGroundingFromRetrieval(
+          recallRetrieval, responseText, knowledgeGrounding,
+        );
+        knowledgeGrounding = applied.grounding;
+        groundingProvenance = applied.provenance;
+        groundedBy = applied.groundedBy;
+        if (groundingProvenance) {
+          this.logger.debug(
+            `Recall grounded (short-circuit, pre-arbitration): node="${groundingProvenance}" ` +
+              `source=${groundedBy} response="${responseText.substring(0, 60)}"`,
+          );
+        }
+      } else {
+        const shortCircuitOkg = applyOkgRecallGrounding(
+          personModel?.personId, rawText, responseText, personModel?.knownFacts, knowledgeGrounding,
+        );
+        knowledgeGrounding = shortCircuitOkg.grounding;
+        groundingProvenance = shortCircuitOkg.provenance;
+        groundedBy = discriminateGroundedBy(
+          knowledgeGrounding, wkg, responseText, personModel?.knownFacts, groundingProvenance,
         );
       }
-
-      // WS4 Ticket 5 (§3.1) — discriminate the GROUNDED source for write-time
-      // person-scoping. Computed from WHICH cascade rule fired, not ambient WKG.
-      const groundedBy = discriminateGroundedBy(
-        knowledgeGrounding, wkg, responseText, personModel?.knownFacts, groundingProvenance,
-      );
 
       vlog('deliberation short-circuit', {
         intent: monologueParsed.intent,
@@ -723,26 +744,36 @@ export class DeliberationService {
       knowledgeGrounding = 'UNKNOWN';
     }
 
-    // Deterministic OKG recall grounding (CANON Standard 1 + 4). Defense-in-depth
-    // for genuine TYPE_2 NOVEL recall turns (no procedure node). The procedure-path
-    // counterpart lives in decision-making.service.ts after groundingForCachedResponse.
-    const novelOkg = applyOkgRecallGrounding(
-      personModel?.personId, rawText, finalResponseText, personModel?.knownFacts, knowledgeGrounding,
-    );
-    knowledgeGrounding = novelOkg.grounding;
-    let groundingProvenance: string | null = novelOkg.provenance;
-    if (novelOkg.provenance) {
-      this.logger.debug(
-        `OKG recall grounded (novel-deliberation): provenance="${novelOkg.provenance}" ` +
-          `response="${finalResponseText.substring(0, 60)}"`,
+    // ── WS3 Ticket T1 — grounding from the PRE-ARBITRATION recall retrieval ───
+    // TYPE_2 NOVEL recall turns (no procedure node) consume the same once-resolved
+    // node id as every other path. Non-recall novel turns fall back to the legacy
+    // post-hoc helper (transitional — a no-op for grounding except via OKG recall,
+    // which the pre-arbitration step now owns).
+    let groundingProvenance: string | null;
+    let groundedBy: 'OKG' | 'WKG' | null;
+    if (recallRetrieval) {
+      const applied = applyRecallGroundingFromRetrieval(
+        recallRetrieval, finalResponseText, knowledgeGrounding,
+      );
+      knowledgeGrounding = applied.grounding;
+      groundingProvenance = applied.provenance;
+      groundedBy = applied.groundedBy;
+      if (groundingProvenance) {
+        this.logger.debug(
+          `Recall grounded (novel-deliberation, pre-arbitration): node="${groundingProvenance}" ` +
+            `source=${groundedBy} response="${finalResponseText.substring(0, 60)}"`,
+        );
+      }
+    } else {
+      const novelOkg = applyOkgRecallGrounding(
+        personModel?.personId, rawText, finalResponseText, personModel?.knownFacts, knowledgeGrounding,
+      );
+      knowledgeGrounding = novelOkg.grounding;
+      groundingProvenance = novelOkg.provenance;
+      groundedBy = discriminateGroundedBy(
+        knowledgeGrounding, wkg, finalResponseText, personModel?.knownFacts, groundingProvenance,
       );
     }
-
-    // WS4 Ticket 5 (§3.1) — discriminate the GROUNDED source for write-time
-    // person-scoping. Read off the cascade rule that fired, not ambient WKG.
-    const groundedBy = discriminateGroundedBy(
-      knowledgeGrounding, wkg, finalResponseText, personModel?.knownFacts, groundingProvenance,
-    );
 
     // Extract any new entity names mentioned in the response
     const discoveredEntities = extractNewEntities(finalResponseText, wkg);
@@ -1237,6 +1268,20 @@ export function recallKeyForQuestion(inputText: string): string | null {
  * `${key}: ${value}`). Returns null when the key is absent → unknowables and
  * un-taught dimensions stay LLM_ASSISTED/UNKNOWN (C2 safety by construction).
  */
+/**
+ * WS3 T1 — exported alias of the OKG fact retrieval used by the pre-arbitration
+ * recall retrieval step (recall-retrieval.ts). Same deterministic-id lookup over
+ * the frame's knownFacts; exported so the single pre-arbitration retrieval can
+ * reuse it rather than re-deriving the key→value→provenance mapping.
+ */
+export function getRecalledFactForRecall(
+  personId: string,
+  key: string,
+  knownFacts: readonly string[] | undefined,
+): { key: string; value: string; attrId: string } | null {
+  return getRecalledFact(personId, key, knownFacts);
+}
+
 function getRecalledFact(
   personId: string,
   key: string,

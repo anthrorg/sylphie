@@ -146,6 +146,55 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 
 ---
 
+### 2.9 Spreading-activation engine is fully-formed but inert (2026-06-13)
+
+**Where:** `packages/perception-service/cobeing/layer3_knowledge/spreading_activation.py` (~1,090 lines — `SpreadingActivationEngine` class :670, `spread_from` :694, `create_session_activation` :1022).
+
+**What:** A complete four-layer spreading-activation engine (BFS propagation, MAX-accumulation, post-traversal lateral inhibition, developmental budget scaling, guardian-tunable EvolutionRule params) that is **dead code**. Its public symbols are referenced in **no other file** (grep-confirmed, self-references only). It is not re-exported from `layer3_knowledge/__init__.py`, has no FastAPI route, and no test. Its only nominal consumers are the three query handlers, which declare `activation_map: dict = field(default_factory=dict)` but **never populate it** — the single read site `definition_query.py:673 (if request.activation_map:)` is always falsy. The entire `cobeing/layer3_knowledge` semantic-query subsystem is referenced by **zero** TypeScript files; the live cognition path (`decision-making`, `apps/sylphie`) never calls into it.
+
+Separately, the **live** TS port `spreadActivation` (`packages/decision-making/src/working-memory/activation.ts:308`) is NOT a retrieval expander — it only **re-ranks already-retrieved items** inside working-memory buffer assembly (`working-memory.service.ts:152-177`). The live retrieval frontier (`wkg-context.service.ts:getContextForFrame`) is strictly single-hop.
+
+**Impact:** Latent theater-prohibition hazard — a comment-rich, never-executed subsystem reads as a capability the system does not have. It is NOT a turnkey "curve-mover": WS3's compounding work does not depend on it (see `wiki/ws3-build-plan.md`). Its four-layer *design* (budget / decay / inhibition / developmental depth) is a useful reference spec for any future Phase-3 multi-hop recall, but the depth-advancement governor is mis-designed for scale (servos on raw spread ratio, which inverts meaning under budget clamping) and must be redesigned before wiring.
+
+**Fix complexity:** Decision, not code. Either (a) leave in place explicitly labeled as a Phase-3 reference spec (current choice), or (b) delete it and keep the design in the build-plan doc. Do NOT wire it as-is.
+
+---
+
+### 2.10 Post-hoc OKG recall regex retained as a transitional fallback (WS3 T1, 2026-06-13)
+
+**Where:** `packages/decision-making/src/decision-making.service.ts` (procedure path ~:1183, Type-1 latent path ~:1126) and `packages/decision-making/src/deliberation/deliberation.service.ts` (short-circuit ~:361, novel ~:729) — the `else` branch of each grounding site, calling `applyOkgRecallGrounding` / `discriminateGroundedBy`.
+
+**What:** WS3 T1 introduced a **pre-arbitration recall retrieval** (`deliberation/recall-retrieval.ts`) that resolves the grounding fact node id ONCE before arbitration and threads it (`recallRetrieval`) into all four grounding sites via `applyRecallGroundingFromRetrieval`. This is the durable path and is the PRIMARY branch at every site. The legacy post-hoc `applyOkgRecallGrounding` regex is kept as the `else` fallback for turns where `computeRecallRetrieval` returned null.
+
+**Why it is NOT a silent stub / not a behavior gap:** `computeRecallRetrieval` returns non-null for exactly the set of inputs `recallKeyForQuestion` matches — i.e. every recall turn the legacy helper could have grounded. The legacy helper only ever upgrades grounding via that same OKG recall path. So for **recall** turns the pre-arbitration branch always fires and the fallback is unreached; for **non-recall** turns both branches are no-ops (LLM_ASSISTED/UNKNOWN floor). The fallback exists only to avoid regressing any non-recall path that historically depended on `applyOkgRecallGrounding` being called, and to degrade safely if the WKG lookup throws.
+
+**Residual to close (T1 follow-up / T2 prep):** once T2/T4 confirm nothing else reaches the `else` branch on a real recall turn, the legacy `applyOkgRecallGrounding` / `okgRecallProvenance` / post-hoc `getRecalledFact` can be deleted outright and the sites collapsed to the single pre-arbitration path. Until then both coexist (flagged in code comments at each site).
+
+**Fix complexity:** Low (deletion + collapse), gated on T2/T4 verification that the durable path fully subsumes the regex.
+
+---
+
+### 2.11 Fact reinforcement persists retrieval-tracking fields; WORLD decay now reads them, OTHER decay deferred (WS3 T2 closed, T3 closed, 2026-06-13)
+
+**Where:** `packages/decision-making/src/wkg/wkg-context.service.ts` (`reinforceFactNode`) — fired from `packages/decision-making/src/decision-making.service.ts` after the single per-turn CycleResponse emit, guarded by `responseGrounding === 'GROUNDED' && responseGroundingProvenance === recallRetrieval.factNodeId`.
+
+**What:** WS3 T2 closes the knowledge use→reinforce edge. On a successful grounded recall-and-use, the used fact node's `retrieval_count` is incremented, `last_retrieval_at` (+ `reinforced_at`) set, and `confidence` recomputed via the shared ACT-R `computeConfidence()` — clamped to the 0.60 ceiling (Std 3) and floored at the node's current confidence (never demotes a guardian-confirmed 0.90 fact). Persisted to the **correct store per `RecallSource`**: OKG `(:Attribute {attr_id})` → Neo4j **OTHER**; WKG `({node_id})` → Neo4j **WORLD**. No graph boundary is crossed.
+
+**T2 reinforce side (closed):** T2 is the FIRST writer of `retrieval_count` / `last_retrieval_at` on fact nodes in either store. Persisted per `RecallSource`: OKG `(:Attribute {attr_id})` → OTHER; WKG `({node_id})` → WORLD. Reinforces the fact **node** only — not WKG **edges** (out of T2 scope). Verified (unit tests assert OKG→OTHER, WKG→WORLD, ceiling clamp, never-demote, monotonic saturation at 0.60).
+
+**T3 decay side — WORLD closed (2026-06-13):** `ConfidenceDecayService.decayNodes()` (`packages/learning/src/pipeline/confidence-decay.service.ts`) now keys node decay on `coalesce(n.last_retrieval_at, n.updated_at, n.created_at)` instead of the `updated_at`/`created_at` proxy. Fallback is load-bearing: never-reinforced nodes (no `last_retrieval_at`) decay exactly as before; reinforced nodes decay from their last *use*. This closes the WKG/WORLD compounding loop end-to-end (reinforce→decay). Covered by `confidence-decay.service.spec.ts` (coalesce query shape + recalled-vs-control divergence). **Edges intentionally still read `updated_at`** — T2 reinforces nodes only, so no WORLD edge carries `last_retrieval_at`; a coalesce including it would be inert (documented in `decayEdges()`).
+
+**Residual flag — OTHER-instance (OKG self-fact) decay is DEFERRED to T4 gate-design (honest flag):** `decayNodes()`/`decayEdges()` run only against `Neo4jInstanceName.WORLD`. OKG self-facts in the **OTHER** instance (`:Attribute`) are NOT decayed by this service — and never have been. T3 deliberately did **not** add decay to OTHER, because:
+  - OTHER holds person-identity facts; guardian-taught identity ("my name is Jim") must not silently fade. The existing per-provenance GUARDIAN rate (0.03) *slows* but does not *stop* decay, and `pruneOrphanedNodes()` targets `:Entity` orphans (WORLD), not `:Attribute` self-facts — so the current protections are NOT sufficient to make OTHER decay safe by default.
+  - Adding decay to OTHER would be a brand-new behavior (not a retrieval-awareness upgrade), out of T3's "close the loop where decay already exists" scope.
+  - **Consequence for T4:** the T4 compounding proof ("recalled node diverges upward from a never-recalled control after a decay cycle") is proven on **WKG/WORLD**, where both reinforce (T2) and retrieval-aware decay (T3) now exist. T4 must seed its control + treatment fact nodes in **WORLD**, not OTHER. If T4 wants to demonstrate the loop on OKG self-facts as well, it must first design OTHER decay with strong guardian/identity exclusion (e.g. skip `provenance_type IN ['GUARDIAN','GUARDIAN_APPROVED_INFERENCE']` and/or `:Attribute` identity keys), then add the same retrieval-aware coalesce — that is a T4 gate-design decision, explicitly out of T3.
+
+**Why it is NOT a silent stub:** the reinforce write (T2) and the WORLD decay read (T3) are both real, wired, and unit-tested. The only deferred piece — OTHER-instance decay — is flagged here precisely, with its reasoning and its consequence for the T4 gate, not left implied.
+
+**Fix complexity:** OTHER decay = Medium (needs guardian/identity-fact exclusion design before any decay is applied to person facts).
+
+---
+
 ## TIER 3 — MEDIUM: Silent Degradation
 
 ### 3.1 CommunicationService theater check is flag-only
@@ -261,6 +310,8 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 | 2.5 | ConvergenceModel.use_learned | HIGH | ✅ DONE (head removed) | No (bootstrap stall risk) |
 | 2.6 | alwaysEvaluate types | HIGH | ✅ PARTIAL (guardian_feedback done, attractor_alert deferred) | No (sampling miss) |
 | 2.7 | Inference timeout enforcement | HIGH | Trivial | No (hang risk) |
+| 2.8 | Learning-pipeline person-fact WKG leak | HIGH | Medium (atlas) | No (gate-invisible; Std-3 breach) |
+| 2.9 | Spreading-activation engine inert | HIGH | Decision (don't wire as-is) | No (latent theater) |
 | 3.1 | Theater check sentiment-vs-drive | MEDIUM | High | No (toothless guard) |
 | 3.2 | SearXNG unused | MEDIUM | Medium | No (research limited to history) |
 | 3.3 | DrivesController stubs | MEDIUM | Trivial (delete) | Yes (UI lies) |

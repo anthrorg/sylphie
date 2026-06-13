@@ -83,3 +83,26 @@ export { AudioEncoder, type AudioChunk } from './inputs/encoders/audio.encoder';
 export { SceneEncoder } from './inputs/encoders/scene.encoder';
 export { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 export { TickSamplerService } from './inputs/sampling/tick-sampler';
+
+// ---------------------------------------------------------------------------
+// WS3 Ticket T1 — pre-arbitration grounded recall retrieval
+// ---------------------------------------------------------------------------
+// The durable replacement for the post-hoc OKG grounding regex: a single
+// pre-arbitration retrieval that surfaces the WKG/OKG fact node id grounding a
+// recall answer, recorded at retrieval time and fed to both the procedure path
+// and deliberate(). T2 reinforces RecallRetrieval.factNodeId; T3 decays unused.
+export {
+  retrieveRecallGrounding,
+  applyRecallGroundingFromRetrieval,
+} from './deliberation/recall-retrieval';
+export type { RecallRetrieval, RecallSource } from './deliberation/recall-retrieval';
+
+/**
+ * WS3 Ticket T2/T4 — the knowledge use→reinforce edge.
+ * WkgContextService is exported (it is already a provider AND a module export of
+ * DecisionMakingModule) so MetricsController can drive `reinforceFactNode()` —
+ * the REAL T2 reinforcement code — from the hermetic C3 compounding gate seam.
+ * The gate does NOT re-implement ACT-R math; it calls the same method the live
+ * cognitive cycle calls, so a green C3 row proves the live mechanism.
+ */
+export { WkgContextService } from './wkg/wkg-context.service';

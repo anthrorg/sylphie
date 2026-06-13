@@ -883,6 +883,263 @@ async function runNoClearGateProbe(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase C3: COMPOUNDING — a recalled-and-used fact node strengthens vs a
+// never-recalled control, capped at the 0.60 ceiling (WS3 T4).
+// ---------------------------------------------------------------------------
+
+/**
+ * C3 — the compounding proof (WS3 T4).
+ *
+ * Proves the WS3 thesis end-to-end through the REAL T2 (reinforceFactNode) and T3
+ * (runDecayCycle) services: a recalled-and-used WORLD fact node STRENGTHENS
+ * relative to a matched never-recalled control, and recall-use respects the 0.60
+ * ceiling (Std 3).
+ *
+ * Hermetic & seeded. No LLM involved — this measures the knowledge confidence
+ * dynamic directly, so the cassette is irrelevant to it. The four seam routes
+ * (/metrics/c3-seed, c3-reinforce, decay-now, c3-inspect) call production code:
+ * c3-reinforce invokes the exact reinforceFactNode() the live cognitive cycle
+ * calls on a grounded recall-and-use; decay-now runs the production decay cycle.
+ *
+ * GREEN-FOR-THE-RIGHT-REASON guards (these are the assertions that keep C3 from
+ * passing on a write-recency or mention-only artifact):
+ *   • Seed writes control + treatment with byte-identical confidence/provenance/
+ *     created_at/updated_at; the ONLY difference introduced is the reinforcement.
+ *   • reinforceFactNode never touches updated_at, so after a decay cycle the
+ *     treatment and control updated_at must STILL be equal — C3.3 asserts this.
+ *     If they differ, the divergence could be a write-recency effect and C3 fails.
+ *   • C3.1 asserts the asymmetry source: treatment retrieval_count>0 + last_retrieval_at
+ *     set, control has neither. Divergence with control showing retrievals would
+ *     mean the seam reinforced the wrong node.
+ *   • C3.4 asserts the ceiling is never breached.
+ *
+ * Emits four rows: C3.1 (reinforcement asymmetry), C3.2 (upward divergence),
+ * C3.3 (write-recency guard), C3.4 (0.60 ceiling).
+ */
+async function runCompoundingPhase(): Promise<void> {
+  banner('PHASE C3: COMPOUNDING — recalled fact strengthens vs control (WS3 T4)');
+
+  const REINFORCE_TIMES = 12;
+  const fail = (detail: string) => {
+    recordBool('C3.1', 'reinforcement asymmetry (treatment used, control not)', false, detail);
+    recordBool('C3.2', 'treatment confidence diverges upward from control after decay', false, detail);
+    recordBool('C3.3', 'write-recency guard (updated_at unchanged by reinforce)', false, detail);
+    recordBool('C3.4', 'recall-use never breaches the 0.60 ceiling (Std 3)', false, detail);
+  };
+
+  // 1) Seed two byte-identical WORLD fact nodes (control + treatment).
+  let seed: any;
+  try {
+    const r = await fetchJson('/api/metrics/c3-seed', {
+      method: 'POST',
+      body: JSON.stringify({ confidence: 0.30, ageHours: 48 }),
+    });
+    seed = r.body;
+    if (r.status !== 200 || !seed?.ok) {
+      fail(`c3-seed failed (status=${r.status} ok=${seed?.ok}) — cannot run C3`);
+      return;
+    }
+    console.log(`  seed: control='${seed.controlId}' treatment='${seed.treatmentId}' ` +
+      `conf=${seed.confidence} prov=${seed.provenanceType} age=${seed.ageHours}h`);
+  } catch (err) {
+    fail(`c3-seed threw: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const treatmentId: string = seed.treatmentId;
+
+  // 2) Reinforce ONLY the treatment via the real T2 reinforceFactNode N times.
+  let reinforce: any;
+  try {
+    const r = await fetchJson('/api/metrics/c3-reinforce', {
+      method: 'POST',
+      body: JSON.stringify({ times: REINFORCE_TIMES }),
+    });
+    reinforce = r.body;
+    if (r.status !== 200 || !reinforce?.ok || reinforce.reinforced < 1) {
+      fail(`c3-reinforce failed (status=${r.status} ok=${reinforce?.ok} ` +
+        `reinforced=${reinforce?.reinforced}) — treatment node likely missing`);
+      return;
+    }
+    console.log(`  reinforce: treatment reinforced ${reinforce.reinforced}/${REINFORCE_TIMES}x via T2 ` +
+      `— conf ${reinforce.oldConfidence} -> ${reinforce.newConfidence}, ` +
+      `retrieval_count=${reinforce.retrievalCount}`);
+  } catch (err) {
+    fail(`c3-reinforce threw: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // Verify the reinforce SOURCE respected the ceiling (independent of decay).
+  // This is the at-source half of C3.4 — the persisted value never exceeded 0.60.
+  const reinforcedConf: number | null =
+    typeof reinforce.newConfidence === 'number' ? reinforce.newConfidence : null;
+
+  // 3) Run a real decay cycle (T3 production code).
+  try {
+    const r = await fetchJson('/api/metrics/decay-now', { method: 'POST' });
+    if (r.status !== 200 || !r.body?.ok) {
+      fail(`decay-now failed (status=${r.status} ok=${r.body?.ok})`);
+      return;
+    }
+    console.log(`  decay-now: ${JSON.stringify(r.body.result)}`);
+  } catch (err) {
+    fail(`decay-now threw: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // 4) Inspect both nodes' post-decay state.
+  let control: any, treatment: any;
+  try {
+    const r = await fetchJson('/api/metrics/c3-inspect');
+    if (r.status !== 200 || !r.body?.ok || !r.body.control || !r.body.treatment) {
+      fail(`c3-inspect failed (status=${r.status} ok=${r.body?.ok}) — nodes not found post-decay`);
+      return;
+    }
+    control = r.body.control;
+    treatment = r.body.treatment;
+    console.log(
+      `  inspect: control(conf=${control.confidence?.toFixed?.(4)} rc=${control.retrievalCount} ` +
+        `lr=${control.hasLastRetrieval}) treatment(conf=${treatment.confidence?.toFixed?.(4)} ` +
+        `rc=${treatment.retrievalCount} lr=${treatment.hasLastRetrieval})`);
+  } catch (err) {
+    fail(`c3-inspect threw: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // ── C3.1 — reinforcement asymmetry. Treatment recalled-and-used; control not. ──
+  const c31Pass =
+    treatment.retrievalCount > 0 && treatment.hasLastRetrieval === true &&
+    control.retrievalCount === 0 && control.hasLastRetrieval === false;
+  recordBool('C3.1', 'reinforcement asymmetry (treatment used N>0, control never)', c31Pass,
+    c31Pass
+      ? `treatment retrieval_count=${treatment.retrievalCount} + last_retrieval_at set; ` +
+        `control retrieval_count=0 + no last_retrieval_at`
+      : `EXPECTED treatment rc>0&lr=true, control rc=0&lr=false — got ` +
+        `treatment(rc=${treatment.retrievalCount},lr=${treatment.hasLastRetrieval}) ` +
+        `control(rc=${control.retrievalCount},lr=${control.hasLastRetrieval})`);
+
+  // ── C3.2 — the compounding divergence: treatment strictly > control after decay. ──
+  const c32Pass = treatment.confidence > control.confidence;
+  recordBool('C3.2', 'treatment confidence STRICTLY > control after decay (compounding)', c32Pass,
+    `treatment=${treatment.confidence?.toFixed?.(4)} vs control=${control.confidence?.toFixed?.(4)} ` +
+      `(Δ=${(treatment.confidence - control.confidence).toFixed(4)}) — ` +
+      (c32Pass ? 'used knowledge strengthened relative to unused' : 'NO upward divergence — compounding NOT proven'));
+
+  // ── C3.3 — write-recency guard. updated_at must be IDENTICAL on both nodes. ──
+  // reinforceFactNode sets last_retrieval_at/reinforced_at, never updated_at, so
+  // the only timestamp that diverges is last_retrieval_at (the use event). If
+  // updated_at differs, the divergence could be a write-recency artifact → FAIL.
+  const updatedEqual = control.updatedAt === treatment.updatedAt && control.updatedAt !== null;
+  recordBool('C3.3', 'write-recency guard: reinforce left updated_at unchanged (Δ is recall-use only)', updatedEqual,
+    updatedEqual
+      ? `both updated_at == '${control.updatedAt}' — divergence is reinforcement, not a fresher write`
+      : `updated_at DIFFERS (control='${control.updatedAt}' treatment='${treatment.updatedAt}') — ` +
+        `divergence may be a write-recency artifact, not reinforcement`);
+
+  // ── C3.4 — ceiling: treatment confidence never exceeds 0.60, at source AND post-decay. ──
+  const CEILING = 0.60;
+  const EPS = 1e-9;
+  const sourceOk = reinforcedConf === null || reinforcedConf <= CEILING + EPS;
+  const postDecayOk = treatment.confidence <= CEILING + EPS;
+  const c34Pass = sourceOk && postDecayOk;
+  recordBool('C3.4', 'recall-use never breaches the 0.60 ceiling (Std 3)', c34Pass,
+    c34Pass
+      ? `at-source reinforced conf=${reinforcedConf?.toFixed?.(4) ?? 'n/a'} <= 0.60; ` +
+        `post-decay conf=${treatment.confidence?.toFixed?.(4)} <= 0.60`
+      : `CEILING BREACH — at-source=${reinforcedConf?.toFixed?.(4) ?? 'n/a'} ` +
+        `post-decay=${treatment.confidence?.toFixed?.(4)} (limit 0.60)`);
+
+  // Cleanup: remove the gate-fixture nodes so they do not pollute the provenance
+  // census or accumulate across runs.
+  try {
+    const r = await fetchJson('/api/metrics/c3-cleanup', { method: 'POST' });
+    console.log(`  cleanup: c3-cleanup deleted=${r.body?.deleted ?? '?'}`);
+  } catch {
+    console.log('  cleanup: c3-cleanup failed (non-fatal for C3 scoring)');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase C3PROV: T5 — grounding provenance verified against live Neo4j.
+// ---------------------------------------------------------------------------
+
+/**
+ * C3PROV (WS3 T5) — the deferred C1 provenance verification (ROADMAP.md:73).
+ *
+ * On a GROUNDED recall turn, CycleResponse.groundingProvenance must be a node id
+ * that ACTUALLY EXISTS in the correct live Neo4j instance (WORLD for a WKG-sourced
+ * verdict, OTHER for an OKG-sourced one). C1 proved the response carries a node
+ * id; T5 proves that id resolves to a real node in the live graph.
+ *
+ * Hermetic-seeded: drives a recall turn the corpus already taught ("What is my
+ * name?" — taught "My name is Jim" earlier in the corpus, which the gate replays
+ * deterministically). The turn is sent over the same guardian socket the corpus
+ * uses, so the cassette already has the entry. We then read the turn's
+ * groundingProvenance + groundedBy and verify existence via /metrics/node-exists.
+ *
+ * If the recall turn does not come back GROUNDED (the known C1 conversation-recall
+ * gap — recall may ground as LLM_ASSISTED), T5 is recorded as a SKIP with the
+ * honest reason rather than a false pass: there is no provenance id to verify, so
+ * the assertion is N/A, not green. The load-bearing claim ("a carried id resolves
+ * to a real node") only fires when an id is actually carried.
+ */
+async function runProvenancePhase(): Promise<void> {
+  banner('PHASE C3PROV: T5 — grounding provenance exists in live Neo4j (WS3 T5)');
+
+  // Re-teach the name on this socket so the OKG fact is present for THIS run's
+  // person state (P0 wiped it at the start; the corpus taught it, but we make the
+  // dependency explicit and self-contained here), then probe recall.
+  let sock: PersistentSocket | null = null;
+  try {
+    sock = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian');
+    sock.send('My name is Jim.');
+    await waitForReplies(sock.received, 1, 20_000);
+    await sleep(1000); // write-back window
+
+    const pre = sock.received.length;
+    sock.send('What is my name?');
+    await waitForReplies(sock.received, pre + 1, 30_000);
+    const reply = sock.received[sock.received.length - 1];
+
+    const grounding = reply?.knowledgeGrounding ?? null;
+    const provenance = reply?.groundingProvenance ?? null;
+    const groundedBy = reply?.groundedBy ?? null;
+
+    console.log(`  recall turn: grounding=${grounding} provenance=${provenance ?? '(none)'} ` +
+      `groundedBy=${groundedBy ?? '(none)'}`);
+
+    if (grounding !== 'GROUNDED' || !provenance) {
+      // No provenance id carried → nothing to verify against the live graph. This
+      // is the known C1 conversation-recall gap, NOT a T5 failure. Honest SKIP.
+      recordSkip('C3PROV', 'GROUNDED recall provenance exists in live Neo4j',
+        `recall turn returned grounding='${grounding}' provenance='${provenance ?? 'none'}' — ` +
+        `no node id carried (known C1 conversation-recall gap, tracked in ` +
+        `wiki/ideas/grounded-okg-recall-retrieval.md). T5 verifies an id ONLY when one is ` +
+        `carried; with none there is nothing to resolve — recorded SKIP, not a false pass.`);
+      return;
+    }
+
+    // Pick the instance from the source discriminator (default WORLD).
+    const source = groundedBy === 'OKG' ? 'OTHER' : groundedBy === 'WKG' ? 'WORLD' : 'OTHER';
+    const r = await fetchJson(
+      `/api/metrics/node-exists?nodeId=${encodeURIComponent(provenance)}&source=${source}`,
+    );
+    const exists = r.status === 200 && r.body?.exists === true;
+    recordBool('C3PROV', 'GROUNDED recall provenance node EXISTS in correct live Neo4j', exists,
+      exists
+        ? `groundingProvenance='${provenance}' resolves to a real node in ${r.body?.instance} ` +
+          `(label='${r.body?.label}', groundedBy=${groundedBy ?? 'ambiguous→OTHER'})`
+        : `groundingProvenance='${provenance}' NOT found in ${source} ` +
+          `(status=${r.status} exists=${r.body?.exists}) — a carried id that does not resolve to ` +
+          `a live node is a provenance integrity failure (Std 4)`);
+  } catch (err) {
+    recordBool('C3PROV', 'GROUNDED recall provenance node exists in live Neo4j', false,
+      `T5 probe threw: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    sock?.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase: aggregate metric assertions vs baseline
 // ---------------------------------------------------------------------------
 
@@ -1304,6 +1561,26 @@ async function main(): Promise<void> {
     // Runs AFTER the corpus (so corpus measurement is on a clean hot layer) and
     // re-clears the hot layer on its way out so Phase 2/2.5 start clean.
     await runNoClearGateProbe();
+
+    // PHASE C3 — compounding proof (WS3 T4). Hermetic; no LLM. Seeds two matched
+    // WORLD nodes, reinforces only the treatment via the real T2 path, runs a real
+    // decay cycle, asserts upward divergence + ceiling + write-recency guard.
+    // Runs in replay/update-baseline (the seam exercises T2/T3 directly; under
+    // lesion the conversation path is severed but these REST routes still work — we
+    // still run it so the compounding mechanism is checked in every non-record mode).
+    if (MODE !== 'record') {
+      await runCompoundingPhase();
+    }
+
+    // PHASE C3PROV — T5 grounding-provenance-vs-live-Neo4j (deferred C1 item).
+    // Needs the LLM available (recall turn) so it runs only in replay-style modes;
+    // under lesion the conversation path is severed (recorded-skip).
+    if (MODE === 'replay' || MODE === 'update-baseline') {
+      await runProvenancePhase();
+    } else if (MODE === 'lesion') {
+      recordSkip('C3PROV', 'GROUNDED recall provenance exists in live Neo4j',
+        'lesion mode — conversation path severed; T5 needs a live GROUNDED recall turn');
+    }
 
     // PHASE 2 — metrics capture (M1–M4 anchored BEFORE multi-person phase).
     // Do NOT re-read metrics after Phase 2.5 per spec §2.

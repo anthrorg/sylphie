@@ -133,6 +133,15 @@ export interface CycleResponse {
   readonly groundingProvenance?: string | null;
 
   /**
+   * Which knowledge graph produced a GROUNDED verdict (WS3 T5 / WS4 T5 §3.1).
+   *   'OKG' → a person-model self-fact (lives in Neo4j OTHER, keyed on attr_id).
+   *   'WKG' → a shared world-knowledge entity (lives in Neo4j WORLD, keyed on node_id).
+   * Threaded so a consumer can verify groundingProvenance against the CORRECT live
+   * instance. Null/undefined when grounding is not GROUNDED or the source is ambiguous.
+   */
+  readonly groundedBy?: 'OKG' | 'WKG' | null;
+
+  /**
    * Drive pressure vector captured just before action execution (EXECUTING phase).
    *
    * Communication uses this to compute the real driveEffectsObserved delta by
@@ -270,4 +279,20 @@ export interface DeliveryPayload {
    *   UNKNOWN     → muted/gray (honest "I don't know")
    */
   readonly knowledgeGrounding: KnowledgeGrounding;
+
+  /**
+   * Provenance node id backing a GROUNDED verdict (WS3 T5, forwarded from
+   * CycleResponse.groundingProvenance). OKG: `attr-${personId}-${key}` in Neo4j
+   * OTHER; WKG: the real `node_id` in Neo4j WORLD. Absent when not GROUNDED or
+   * when the GROUNDED label came from a latent-space pattern that recorded no
+   * single node id at write time.
+   */
+  readonly groundingProvenance?: string | null;
+
+  /**
+   * Which graph produced the GROUNDED verdict (WS3 T5): 'OKG' (→ Neo4j OTHER) or
+   * 'WKG' (→ Neo4j WORLD). Lets a consumer pick the correct instance to verify
+   * groundingProvenance against. Absent/null when not GROUNDED or ambiguous.
+   */
+  readonly groundedBy?: 'OKG' | 'WKG' | null;
 }

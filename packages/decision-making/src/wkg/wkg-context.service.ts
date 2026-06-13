@@ -32,9 +32,15 @@ import {
   type WkgContextEntry,
   type ActionStep,
   DriveName,
+  computeConfidence,
+  PROVENANCE_BASE_CONFIDENCE,
+  DEFAULT_DECAY_RATES,
+  CONFIDENCE_THRESHOLDS,
+  type ACTRParams,
   verboseFor,
 } from '@sylphie/shared';
 import { TextEncoder } from '../inputs/encoders/text.encoder';
+import type { RecallSource } from '../deliberation/recall-retrieval';
 
 const vlog = verboseFor('Cortex');
 
@@ -395,6 +401,154 @@ export class WkgContextService {
       this.logger.debug(`WKG relationship written: ${rel.sourceId} -[${rel.type}]-> ${rel.targetId}`);
     } catch (err) {
       this.logger.error(`WKG relationship write failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS3 Ticket T2 — Knowledge use→reinforce edge (the compounding mechanism)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reinforce a fact node's ACT-R confidence on a successful grounded
+   * recall-and-use event, persisted to the correct graph per RecallSource.
+   *
+   * THE COMPOUNDING EDGE (WS3 build plan §thesis). Before this, fact nodes only
+   * ever DECAYED (ConfidenceDecayService) or bumped on re-extraction MERGE; a
+   * fact recalled-and-used 100× decayed identically to one never touched. This
+   * method closes the use→reinforce edge: a fact that surfaces and grounds a
+   * delivered response gets its retrieval count incremented, its last-retrieval
+   * timestamp set, and its confidence recomputed via the SAME pure ACT-R
+   * `computeConfidence()` the procedure path uses — capped at the 0.60 ceiling.
+   *
+   * GRAPH ISOLATION (sylphie-tech-spec §4.1 — load-bearing, do NOT cross):
+   *   - OKG (source 'OKG'): the node is an `(:Attribute {attr_id})` in the
+   *     **Neo4j OTHER** instance (PersonModelService.writeFact persists it there).
+   *     We reinforce it in OTHER. NEVER in WORLD.
+   *   - WKG (source 'WKG'): the node is `({node_id})` in the **Neo4j WORLD**
+   *     instance. We reinforce it in WORLD. NEVER in OTHER.
+   *
+   * CANON Standard 3 (Confidence Ceiling) — the hard invariant:
+   *   Recall-use is NOT guardian confirmation, so it must NEVER lift a node's
+   *   confidence above 0.60. We clamp the recomputed value to 0.60. And it must
+   *   never DEMOTE an already-stronger node (e.g. a 0.90 guardian self-fact):
+   *   the persisted confidence is max(currentConfidence, min(0.60, recomputed)).
+   *   For an already-≥0.60 node this leaves confidence untouched but still
+   *   advances retrieval_count / last_retrieval_at (so T3 decay can read them).
+   *
+   * CANON Standard 6 (no self-modification of evaluation): we reuse the pure
+   *   shared `computeConfidence()`. No bespoke confidence math lives here.
+   *
+   * NEW PERSISTED FIELDS (T3 dependency): this is the first writer of
+   *   `retrieval_count` and `last_retrieval_at` on fact nodes in BOTH stores.
+   *   Before T2, neither field existed on Attribute (OKG) or Entity (WKG) nodes
+   *   — which is exactly why ConfidenceDecayService had to fall back to the
+   *   `updated_at` proxy (confidence-decay.service.ts:21-23). After T2, T3 can
+   *   switch decay to the real `last_retrieval_at` / `retrieval_count`.
+   *
+   * @param nodeId  the grounding fact node id resolved at retrieval time
+   *                (OKG: `attr-${personId}-${key}`; WKG: real `node_id`).
+   * @param source  which graph the node lives in (OKG → OTHER, WKG → WORLD).
+   * @returns the reinforcement outcome, or null if the node could not be found
+   *          / Neo4j is unavailable (honest no-op, never fabricated).
+   */
+  async reinforceFactNode(
+    nodeId: string,
+    source: RecallSource,
+  ): Promise<{ oldConfidence: number; newConfidence: number; retrievalCount: number } | null> {
+    if (!this.neo4j) {
+      this.logger.warn('Fact reinforcement skipped: Neo4jService unavailable');
+      return null;
+    }
+
+    const instance =
+      source === 'OKG' ? Neo4jInstanceName.OTHER : Neo4jInstanceName.WORLD;
+    // Match clause + id param differ per store: OKG keys on attr_id, WKG on node_id.
+    const matchClause =
+      source === 'OKG'
+        ? 'MATCH (n:Attribute {attr_id: $nodeId})'
+        : 'MATCH (n {node_id: $nodeId})';
+
+    const session = this.neo4j.getSession(instance, 'WRITE');
+    try {
+      // 1. Read current confidence + provenance + retrieval tracking (which may
+      //    be absent on a node never reinforced before — coalesce to defaults).
+      const readResult = await session.run(
+        `${matchClause}
+         RETURN n.confidence AS confidence,
+                n.provenance_type AS provenanceType,
+                coalesce(n.retrieval_count, 0) AS retrievalCount`,
+        { nodeId },
+      );
+      const rec = readResult.records[0];
+      if (!rec) {
+        this.logger.warn(
+          `Fact reinforcement no-op: node "${nodeId}" not found in ${instance} (${source}).`,
+        );
+        return null;
+      }
+
+      const currentConfidence = toFloat(rec.get('confidence'), NaN);
+      if (Number.isNaN(currentConfidence)) {
+        this.logger.warn(
+          `Fact reinforcement no-op: node "${nodeId}" has no numeric confidence.`,
+        );
+        return null;
+      }
+      const provenanceType = (rec.get('provenanceType') as string | null) ?? 'INFERENCE';
+      const priorCount = toInt(rec.get('retrievalCount'), 0);
+
+      // 2. Recompute confidence via the SAME pure ACT-R function the action path
+      //    uses. base/decayRate derive from provenance; count = priorCount + 1;
+      //    lastRetrievalAt = now (the use that just happened — hours≈0).
+      const { base, decayRate } = actrTierForProvenance(provenanceType);
+      const newCount = priorCount + 1;
+      const params: ACTRParams = {
+        base,
+        count: newCount,
+        decayRate,
+        lastRetrievalAt: new Date(),
+      };
+      const recomputed = computeConfidence(params);
+
+      // 3. CANON Std 3: recall-use never lifts past 0.60, and never demotes an
+      //    already-stronger node. Clamp to the ceiling, floor at currentConfidence.
+      const ceilingClamped = Math.min(CONFIDENCE_THRESHOLDS.ceiling, recomputed);
+      const newConfidence = Math.max(currentConfidence, ceilingClamped);
+
+      // 4. Persist: always advance retrieval_count + last_retrieval_at (T3 reads
+      //    these), and write the (possibly unchanged) ceiling-respecting confidence.
+      await session.run(
+        `${matchClause}
+         SET n.confidence = $newConfidence,
+             n.retrieval_count = $newCount,
+             n.last_retrieval_at = datetime(),
+             n.reinforced_at = datetime()`,
+        { nodeId, newConfidence, newCount },
+      );
+
+      this.logger.debug(
+        `Fact reinforced (${source}): node="${nodeId}" ` +
+          `conf ${currentConfidence.toFixed(4)} -> ${newConfidence.toFixed(4)} ` +
+          `(recomputed ${recomputed.toFixed(4)}, ceiling 0.60), retrieval_count ${priorCount} -> ${newCount}`,
+      );
+      vlog('fact reinforced', {
+        source,
+        nodeId,
+        oldConfidence: +currentConfidence.toFixed(4),
+        newConfidence: +newConfidence.toFixed(4),
+        retrievalCount: newCount,
+        provenanceType,
+      });
+
+      return { oldConfidence: currentConfidence, newConfidence, retrievalCount: newCount };
+    } catch (err) {
+      this.logger.warn(
+        `Fact reinforcement failed for "${nodeId}" (${source}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
     } finally {
       await session.close();
     }
@@ -898,4 +1052,59 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
     if (b.has(token)) intersection++;
   }
   return intersection / (a.size + b.size - intersection);
+}
+
+// ---------------------------------------------------------------------------
+// WS3 T2 — reinforcement helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Coerce a Neo4j numeric (float, Integer wrapper, or plain number) to a JS
+ * float, falling back to `fallback` when the value is null/undefined/unparseable.
+ */
+function toFloat(v: unknown, fallback: number): number {
+  if (typeof v === 'number') return v;
+  if (v && typeof v === 'object' && 'toNumber' in v) {
+    return (v as { toNumber(): number }).toNumber();
+  }
+  return fallback;
+}
+
+/** Coerce a Neo4j Integer/number to a plain JS integer. */
+function toInt(v: unknown, fallback: number): number {
+  const n = toFloat(v, fallback);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+/**
+ * Resolve the ACT-R `{base, decayRate}` tier for a fact node's stored
+ * `provenance_type`, for reinforcement via the shared `computeConfidence()`.
+ *
+ * This mirrors the provenance→base/decay mapping the action path uses, but must
+ * also tolerate the OKG-scoped provenance labels PersonModelService.writeFact
+ * stamps on Attribute nodes (WS4-T5 §1): 'SELF_REPORTED' and 'OBSERVED' are not
+ * core provenance sources. We map them to the INFERENCE tier (base 0.30 / decay
+ * 0.06) — the conservative non-guardian inference grade. This only sets the
+ * ACT-R growth curve's floor; the 0.60 ceiling clamp and the never-demote floor
+ * in reinforceFactNode() are what actually govern the persisted value, so a
+ * self-reported fact already at 0.60 stays at 0.60 (Std 3) regardless of tier.
+ */
+function actrTierForProvenance(provenanceType: string): { base: number; decayRate: number } {
+  switch (provenanceType) {
+    case 'SENSOR':
+    case 'SYSTEM_BOOTSTRAP':
+      return { base: PROVENANCE_BASE_CONFIDENCE.SENSOR, decayRate: DEFAULT_DECAY_RATES.SENSOR };
+    case 'GUARDIAN':
+    case 'GUARDIAN_APPROVED_INFERENCE':
+    case 'TAUGHT_PROCEDURE':
+      return { base: PROVENANCE_BASE_CONFIDENCE.GUARDIAN, decayRate: DEFAULT_DECAY_RATES.GUARDIAN };
+    case 'LLM_GENERATED':
+      return { base: PROVENANCE_BASE_CONFIDENCE.LLM_GENERATED, decayRate: DEFAULT_DECAY_RATES.LLM_GENERATED };
+    case 'INFERENCE':
+    case 'BEHAVIORAL_INFERENCE':
+    case 'SELF_REPORTED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
+    case 'OBSERVED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
+    default:
+      return { base: PROVENANCE_BASE_CONFIDENCE.INFERENCE, decayRate: DEFAULT_DECAY_RATES.INFERENCE };
+  }
 }

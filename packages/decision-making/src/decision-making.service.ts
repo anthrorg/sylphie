@@ -69,6 +69,8 @@ import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.serv
 import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding, discriminateGroundedBy } from './deliberation/deliberation.service';
+import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, type RecallRetrieval } from './deliberation/recall-retrieval';
+import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { isDocumentEncoder } from './inputs/encoders/text.encoder';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
@@ -780,6 +782,26 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         fingerprint: contextFingerprint.substring(0, 16),
       });
 
+      // ── WS3 Ticket T1: pre-arbitration grounded recall retrieval ──────────
+      // Resolve the WKG/OKG fact node that grounds this turn ONCE, BEFORE the
+      // procedure-vs-deliberate arbitration, so BOTH paths observe the SAME
+      // provenance-carrying node. This replaces the post-hoc per-site regex
+      // re-derivation (applyOkgRecallGrounding at 3 call sites) with a single
+      // retrieval whose node id is recorded AT RETRIEVAL TIME. Single-hop only.
+      //
+      // Cheap guard inside computeRecallRetrieval(): a non-recall question exits
+      // before any Neo4j round-trip. T2 will reinforce recallRetrieval.factNodeId;
+      // T3 will decay unused nodes — both depend on this node id being surfaced.
+      const recallRetrieval = await this.computeRecallRetrieval(frame);
+      if (recallRetrieval) {
+        vlog('pre-arbitration recall retrieval HIT', {
+          key: recallRetrieval.recallKey,
+          source: recallRetrieval.source,
+          nodeId: recallRetrieval.factNodeId,
+          confidence: recallRetrieval.confidence,
+        });
+      }
+
       // Check per-modality latent spaces FIRST — if we find a high-similarity
       // match on any modality, inject it as a Type 1 candidate. Each modality's
       // embedding is searched independently so text changes aren't drowned out
@@ -1089,25 +1111,39 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             );
           }
 
-          // Defense-in-depth OKG recall attribution for Type 1 fact-recall hits:
-          // the stored pattern may carry LLM_ASSISTED/UNKNOWN from when it was
-          // first written (e.g. the OKG hadn't ingested the teach yet, or a later
-          // corpus run matched a social pattern rather than the actual fact turn).
-          // Re-running applyOkgRecallGrounding with the current session's person
-          // facts allows a genuine recall hit to be upgraded to GROUNDED even if
-          // the stored grounding was conservative. This is honest: the OKG fact IS
-          // in session memory, the response text DOES contain the fact value; the
-          // provenance is real.
+          // Type-1 fact-recall attribution: the stored pattern may carry
+          // LLM_ASSISTED/UNKNOWN from when it was first written (e.g. the OKG
+          // hadn't ingested the teach yet, or a later corpus run matched a social
+          // pattern rather than the actual fact turn). A genuine recall hit is
+          // upgraded to GROUNDED even if the stored grounding was conservative.
+          //
+          // WS3 Ticket T1: prefer the cycle's PRE-ARBITRATION recall retrieval so
+          // the latent reflex carries the SAME once-resolved node id as the
+          // procedure/deliberate paths. Falls back to the legacy post-hoc helper
+          // when the turn isn't a resolvable recall (transitional — that helper
+          // only upgrades via OKG recall, now owned by the pre-arbitration step).
           const latentPersonModel = frame.raw['person_model'] as
             { personId?: string; knownFacts?: string[] } | null | undefined;
           const latentInputText = (frame.raw['text'] as string | undefined) ?? inputSummary;
-          const { grounding: latentGrounding, provenance: latentProvenance } = applyOkgRecallGrounding(
-            latentPersonModel?.personId,
-            latentInputText,
-            latentMatch.pattern.responseText,
-            latentPersonModel?.knownFacts,
-            latentBaseGrounding,
-          );
+          let latentGrounding: KnowledgeGrounding;
+          let latentProvenance: string | null;
+          if (recallRetrieval) {
+            const applied = applyRecallGroundingFromRetrieval(
+              recallRetrieval, latentMatch.pattern.responseText, latentBaseGrounding,
+            );
+            latentGrounding = applied.grounding;
+            latentProvenance = applied.provenance;
+          } else {
+            const legacy = applyOkgRecallGrounding(
+              latentPersonModel?.personId,
+              latentInputText,
+              latentMatch.pattern.responseText,
+              latentPersonModel?.knownFacts,
+              latentBaseGrounding,
+            );
+            latentGrounding = legacy.grounding;
+            latentProvenance = legacy.provenance;
+          }
 
           executionResults.push({
             content: latentMatch.pattern.responseText,
@@ -1124,7 +1160,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.warn(
             `Latent match ${latentMatch.pattern.id.substring(0, 8)} has empty responseText — falling through to Type 2.`,
           );
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
+          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
           executionResults.push({
             content: deliberationResult.responseText,
             tokensUsed: deliberationResult.totalTokens,
@@ -1158,28 +1194,53 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               const procedurePersonModel = frame.raw['person_model'] as
                 { personId?: string; knownFacts?: string[] } | null | undefined;
               const procedureRawText = (frame.raw['text'] as string | undefined) ?? inputSummary;
-              const { grounding: procedureGrounding, provenance: procedureProvenance } = applyOkgRecallGrounding(
-                procedurePersonModel?.personId,
-                procedureRawText,
-                procedureResponseText,
-                procedurePersonModel?.knownFacts,
-                baseGrounding,
-              );
+
+              // ── WS3 Ticket T1 — apply the PRE-ARBITRATION recall retrieval ──
+              // This is THE structural close of the seed-greet bypass that forced
+              // C1's post-hoc regex: the procedure path now consumes the SAME
+              // node id the cycle resolved before arbitration (recallRetrieval),
+              // instead of independently re-running recallKeyForQuestion over the
+              // free-generated prose. The honesty guard (value must surface) lives
+              // in applyRecallGroundingFromRetrieval, so C2 stays honest.
+              let procedureGrounding: KnowledgeGrounding;
+              let procedureProvenance: string | null;
+              let procedureGroundedBy: 'OKG' | 'WKG' | null;
+              if (recallRetrieval) {
+                const applied = applyRecallGroundingFromRetrieval(
+                  recallRetrieval, procedureResponseText, baseGrounding,
+                );
+                procedureGrounding = applied.grounding;
+                procedureProvenance = applied.provenance;
+                procedureGroundedBy = applied.groundedBy;
+              } else {
+                // TRANSITIONAL FALLBACK (WS3 T1): non-recall procedure turns (and
+                // any recall the pre-arbitration step could not resolve) still use
+                // the legacy post-hoc helper. This path no longer carries recall
+                // provenance forward — it only ever reaches GROUNDED via OKG-recall,
+                // which the pre-arbitration step now owns — so in practice this is a
+                // no-op LLM_ASSISTED/UNKNOWN floor for non-recall procedure output.
+                const legacy = applyOkgRecallGrounding(
+                  procedurePersonModel?.personId,
+                  procedureRawText,
+                  procedureResponseText,
+                  procedurePersonModel?.knownFacts,
+                  baseGrounding,
+                );
+                procedureGrounding = legacy.grounding;
+                procedureProvenance = legacy.provenance;
+                // Empty WKG context here → discriminateGroundedBy can only return
+                // 'OKG' or null; a GROUNDED via legacy OKG recall is person-scoped.
+                procedureGroundedBy = discriminateGroundedBy(
+                  procedureGrounding,
+                  { entities: [], facts: [], relationships: [], procedures: [], summary: '' },
+                  procedureResponseText,
+                  procedurePersonModel?.knownFacts,
+                  procedureProvenance,
+                );
+              }
               result['knowledgeGrounding'] = procedureGrounding;
               if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
-              // WS4 Ticket 5 (§3.1) — source discriminator for write-time scoping.
-              // The procedure base grounding is computed against an EMPTY WKG
-              // context (groundingForCachedResponse), so the ONLY way this path
-              // reaches GROUNDED is an OKG-recall upgrade. discriminateGroundedBy
-              // confirms this from the cascade (empty WKG → never 'WKG'); a
-              // GROUNDED here is therefore 'OKG' (person-scoped).
-              result['groundedBy'] = discriminateGroundedBy(
-                procedureGrounding,
-                { entities: [], facts: [], relationships: [], procedures: [], summary: '' },
-                procedureResponseText,
-                procedurePersonModel?.knownFacts,
-                procedureProvenance,
-              );
+              result['groundedBy'] = procedureGroundedBy;
             }
             executionResults.push(result);
           }
@@ -1189,7 +1250,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // debate (conditional) → arbiter → commit.
           vlog('executing Type 2 deliberation (novel)', { inputSummary: inputSummary.substring(0, 80) });
           this.logger.debug('Type 2 novel: running deliberation pipeline');
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
+          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
 
           // ── Action dispatch: if the LLM detected a COMMAND and requested
           // an action (e.g. RESEARCH_ENTITY), dispatch it to the handler
@@ -1278,7 +1339,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         if (rawText && rawText.length > 0) {
           // Run the full deliberation pipeline.
           this.logger.debug('SHRUG with text input — running deliberation pipeline.');
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction);
+          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
 
           // Handle action requests from SHRUG+deliberation path too.
           if (deliberationResult.actionRequest) {
@@ -1696,6 +1757,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           tokensUsed: responseDegradedNoLlm ? undefined : responseTokens,
           knowledgeGrounding: responseGrounding,
           groundingProvenance: responseGroundingProvenance ?? undefined,
+          // WS3 T5: thread the GROUNDED source ('OKG'|'WKG') so a consumer can
+          // verify groundingProvenance against the correct live Neo4j instance.
+          groundedBy: responseGroundedBy ?? undefined,
           preExecutionDriveSnapshot: driveSnapshot.pressureVector,
           latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
           // Tensor metadata — populated when sidecar was available this cycle
@@ -1711,6 +1775,58 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.logger.debug(
           `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
         );
+      }
+
+      // ── WS3 Ticket T2 — knowledge use→reinforce edge (compounding) ─────────
+      // A successful grounded recall-and-USE event reinforces the fact node that
+      // grounded the delivered answer (ACT-R, capped at the 0.60 ceiling). This
+      // is the compounding mechanism: today fact nodes only ever decay or bump on
+      // re-extraction; here a recalled-and-used fact gets its retrieval count and
+      // last-retrieval timestamp advanced and its confidence recomputed.
+      //
+      // The "use" event is precisely: the cycle's grounding verdict is GROUNDED
+      // AND it carries a real provenance node id (the fact actually SURFACED in
+      // the delivered response — the honesty guard in applyRecallGroundingFromRetrieval
+      // already enforced surfacing before setting GROUNDED+provenance). A retrieval
+      // that did not surface (paraphrased away) carries null provenance and is NOT
+      // reinforced — that is a different count (T3/T4 distinguish them).
+      //
+      // IDEMPOTENT PER TURN: this fires at most once, after the single emit, on
+      // the single resolved grounding node id. Both epoch fences are already past,
+      // so a zombie/late cycle cannot reinforce. We only reinforce the node the
+      // cycle resolved at retrieval time (recallRetrieval.factNodeId) AND that the
+      // delivered verdict actually grounded on (responseGroundingProvenance) — when
+      // those disagree we do nothing (a different/ambient node grounded it, not the
+      // pre-resolved recall fact; we never reinforce a node we didn't recall-and-use).
+      //
+      // Std 3 ceiling + never-demote are enforced inside reinforceFactNode().
+      if (
+        responseGrounding === 'GROUNDED' &&
+        typeof responseGroundingProvenance === 'string' &&
+        responseGroundingProvenance.length > 0 &&
+        recallRetrieval !== null &&
+        recallRetrieval.factNodeId === responseGroundingProvenance
+      ) {
+        // Source: prefer the verdict's discriminator (WS4-T5), fall back to the
+        // pre-arbitration retrieval's source. Both agree for a recall-grounded turn.
+        const reinforceSource = responseGroundedBy ?? recallRetrieval.source;
+        try {
+          const result = await this.wkgContext.reinforceFactNode(
+            responseGroundingProvenance,
+            reinforceSource,
+          );
+          if (result) {
+            this.logger.debug(
+              `WS3-T2 reinforced ${reinforceSource} fact "${responseGroundingProvenance}": ` +
+                `conf ${result.oldConfidence.toFixed(4)} -> ${result.newConfidence.toFixed(4)}, ` +
+                `retrieval_count=${result.retrievalCount}`,
+            );
+          }
+        } catch (err) {
+          // Reinforcement is a best-effort compounding bump; never let it break
+          // a cycle that already delivered its response.
+          this.logger.warn(`WS3-T2 fact reinforcement failed: ${err}`);
+        }
       }
 
       // ── Tensor training with real frame data ──────────────────────────────
@@ -2233,6 +2349,51 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    *
    * Returns null if no suitable target is found.
    */
+  // ---------------------------------------------------------------------------
+  // WS3 Ticket T1 — pre-arbitration grounded recall retrieval
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resolve the grounding fact node id for a recall question ONCE, before
+   * arbitration. Single-hop, provenance-carrying. Returns null for non-recall
+   * input (cheap exit, no DB hit) and for recall input with no taught OKG fact
+   * and no topical WKG entity (honest NOT_GROUNDED by construction).
+   *
+   * OKG self-fact recall is resolved purely from the frame's knownFacts (no DB
+   * round-trip). The WKG single-hop fallback is only consulted when the OKG
+   * misses AND the question is a recall — and it reuses getContextForFrame's
+   * one fulltext hop, not a second traversal.
+   *
+   * CANON Std 4: the node id is real (deterministic attr-id for OKG; matched
+   * node_id for WKG); never fabricated. Std 3: confidence is surfaced, not lifted.
+   */
+  private async computeRecallRetrieval(frame: SensoryFrame): Promise<RecallRetrieval | null> {
+    const inputText = (frame.raw['text'] as string | undefined) ?? '';
+    if (!inputText.trim()) return null;
+    // Cheap guard: not a recall question → no provenance to resolve, no DB hit.
+    if (!recallKeyForQuestion(inputText)) return null;
+
+    const personModel = frame.raw['person_model'] as
+      { personId?: string; knownFacts?: string[] } | null | undefined;
+    const personId = personModel?.personId ?? null;
+    const knownFacts = personModel?.knownFacts;
+
+    // Try OKG first (pure, no DB). If it grounds, we never touch Neo4j.
+    const okgFirst = retrieveRecallGrounding(personId, inputText, knownFacts, {
+      entities: [], facts: [], relationships: [], procedures: [], summary: '',
+    });
+    if (okgFirst) return okgFirst;
+
+    // OKG missed on a recall question — consult the single-hop WKG context.
+    try {
+      const wkg = await this.wkgContext.getContextForFrame(frame);
+      return retrieveRecallGrounding(personId, inputText, knownFacts, wkg);
+    } catch (err) {
+      this.logger.warn(`computeRecallRetrieval WKG lookup failed: ${err}`);
+      return null;
+    }
+  }
+
   private async pickResearchTarget(): Promise<string | null> {
     try {
       const entities = await this.wkgContext.queryEntities('*');
