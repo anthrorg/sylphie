@@ -792,6 +792,97 @@ async function runCorpus(): Promise<TurnResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase H1: NO-CLEAR min-population gate probe (WS1 follow-up #3 — the TRAP)
+// ---------------------------------------------------------------------------
+
+/**
+ * H1 — the no-clear proof.
+ *
+ * H0 (in main) clears the hot layer, so the corpus runs against an EMPTY latent
+ * index and a naive gate stays green whether or not the min-population trust gate
+ * exists. That is the trap WS1 exists to prevent ("green for the wrong reason").
+ *
+ * H1 closes it: seed EXACTLY ONE over-general pattern (the document embedding of a
+ * nonsense probe text — worst-case near-1.0 cosine, useCount 0), then send that
+ * same nonsense over the conversation WS. If the min-population gate is present,
+ * the lone fresh pattern is NOT trusted: the turn routes to deliberation and the
+ * response is NOT a confident GROUNDED Type 1. If the gate were removed, the lone
+ * pattern fires a Type 1 reflex returning the seeded responseText labeled
+ * GROUNDED — and H1 goes RED. This is the assertion that actually proves the prod
+ * hazard is fixed.
+ *
+ * Cleanup: re-clear the hot layer afterward so the seeded pattern and this probe's
+ * turn do not pollute the multi-person / privacy phases.
+ *
+ * Uses the burst nonsense text (already in the cassette) so replay never misses on
+ * the deliberation path the gate is SUPPOSED to take.
+ */
+async function runNoClearGateProbe(): Promise<void> {
+  banner('PHASE H1: NO-CLEAR MIN-POPULATION GATE PROBE (WS1 follow-up #3)');
+
+  const NONSENSE = 'How many glorps fit in a standard zanfibble?';
+
+  // 1) Seed a single over-general pattern (clears hot layer, leaves population 1).
+  let seeded = false;
+  try {
+    const { status, body } = await fetchJson('/api/metrics/latent-seed-overgeneral', {
+      method: 'POST',
+      body: JSON.stringify({ text: NONSENSE }),
+    });
+    seeded = status === 200 && body?.ok === true && body?.textPopulation === 1;
+    console.log(
+      `  seed: status=${status} ok=${body?.ok} textPopulation=${body?.textPopulation} ` +
+        `patternId=${(body?.patternId ?? '?').toString().substring(0, 8)}`,
+    );
+    if (!seeded) {
+      recordBool('H1', 'no-clear min-population gate: single over-general pattern not trusted',
+        false,
+        `seed route failed or did not produce exactly 1 text pattern ` +
+          `(status=${status} ok=${body?.ok} textPopulation=${body?.textPopulation}) — ` +
+          `cannot run the no-clear proof`);
+      return;
+    }
+  } catch (err) {
+    recordBool('H1', 'no-clear min-population gate: single over-general pattern not trusted',
+      false, `seed route threw: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // 2) Send the SAME nonsense. With the gate present, this must NOT be a confident
+  //    GROUNDED Type 1 reflex — it routes to deliberation (LLM_ASSISTED / UNKNOWN).
+  const res = await converse(NONSENSE);
+  const arb = res.speech?.arbitrationType ?? '(none)';
+  const grd = res.speech?.knowledgeGrounding ?? '(none)';
+  const lat = res.speech?.latencyMs ?? res.elapsedMs;
+  console.log(`  probe: arb=${arb} grd=${grd} ${lat}ms${res.timedOut ? '  <<< NO RESPONSE' : ''}`);
+
+  // The hazard signature is a GROUNDED Type-1 reflex on nonsense. PASS = NOT that.
+  // (A turn that answered and is not a GROUNDED+TYPE_1 reflex is the win; a timeout
+  //  is a fail — the system must still answer, via deliberation.)
+  const answered = !!res.speech && !res.timedOut;
+  const isGroundedType1Reflex = arb === 'TYPE_1' && grd === 'GROUNDED';
+  const h1Pass = answered && !isGroundedType1Reflex;
+  recordBool('H1',
+    'no-clear single over-general pattern does NOT fire a GROUNDED Type 1 reflex',
+    h1Pass,
+    !answered
+      ? 'probe produced no response (timeout) — system failed to deliberate past the lone pattern'
+      : isGroundedType1Reflex
+        ? `HAZARD: lone over-general pattern fired a TYPE_1/GROUNDED reflex on nonsense ` +
+          `(min-population gate missing or bypassed) — confabulation re-opened`
+        : `single fresh pattern not trusted; nonsense routed to deliberation ` +
+          `(arb=${arb}, grd=${grd}) — gate holding`);
+
+  // 3) Cleanup: re-clear the hot layer so later phases start clean again.
+  try {
+    const { status } = await fetchJson('/api/metrics/latent-reset', { method: 'POST' });
+    console.log(`  cleanup: latent-reset status=${status}`);
+  } catch {
+    console.log('  cleanup: latent-reset failed (non-fatal for H1 itself)');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase: aggregate metric assertions vs baseline
 // ---------------------------------------------------------------------------
 
@@ -1208,6 +1299,11 @@ async function main(): Promise<void> {
   try {
     // PHASE 1 — corpus.
     await runCorpus();
+
+    // PHASE H1 — no-clear min-population gate proof (WS1 follow-up #3 — the TRAP).
+    // Runs AFTER the corpus (so corpus measurement is on a clean hot layer) and
+    // re-clears the hot layer on its way out so Phase 2/2.5 start clean.
+    await runNoClearGateProbe();
 
     // PHASE 2 — metrics capture (M1–M4 anchored BEFORE multi-person phase).
     // Do NOT re-read metrics after Phase 2.5 per spec §2.

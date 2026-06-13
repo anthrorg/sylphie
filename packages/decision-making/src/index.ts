@@ -75,7 +75,7 @@ export { ScenePredictionService, type ScenePredictionResult, type SceneObjectErr
 // ---------------------------------------------------------------------------
 
 export { ModalityRegistryService } from './inputs/registry/modality-registry.service';
-export { TextEncoder } from './inputs/encoders/text.encoder';
+export { TextEncoder, isDocumentEncoder } from './inputs/encoders/text.encoder';
 export { VideoEncoder } from './inputs/encoders/video.encoder';
 export { FaceEncoder } from './inputs/encoders/face.encoder';
 export { DriveEncoder } from './inputs/encoders/drive.encoder';

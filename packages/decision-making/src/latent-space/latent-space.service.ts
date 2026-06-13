@@ -155,6 +155,41 @@ const DEFAULT_SIMILARITY_THRESHOLD = 0.80;
  */
 const RUNNER_UP_MARGIN = 0.05;
 
+/**
+ * MIN-POPULATION TRUST GATE (WS1 follow-up #3 — production hardening).
+ *
+ * The runner-up margin (above) only defends when there are ≥2 candidates of a
+ * modality to discriminate against. The dangerous case it CANNOT see is a hot
+ * layer holding exactly ONE pattern for a modality: with no runner-up, the margin
+ * check is trivially satisfied, so a single over-general pattern fires a confident
+ * GROUNDED Type 1 reflex against ANY input that grazes the 0.80 threshold. This is
+ * the exact confabulation mechanism the gate exists to prevent: on a fresh boot (or
+ * after the hot layer re-accumulates a single over-general pattern), nonsense gets
+ * a trusted reflex and the honest ~6% autonomy number silently re-inflates.
+ *
+ * The gate: when a modality's hot layer is below MIN_MODALITY_POPULATION patterns,
+ * a single-pattern match is only trusted if THAT pattern has earned trust through
+ * repeated confirmed use (useCount ≥ MIN_TRUSTED_USECOUNT). A specific, battle-
+ * tested reflex (used many times, confidence reinforced) still fires; a fresh,
+ * unproven, over-general pattern is rejected and the input falls through to honest
+ * deliberation. Once the layer holds ≥ MIN_MODALITY_POPULATION patterns, the
+ * runner-up margin is doing real discrimination work and the population floor lifts.
+ *
+ * Standard 1 (provenance) / Standard 4 (theater prohibition): a reflex that fires
+ * GROUNDED on nonsense is confabulation. This gate is the structural guarantee that
+ * a single unproven pattern cannot manufacture trust it has not earned.
+ */
+const MIN_MODALITY_POPULATION = 3;
+
+/**
+ * useCount a SINGLE pattern must reach to be trusted when its modality's hot layer
+ * is below MIN_MODALITY_POPULATION. A pattern that has fired and been confirmed
+ * this many times is no longer "an untested over-general guess" — it has a track
+ * record. Fresh patterns (useCount 0) never clear this floor, so a fresh-boot
+ * single over-general pattern routes to deliberation, not a confident reflex.
+ */
+const MIN_TRUSTED_USECOUNT = 3;
+
 /** Modality weights for composite scoring. Text dominates to prevent drowning. */
 const MODALITY_WEIGHTS: Record<string, number> = {
   text: 0.50,
@@ -245,9 +280,12 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     // Highest similarity among entries OTHER than the current best. A genuine
     // reflex must clear the threshold AND beat this runner-up by RUNNER_UP_MARGIN.
     let secondSimilarity = -1;
+    // Population of THIS modality in the hot layer — feeds the min-population gate.
+    let modalityPopulation = 0;
 
     for (const entry of this.hotLayer) {
       if (entry.modality !== modality) continue;
+      modalityPopulation++;
       const sim = cosineSimilarity(embedding, entry.embedding);
       if (sim > bestSimilarity) {
         // Previous best becomes the runner-up.
@@ -261,6 +299,33 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
 
     if (!bestEntry || bestSimilarity < threshold) {
       vlog('latent searchByModality MISS', { modality, threshold, hotLayerSize: this.hotLayer.length });
+      return null;
+    }
+
+    // MIN-POPULATION TRUST GATE — the structural defense against a single
+    // over-general pattern firing a confident GROUNDED reflex on a fresh boot.
+    //
+    // When this modality's hot layer is sparse (< MIN_MODALITY_POPULATION), the
+    // runner-up margin below has nothing to discriminate against (a lone pattern
+    // has no runner-up, so the margin is trivially satisfied). In that regime we
+    // require the matched pattern itself to have EARNED trust via repeated
+    // confirmed use (useCount ≥ MIN_TRUSTED_USECOUNT). A fresh, unproven pattern
+    // (useCount 0) is rejected → the input falls through to honest deliberation
+    // instead of a confabulated reflex. Once the layer is populous enough, the
+    // runner-up margin is the active discriminator and this floor lifts.
+    if (
+      modalityPopulation < MIN_MODALITY_POPULATION &&
+      bestEntry.useCount < MIN_TRUSTED_USECOUNT
+    ) {
+      vlog('latent searchByModality MISS (min-population trust gate)', {
+        modality,
+        modalityPopulation,
+        minPopulation: MIN_MODALITY_POPULATION,
+        patternUseCount: bestEntry.useCount,
+        minUseCount: MIN_TRUSTED_USECOUNT,
+        best: +bestSimilarity.toFixed(3),
+        patternId: bestEntry.id.substring(0, 8),
+      });
       return null;
     }
 
@@ -570,6 +635,58 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
   /** Number of patterns in the hot layer. */
   get hotLayerSize(): number {
     return this.hotLayer.length;
+  }
+
+  /** Count of hot-layer patterns for a given modality (gate/diagnostic use). */
+  hotLayerSizeForModality(modality: string): number {
+    return this.hotLayer.reduce((n, e) => (e.modality === modality ? n + 1 : n), 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gate seam — seed a single over-general pattern (WS1 follow-up #3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GATE/TEST SEAM — clear the hot layer and seed EXACTLY ONE text pattern with
+   * useCount 0, leaving the modality population at 1.
+   *
+   * This reproduces, in-memory and non-destructively, the precise production
+   * hazard the min-population trust gate defends against: a fresh boot (or a
+   * re-accumulated warm layer) holding a single over-general pattern that would
+   * otherwise fire a confident GROUNDED Type 1 reflex on any grazing input. The
+   * provability gate's H1 probe seeds the document-embedding of a NONSENSE input
+   * here (worst case: near-1.0 cosine), then feeds that nonsense and asserts the
+   * response is NOT a confident GROUNDED reflex — the real proof that the gate
+   * exists, distinct from H0 (clearHotLayer) which would stay green either way.
+   *
+   * Hot-layer only: the persistent warm layer (learned_patterns) is untouched, so
+   * this is non-destructive and re-hydrates normally on the next boot.
+   *
+   * @returns The seeded pattern's id, and the resulting hot-layer size (always 1).
+   */
+  seedSingleOverGeneralPattern(
+    embedding: number[],
+    responseText = 'over-general seeded reflex',
+  ): { id: string; hotLayerSize: number } {
+    this.hotLayer = [];
+    const id = randomUUID();
+    this.hotLayer.push({
+      id,
+      modality: 'text',
+      embedding,
+      responseText,
+      procedureId: null,
+      confidence: 0.9,
+      useCount: 0, // fresh / unproven — must NOT clear the trust floor
+      entityIds: [],
+      knowledgeGrounding: 'GROUNDED', // worst case: pattern claims GROUNDED
+      groundingPersonId: null,
+    });
+    this.logger.warn(
+      `Seeded a SINGLE over-general hot-layer pattern ${id.substring(0, 8)} (useCount 0) ` +
+        `for the no-clear gate probe (H1). Warm layer untouched.`,
+    );
+    return { id, hotLayerSize: this.hotLayer.length };
   }
 
   // ---------------------------------------------------------------------------

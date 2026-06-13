@@ -2030,16 +2030,39 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * In full mode, confidence can exceed 0.80 (allows Type 1 reflex).
    */
   /**
+   * Count of pattern write-backs that had to DROP their text modality because a
+   * `search_document:`-prefixed document embedding could not be produced. Metered
+   * (not silent) so the degradation is observable — a rising count means the text
+   * encoder's document path is failing and learned patterns are losing their text
+   * reflex. WS1 follow-up #3.
+   */
+  private documentWriteBackDegradations = 0;
+
+  /** Read the degradation counter (diagnostic; no reset, monotonic per process). */
+  getDocumentWriteBackDegradations(): number {
+    return this.documentWriteBackDegradations;
+  }
+
+  /**
    * Produce the per-modality embeddings to STORE for a learned pattern.
    *
    * The frame's text embedding was produced by the fusion layer as a nomic
    * QUERY (`search_query:`). A stored pattern must live in the DOCUMENT
    * sub-space (`search_document:`) so a future query retrieves it correctly, so
    * we re-embed the raw text stimulus via the text encoder's document method.
+   *
+   * WS1 follow-up #3 — PROVENANCE-CORRECT FALLBACK (Standard 1).
    * If the text encoder, the raw text, or the document re-embed is unavailable,
-   * we fall back to the frame's existing text embedding (degraded, but never a
-   * crash). Non-text modalities are passed through unchanged — they carry no
-   * nomic query/document asymmetry.
+   * we DROP the text modality from the write-back rather than store the QUERY
+   * embedding mislabeled as a document. Storing a `search_query:`-space vector in
+   * the document sub-space is a silent provenance lie: it sits in `learned_patterns`
+   * indistinguishable from a correctly-prefixed document, and a future
+   * `search_query:` lookup matches it against the WRONG sub-space — exactly the
+   * mislabel this hardening pass exists to kill. Dropping the text key means the
+   * pattern simply has no text reflex (the other modalities still persist), the
+   * conversation path still answers via deliberation, and the degradation is
+   * METERED + logged loudly instead of faked. Non-text modalities carry no nomic
+   * query/document asymmetry and pass through unchanged.
    */
   private async toDocumentEmbeddings(
     frame: SensoryFrame,
@@ -2048,20 +2071,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
     const rawText = frame.raw['text'];
     const textEncoder = this.modalityRegistry.get('text');
-    if (
-      typeof rawText === 'string' &&
-      rawText.trim().length > 0 &&
-      isDocumentEncoder(textEncoder)
-    ) {
+    const haveText = typeof rawText === 'string' && rawText.trim().length > 0;
+
+    if (haveText && isDocumentEncoder(textEncoder)) {
       try {
-        result['text'] = await textEncoder.encodeDocument(rawText);
+        result['text'] = await textEncoder.encodeDocument(rawText as string);
       } catch (err) {
+        // Re-embed FAILED. Do NOT store the query embedding (provenance lie).
+        delete result['text'];
+        this.documentWriteBackDegradations++;
         this.logger.warn(
-          `Document re-embed for write-back failed; storing query embedding instead: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `Document re-embed for write-back FAILED — DROPPING text modality from this ` +
+            `pattern (NOT storing the mislabeled query embedding; would violate Standard 1). ` +
+            `Pattern persists without a text reflex. Degradations this process: ` +
+            `${this.documentWriteBackDegradations}. Cause: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
         );
       }
+    } else if (haveText) {
+      // We HAVE text but no document-capable encoder: the frame's text embedding
+      // is a query-space vector. Storing it would mislabel the sub-space, so drop
+      // it and meter, same as the failure path above.
+      delete result['text'];
+      this.documentWriteBackDegradations++;
+      this.logger.warn(
+        `No document-capable text encoder available for write-back — DROPPING text ` +
+          `modality (NOT storing the query embedding; would violate Standard 1). ` +
+          `Degradations this process: ${this.documentWriteBackDegradations}.`,
+      );
     }
 
     return result;

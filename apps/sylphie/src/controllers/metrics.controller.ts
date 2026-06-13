@@ -1,10 +1,12 @@
-import { Controller, Get, HttpCode, Inject, Logger, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Logger, Post } from '@nestjs/common';
 import {
   ARBITRATION_SERVICE,
   ArbitrationService,
   ATTRACTOR_MONITOR_SERVICE,
   AttractorMonitorService,
   LatentSpaceService,
+  ModalityRegistryService,
+  isDocumentEncoder,
 } from '@sylphie/decision-making';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import {
@@ -66,6 +68,7 @@ export class MetricsController {
     private readonly timescale: TimescaleService,
     private readonly latentSpace: LatentSpaceService,
     private readonly personModel: PersonModelService,
+    private readonly modalityRegistry: ModalityRegistryService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -180,6 +183,65 @@ export class MetricsController {
       `Latent hot layer cleared for gate hermeticity (non-destructive): ${hotLayerCleared} patterns removed; warm layer preserved.`,
     );
     return { ok: true, clearedAt: new Date().toISOString(), hotLayerCleared };
+  }
+
+  /**
+   * POST /metrics/latent-seed-overgeneral   { "text": "<nonsense probe>" }
+   *
+   * WS1 follow-up #3 — the NO-CLEAR gate seam (the TRAP defense).
+   *
+   * Clears the hot layer and seeds EXACTLY ONE over-general text pattern whose
+   * stimulus embedding is the DOCUMENT embedding of the provided text — i.e. a
+   * worst-case near-1.0 cosine match for that same text as a query, with
+   * useCount 0. This reproduces the production hazard the min-population trust
+   * gate exists to neutralize: a single fresh over-general pattern that would,
+   * absent the gate, fire a confident GROUNDED Type 1 reflex on a grazing input.
+   *
+   * The provability gate's H1 probe calls this, then sends the SAME nonsense text
+   * over the conversation WS and asserts the response is NOT a GROUNDED Type 1.
+   * Unlike H0 (clearHotLayer → empty hot layer), this probe deliberately leaves a
+   * lone pattern present, so it goes RED if the gate is removed — the real proof.
+   *
+   * NON-DESTRUCTIVE: hot-layer only; the persistent warm layer is untouched.
+   *
+   * @returns ok + the seeded pattern id + the resulting (modality) populations.
+   */
+  @Post('latent-seed-overgeneral')
+  @HttpCode(200)
+  async seedOverGeneral(
+    @Body() body: { text?: string },
+  ): Promise<{ ok: boolean; seededAt: string; patternId: string | null; hotLayerSize: number; textPopulation: number; reason?: string }> {
+    const text = (body?.text ?? '').trim();
+    if (!text) {
+      return {
+        ok: false, seededAt: new Date().toISOString(), patternId: null,
+        hotLayerSize: this.latentSpace.hotLayerSize, textPopulation: 0,
+        reason: 'no text provided',
+      };
+    }
+
+    const encoder = this.modalityRegistry.get('text');
+    if (!isDocumentEncoder(encoder)) {
+      return {
+        ok: false, seededAt: new Date().toISOString(), patternId: null,
+        hotLayerSize: this.latentSpace.hotLayerSize, textPopulation: 0,
+        reason: 'no document-capable text encoder registered',
+      };
+    }
+
+    const embedding = await encoder.encodeDocument(text);
+    const { id, hotLayerSize } = this.latentSpace.seedSingleOverGeneralPattern(embedding);
+    this.logger.warn(
+      `Seeded a single over-general pattern ${id.substring(0, 8)} for the H1 no-clear gate probe ` +
+        `(text="${text.slice(0, 40)}", useCount 0). Hot layer size now ${hotLayerSize}.`,
+    );
+    return {
+      ok: true,
+      seededAt: new Date().toISOString(),
+      patternId: id,
+      hotLayerSize,
+      textPopulation: this.latentSpace.hotLayerSizeForModality('text'),
+    };
   }
 
   /**
