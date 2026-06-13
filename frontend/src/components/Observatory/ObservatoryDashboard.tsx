@@ -158,17 +158,17 @@ const DriveHeatmap: React.FC<{ data: DriveEntry[] }> = ({ data }) => {
 // -- Developmental stage indicator -----------------------------------------
 
 // Developmental stages in progression order per CANON; only one is active at a time
-const STAGE_ORDER = ['pre-autonomy', 'emerging', 'developing', 'autonomous']
+const STAGE_ORDER = ['pre-autonomy', 'emerging', 'consolidating', 'autonomous']
 const STAGE_LABELS: Record<string, string> = {
   'pre-autonomy': 'Pre-Autonomy',
   emerging: 'Emerging',
-  developing: 'Developing',
+  consolidating: 'Consolidating',
   autonomous: 'Autonomous',
 }
 
 const StageIndicator: React.FC<{ stage: DevStage }> = ({ stage }) => {
   const current = stage.overall.stage
-  const type1Pct = stage.overall.type1Pct.toFixed(1)
+  const type1Pct = (stage.overall.type1Pct * 100).toFixed(0)
 
   return (
     <Box>

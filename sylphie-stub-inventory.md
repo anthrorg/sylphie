@@ -275,7 +275,7 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 
 **Phase A (immediate, before any partial-mode bootstrap):**
 - 1.1 EWC — without this, partial mode is unsafe
-- 1.3 Procedure conflict — actively corrupting Type 1 graduation now
+- 1.3 Procedure conflict — ✅ RESOLVED (2026-06-10, 2e62de6); see §1.3
 - 2.4 DeepSeek reasoning trace — paying for it, throwing it away
 
 **Phase B (next sprint):**

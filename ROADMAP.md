@@ -72,7 +72,7 @@ The gate exists and is trustworthy. `yarn gate` (record/replay/lesion modes) dri
 >
 > **C1 — DONE (2026-06-10). 13/15 (87%) GROUNDED, C2 still 10/10.** Root cause was that the `okgRecallProvenance` fix was placed in `deliberate()` — but recall turns dispatch a `seed-greet` LLM_GENERATE ActionProcedure (TYPE_2 PROCEDURE path), which bypasses `deliberate()` entirely. Fix: `applyOkgRecallGrounding` shared helper applied in the PROCEDURE loop after `groundingForCachedResponse()`, with `recallKeyForQuestion` exclusions preventing C2 collisions (middle name, grew-up town, favorite food). `groundingProvenance` (the deterministic `attr-${personId}-${key}` OKG node id) now threads to `CycleResponse` (Standard 1 compliance). Two follow-ups: unit spec for `recallKeyForQuestion`; provenance verified against live Neo4j (deferred WS3). See `wiki/ideas/grounded-okg-recall-retrieval.md` for tactical vs durable distinction.
 3. **(recurrence-prevention, prod) Latent-space production hardening** — the `toDocumentEmbeddings` fallback (`decision-making.service.ts:~1540`) silently stores the *query* embedding instead of a `search_document:` one, and a long-running process re-accumulates over-general patterns in `learned_patterns` and will confabulate the same way the gate did. Add document-space write-back + a min-population gate before single-pattern matches are trusted. (This is a production Standard-4/Standard-1 hazard, not just a test artifact.)
-4. **Developmental dashboard + deploy hardening** (original WS1 scope, still open): live autonomy/MAE/provenance/graduation chart; app healthcheck; fix the Dockerfile subpath `exports` hack.
+4. **Developmental dashboard — built; display-hardened (2026-06-12).** Observatory dashboard renders live autonomy/MAE/provenance/graduation from 7 `/metrics/observatory/*` endpoints (`ObservatoryDashboard.tsx`, `useObservatoryData.ts`). This session fixed two display bugs: the autonomy number was rendering the 0–1 fraction with `toFixed(1)` ("0.1%" instead of "7%" at the ~6.9% live anchor), and the frontend stage set used `developing` where CANON/backend use `consolidating` (chip would silently go dark above 0.50). **Deploy hardening still open:** app-level healthcheck + the Dockerfile subpath `exports` hack. (Latent-space production hardening, #3, is the live build this session.)
 
 #### WS2 — Close the learning loop
 Make the autonomy curve *able* to rise. These are the load-bearing stubs.
@@ -87,7 +87,7 @@ Make the autonomy curve *able* to rise. These are the load-bearing stubs.
 
 #### WS3 — Compounding memory
 Turn accumulated knowledge into compounding capability.
-- **Procedure-conflict fix** — `constraint-validation-trigger-context-wiring`. One Cypher query; actively corrupting Type 1 graduation *now*. (Could be pulled forward into WS1/WS2 — it's cheap and high-impact.)
+- **Procedure-conflict fix** — ✅ **DONE (2026-06-10, `2e62de6`)**. `fetchExistingTriggerContexts()` now queries Neo4j WORLD for existing ActionProcedure trigger contexts (was returning an empty set → duplicate procedures fragmenting Type 1 confidence). Fails-closed: a WORLD outage DEFERS (bounded at 5 re-enqueues, then dropped loudly) rather than writing a possible duplicate. `constraint-validation.service.ts` + `constraint-checks.ts`/`.spec.ts`; constraint tests pass. (Stub inventory §1.3 RESOLVED.)
 - Instrument spreading-activation payoff and the experiential-provenance ratio shift.
 - Related: `mood-congruent-episodic-retrieval`, `theater-prohibition-real-validation`.
 
