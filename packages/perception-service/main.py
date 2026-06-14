@@ -9,8 +9,6 @@ Endpoints:
     GET  /perception/health         -- liveness probe: model loaded flag
     POST /perception/detect         -- one-shot detection on a submitted JPEG
     GET  /perception/status         -- pipeline running state + tracked object count
-    GET  /perception/stream         -- MJPEG stream, annotated frames
-    GET  /perception/stream/raw     -- MJPEG stream, unannotated frames
 
 Design:
     - Imports from src/cobeing/layer2_perception via PYTHONPATH (no copy).
@@ -21,8 +19,6 @@ Design:
       the service handles that gracefully via the /perception/health endpoint.
     - CPU-bound detection (YoloDetector.detect) is already synchronous; calls
       from the /detect endpoint are dispatched to a thread executor.
-    - MJPEG stream polls DebugFrameStore at ~10 Hz, matching the existing
-      routes_debug_camera.py pattern.
 
 Environment variables (COBEING_PERCEPTION_ prefix, double-underscore for nesting):
     COBEING_PERCEPTION_CAMERA__DEVICE          (default 0)
@@ -45,7 +41,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -86,7 +82,6 @@ class _NullPersistenceCheck:
 class _AppState:
     pipeline: Any | None = None          # PerceptionPipeline, or None if no camera
     pipeline_task: asyncio.Task | None = None  # background task running pipeline.run()
-    debug_frame_store: Any | None = None  # DebugFrameStore
     detector: Any | None = None          # YoloDetector, for the /detect endpoint
     face_detector: Any | None = None     # MediaPipeFaceDetector, for face detection
     embedding_extractor: Any | None = None  # OnnxEmbeddingExtractor, lazy-init
@@ -127,6 +122,63 @@ _state.frame_sequence_lock = asyncio.Lock()
 # executor threads, not on the event loop thread.
 _embedding_init_lock = threading.Lock()
 
+# Set True once an OnnxEmbeddingExtractor init has failed, to short-circuit
+# all future attempts. A missing/broken ONNX model or runtime does not
+# self-heal at request time, so retrying on every /detect frame (3 fps) or
+# /crop-face call only wastes work and floods the logs. Both embedding call
+# sites go through _get_or_init_embedding_extractor(), so this flag is shared.
+_embedding_init_failed: bool = False
+
+
+def _get_or_init_embedding_extractor() -> Any | None:  # noqa: ANN401
+    """Return the shared OnnxEmbeddingExtractor, initialising it on first use.
+
+    Thread-safe double-checked locking. Both embedding code paths
+    (``_compute_embedding`` for ``/crop-face`` and ``_extract_track_embedding``
+    for tracked objects) run inside ``loop.run_in_executor`` on OS threads from
+    the default ThreadPoolExecutor, so a ``threading.Lock`` (not an
+    ``asyncio.Lock``) is required to serialise the init.
+
+    On the first init failure the module-level ``_embedding_init_failed`` flag
+    is set and every subsequent call returns ``None`` immediately without
+    re-attempting -- the ONNX model/runtime does not recover at request time.
+
+    Returns:
+        The initialised ``OnnxEmbeddingExtractor``, or ``None`` if init has
+        failed (now or on a previous attempt).
+    """
+    global _embedding_init_failed  # noqa: PLW0603
+
+    if _embedding_init_failed:
+        return None
+
+    # Fast path: already initialised, no lock acquisition.
+    if _state.embedding_extractor is not None:
+        return _state.embedding_extractor
+
+    with _embedding_init_lock:
+        # Re-check inside the lock (another thread may have won the race).
+        if _state.embedding_extractor is not None:
+            return _state.embedding_extractor
+        if _embedding_init_failed:
+            return None
+        try:
+            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                OnnxEmbeddingExtractor,
+            )
+            _state.embedding_extractor = OnnxEmbeddingExtractor()
+            logger.info("OnnxEmbeddingExtractor initialized")
+        except (ImportError, RuntimeError) as exc:
+            logger.warning(
+                "OnnxEmbeddingExtractor unavailable (embeddings will be null): %s",
+                exc,
+            )
+            _embedding_init_failed = True
+            return None
+
+    return _state.embedding_extractor
+
+
 # threading.Lock protecting lazy-init of the VLM model. Same pattern as
 # _embedding_init_lock -- caption generation runs in run_in_executor.
 _vlm_init_lock = threading.Lock()
@@ -160,7 +212,7 @@ async def _startup() -> None:
     Non-fatal: if the [cv] extras are not installed or the camera device
     cannot be opened, the service starts anyway with model_loaded=False.
     The /perception/health endpoint reports the failure. The /perception/detect
-    and /perception/stream endpoints return 503 in that case.
+    endpoint returns 503 in that case.
     """
     try:
         from cobeing.layer2_perception.config import PerceptionConfig  # noqa: PLC0415
@@ -663,27 +715,15 @@ async def crop_face(request: Request) -> JSONResponse:
     loop = asyncio.get_event_loop()
 
     def _compute_embedding() -> list[float] | None:
-        # Double-checked locking pattern for thread-safe lazy init.
-        # This function runs in run_in_executor (OS thread), so we need
-        # threading.Lock, not asyncio.Lock. The outer check avoids lock
-        # acquisition after the first successful init.
-        if _state.embedding_extractor is None:
-            with _embedding_init_lock:
-                if _state.embedding_extractor is None:
-                    try:
-                        from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
-                            OnnxEmbeddingExtractor,
-                        )
-                        _state.embedding_extractor = OnnxEmbeddingExtractor()
-                        logger.info("OnnxEmbeddingExtractor initialized for face crops")
-                    except (ImportError, RuntimeError) as exc:
-                        logger.warning("Could not initialize OnnxEmbeddingExtractor: %s", exc)
-                        return None
+        # Shared thread-safe lazy init (runs on an executor thread).
+        extractor = _get_or_init_embedding_extractor()
+        if extractor is None:
+            return None
 
         # Use the masked crop for embedding (face-only, no background)
         crop_rgb = cv2.cvtColor(resized_masked, cv2.COLOR_BGR2RGB)
         raw_bytes = crop_rgb.tobytes()
-        return _state.embedding_extractor.extract(
+        return extractor.extract(
             raw_bytes,
             (0, 0, target_size, target_size),
             target_size,
@@ -862,9 +902,6 @@ def _generate_vlm_caption(jpeg_bytes: bytes, prompt: str) -> str:
     return result.strip()
 
 
-_embedding_init_failed: bool = False
-
-
 def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None:  # noqa: ANN401
     """Extract a 1280D EfficientNet-B0 embedding for a tracked object's bbox.
 
@@ -873,31 +910,12 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
     This produces embeddings that represent the object itself, not the object
     plus whatever table/wall/floor surrounds it.
 
-    Uses the same lazy-init OnnxEmbeddingExtractor pattern as /crop-face.
+    Uses the same shared lazy-init OnnxEmbeddingExtractor as /crop-face.
     Returns None if extraction fails or the extractor cannot be initialised.
     """
-    global _embedding_init_failed  # noqa: PLW0603
-
-    if _embedding_init_failed:
+    extractor = _get_or_init_embedding_extractor()
+    if extractor is None:
         return None
-
-    # Double-checked locking pattern for thread-safe lazy init.
-    # _extract_track_embedding runs in run_in_executor (OS thread), so
-    # threading.Lock is required. The outer check avoids acquiring the lock
-    # after the first successful init (hot path: no lock contention).
-    if _state.embedding_extractor is None:
-        with _embedding_init_lock:
-            if _state.embedding_extractor is None:
-                try:
-                    from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
-                        OnnxEmbeddingExtractor,
-                    )
-                    _state.embedding_extractor = OnnxEmbeddingExtractor()
-                    logger.info("OnnxEmbeddingExtractor initialized for tracked objects")
-                except (ImportError, RuntimeError) as exc:
-                    logger.warning("OnnxEmbeddingExtractor unavailable (embeddings will be null): %s", exc)
-                    _embedding_init_failed = True
-                    return None
 
     try:
         frame_data = frame.data
@@ -922,7 +940,7 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
             arr[mask == 0] = 0
             frame_data = arr.tobytes()
 
-        return _state.embedding_extractor.extract(
+        return extractor.extract(
             frame_data,
             (
                 detection.bbox_x_min,
@@ -1042,73 +1060,3 @@ async def status() -> JSONResponse:
         "tracked_objects": tracked_count,
         "fps": fps,
     })
-
-
-# ---------------------------------------------------------------------------
-# GET /perception/stream  (annotated MJPEG)
-# GET /perception/stream/raw  (unannotated MJPEG)
-# ---------------------------------------------------------------------------
-
-
-@app.get("/perception/stream")
-async def stream_annotated() -> StreamingResponse:
-    """Stream annotated MJPEG frames from the perception pipeline.
-
-    Polls DebugFrameStore.get_annotated() at ~10 Hz and yields frames as
-    multipart/x-mixed-replace, identical to routes_debug_camera.py.
-
-    Returns HTTP 503 if the pipeline is not active.
-    """
-    return _make_mjpeg_response(annotated=True)
-
-
-@app.get("/perception/stream/raw")
-async def stream_raw() -> StreamingResponse:
-    """Stream raw (unannotated) MJPEG frames from the perception pipeline.
-
-    Returns HTTP 503 if the pipeline is not active.
-    """
-    return _make_mjpeg_response(annotated=False)
-
-
-def _make_mjpeg_response(*, annotated: bool) -> StreamingResponse:
-    """Build a StreamingResponse for the MJPEG stream endpoints.
-
-    Args:
-        annotated: True for annotated frames, False for raw frames.
-
-    Returns:
-        A StreamingResponse with multipart/x-mixed-replace content type,
-        or a 503 plain-text response if the pipeline is not active.
-    """
-    store = _state.debug_frame_store
-
-    if store is None or not _state.pipeline_active:
-        return StreamingResponse(
-            iter([b"Perception pipeline not active"]),
-            status_code=503,
-            media_type="text/plain",
-        )
-
-    async def _generate():
-        """Yield MJPEG frames at ~10 Hz. Mirrors routes_debug_camera.py."""
-        while True:
-            if annotated:
-                frame_bytes = await store.get_annotated()
-            else:
-                frame_bytes = await store.get_raw()
-
-            if frame_bytes is not None:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n"
-                    b"\r\n" + frame_bytes + b"\r\n"
-                )
-
-            await asyncio.sleep(0.1)  # ~10 Hz polling
-
-    return StreamingResponse(
-        _generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )

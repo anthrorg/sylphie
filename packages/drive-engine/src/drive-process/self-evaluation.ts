@@ -14,6 +14,7 @@ const vlog = verboseFor('DriveEngine');
 import {
   SELF_EVALUATION_INTERVAL_TICKS,
   SELF_KG_QUERY_TIMEOUT_MS,
+  LOW_CAPABILITY_THRESHOLD,
 } from '../constants/self-evaluation';
 import { ISelfKgReader } from '../interfaces/self-kg.interfaces';
 import { DriveStateManager } from './drive-state';
@@ -132,19 +133,26 @@ export class SelfEvaluator {
    * @returns Promise<T | null>
    */
   private async queryWithTimeout<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T | null> {
-    return Promise.race([
-      fn(),
-      new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), timeoutMs);
-      }),
-    ]);
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timerId = setTimeout(() => resolve(null), timeoutMs);
+    });
+    try {
+      return await Promise.race([fn(), timeoutPromise]);
+    } finally {
+      // Clear the loser's timer so a resolved query doesn't leak a handle
+      // every evaluation cycle.
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+      }
+    }
   }
 
   /**
    * Assess whether the evaluation results indicate negative state.
    *
-   * Negative assessment: any capability has successRate < 0.3
-   * Positive assessment: all capabilities are >= 0.3 (or no data)
+   * Negative assessment: any capability has successRate < LOW_CAPABILITY_THRESHOLD
+   * Positive assessment: all capabilities are >= threshold (or no data)
    *
    * @param capabilities Capabilities from KG(Self)
    * @returns true if negative assessment
@@ -156,7 +164,7 @@ export class SelfEvaluator {
 
     // Check if any capability is low
     for (const cap of capabilities) {
-      if (cap.successRate !== undefined && cap.successRate < 0.3) {
+      if (cap.successRate !== undefined && cap.successRate < LOW_CAPABILITY_THRESHOLD) {
         return true; // Found a low-capability capability
       }
     }

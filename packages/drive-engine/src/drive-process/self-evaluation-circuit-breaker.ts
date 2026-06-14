@@ -67,10 +67,19 @@ export class SelfEvaluationCircuitBreaker {
 
   /**
    * Record a negative assessment.
-   * If threshold is reached, trip the circuit breaker.
+   *
+   * In HALF_OPEN, a single failed probe immediately re-trips the circuit
+   * (standard circuit-breaker semantics) — a relapse should not get a fresh
+   * run at the full threshold. In CLOSED, the threshold counter governs.
    */
   public recordNegativeAssessment(): void {
     this.consecutiveNegatives++;
+
+    if (this.state === CircuitBreakerState.HALF_OPEN) {
+      // Probe failed — relapse straight back to OPEN.
+      this.tripCircuit();
+      return;
+    }
 
     if (this.consecutiveNegatives >= CIRCUIT_BREAKER_NEGATIVE_THRESHOLD) {
       this.tripCircuit();

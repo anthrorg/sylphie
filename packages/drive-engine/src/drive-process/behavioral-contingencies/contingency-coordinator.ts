@@ -98,12 +98,17 @@ export class ContingencyCoordinator {
     }
 
     // 3. Guilt Repair
+    // Behavioral change is detected by comparing the current (repairing)
+    // action against the *prior* error's action type — not against itself.
+    // Capture the last recorded error before computeGuiltRelief mutates the
+    // history (on negative outcomes it appends; on successful repair it clears).
+    const previousErrorActionType = this.guiltyRepair.getLastErrorActionType();
     const guiltRelief = this.guiltyRepair.computeGuiltRelief(
       outcome.actionType,
       outcome.outcome,
       {
-        previousErrorActionType: outcome.actionType,
-        previousErrorContext: outcome.actionType,
+        previousErrorActionType: previousErrorActionType ?? undefined,
+        previousErrorContext: previousErrorActionType ?? undefined,
       },
     );
     if (guiltRelief !== 0) {

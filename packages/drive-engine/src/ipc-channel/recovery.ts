@@ -33,6 +33,22 @@ export interface RecoveryOptions {
 
   /** Backoff multiplier (default: 2). */
   backoffMultiplier?: number;
+
+  /**
+   * Jitter fraction applied to each backoff delay (default: 0.25).
+   * The actual delay is the computed backoff multiplied by a random factor
+   * in [1 - jitterFraction, 1 + jitterFraction], spreading reconnect attempts
+   * across instances to avoid a thundering herd. Set to 0 to disable.
+   */
+  jitterFraction?: number;
+
+  /**
+   * Optional provider for the count of pending (in-flight) outbound messages,
+   * surfaced via getState().pendingMessageCount. When omitted, the count
+   * reports 0. Lets an owner (e.g. the outcome reporter) supply real
+   * visibility without RecoveryMechanism taking a hard queue dependency.
+   */
+  pendingMessageProvider?: () => number;
 }
 
 /**
@@ -71,6 +87,8 @@ export class RecoveryMechanism {
   private readonly maxDelayMs: number;
   private readonly maxRetries: number;
   private readonly backoffMultiplier: number;
+  private readonly jitterFraction: number;
+  private readonly pendingMessageProvider?: () => number;
   private inSafeModeAlert = false;
   private lastRestartAt: Date | null = null;
 
@@ -84,6 +102,8 @@ export class RecoveryMechanism {
     this.maxDelayMs = options?.maxDelayMs ?? 60000;
     this.maxRetries = options?.maxRetries ?? 3;
     this.backoffMultiplier = options?.backoffMultiplier ?? 2;
+    this.jitterFraction = options?.jitterFraction ?? 0.25;
+    this.pendingMessageProvider = options?.pendingMessageProvider;
     this.currentDelayMs = this.initialDelayMs;
   }
 
@@ -111,52 +131,56 @@ export class RecoveryMechanism {
       return false;
     }
 
-    if (this.attemptCount >= this.maxRetries) {
-      this.logger.error(
-        `Max retry limit (${this.maxRetries}) exceeded, entering safe mode alert`,
+    // Iterative retry loop. Replaces the previous recursive self-call in the
+    // catch block, which risked stack growth if maxRetries were ever raised or
+    // the depth guard regressed. Each failed reconnect grows the backoff and
+    // loops; only an exhausted retry budget exits to safe mode.
+    while (this.attemptCount < this.maxRetries) {
+      this.attemptCount++;
+
+      // Apply jitter to the *current* backoff so concurrent instances don't
+      // all reconnect on the same tick (thundering herd).
+      const waitMs = this.applyJitter(this.currentDelayMs);
+      this.logger.warn(
+        `Recovery attempt ${this.attemptCount}/${this.maxRetries} in ${waitMs}ms`,
       );
-      this.inSafeModeAlert = true;
-      return false;
+
+      // Wait before retrying.
+      await this.delay(waitMs);
+
+      try {
+        // Close the old connection and reconnect.
+        await this.wsChannel.close(2000);
+        this.wsChannel.connect(this.wsUrl);
+        // Guard: older/mocked channels may not implement this counter.
+        if (typeof this.wsChannel.incrementReconnectCount === 'function') {
+          this.wsChannel.incrementReconnectCount();
+        }
+
+        this.lastRestartAt = new Date();
+        this.advanceBackoff();
+
+        this.logger.log(
+          `Process restarted successfully (attempt ${this.attemptCount})`,
+        );
+        return true;
+      } catch (error) {
+        this.logger.error(
+          `Recovery attempt ${this.attemptCount} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+
+        // Grow the backoff for the next loop iteration.
+        this.advanceBackoff();
+        // Continue looping until the retry budget is exhausted.
+      }
     }
 
-    this.attemptCount++;
-    this.logger.warn(
-      `Recovery attempt ${this.attemptCount}/${this.maxRetries} in ${this.currentDelayMs}ms`,
+    // Retry budget exhausted without a successful reconnect.
+    this.logger.error(
+      `Max retry limit (${this.maxRetries}) exceeded, entering safe mode alert`,
     );
-
-    // Wait before retrying
-    await this.delay(this.currentDelayMs);
-
-    try {
-      // Close the old connection and reconnect
-      await this.wsChannel.close(2000);
-      this.wsChannel.connect(this.wsUrl);
-      this.wsChannel.incrementReconnectCount();
-
-      this.lastRestartAt = new Date();
-      this.currentDelayMs = Math.min(
-        this.currentDelayMs * this.backoffMultiplier,
-        this.maxDelayMs,
-      );
-
-      this.logger.log(
-        `Process restarted successfully (attempt ${this.attemptCount})`,
-      );
-      return true;
-    } catch (error) {
-      this.logger.error(
-        `Recovery attempt ${this.attemptCount} failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-
-      // Exponential backoff for next attempt
-      this.currentDelayMs = Math.min(
-        this.currentDelayMs * this.backoffMultiplier,
-        this.maxDelayMs,
-      );
-
-      // Retry again (until max retries exceeded)
-      return this.attemptRecovery();
-    }
+    this.inSafeModeAlert = true;
+    return false;
   }
 
   /**
@@ -183,7 +207,9 @@ export class RecoveryMechanism {
       currentDelayMs: this.currentDelayMs,
       inSafeModeAlert: this.inSafeModeAlert,
       lastRestartAt: this.lastRestartAt,
-      pendingMessageCount: 0, // Placeholder: would be tracked by IpcChannelService
+      pendingMessageCount: this.pendingMessageProvider
+        ? this.pendingMessageProvider()
+        : 0,
     };
   }
 
@@ -199,6 +225,32 @@ export class RecoveryMechanism {
   // ---------------------------------------------------------------------------
   // Private: Utilities
   // ---------------------------------------------------------------------------
+
+  /**
+   * Grow the backoff delay by the multiplier, capped at maxDelayMs.
+   */
+  private advanceBackoff(): void {
+    this.currentDelayMs = Math.min(
+      this.currentDelayMs * this.backoffMultiplier,
+      this.maxDelayMs,
+    );
+  }
+
+  /**
+   * Apply randomized jitter to a delay, returning a value in
+   * [delay * (1 - jitterFraction), delay * (1 + jitterFraction)] clamped to
+   * a non-negative integer. Spreads reconnection attempts across instances.
+   *
+   * @param delayMs - Base delay in milliseconds
+   */
+  private applyJitter(delayMs: number): number {
+    if (this.jitterFraction <= 0) {
+      return delayMs;
+    }
+    // Random factor in [1 - f, 1 + f].
+    const factor = 1 + (Math.random() * 2 - 1) * this.jitterFraction;
+    return Math.max(0, Math.round(delayMs * factor));
+  }
 
   /**
    * Sleep for the specified duration.

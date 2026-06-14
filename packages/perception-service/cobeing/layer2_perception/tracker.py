@@ -107,6 +107,7 @@ def _greedy_assign(
     tracks: list[TrackedObject],
     detections: list[Detection],
     iou_threshold: float,
+    class_gating: bool = True,
 ) -> tuple[dict[int, int], set[int], set[int]]:
     """Greedily assign detections to tracks by highest IoU.
 
@@ -118,6 +119,12 @@ def _greedy_assign(
         tracks: Current active tracks (in any non-DELETED state).
         detections: New-frame detections to assign.
         iou_threshold: Minimum IoU for a valid assignment.
+        class_gating: When True (default), a track and a detection are only
+            eligible to match when their ``Detection.label_raw`` values are
+            equal. Their IoU is forced to 0.0 on label mismatch, preventing
+            cross-class ID swaps (e.g. a ``person`` track rebinding to an
+            overlapping ``chair``). When False, association is class-blind
+            (legacy behaviour, for tests/experiments).
 
     Returns:
         A 3-tuple:
@@ -131,8 +138,16 @@ def _greedy_assign(
         return {}, set(range(len(tracks))), set(range(len(detections)))
 
     # Build full IoU matrix: rows = tracks, cols = detections.
+    # Class gating forces IoU to 0.0 whenever the track's last detection and
+    # the candidate detection carry different YOLO class labels, so they can
+    # never be associated regardless of bbox overlap.
     iou_matrix: list[list[float]] = [
-        [_compute_iou(track.detection, det) for det in detections]
+        [
+            _compute_iou(track.detection, det)
+            if not class_gating or track.detection.label_raw == det.label_raw
+            else 0.0
+            for det in detections
+        ]
         for track in tracks
     ]
 
@@ -198,6 +213,10 @@ class IoUTracker:
             from TENTATIVE to CONFIRMED.  Default 3.
         max_lost_frames: Consecutive unmatched frames before a LOST track is
             promoted to DELETED and removed.  Default 15.
+        class_gating: When True (default), detections may only be associated
+            with tracks of the same YOLO class (``Detection.label_raw``),
+            eliminating cross-class ID swaps. Set False for class-blind
+            (legacy) matching.
     """
 
     def __init__(
@@ -205,10 +224,12 @@ class IoUTracker:
         iou_threshold: float = 0.3,
         min_confirm_frames: int = 3,
         max_lost_frames: int = 15,
+        class_gating: bool = True,
     ) -> None:
         self._iou_threshold = iou_threshold
         self._min_confirm_frames = min_confirm_frames
         self._max_lost_frames = max_lost_frames
+        self._class_gating = class_gating
 
         # Active tracks (all non-DELETED states).
         self._tracks: list[TrackedObject] = []
@@ -252,7 +273,12 @@ class IoUTracker:
         now = datetime.now(UTC)
 
         assignments, unmatched_track_indices, unmatched_detection_indices = (
-            _greedy_assign(self._tracks, detections, self._iou_threshold)
+            _greedy_assign(
+                self._tracks,
+                detections,
+                self._iou_threshold,
+                self._class_gating,
+            )
         )
 
         updated: list[TrackedObject] = []

@@ -194,6 +194,17 @@ export interface LlmResponse {
    * Rounded to 6 decimal places.
    */
   readonly cost: number;
+
+  /**
+   * Separated chain-of-thought reasoning trace, when the model emits one.
+   *
+   * Reasoning models (e.g. DeepSeek-reasoner) return their chain-of-thought in
+   * a distinct `reasoning_content` field, separate from the final `content`.
+   * Adapters that surface such models populate this field so consumers (e.g.
+   * the supervisor's audit trail) can store the reasoning independently from
+   * the conclusion. Undefined for non-reasoning models or when not returned.
+   */
+  readonly reasoningContent?: string;
 }
 
 // ---------------------------------------------------------------------------

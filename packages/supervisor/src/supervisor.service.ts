@@ -275,10 +275,10 @@ export class SupervisorService
 
       return {
         ...parsed,
-        // DeepSeek reasoning_content is folded into response.content by
-        // OllamaLlmService — reasoning trace not separately available yet.
-        // TODO: Expose reasoning_content on LlmResponse interface.
-        reasoningTrace: undefined,
+        // DeepSeek-reasoner returns chain-of-thought separately from the final
+        // verdict; OllamaLlmService now surfaces it as response.reasoningContent.
+        // Captured here for the supervisor audit trail.
+        reasoningTrace: response.reasoningContent,
         inputTokens,
         outputTokens,
         costUsd: response.cost,

@@ -495,15 +495,30 @@ class PerceptionPipeline:
             for track, obs in zip(updated_confirmed, preliminary_list):
                 preliminary_obs_map[track.track_id] = obs
 
-            # Run persistence check for each CONFIRMED track.
-            persistence_results: dict[TrackId, PersistenceResult] = {}
-            for track in updated_confirmed:
+            # Run persistence check for each CONFIRMED track. The checks are
+            # independent (different track, different observation, no shared
+            # mutable state between calls), so they are dispatched concurrently
+            # via asyncio.gather rather than awaited one at a time. With N
+            # confirmed objects this collapses N sequential Layer 3 round-trips
+            # into a single concurrent wait, reclaiming per-frame budget.
+            async def _check_one(
+                track: TrackedObject,
+            ) -> tuple[TrackId, PersistenceResult | None]:
                 obs = preliminary_obs_map.get(track.track_id)
                 if obs is None:
-                    continue
-                result = await self._persistence_check.find_match(obs)
-                if result is not None:
-                    persistence_results[track.track_id] = result
+                    return track.track_id, None
+                return track.track_id, await self._persistence_check.find_match(obs)
+
+            persistence_results: dict[TrackId, PersistenceResult] = {}
+            if updated_confirmed:
+                check_results = await asyncio.gather(
+                    *(_check_one(track) for track in updated_confirmed)
+                )
+                persistence_results = {
+                    track_id: result
+                    for track_id, result in check_results
+                    if result is not None
+                }
 
             # Build final Observations with persistence results.
             # The builder applies debounce internally.

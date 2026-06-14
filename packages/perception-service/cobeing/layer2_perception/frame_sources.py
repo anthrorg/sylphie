@@ -204,14 +204,29 @@ class CameraFrameSource:
 
         Raises:
             CaptureError: If the source has not been opened (``__aenter__``
-                was not called).
+                was not called), or if the blocking ``read()`` does not
+                complete within ``capture_timeout_seconds`` (hung device).
         """
         if self._cap is None:
             raise CaptureError(
                 "CameraFrameSource is not open. Use 'async with' to open the device."
             )
-        loop = asyncio.get_event_loop()
-        frame = await loop.run_in_executor(None, self._read_frame)
+        loop = asyncio.get_running_loop()
+        timeout = self._config.capture_timeout_seconds
+        try:
+            frame = await asyncio.wait_for(
+                loop.run_in_executor(None, self._read_frame),
+                timeout=timeout,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            # The underlying read() is still running on the executor thread;
+            # we abandon waiting on it. A hung device must not stall the
+            # capture loop indefinitely. The orphaned thread will resolve (or
+            # leak) on the device's own timeout, but the event loop is freed.
+            raise CaptureError(
+                f"Camera read on device {self._config.device!r} timed out after "
+                f"{timeout}s. The device may be disconnected or hung."
+            ) from exc
         return frame
 
     def _read_frame(self) -> Frame | None:
@@ -286,6 +301,7 @@ class VideoFileSource:
         session_id: str,
         width: int = 1280,
         height: int = 720,
+        capture_timeout_seconds: float = 5.0,
     ) -> None:
         """Initialise the source with a video file path.
 
@@ -301,6 +317,10 @@ class VideoFileSource:
                 The file's native width is used if this property cannot be set.
             height: Requested frame height. Passed to ``CAP_PROP_FRAME_HEIGHT``.
                 The file's native height is used if this property cannot be set.
+            capture_timeout_seconds: Max seconds to wait for a single blocking
+                ``read()`` before raising ``CaptureError``. Guards against a
+                hung/corrupted file handle stalling the consumer loop. Default
+                5.0s.
 
         Raises:
             ImportError: If the ``[cv]`` extras are not installed.
@@ -312,6 +332,7 @@ class VideoFileSource:
         self._session_id = session_id
         self._width = width
         self._height = height
+        self._capture_timeout_seconds = capture_timeout_seconds
         self._cap: object | None = None
         self._sequence: int = 0
 
@@ -388,14 +409,25 @@ class VideoFileSource:
 
         Raises:
             CaptureError: If the source has not been opened (``__aenter__``
-                was not called).
+                was not called), or if the blocking ``read()`` does not
+                complete within ``capture_timeout_seconds``.
         """
         if self._cap is None:
             raise CaptureError(
                 "VideoFileSource is not open. Use 'async with' to open the file."
             )
-        loop = asyncio.get_event_loop()
-        frame = await loop.run_in_executor(None, self._read_frame)
+        loop = asyncio.get_running_loop()
+        timeout = self._capture_timeout_seconds
+        try:
+            frame = await asyncio.wait_for(
+                loop.run_in_executor(None, self._read_frame),
+                timeout=timeout,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise CaptureError(
+                f"Video file read on {self._file_path!r} timed out after "
+                f"{timeout}s. The file handle may be hung or the source stalled."
+            ) from exc
         return frame
 
     def _read_frame(self) -> Frame | None:

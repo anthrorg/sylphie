@@ -33,6 +33,7 @@ Environment variables (COGNITION_ prefix):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -145,7 +146,13 @@ class _AppState:
         # Metrics
         self.inference_latency_ms: float = 0.0
         self.checkpoint_count: int = 0
+        # Running mean of per-cycle confidence, keyed by the tensor's resolved
+        # top action_category. Surfaced via GET /cognition/metrics for the
+        # Guardian dashboard panel. Updated by record_cycle_confidence() after
+        # each /cognition/cycle. The companion count dict backs the incremental
+        # mean so we never have to retain the full history.
         self.per_category_confidence: dict[str, float] = {}
+        self._per_category_confidence_counts: dict[str, int] = {}
 
         # Bootstrap sample counters (raw counts; agreement data lives in tracker).
         self.total_shadow_samples: int = 0
@@ -183,6 +190,40 @@ class _AppState:
         if self.buffer is not None:
             return len(self.buffer)
         return 0
+
+    def record_cycle_confidence(self, result: CognitionCycleResponse) -> None:
+        """Aggregate a cycle's confidence into per_category_confidence.
+
+        The cycle's confidence scalar is the mean of the panel confidence
+        heads for this cycle (each panel emits a sigmoid confidence in
+        [0, 1]). It is attributed to the tensor's resolved top category
+        (result.tensor_top_category) and folded into an incremental running
+        mean so the metrics endpoint reflects the long-run confidence the
+        sidecar has expressed for each category.
+
+        Categories are only resolvable when a vocab was passed to cycle.run
+        (i.e. during bootstrap, when tensor_top_category is populated). When
+        it is None — full mode, or no vocab — there is nothing to attribute,
+        so the cycle is skipped rather than bucketed under a placeholder.
+        """
+        category = result.tensor_top_category
+        if not category:
+            return
+
+        opinions = result.panel_opinions
+        if not opinions:
+            return
+        cycle_confidence = sum(p.confidence for p in opinions) / len(opinions)
+
+        key = category.strip().lower()
+        prev_count = self._per_category_confidence_counts.get(key, 0)
+        prev_mean = self.per_category_confidence.get(key, 0.0)
+        new_count = prev_count + 1
+        # Incremental mean: mean_n = mean_{n-1} + (x_n - mean_{n-1}) / n
+        self.per_category_confidence[key] = (
+            prev_mean + (cycle_confidence - prev_mean) / new_count
+        )
+        self._per_category_confidence_counts[key] = new_count
 
 
 _state = _AppState()
@@ -282,9 +323,38 @@ async def cognitive_cycle(req: CognitionCycleRequest):
     # tensor_top_category for NestJS audit comparison. In full mode or when
     # the trainer is unavailable, vocab is None and the field is omitted.
     vocab = _state.trainer._vocab if _state.trainer is not None else None
-    result = _state.cycle.run(req, vocab=vocab)
+
+    # Internal watchdog: cycle.run is synchronous CPU work, so we offload it to
+    # a worker thread and bound it with asyncio.wait_for. The TS caller already
+    # has its own AbortSignal, but the sidecar self-protects + logs so a hung
+    # cycle can't silently pin the event loop. Timeout is MAX_INFERENCE_TIMEOUT_MS
+    # (config), converted to seconds.
+    timeout_s = config.MAX_INFERENCE_TIMEOUT_MS / 1000.0
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_state.cycle.run, req, vocab),
+            timeout=timeout_s,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Cognitive cycle exceeded MAX_INFERENCE_TIMEOUT_MS=%d ms — "
+            "aborting this request. The worker thread may still be running; "
+            "this is a watchdog, not a hard kill. Returning 503.",
+            config.MAX_INFERENCE_TIMEOUT_MS,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "cycle_timeout",
+                "timeout_ms": config.MAX_INFERENCE_TIMEOUT_MS,
+            },
+        )
+
     _state.inference_latency_ms = result.inference_ms
     _state.last_cycle_result = result
+    # Aggregate this cycle's confidence by resolved category for the metrics
+    # endpoint / Guardian dashboard panel (§2.3).
+    _state.record_cycle_confidence(result)
     return result
 
 

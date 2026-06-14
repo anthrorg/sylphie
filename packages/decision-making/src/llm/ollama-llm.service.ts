@@ -201,8 +201,12 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const cost = (promptTokens / 1_000_000) * DEEPSEEK_INPUT_COST_PER_M
       + (completionTokens / 1_000_000) * DEEPSEEK_OUTPUT_COST_PER_M;
 
-    // For reasoning models, content may be in reasoning_content
+    // Reasoning models (DeepSeek-reasoner) return chain-of-thought in a
+    // separate reasoning_content field. Keep it distinct from the final answer.
+    // If content is empty (some responses), fall back to the reasoning text so
+    // downstream parsers still receive something usable.
     const choice = data.choices[0]?.message;
+    const reasoningContent = choice?.reasoning_content || undefined;
     const content = choice?.content || choice?.reasoning_content || '';
 
     const tier = request.tier ?? 'deep';
@@ -230,6 +234,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       latencyMs,
       model: data.model ?? model,
       cost,
+      reasoningContent,
     };
   }
 

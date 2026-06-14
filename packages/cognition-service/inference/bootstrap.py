@@ -72,8 +72,13 @@ class BootstrapTracker:
         """
         # Normalise to lowercase for comparison — NestJS sends PascalCase
         # (e.g. "ConversationalResponse") but the tensor vocab stores lowercase.
-        tensor_norm = tensor_top_category.lower()
-        llm_norm = llm_category.lower()
+        # Use .strip().lower() to match ActionVocabulary.index_of() in
+        # training/trainer.py exactly; a bare .lower() left surrounding
+        # whitespace intact and produced false disagreements (e.g.
+        # " conversationalresponse " != "conversationalresponse"), skewing
+        # graduation metrics and delaying mode advancement.
+        tensor_norm = tensor_top_category.strip().lower()
+        llm_norm = llm_category.strip().lower()
         agreed = (tensor_norm == llm_norm)
         if llm_norm not in self._category_history:
             self._category_history[llm_norm] = []

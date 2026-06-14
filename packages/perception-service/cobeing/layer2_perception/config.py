@@ -64,6 +64,12 @@ class CameraConfig(BaseModel):
         buffer_size: ``CAP_PROP_BUFFERSIZE`` value. Setting to ``1`` reduces
             capture latency by discarding older buffered frames, at the cost
             of potentially missing frames under heavy load.
+        capture_timeout_seconds: Maximum time to wait for a single blocking
+            ``VideoCapture.read()`` in the thread executor before the read is
+            abandoned and a ``CaptureError`` is raised. Guards against a hung
+            device (USB disconnect, driver freeze, stalled RTSP stream)
+            blocking the capture loop forever. Default 5.0s; raise this for
+            high-latency network (RTSP) cameras.
     """
 
     device: int = Field(default=0, ge=0, description="OpenCV camera device index")
@@ -74,6 +80,11 @@ class CameraConfig(BaseModel):
         default=1,
         ge=1,
         description="cv2 CAP_PROP_BUFFERSIZE. 1 = lowest latency.",
+    )
+    capture_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="Max seconds to wait for a blocking frame read before raising CaptureError",
     )
 
 

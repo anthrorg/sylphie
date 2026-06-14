@@ -16,6 +16,12 @@ export class CostTrackerService {
   /** Daily budget in USD. */
   private readonly dailyBudgetUsd: number;
 
+  /** DeepSeek input price in USD per million tokens (config-driven). */
+  private readonly inputPricePerM: number;
+
+  /** DeepSeek output price in USD per million tokens (config-driven). */
+  private readonly outputPricePerM: number;
+
   /** Cumulative cost for today (resets at midnight UTC). */
   private costToday = 0;
 
@@ -29,8 +35,21 @@ export class CostTrackerService {
     this.dailyBudgetUsd = parseFloat(
       this.config.get<string>('SUPERVISOR_DAILY_BUDGET_USD', '5.00'),
     );
+
+    // DeepSeek pricing is operator-configurable so rate changes are an env
+    // update, not a code deploy. Defaults reflect DeepSeek pricing as of 2026-04.
+    this.inputPricePerM = parseFloat(
+      this.config.get<string>('DEEPSEEK_INPUT_PRICE_PER_M', '0.28'),
+    );
+    this.outputPricePerM = parseFloat(
+      this.config.get<string>('DEEPSEEK_OUTPUT_PRICE_PER_M', '0.42'),
+    );
+
     this.currentDay = this.todayUtc();
-    this.logger.log(`Cost tracker initialized (daily budget: $${this.dailyBudgetUsd})`);
+    this.logger.log(
+      `Cost tracker initialized (daily budget: $${this.dailyBudgetUsd}, ` +
+        `rates: $${this.inputPricePerM}/M in, $${this.outputPricePerM}/M out)`,
+    );
   }
 
   /**
@@ -41,9 +60,10 @@ export class CostTrackerService {
   recordCost(inputTokens: number, outputTokens: number): boolean {
     this.maybeResetDay();
 
-    // DeepSeek pricing: $0.28/M input, $0.42/M output (as of 2026-04)
+    // DeepSeek pricing is config-driven (DEEPSEEK_INPUT/OUTPUT_PRICE_PER_M).
     const cost =
-      (inputTokens / 1_000_000) * 0.28 + (outputTokens / 1_000_000) * 0.42;
+      (inputTokens / 1_000_000) * this.inputPricePerM +
+      (outputTokens / 1_000_000) * this.outputPricePerM;
 
     this.costToday += cost;
     this.totalCost += cost;

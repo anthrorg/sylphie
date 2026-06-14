@@ -170,6 +170,33 @@ export class GuiltyRepair {
   public getRecentErrors(): ErrorContext[] {
     return [...this.recentErrors];
   }
+
+  /**
+   * Get the action type of the most recent error still within the history
+   * window, or null if there are no live errors.
+   *
+   * Used by the contingency coordinator to supply a genuine "previous error"
+   * for behavioral-change detection, rather than echoing back the current
+   * action type (which always reads as "no change").
+   *
+   * @param excludeActionType - Optional action type to ignore when scanning
+   *   (e.g. the current action) so a repair of the same type still counts as
+   *   matching its earlier failure rather than itself.
+   */
+  public getLastErrorActionType(): string | null {
+    if (this.recentErrors.length === 0) {
+      return null;
+    }
+    const now = Date.now();
+    // Scan newest-first for an error still within the timeout window.
+    for (let i = this.recentErrors.length - 1; i >= 0; i--) {
+      const err = this.recentErrors[i];
+      if (now - err.timestamp < this.ERROR_HISTORY_TIMEOUT_MS) {
+        return err.actionType;
+      }
+    }
+    return null;
+  }
 }
 
 /**
