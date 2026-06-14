@@ -79,6 +79,14 @@ interface SceneEntity {
   leavingAt: number | null;
   /** 1280D embedding for cosine matching (from tracker). */
   embedding: number[] | null;
+  /**
+   * WS5 T0.8 — synthetic-frame discriminator carried from the detection DTO.
+   * Real sensor frames leave it false; gate-injected (cassette) frames set it
+   * true so the WORLD :VisualObject node is marked `synthetic:true` for clean
+   * `perception-reset` deletion. provenance_type stays 'SENSOR' regardless
+   * (atlas ruling 2026-06-13).
+   */
+  synthetic: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +363,8 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       presenceRatio: 1.0,
       leavingAt: null,
       embedding: track.embedding,
+      // WS5 T0.8 — carry the synthetic discriminator from the detection DTO.
+      synthetic: track.synthetic ?? false,
     };
 
     this.entities.set(entityId, entity);
@@ -384,6 +394,9 @@ export class VisualWorkingMemoryService implements OnModuleInit {
         entity.confidence = track.confidence;
         entity.state = 'present';
         if (track.embedding) entity.embedding = track.embedding;
+        // WS5 T0.8 — once a synthetic track re-associates onto an entity, the
+        // entity is synthetic (so its WORLD node, if/when created, is reset-clean).
+        if (track.synthetic) entity.synthetic = true;
 
         this.trackToEntity.set(track.trackId, entity.id);
 
@@ -507,9 +520,13 @@ export class VisualWorkingMemoryService implements OnModuleInit {
              n.discovered = false,
              n.yolo_class = $label,
              n.sighting_count = 1,
+             n.synthetic = $synthetic,
              n.created_at = datetime()
            RETURN n.node_id AS id`,
-          { nodeId, label: entity.label },
+          // WS5 T0.8 (atlas ruling 2026-06-13): provenance_type stays 'SENSOR';
+          // the synthetic:true boolean is the SOLE discriminator. Real frames
+          // leave entity.synthetic false. perception-reset deletes synthetic nodes.
+          { nodeId, label: entity.label, synthetic: entity.synthetic },
         );
       } catch (err) {
         this.logger.warn(`VWM: WKG node creation failed: ${err}`);
@@ -771,6 +788,68 @@ export class VisualWorkingMemoryService implements OnModuleInit {
     }
 
     this.logger.log(`VWM: entity discovered: ${displayName} (node=${nodeId})`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS5 T0.7 — gate hermeticity reset
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reset visual perception state for a hermetic gate run (WS5 T0.7).
+   *
+   * Three coupled deletions so a synthetic gate frame leaves NO residue that
+   * could contaminate the next run's surprise/novelty (finding 4):
+   *   1. Clear the in-memory entity Map + trackToEntity index (VWM has no other
+   *      `clear()` today — without this, prior-run entities persist in-process).
+   *   2. DETACH DELETE the synthetic WORLD :VisualObject nodes (T0.8). Scoped to
+   *      `{synthetic:true}` so genuine SENSOR-grounded world facts are untouched.
+   *      WORLD instance is physically separate (isolation-sound per atlas).
+   *   3. TRUNCATE visual_object_embeddings — the companion Timescale rows written
+   *      at createUndiscoveredNode; without this the embedding store leaks across
+   *      runs even after the Neo4j nodes are gone.
+   *
+   * Returns counts for gate audit. Read-then-write only on the WORLD instance;
+   * never touches SELF/OTHER.
+   */
+  async resetForGate(): Promise<{ entitiesCleared: number; syntheticNodesDeleted: number; embeddingsTruncated: boolean }> {
+    const entitiesCleared = this.entities.size;
+    this.entities.clear();
+    this.trackToEntity.clear();
+
+    let syntheticNodesDeleted = 0;
+    if (this.neo4j) {
+      const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+      try {
+        const res = await session.run(
+          `MATCH (n:VisualObject {synthetic: true})
+           DETACH DELETE n
+           RETURN count(n) AS deleted`,
+        );
+        const rec = res.records[0];
+        syntheticNodesDeleted = rec ? (rec.get('deleted') as { toNumber(): number }).toNumber() : 0;
+      } catch (err) {
+        this.logger.warn(`VWM: synthetic WORLD node reset failed: ${err}`);
+      } finally {
+        await session.close();
+      }
+    }
+
+    let embeddingsTruncated = false;
+    if (this.timescale) {
+      try {
+        await this.timescale.query('TRUNCATE visual_object_embeddings');
+        embeddingsTruncated = true;
+      } catch (err) {
+        this.logger.warn(`VWM: visual_object_embeddings truncate failed: ${err}`);
+      }
+    }
+
+    this.logger.warn(
+      `VWM reset for gate: cleared ${entitiesCleared} in-memory entit${entitiesCleared === 1 ? 'y' : 'ies'}, ` +
+        `deleted ${syntheticNodesDeleted} synthetic WORLD node(s), ` +
+        `embeddings truncated=${embeddingsTruncated}.`,
+    );
+    return { entitiesCleared, syntheticNodesDeleted, embeddingsTruncated };
   }
 
   // ---------------------------------------------------------------------------

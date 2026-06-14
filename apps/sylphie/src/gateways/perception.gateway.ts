@@ -23,6 +23,19 @@ const CAPTION_COOLDOWN_MS = 5_000;
 /** If no scene-change trigger fires, request a periodic caption after this. */
 const CAPTION_PERIODIC_MS = 30_000;
 
+/**
+ * WS5 T1.0 — minimum time between scene-change CYCLE nudges (NOT caption
+ * requests). A burst of OBJECT_APPEARED/DISAPPEARED events within one settling
+ * period yields at most one cognitive-cycle nudge, so a flapping scene cannot
+ * out-pace the cognitive loop. Held CONSERVATIVE (mirrors CAPTION_COOLDOWN_MS,
+ * ~well under one cycle/sec) pending ashby's loop-gain sign-off — the new
+ * scene-change→cycle edge changes the scene-surprise event rate into the
+ * drive-feedback subsystem, which is ashby's ratified-bound domain. ashby may
+ * relax or tighten this; it must stay >= the rumination-breaker window so a
+ * flapping scene can't out-pace the breaker's detection (T2.5).
+ */
+const SCENE_CYCLE_COOLDOWN_MS = 5_000;
+
 @WebSocketGateway({ path: '/ws/perception' })
 export class PerceptionGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -39,6 +52,14 @@ export class PerceptionGateway
   /** True while a caption request is in-flight (prevents stacking). */
   private captionInFlight = false;
 
+  /**
+   * WS5 T1.0 — timestamp of the last scene-change CYCLE nudge. Deduped against
+   * SCENE_CYCLE_COOLDOWN_MS so a burst of appear/disappear events fires at most
+   * one cognitive cycle per cooldown window. Co-located with the caption dedup
+   * (same gateway-owns-pacing pattern).
+   */
+  private lastSceneCycleAt = 0;
+
   constructor(
     private readonly config: ConfigService,
     private readonly tickSampler: TickSamplerService,
@@ -51,6 +72,32 @@ export class PerceptionGateway
       'PERCEPTION_HOST',
       'http://localhost:8430',
     );
+  }
+
+  /**
+   * WS5 T0.5 — read-only observability of the per-frame `processing` flag.
+   * The gate's inbound camera stub awaits this clearing between injected frames
+   * (back-to-back frames inside MIN_FRAME_INTERVAL_MS, or while a prior frame is
+   * still in `handleFrame`, are dropped — a dropped novel frame makes P1a/P1c
+   * non-deterministic). This is a plain accessor, NOT a GATE_MODE branch: the
+   * frame-handling path is identical in and out of the gate.
+   */
+  isProcessing(): boolean {
+    return this.processing;
+  }
+
+  /**
+   * WS5 T4 — reset the scene-cycle cooldown timestamp so the NEXT frame's
+   * scene-change event immediately fires a nudge cycle, regardless of when the
+   * last nudge fired. Called by MetricsController.resetPerception() so every
+   * per-row perception-reset also zeroes the cooldown — without this, a row that
+   * starts within 5s of the previous row's final nudge has its first scene-change
+   * suppressed (the cross-row cooldown contamination that caused P1c to see only
+   * ONE teapot surprise instead of two). Additive seam only: the runtime nudge
+   * path is unchanged; this only writes a timestamp field.
+   */
+  resetCooldown(): void {
+    this.lastSceneCycleAt = 0;
   }
 
   handleConnection(client: WebSocket) {
@@ -140,6 +187,10 @@ export class PerceptionGateway
           firstSeenAt: t.first_seen_at ?? null,
           lastSeenAt: t.last_seen_at ?? null,
           embedding: t.embedding ?? null,
+          // WS5 T0.8 — data-carried synthetic discriminator. Real sidecar omits
+          // it (→ undefined → false downstream); the gate cassette sets it true.
+          // This is a value off the detection payload, NOT a GATE_MODE branch.
+          synthetic: t.synthetic ?? false,
         }));
 
         const summary: SceneSummary = {
@@ -199,6 +250,23 @@ export class PerceptionGateway
         const unknownPersons = this.vwm.getUnknownPersons();
         this.tickSampler.updateUndiscoveredCount(undiscovered.length);
         this.tickSampler.updateUnknownPersonCount(unknownPersons.length);
+
+        // --- WS5 T1.0: scene-change cognitive-cycle nudge ---
+        // A confirmed-object scene change must get a cognitive cycle to RUN on
+        // this frame, or a salient-but-CALM visual frame on a drive-cold backend
+        // is never sampled (the self-tick is pressure-gated at 4.0 and `scene`
+        // is deliberately NOT a globally event-driven modality). Fire AFTER all
+        // tick-sampler slot updates for this frame (scene + scene_description +
+        // counts) so the drained cycle samples the freshest scene this frame
+        // produced. Deduped against SCENE_CYCLE_COOLDOWN_MS so a flapping scene
+        // fires at most one cycle per window. The nudge enqueues an
+        // originator-less, non-guardian, empty-text turn (no drives written,
+        // speakerIsGuardian structurally absent — T0.9/ashby).
+        const timeSinceSceneCycle = now - this.lastSceneCycleAt;
+        if (hasSceneChange && timeSinceSceneCycle >= SCENE_CYCLE_COOLDOWN_MS) {
+          this.lastSceneCycleAt = now;
+          this.tickSampler.nudgeSceneChange();
+        }
 
         // Send enriched result to browser (tracked objects + scene events + VWM entities + VLM caption)
         if (client.readyState === WebSocket.OPEN) {

@@ -23,6 +23,84 @@ import type { ActionCandidate, ExecutorState } from './action.types';
 import type { ProvenanceSource } from './provenance.types';
 
 // ---------------------------------------------------------------------------
+// Episode source discriminant (WS5 T1.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * REQUIRED, guarded discriminant for the modality that dominated an episode's
+ * encoding (WS5 T1.1; CANON Std 1 — provenance-required).
+ *
+ * - `'conversation'` — a text/voice turn (the WS1–WS4 loop).
+ * - `'perception'`   — a vision-dominant frame (the WS5 second sensory channel).
+ *                      A `'perception'` episode is *seen*, not *told*, and NEVER
+ *                      inherits GUARDIAN provenance.
+ * - `'legacy'`       — the deserialization sentinel for pre-T1 checkpoint rows
+ *                      that predate this field. NEVER stamped on a fresh write —
+ *                      a known source is always `'conversation'` or `'perception'`.
+ *                      It is deliberately NOT `'conversation'` so P4's
+ *                      `source === 'perception'` / `source !== 'conversation'`
+ *                      assertions are never satisfied vacuously by a back-filled
+ *                      default.
+ *
+ * Why required (not optional): without a positive discriminant, "seen-not-told"
+ * is unfalsifiable — the recall surface (T2) reads `episode.source` to derive
+ * per-episode provenance, replacing the hardcoded tool-level `'medium_trust'`.
+ */
+export type EpisodeSource = 'conversation' | 'perception' | 'legacy';
+
+// ---------------------------------------------------------------------------
+// Visual context with per-sub-field provenance (WS5 T1.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Visual content captured on a vision-dominant episode, with per-sub-field
+ * provenance so a recalled value can never launder its trust tier at recall
+ * (WS5 T1.2; CANON Std 1).
+ *
+ * The three sub-fields carry THREE DIFFERENT provenance tiers and must never be
+ * collapsed to a single episode-level grounding:
+ *   - `caption`     — LLM_GENERATED (a VLM, e.g. Moondream2). Carries its OWN
+ *                     required typed `provenanceSource` so a recalled VLM caption
+ *                     never surfaces as experiential-GROUNDED.
+ *   - `sceneLabels` — SENSOR (YOLO/tracker object labels). Directly observed.
+ *   - `personIds`   — INFERENCE (face→identity match). Carries an explicit typed
+ *                     `provenanceSource` so the WS5.5 consolidation path that
+ *                     later reads it sees a machine-readable INFERENCE tag, not a
+ *                     comment.
+ *
+ * Isolation note: this lives on the in-process episodic ring, NOT the WKG — it
+ * is no graph-isolation concern (it follows the shipped `speakerId` precedent).
+ */
+export interface VisualContext {
+  /**
+   * VLM caption of the scene with its REQUIRED, typed provenance. Present only
+   * when a caption was actually generated for the frame. `provenanceSource` is
+   * always `'LLM_GENERATED'` — it is REQUIRED whenever `caption` is present, not
+   * narrative-only, so a recalled caption is never mislabeled experiential.
+   */
+  readonly caption?: {
+    readonly text: string;
+    readonly provenanceSource: 'LLM_GENERATED';
+  };
+
+  /** Directly-observed scene/object labels (SENSOR). Confirmed-track labels. */
+  readonly sceneLabels?: readonly string[];
+
+  /**
+   * Recognized person ids (face→identity INFERENCE), with an explicit typed
+   * per-sub-field provenance tag so the WS5.5 consolidation path reads INFERENCE
+   * machine-readably, not from a comment.
+   */
+  readonly personIds?: {
+    readonly ids: readonly string[];
+    readonly provenanceSource: 'INFERENCE';
+  };
+
+  /** Number of faces detected in the frame, if known. */
+  readonly faceCount?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Encoding Depth
 // ---------------------------------------------------------------------------
 
@@ -51,6 +129,22 @@ export type EncodingDepth = 'DEEP' | 'NORMAL' | 'SHALLOW' | 'SKIP';
  * full object embeddings. Keeps the ring buffer memory-efficient.
  */
 export interface EpisodeInput {
+  /**
+   * REQUIRED modality discriminant (WS5 T1.1). `'conversation'` for text/voice
+   * turns, `'perception'` for vision-dominant frames. Set at the encode call
+   * site from the frame's dominant modality. Required (not optional) so
+   * "seen-not-told" provenance is falsifiable. The `'legacy'` sentinel is for
+   * deserialization back-fill only — never set it on a fresh write.
+   */
+  readonly source: EpisodeSource;
+
+  /**
+   * Visual content with per-sub-field provenance (WS5 T1.2). Present only on
+   * vision-dominant episodes; absent on pure-conversation turns. Pre-T1 rows
+   * have no `visualContext` — read paths must treat absence as "text episode."
+   */
+  readonly visualContext?: VisualContext;
+
   /** Drive state at the moment of action selection. */
   readonly driveSnapshot: DriveSnapshot;
 
@@ -116,6 +210,21 @@ export interface EpisodeInput {
 export interface Episode {
   /** Unique identifier for this episode. UUID v4. */
   readonly id: string;
+
+  /**
+   * REQUIRED modality discriminant (WS5 T1.1). `'conversation'` | `'perception'`
+   * | `'legacy'` (deserialization sentinel for pre-T1 checkpoint rows). The
+   * recall surface (T2) derives per-episode provenance from this. Required so a
+   * visual episode is positively distinguishable from a text one — never
+   * defaulted to `'conversation'`.
+   */
+  readonly source: EpisodeSource;
+
+  /**
+   * Visual content with per-sub-field provenance (WS5 T1.2). Present only on
+   * `source === 'perception'` episodes; absent on conversation and legacy rows.
+   */
+  readonly visualContext?: VisualContext;
 
   /** Wall-clock time this episode was encoded. */
   readonly timestamp: Date;

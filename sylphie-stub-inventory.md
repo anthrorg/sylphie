@@ -195,6 +195,18 @@ Separately, the **live** TS port `spreadActivation` (`packages/decision-making/s
 
 ---
 
+### 2.12 Visual episodes are recall-only; consolidation does not read `visualContext` (WS5 T1, 2026-06-13)
+
+**Where:** `packages/decision-making/src/episodic-memory/consolidation.service.ts` (`convertToSemantic`) — reads only `inputSummary`/`actionTaken`; `EXTRACTION_PROVENANCE` is a hardcoded INFERENCE constant.
+
+**What (verbatim per WS5 T1.4):** WS5 T1 visual episodes are recall-only. `visualContext` (caption/sceneLabels/personIds) is NOT read by consolidation (`convertToSemantic`); visual episodes contribute ZERO to the WKG semantic census; `EXTRACTION_PROVENANCE` remains a hardcoded INFERENCE constant, not derived from `episode.source`. No log distinguishes a visual episode from a text episode in the consolidation path. WS5.5's first regression test: a `source='perception'` episode, once consolidated, produces a WKG node whose provenance derives from `episode.source` (SENSOR for sceneLabels / LLM_GENERATED for caption), not the INFERENCE constant.
+
+**Why it is NOT a silent stub:** flagged here at write time, per the WS5 build plan (T1.4). T1 deliberately ships visual episodes as **recall-only** (T2 reads them; consolidation does not). The consolidation extension is explicitly DEFERRED to WS5.5, co-dependent with the §2.8 WKG person-fact leak fix and T5 world-fact promotion.
+
+**Fix complexity:** Medium (WKG-gain question; co-dependent with §2.8 + T5; named WS5.5 regression test above).
+
+---
+
 ## TIER 3 — MEDIUM: Silent Degradation
 
 ### 3.1 CommunicationService theater check is flag-only

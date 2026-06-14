@@ -32,6 +32,7 @@ import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ActionStep, type SensoryFrame, type CognitiveContext, LLM_SERVICE, type ILlmService } from '@sylphie/shared';
 import { WkgContextService } from '../wkg/wkg-context.service';
+import { capturePrompt } from '../deliberation/prompt-capture';
 
 // ---------------------------------------------------------------------------
 // Handler type
@@ -198,12 +199,34 @@ export class ActionHandlerRegistryService {
         ? `About the person I'm talking to: ${personModel.knownFacts.join('; ')}`
         : '';
 
+      // WS5 T4/P2 — inject the visual scene into the PROCEDURE prompt too. The
+      // conversation procedure (LLM_GENERATE) is the path arbitration runs for a
+      // visual question like "what do you see?" — it bypasses deliberate() (where
+      // buildFlatContext/WM already inject "What I see:"), so without this the
+      // caption never reaches the prompt the LLM actually answers from, and a
+      // perception-grounded-looking response would be leaked context, not composed
+      // perception (the theater hole). The caption is ALREADY on the frame
+      // (frame.raw['scene_description'], same accessor as rawText) — mirror
+      // buildFlatContext's line. A conversation procedure answering "what do you
+      // see?" without the scene is the actual defect this closes.
+      const sceneDescription = cycleCtx.frame.raw['scene_description'] as string | undefined;
+      const sceneContext =
+        sceneDescription && sceneDescription.trim() ? `What I see:\n${sceneDescription.trim()}` : '';
+
       const systemPrompt = [
         'You are Sylphie. Respond authentically and concisely.',
         instruction ? `Task: ${instruction}` : '',
         personContext,
+        sceneContext,
         driveLines ? `How I feel: ${driveLines}` : '',
       ].filter(Boolean).join('\n\n');
+
+      // WS5 T4/P2 — mirror the composed visual context to the test-only
+      // prompt-capture ring (no-op unless GATE_DEBUG_PROMPT_CAPTURE is set). This
+      // is the path the gate's "what do you see?" turn actually runs, so P2 reads
+      // its caption-in-prompt assertion off THIS composition, tagged so the smoke
+      // can confirm the procedure path (not deliberate) fired.
+      capturePrompt(sceneContext || systemPrompt, 'procedure-llm-generate', inputText ?? '');
 
       // Build messages: recent conversation turns + current input.
       // Conversation history is passed as normal multi-turn chat messages

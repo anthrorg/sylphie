@@ -35,6 +35,7 @@ import {
 const vlog = verboseFor('Deliberation');
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
 import { applyRecallGroundingFromRetrieval, type RecallRetrieval } from './recall-retrieval';
+import { capturePrompt } from './prompt-capture';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
 import { ContextWindowService } from './context-window.service';
@@ -259,6 +260,16 @@ export class DeliberationService {
     const wmSummary = wmSnapshot
       ? `What I know:\n${wmSnapshot.formattedSummary}`
       : this.buildFlatContext(wkg, driveSnapshot, context, frame);
+
+    // WS5 T4 (P2/P4) — mirror the composed visual/knowledge context to the
+    // test-only prompt-capture ring (no-op unless GATE_DEBUG_PROMPT_CAPTURE is
+    // set). This is the surface P2/P4 read to prove the injected perception
+    // caption is GENUINELY in the prompt the LLM saw — read directly off the real
+    // composed context, decoupled from cassette record/replay (mythos ruling).
+    // Tags which path composed it so the smoke can assert the production
+    // WM-snapshot path fired, not the flat fallback (finding 3). Read-only mirror,
+    // never re-read by any cognitive path.
+    capturePrompt(wmSummary, wmSnapshot ? 'wm-snapshot' : 'flat-fallback', rawText);
 
     // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');

@@ -74,8 +74,8 @@ import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { isDocumentEncoder } from './inputs/encoders/text.encoder';
 import { SensoryPredictionService } from './prediction/sensory-prediction.service';
-import { ScenePredictionService } from './prediction/scene-prediction.service';
-import type { SceneSnapshot } from '@sylphie/shared';
+import { ScenePredictionService, type ScenePredictionResult } from './prediction/scene-prediction.service';
+import type { SceneSnapshot, EpisodeSource, VisualContext } from '@sylphie/shared';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -294,14 +294,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // on responseSubject.next. The originator derives from the InboundTurn's
       // identity fields (populated from the gateway JWT in Ticket 3).
       // Cleared in the finally block below.
-      this.currentTurnContext = {
-        turnId: turn.turnId,
-        originator: {
-          userId: turn.userId ?? 'guardian',
-          socketId: turn.socketId,
-          isGuardian: turn.isGuardian,
-        },
-      };
+      //
+      // WS5 T1.0 / T0.9: a sceneNudge turn has NO human speaker — it is an
+      // exogenous scene-change cycle trigger. Leave currentTurnContext null
+      // (exactly as a self-tick does), so the resulting visual episode has
+      // speakerId/speakerIsGuardian STRUCTURALLY ABSENT — a seen-fact never
+      // masquerades as guardian-told.
+      this.currentTurnContext = turn.sceneNudge
+        ? null
+        : {
+            turnId: turn.turnId,
+            originator: {
+              userId: turn.userId ?? 'guardian',
+              socketId: turn.socketId,
+              isGuardian: turn.isGuardian,
+            },
+          };
 
       const frame = await this.tickSampler.sample();
 
@@ -318,10 +326,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       // WS4 Ticket 8: Notify mood-bleed monitor of cycle start.
       // Exception-isolated: a monitor failure must never break a cycle.
-      try {
-        this.moodBleedMonitor?.onCycleStart(this.currentTurnContext.originator, snapshot);
-      } catch (monitorErr) {
-        this.logger.warn(`MoodBleedMonitor.onCycleStart failed: ${monitorErr}`);
+      // WS5 T1.0: a sceneNudge turn has no originator (currentTurnContext null) —
+      // there is no human speaker to monitor for mood-bleed, so skip cleanly
+      // rather than deref a null originator.
+      if (this.currentTurnContext !== null) {
+        try {
+          this.moodBleedMonitor?.onCycleStart(this.currentTurnContext.originator, snapshot);
+        } catch (monitorErr) {
+          this.logger.warn(`MoodBleedMonitor.onCycleStart failed: ${monitorErr}`);
+        }
       }
 
       await this.processInput(frame, myEpoch);
@@ -515,6 +528,30 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         receivedAt: Date.now(),
         enqueuedAt: Date.now(),
         text: '', // No per-turn text — this path is a fallback for future modalities
+      };
+      this.cycleGuard.enqueue(turn);
+    });
+
+    // WS5 T1.0 — scene-change cycle nudge. A confirmed-object scene change
+    // (decided + deduped at the perception gateway) enqueues an originator-less,
+    // non-guardian, empty-text turn so a cognitive cycle RUNS on the frame
+    // carrying that scene. Without this, a salient-but-CALM visual frame on a
+    // drive-cold backend never reaches the cycle: the self-tick is gated at
+    // IDLE_PRESSURE_THRESHOLD (4.0) and `scene` is deliberately NOT a globally
+    // event-driven modality (that would fire a cycle per frame ~15fps). The
+    // sceneNudge turn drains exactly like a self-tick (scene read from the slot
+    // via sample()), carries NO originator (currentTurnContext stays null →
+    // speakerIsGuardian structurally absent, T0.9), and writes NOTHING to drives
+    // (the trigger keys on an exogenous scene change; no perception→drive→
+    // perception loop is closed — ashby/finding-I).
+    this.tickSampler.onSceneChange(() => {
+      const turn: InboundTurn = {
+        turnId: randomUUID(),
+        isGuardian: false, // exogenous scene change — never guardian-prioritized
+        receivedAt: Date.now(),
+        enqueuedAt: Date.now(),
+        text: '', // no human text — the scene rides the tick-sampler slot
+        sceneNudge: true, // T0.9: runCycleForTurn leaves currentTurnContext null
       };
       this.cycleGuard.enqueue(turn);
     });
@@ -810,6 +847,46 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       // Compute sensory prediction errors (per-modality surprise signals).
       const sensoryErrors = this.sensoryPrediction.computeErrors(frame.modality_embeddings);
+
+      // ── WS5 T1.0: compute scene prediction errors ONCE, EARLY ─────────────
+      // The defect this fixes: the 0.15 encode gate reads input.attention, which
+      // was drive-derived ONLY (computeAttention). Scene surprise used to be
+      // computed LATER in the cycle (routeScenePredictionErrors, ~:1864) — AFTER
+      // the encode call (~:1426). So a salient-but-CALM novel frame failed the
+      // encode gate structurally: frame N's surprise never reached frame N's
+      // encode. We now compare the scene here (PURE — no prediction mutation),
+      // cache the result + totalSurprise, and reuse it for BOTH the
+      // encode-attention saliency term (an additional OR admission path, NOT an
+      // AND) AND the drive router below — which consumes the cached value rather
+      // than recomputing. Predictions are advanced EXACTLY ONCE per frame, at the
+      // routing site (advancePredictions), so they never double-advance.
+      //
+      // ashby (load-bearing): this saliency term feeds the ATTENTION channel
+      // ONLY. It must NOT also raise Curiosity/Anxiety — those already get scene
+      // surprise via routeScenePredictionErrors. Feeding it to drives too would
+      // RELOCATE the perception→drive→perception loop through the attention edge,
+      // not break it.
+      const sceneSnapshot = frame.raw['scene'] as SceneSnapshot | undefined;
+      const sceneComparison: ScenePredictionResult | null = sceneSnapshot
+        ? this.scenePrediction.compareScene(sceneSnapshot)
+        : null;
+      const cachedSceneSurprise = sceneComparison?.totalSurprise ?? 0;
+
+      // WS5 T4/P1c: ADVANCE the predictor (familiarity-count bookkeeping + surprise
+      // inspection-ring write) HERE, immediately after the pure compare — NOT later
+      // at the drive-routing site. Rationale: the cycle has a zombie/epoch fence
+      // (~:1944) before the routing site; a superseded cycle returns early and
+      // would SKIP the advance, so a frame whose compare ran (and logged surprise)
+      // would never increment familiarity or record the ring — defeating P1c
+      // habituation across queued nudge cycles (the count would stay 1 forever).
+      // The advance is cheap, deterministic, and reflects "this frame was
+      // perceived," which is true regardless of whether the downstream ACTION got
+      // superseded. The drive routing stays epoch-gated below (a zombie must not
+      // write drives), but the predictor's own state/observation must not be lost.
+      // This is still EXACTLY ONCE per frame (one compare → one advance here).
+      if (sceneSnapshot && sceneComparison) {
+        this.scenePrediction.advancePredictions(sceneSnapshot, sceneComparison);
+      }
 
       const multiModalMatch = this.latentSpace.searchMultiModal(frame.modality_embeddings);
       // Extract the best single-modality match for downstream compatibility.
@@ -1409,7 +1486,18 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Encode episode for all non-SHRUG results. SHRUG cycles still encode
       // (they carry diagnostic value) but at SHALLOW depth to conserve buffer
       // capacity.
-      const attention = computeAttention(driveSnapshot);
+      //
+      // WS5 T1.0: the encode-attention term now admits a salient-but-calm visual
+      // frame. `attention` is the MAX of the drive-derived computeAttention AND
+      // the scene-saliency term (the phasic surprise cached early this cycle,
+      // floored at 0.05). The encode gate (episodic-memory.service:185) is an OR
+      // over attention/arousal, so this is an ADDITIONAL admission path, not a
+      // new AND. saliencyTerm feeds the attention channel ONLY — it never touches
+      // arousal (which stays a drive-derived ageWeight/consolidation weight) and
+      // never feeds Curiosity/Anxiety (ashby — else the perception→drive loop
+      // re-forms through the attention edge).
+      const driveAttention = computeAttention(driveSnapshot);
+      const attention = Math.max(driveAttention, saliencyTerm(cachedSceneSurprise));
       const arousal = computeArousal(driveSnapshot);
       const encodingDepth = arbitrationResult.type === 'SHRUG' ? 'SHALLOW' : 'NORMAL';
 
@@ -1419,12 +1507,27 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               `type2-novel-${Date.now()}`)
           : 'SHRUG';
 
+      // WS5 T1.1/T1.2/T1.3 — modality discriminant + visual content.
+      // `source` is REQUIRED (CANON Std 1): a conversation turn (real text
+      // content in the frame) is 'conversation'; a vision-dominant frame is
+      // 'perception'. We never default-stamp an unknown — the deserialization
+      // shim handles pre-T1 rows with the 'legacy' sentinel. visualContext is
+      // populated only when there is visual content to carry, each sub-field with
+      // its own provenance tier (caption=LLM_GENERATED, sceneLabels=SENSOR,
+      // personIds=INFERENCE).
+      const visualContext = buildVisualContext(frame, sceneSnapshot);
+      const episodeSource: EpisodeSource = deriveEpisodeSource(frame, visualContext);
+
       // WS4 Ticket 3 — speaker attribution on episodic memory.
       // currentTurnContext carries the speaker identity from the in-flight InboundTurn.
       // Self-initiated ticks have no currentTurnContext; speakerId/speakerIsGuardian
-      // are omitted so episodes correctly reflect no human speaker.
+      // are omitted so episodes correctly reflect no human speaker. T0.9: a
+      // synthetic perception frame has no currentTurnContext, so speakerIsGuardian
+      // is structurally absent — a seen-fact never masquerades as guardian-told.
       await this.episodicMemory.encode(
         {
+          source: episodeSource,
+          ...(visualContext !== null ? { visualContext } : {}),
           driveSnapshot,
           inputSummary,
           actionTaken: actionId,
@@ -1862,9 +1965,18 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       this.routeSensoryPredictionErrors(sensoryErrors, driveSnapshot);
 
       // ── Route scene-level prediction errors (per-object) to drives ──────
-      const sceneSnapshot = frame.raw['scene'] as SceneSnapshot | undefined;
-      if (sceneSnapshot) {
-        this.routeScenePredictionErrors(sceneSnapshot, driveSnapshot);
+      // WS5 T1.0: consume the comparison cached EARLY this cycle (sceneComparison
+      // computed at :832 before encode), NOT a recompute. Then advance the
+      // predictor EXACTLY ONCE so predictions don't double-advance (which would
+      // corrupt the next frame's surprise). The old code called
+      // computeSceneErrors here, which both compared AND advanced — calling it a
+      // second time (after the early compare) would advance twice.
+      if (sceneSnapshot && sceneComparison) {
+        // WS5 T1.0: route scene surprise to drives (Curiosity/Anxiety). This stays
+        // epoch-gated (a zombie cycle must not write drives). The predictor advance
+        // + familiarity/ring bookkeeping already happened EARLY this cycle (right
+        // after the compare, ~:873) so it survives a late zombie — see note there.
+        this.routeScenePredictionErrors(sceneComparison, driveSnapshot);
       }
 
       // ── Sustained curiosity for undiscovered visual objects ──────────────
@@ -2306,13 +2418,17 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * Unknown face → curiosity + focus.
    * Known face identified → social (slight).
    * General scene instability → curiosity.
+   *
+   * WS5 T1.0: takes the ALREADY-COMPUTED comparison (cached early this cycle),
+   * NOT a snapshot to recompute. The caller advances predictions exactly once
+   * after this returns. This is the only place scene surprise reaches drives
+   * (Curiosity/Anxiety) — the encode-attention saliency term (T1.0) deliberately
+   * does NOT, so the perception→drive loop is broken, not relocated (ashby).
    */
   private routeScenePredictionErrors(
-    sceneSnapshot: SceneSnapshot,
+    result: ScenePredictionResult,
     _snapshot: DriveSnapshot,
   ): void {
-    const result = this.scenePrediction.computeSceneErrors(sceneSnapshot);
-
     if (result.totalSurprise < 0.05) return;
 
     if (this.actionOutcomeReporter) {
@@ -2330,6 +2446,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             isTheatrical: false,
           },
         });
+        // WS5 P1a gate seam: record the routed outcome so the gate can assert on
+        // the CAUSAL drive effect (computedEffects.curiosity>0, anxiety>0) without
+        // polling the noisy net drive-vector delta. Called AFTER reportOutcome so
+        // the seam reflects what was actually sent, not a speculative pre-call.
+        this.scenePrediction.recordOutcomeRouted(result.totalSurprise);
       } catch (err) {
         this.logger.warn(`Scene prediction error routing failed: ${err}`);
       }
@@ -2425,6 +2546,105 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 // ---------------------------------------------------------------------------
 // Pure helpers (not injectable)
 // ---------------------------------------------------------------------------
+
+/**
+ * WS5 T1.0 — phasic scene-saliency term feeding the ENCODE-ATTENTION channel.
+ *
+ * Maps the cached scene `totalSurprise` to an attention contribution so a
+ * salient-but-CALM novel frame can clear the 0.15 encode gate (it could not
+ * before T1.0 — surprise was computed after encode). This is the one new
+ * admission path; the encode gate is an OR, so it never blocks a frame that the
+ * drive-derived attention would have admitted.
+ *
+ * Wording (luria): "floored at 0.05, with familiarity decay from P1c." The 0.05
+ * floor prevents a fully-familiar scene (surprise 0) from contributing NEGATIVE
+ * attention — it contributes nothing, never subtracts. The familiarity DECAY
+ * itself (the term diminishing on re-exposure) is the P1c/T4 predictor mechanism
+ * and is NOT built here; for T1 the term is the phasic surprise as-is, floored.
+ * A threshold is NOT habituation — habituation arrives with P1c.
+ *
+ * The term is `surprise` clamped to [0.05, 1.0] when there is any surprise, and
+ * exactly 0 when there is no scene at all (so a pure-conversation frame gets no
+ * spurious visual attention floor). Feeds attention ONLY — never arousal, never
+ * Curiosity/Anxiety (ashby).
+ */
+function saliencyTerm(cachedSceneSurprise: number): number {
+  if (cachedSceneSurprise <= 0) return 0;
+  return Math.min(1.0, Math.max(0.05, cachedSceneSurprise));
+}
+
+/**
+ * WS5 T1.2 — build the per-sub-field-provenance VisualContext for an episode, or
+ * null when the frame carries no visual content (a pure-conversation turn).
+ *
+ * Sub-field provenance tiers are kept distinct and machine-readable:
+ *   - caption     → LLM_GENERATED (the VLM scene_description), carries its OWN
+ *                   required typed provenanceSource so a recalled caption can
+ *                   never surface as experiential-GROUNDED.
+ *   - sceneLabels → SENSOR (confirmed-track object labels).
+ *   - personIds   → INFERENCE (face→identity match), carries an explicit typed tag.
+ */
+function buildVisualContext(
+  frame: SensoryFrame,
+  sceneSnapshot: SceneSnapshot | undefined,
+): VisualContext | null {
+  const caption = frame.raw['scene_description'] as string | undefined;
+  const faces = frame.raw['faces'] as unknown[] | undefined;
+
+  const sceneLabels: string[] = [];
+  const personIds: string[] = [];
+  if (sceneSnapshot) {
+    for (const obj of sceneSnapshot.objects) {
+      if (obj.state !== 'confirmed') continue;
+      sceneLabels.push(obj.label);
+      if (obj.personId) personIds.push(obj.personId);
+    }
+  }
+
+  const hasCaption = typeof caption === 'string' && caption.trim().length > 0;
+  const hasLabels = sceneLabels.length > 0;
+  const hasPersons = personIds.length > 0;
+  const faceCount = Array.isArray(faces) ? faces.length : undefined;
+
+  // Nothing visual to carry → not a perception episode; return null so the
+  // episode stays a pure text episode with no visualContext key.
+  if (!hasCaption && !hasLabels && !hasPersons && !faceCount) return null;
+
+  const vc: {
+    caption?: { text: string; provenanceSource: 'LLM_GENERATED' };
+    sceneLabels?: string[];
+    personIds?: { ids: string[]; provenanceSource: 'INFERENCE' };
+    faceCount?: number;
+  } = {};
+  if (hasCaption) vc.caption = { text: caption!.trim(), provenanceSource: 'LLM_GENERATED' };
+  if (hasLabels) vc.sceneLabels = [...new Set(sceneLabels)];
+  if (hasPersons) vc.personIds = { ids: [...new Set(personIds)], provenanceSource: 'INFERENCE' };
+  if (faceCount !== undefined && faceCount > 0) vc.faceCount = faceCount;
+  return vc;
+}
+
+/**
+ * WS5 T1.1/T1.3 — derive the REQUIRED `source` discriminant for an episode.
+ *
+ * A frame with real text content is a 'conversation' turn. A frame with no text
+ * but visual content (caption / scene objects / faces, as captured in
+ * visualContext) is 'perception'. We never default-stamp an unknown to
+ * 'conversation' — a frame with neither text nor visual content (e.g. a
+ * drive-only self-tick) is also 'conversation' as the conservative non-visual
+ * default, since it is NOT a seen-not-told visual episode and must not satisfy
+ * P4's `source === 'perception'` assertion. The 'legacy' sentinel is reserved
+ * for the deserialization shim only (pre-T1 checkpoint rows), never set here.
+ */
+function deriveEpisodeSource(
+  frame: SensoryFrame,
+  visualContext: VisualContext | null,
+): EpisodeSource {
+  const text = frame.raw['text'] as string | undefined;
+  const hasText = typeof text === 'string' && text.trim().length > 0;
+  if (hasText) return 'conversation';
+  if (visualContext !== null) return 'perception';
+  return 'conversation';
+}
 
 /**
  * Compute a proxy attention value from the current drive snapshot.

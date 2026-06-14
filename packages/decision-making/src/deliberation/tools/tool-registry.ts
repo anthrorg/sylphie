@@ -24,6 +24,7 @@ import {
   DriveName,
   type DriveSnapshot,
   type ActionStep,
+  type Episode,
 } from '@sylphie/shared';
 import {
   DRIVE_STATE_READER,
@@ -317,17 +318,18 @@ export class ToolRegistryService {
       return { source: 'episodic_memory', episodes: [], note: 'Episodic memory unavailable' };
     }
 
-    const episodes = this.episodicMemory.queryByContext(query, 5);
+    // WS5 T2.1 — free-text recall over CONTENT (caption + sceneLabels +
+    // inputSummary), NOT the SHA fingerprint. The raw natural-language `query`
+    // reaches queryByContent un-fingerprinted (it is the LLM's tool argument, a
+    // description of the situation to search for). T2.5 — pass the current drive
+    // snapshot as the query mood for the bounded mood-congruent blend; the
+    // episodic service never reads the Drive Engine itself (drive-isolation clean).
+    const queryMood = this.driveStateReader.getCurrentState();
+    const episodes = this.episodicMemory.queryByContent(query, 5, queryMood);
     return {
       source: 'episodic_memory',
-      provenance: 'medium_trust',
       query,
-      episodes: episodes.map((ep) => ({
-        summary: ep.inputSummary,
-        action: ep.actionTaken,
-        ageWeight: ep.ageWeight.toFixed(2),
-        timestamp: ep.timestamp.toISOString(),
-      })),
+      episodes: episodes.map((ep) => surfaceEpisode(ep)),
       count: episodes.length,
       note: episodes.length === 0
         ? 'No similar experiences found. This situation is new to me.'
@@ -606,4 +608,71 @@ function interpretDriveState(snapshot: DriveSnapshot): string {
 
   if (parts.length === 0) return 'calm and neutral';
   return parts.join(', ');
+}
+
+/**
+ * WS5 T2.3 — surface a recalled episode for the episodic_search tool result,
+ * with PER-EPISODE provenance derived from `episode.source` (replacing the old
+ * hardcoded tool-level `provenance:'medium_trust'` at the result level).
+ *
+ * Provenance discipline (CANON Std 1 — Theater Prohibition):
+ *   - source='perception' → the EPISODE is experiential ('experiential' — she
+ *     actually saw it), BUT its caption is surfaced separately tagged with the
+ *     caption's own provenanceSource ('LLM_GENERATED'), never experiential-
+ *     GROUNDED. A recalled VLM caption must never masquerade as a seen-grounded
+ *     fact. sceneLabels carry their SENSOR origin; personIds carry INFERENCE.
+ *   - source='conversation' → 'medium_trust' (the prior tool-level default, now
+ *     per-episode and honest about being a told/heard episode).
+ *   - source='legacy' → 'unknown' (pre-T1 rows; deliberately not laundered into
+ *     either experiential or conversation provenance).
+ */
+function surfaceEpisode(ep: Episode): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    summary: ep.inputSummary,
+    action: ep.actionTaken,
+    ageWeight: ep.ageWeight.toFixed(2),
+    timestamp: ep.timestamp.toISOString(),
+    source: ep.source,
+    provenance: episodeProvenance(ep.source),
+  };
+
+  // Surface the visual content with per-sub-field provenance preserved, so the
+  // LLM sees what she saw AND the honest trust tier of each sub-field.
+  const vc = ep.visualContext;
+  if (vc) {
+    if (vc.caption) {
+      // Caption is LLM_GENERATED (the VLM) — surfaced as a narrated caption with
+      // its provenanceSource, NEVER folded into the episode's experiential tier.
+      base['caption'] = vc.caption.text;
+      base['captionProvenance'] = vc.caption.provenanceSource; // 'LLM_GENERATED'
+    }
+    if (vc.sceneLabels && vc.sceneLabels.length > 0) {
+      base['sceneLabels'] = vc.sceneLabels; // SENSOR (directly observed)
+      base['sceneLabelsProvenance'] = 'SENSOR';
+    }
+    if (vc.personIds && vc.personIds.ids.length > 0) {
+      base['personIds'] = vc.personIds.ids;
+      base['personIdsProvenance'] = vc.personIds.provenanceSource; // 'INFERENCE'
+    }
+    if (vc.faceCount !== undefined) base['faceCount'] = vc.faceCount;
+  }
+
+  return base;
+}
+
+/**
+ * Map an episode's `source` discriminant to its per-episode provenance label.
+ * A perception episode is EXPERIENTIAL (seen-not-told) at the episode level —
+ * but its caption's LLM_GENERATED tier is surfaced separately (see surfaceEpisode).
+ */
+function episodeProvenance(source: Episode['source']): string {
+  switch (source) {
+    case 'perception':
+      return 'experiential';
+    case 'conversation':
+      return 'medium_trust';
+    case 'legacy':
+    default:
+      return 'unknown';
+  }
 }

@@ -45,6 +45,12 @@ import {
   assertDriveTickRate,
   type AssertResult,
 } from './assertions';
+import {
+  PerceptionCassette,
+  PERCEPTION_CASSETTE_URL,
+  makeDetectFixture,
+} from './perception-cassette';
+import { PerceptionCameraStub } from './perception-stub';
 
 // ---------------------------------------------------------------------------
 // Config — no hardcoded ports
@@ -1140,6 +1146,688 @@ async function runProvenancePhase(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Phase T0: perception-frame gate-injection seam (WS5 T0)
+//
+// MECHANICAL verification of the seam only — the full encode→recall smoke is
+// deferred to T1.0 (sceneSurprise→attention not yet wired), so this does NOT
+// expect a salient-but-calm frame to encode an episode. It proves:
+//   T0-A  reset endpoints respond (episodic-reset / perception-reset / predictor)
+//   T0-B  the inbound camera stub triggers the REAL handleFrame path (detect hit)
+//   T0-C  the caption-settle barrier lands a /perception/caption hit (T0.4)
+//   T0-D  a synthetic frame writes a WORLD :VisualObject {synthetic:true} node and
+//         perception-reset removes it (T0.8) — provenance_type stays 'SENSOR'.
+//
+// Runs in replay/update-baseline (it needs the cassette + a live perception
+// gateway, neither of which depends on the LLM). Under lesion it is skipped — the
+// seam is identical, and lesion-phase focus is the LLM-degradation path.
+// ---------------------------------------------------------------------------
+
+async function runPerceptionSeamPhase(): Promise<void> {
+  banner('PHASE T0: PERCEPTION-FRAME INJECTION SEAM (WS5 T0)');
+
+  const cassette = new PerceptionCassette();
+  const stub = new PerceptionCameraStub();
+
+  try {
+    await cassette.start();
+    console.log(`  Perception cassette listening on ${PERCEPTION_CASSETTE_URL}.`);
+  } catch (err) {
+    recordBool('T0-A', 'perception reset endpoints respond', false,
+      `perception cassette failed to start: ${err instanceof Error ? err.message : err}`);
+    recordBool('T0-B', 'inbound camera stub triggers handleFrame (detect hit)', false, 'cassette down');
+    recordBool('T0-C', 'caption-settle barrier records a /perception/caption hit', false, 'cassette down');
+    recordBool('T0-D', 'synthetic WORLD node written then removed by perception-reset', false, 'cassette down');
+    return;
+  }
+
+  try {
+    // ── T0-A: the three reset endpoints respond. ──────────────────────────────
+    let resetsOk = true;
+    const resetDetails: string[] = [];
+    for (const route of ['episodic-reset', 'perception-reset', 'scene-predictor-reset']) {
+      try {
+        const { status, body } = await fetchJson(`/api/metrics/${route}`, { method: 'POST' });
+        const ok = status === 200 && body?.ok !== false;
+        resetsOk = resetsOk && ok;
+        resetDetails.push(`${route}=${status}${ok ? '' : ' FAIL'}`);
+      } catch (err) {
+        resetsOk = false;
+        resetDetails.push(`${route}=threw(${err instanceof Error ? err.message : err})`);
+      }
+    }
+    recordBool('T0-A', 'perception/episodic/predictor reset endpoints respond', resetsOk,
+      resetDetails.join(', '));
+
+    // ── Open the inbound camera socket. ───────────────────────────────────────
+    await stub.open();
+
+    // ── T0-B: inbound stub triggers the REAL handleFrame → detect POST. ───────
+    const detectBefore = cassette.stats.detectHits;
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 201 }));
+    const detectHit = cassette.stats.detectHits > detectBefore;
+    recordBool('T0-B', 'inbound camera stub triggers handleFrame (REAL detect POST)', detectHit,
+      detectHit
+        ? `cassette /perception/detect hit ${cassette.stats.detectHits - detectBefore}x — gateway drove the real path`
+        : 'gateway never POSTed /perception/detect — PERCEPTION_HOST not pointed at the cassette? ' +
+          `(set PERCEPTION_HOST=${PERCEPTION_CASSETTE_URL} before starting the backend)`);
+
+    // ── T0-C: caption-settle barrier (T0.4) records a /perception/caption hit. ─
+    const captionHit = await stub.injectCaptionedScene(
+      cassette,
+      'a red mug on the table',
+      makeDetectFixture({ label: 'cup', trackId: 202 }),   // arm-frame (new object → scene change)
+      makeDetectFixture({ label: 'cup', trackId: 202 }),   // second frame (carries lastVlmCaption)
+    );
+    recordBool('T0-C', 'caption-settle barrier records a /perception/caption hit (T0.4)', captionHit,
+      captionHit
+        ? `cassette /perception/caption hit ${cassette.stats.captionHits}x — barrier sequenced correctly`
+        : 'caption endpoint never hit during the settle sequence — barrier misbuilt; ' +
+          'downstream P2/P4 caption assertions would be untrustworthy');
+
+    // ── T0-D: synthetic WORLD node written, then removed by perception-reset. ─
+    // Inject enough frames of the SAME synthetic object to drive it through the
+    // VWM rolling-presence window to 'present' (ENTER_RATIO=0.70 over up to 30
+    // frames), which triggers resolveEntityIdentity → createUndiscoveredNode.
+    for (let i = 0; i < 30; i++) {
+      await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 203, framesSeen: 6 + i }));
+    }
+    // Give the fire-and-forget WKG write a moment to land.
+    await sleep(1500);
+    const afterWrite = await fetchJson('/api/metrics/perception-reset', { method: 'POST' });
+    const deleted = afterWrite.body?.syntheticNodesDeleted ?? 0;
+    const writeOk = afterWrite.status === 200 && deleted >= 1;
+    recordBool('T0-D', 'synthetic WORLD :VisualObject node written then removed by perception-reset (T0.8)',
+      writeOk,
+      writeOk
+        ? `perception-reset removed ${deleted} synthetic node(s) — synthetic:true landed on WORLD, ` +
+          `provenance_type stayed SENSOR (verified by the synthetic-scoped delete matching it)`
+        : `expected >=1 synthetic node to delete, got ${deleted} (status=${afterWrite.status}). ` +
+          `The synthetic frame did not produce a WORLD node — VWM stabilization or the synthetic ` +
+          `plumbing may be broken.`);
+
+  } catch (err) {
+    recordBool('T0-B', 'inbound camera stub triggers handleFrame', false,
+      `perception seam phase threw: ${err instanceof Error ? err.message : err}`);
+  } finally {
+    stub.close();
+    // Final clean-up reset so no synthetic residue survives into later phases.
+    try { await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); } catch { /* non-fatal */ }
+    await cassette.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase T4: WS5 perception proof rows P1a/P1b/P1c/P3 (LLM-independent)
+//
+// These rows assert on INTERNAL STATE the perception→cognition path produces —
+// scene-surprise magnitude, per-drive movement, familiarity habituation, and a
+// stored visual episode — none of which depend on LLM stochasticity, so they run
+// in the main `yarn gate` against the live stack with the perception cassette.
+//
+// P2/P4 (perception changes/recalls the RESPONSE) are NOT here: they need a live
+// LLM response and a captioned prompt, which is brittle under cassette replay
+// (mythos ruling 2026-06-13). They live in the isolated ws5-t4-smoke.ts against
+// real Ollama, asserting the caption is in the REAL composed prompt via the
+// /metrics/last-deliberation-prompt mirror. The full proof = these rows + that
+// smoke.
+//
+// P6 (lesion) is asserted in the lesion phase (runPerceptionLesionRow).
+// ---------------------------------------------------------------------------
+
+/** Read the per-drive snapshot (WS5 T4 — /api/drives now exposes pressureVector). */
+async function fetchDriveVector(): Promise<{
+  pressureVector: Record<string, number>;
+  driveDeltas: Record<string, number>;
+  tickNumber: number;
+} | null> {
+  const { status, body } = await fetchJson('/api/drives');
+  if (status !== 200 || !body || !body.pressureVector) return null;
+  return {
+    pressureVector: body.pressureVector,
+    driveDeltas: body.driveDeltas ?? {},
+    tickNumber: body.tickNumber ?? 0,
+  };
+}
+
+/** Read the scene predictor's surprise ring + familiarity counts (WS5 P1a/P1c). */
+async function fetchScenePredictionState(): Promise<{
+  initialized: boolean;
+  familiarityCounts: Record<string, number>;
+  recentSurprise: Array<{ seq: number; totalSurprise: number; novelMagnitudes: Record<string, number>; at: string }>;
+} | null> {
+  const { status, body } = await fetchJson('/api/metrics/scene-prediction-state');
+  if (status !== 200 || !body) return null;
+  return body;
+}
+
+/**
+ * Poll the scene-prediction state until `label` appears in `minCount` frames'
+ * novelMagnitudes. The nudge cycle is async (and slow under embed timeouts when
+ * the LLM is live), so the surprise/ring lands a few seconds after the frame is
+ * injected — read it with a bounded poll, not a fixed sleep.
+ */
+async function pollForNovelInRing(
+  label: string,
+  minCount = 1,
+  timeoutMs = 25_000,
+): Promise<any | null> {
+  const deadline = Date.now() + timeoutMs;
+  let last: any = null;
+  while (Date.now() < deadline) {
+    const st = await fetchScenePredictionState();
+    last = st;
+    const count = (st?.recentSurprise ?? []).filter(
+      (o: any) => label in (o.novelMagnitudes ?? {}),
+    ).length;
+    if (count >= minCount) return st;
+    await sleep(400);
+  }
+  return last;
+}
+
+/**
+ * Poll /api/metrics/scene-prediction-state until initialized===true (the prime
+ * frame's advancePredictions() call has completed), or until timeoutMs elapses.
+ * Returns true if initialized within the window, false on timeout.
+ * Use instead of a fixed sleep between prime→novel injections: guarantees the
+ * prime's nudge cycle finished (predictor seeded) before the novel frame is sent,
+ * preventing the novel frame from becoming the cold-start frame (surprise 0).
+ */
+async function pollForInitialized(timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = await fetchScenePredictionState();
+    if (st?.initialized === true) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+/**
+ * WS5 P1a gate seam — fetch the most recent ScenePrediction outcome routed to the
+ * drive engine. Returns the `lastRoutedOutcome` object (sceneSurprise +
+ * computedEffects) or null if no outcome has fired since the last reset.
+ * Used instead of the noisy net drive-vector delta: see P1a root cause analysis.
+ */
+async function fetchLastSceneOutcome(): Promise<{
+  sceneSurprise: number;
+  computedEffects: { curiosity: number; anxiety: number };
+  routedAt: string;
+} | null> {
+  const { status, body } = await fetchJson('/api/metrics/last-scene-outcome');
+  if (status !== 200 || !body) return null;
+  return (body.lastRoutedOutcome as {
+    sceneSurprise: number;
+    computedEffects: { curiosity: number; anxiety: number };
+    routedAt: string;
+  } | null) ?? null;
+}
+
+/**
+ * Poll /api/metrics/last-scene-outcome until a ScenePrediction outcome with
+ * sceneSurprise > minSurprise appears (the outcome is recorded in the same cycle
+ * tail as the ring write but slightly later). Bounded to timeoutMs.
+ */
+async function pollForSceneOutcome(
+  minSurprise: number,
+  timeoutMs = 10_000,
+): Promise<{ sceneSurprise: number; computedEffects: { curiosity: number; anxiety: number } } | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const o = await fetchLastSceneOutcome();
+    if (o && o.sceneSurprise > minSurprise) return o;
+    await sleep(200);
+  }
+  return null;
+}
+
+/**
+ * Poll /api/drives until a target drive's pressure rises strictly above a
+ * baseline (bounded). The scene-prediction / unknown-person outcomes are
+ * fire-and-forget IPC to the drive process, which applies them on receipt; the
+ * apply lands within a tick or two. We assert the SIGN of the change (drive
+ * moved up), not a magnitude (the default-affect deltas are scaled by surprise /
+ * count and the new familiarity attenuation keeps them small — direction is the
+ * claim, magnitude is implementation detail; mythos ruling).
+ *
+ * Returns the observed delta (post - baseline) for the drive, or null on timeout
+ * without an increase. EPS guards against float noise.
+ */
+async function pollForDriveRise(
+  drive: string,
+  baseline: number,
+  timeoutMs = 25_000,
+): Promise<number | null> {
+  const EPS = 1e-6;
+  const deadline = Date.now() + timeoutMs;
+  let best = -Infinity;
+  while (Date.now() < deadline) {
+    const v = await fetchDriveVector();
+    if (v) {
+      const cur = v.pressureVector[drive] ?? 0;
+      best = Math.max(best, cur);
+      if (cur > baseline + EPS) return cur - baseline;
+    }
+    await sleep(200);
+  }
+  return best > -Infinity && best > baseline + EPS ? best - baseline : null;
+}
+
+async function runPerceptionProofPhase(llmCassette: Cassette): Promise<void> {
+  banner('PHASE T4: WS5 PERCEPTION PROOF ROWS (P1a/P1b/P1c/P3)');
+
+  const cassette = new PerceptionCassette();
+  const stub = new PerceptionCameraStub();
+
+  // X0 PROTECTION + honest LLM-independence. The scene-change cycle nudge
+  // (perception.gateway.ts:252 — fires a cognitive cycle on each confirmed scene
+  // change) would run a cycle that could reach deliberation and POST a captioned,
+  // never-recorded prompt to the LLM cassette → a MISS → X0 (no-cassette-misses)
+  // would go red. These rows are LLM-INDEPENDENT BY DESIGN (they assert on the
+  // surprise ring, per-drive movement, and episode storage — the encode gate runs
+  // BEFORE deliberation, so an episode still stores under lesion). So we LESION the
+  // LLM for the duration of the phase: the nudge cycles degrade to a no-LLM SHRUG
+  // (isAvailable()=false → no socket call, no miss) while every assertion here
+  // still holds. Healed in the finally block. This is the same severing P6 relies
+  // on — running these rows under it makes their LLM-independence claim literal.
+  let lesionedHere = false;
+
+  const failAll = (detail: string) => {
+    for (const [id, label] of [
+      ['P1a', 'scene-surprise moves curiosity+anxiety'],
+      ['P1b', 'unknown-person moves social'],
+      ['P1c', 'habituation: surprise₂ < surprise₁ on identity key'],
+      ['P3', 'multimodal episode stored (source=perception)'],
+    ] as const) {
+      recordBool(id, label, false, detail);
+    }
+  };
+
+  try {
+    await cassette.start();
+    console.log(`  Perception cassette listening on ${PERCEPTION_CASSETTE_URL}.`);
+  } catch (err) {
+    failAll(`perception cassette failed to start: ${err instanceof Error ? err.message : err}`);
+    return;
+  }
+
+  try {
+    // Sever the LLM so nudge cycles cannot miss the cassette (see note above).
+    await llmCassette.lesionNow();
+    lesionedHere = true;
+    console.log('  LLM lesioned for the perception proof phase (LLM-independent rows; X0-safe).');
+    await sleep(1000); // let the backend settle on isAvailable()=false
+
+    // ── Hermetic reset: predictor (surprise/familiarity), VWM (+ cooldown), episodic.
+    // perception-reset now folds in gateway cooldown reset (WS5 T4 isolation seam):
+    // lastSceneCycleAt=0 so the first frame always fires a nudge.
+    for (const route of ['scene-predictor-reset', 'perception-reset', 'episodic-reset']) {
+      await fetchJson(`/api/metrics/${route}`, { method: 'POST' });
+    }
+
+    await stub.open();
+
+    // ════════════════════════════════════════════════════════════════════════
+    // P1a — scene-surprise moves Curiosity AND Anxiety.
+    // Ordering: predictor-reset → prime-frame (surprise 0) → novel-frame.
+    // Assert on the NOVEL (second) frame. Keep unknown_person_count=0 (no person
+    // tracks) so UnknownPersonPressure doesn't contaminate the curiosity delta.
+    //
+    // Root cause of prior failure: the net /drives pressureVector delta was too
+    // noisy — Curiosity is high-traffic (SensoryPrediction/ScenePrediction/Social-
+    // Comment cycles nudge it every few seconds), so +0.02 from one outcome is lost
+    // in noise. Fix: assert on the deterministic ScenePrediction ACTION_OUTCOME's
+    // computedEffects via GET /metrics/last-scene-outcome instead of the noisy delta.
+    // ════════════════════════════════════════════════════════════════════════
+    // Prime frame establishes baseline (cold-start surprise 0, predictor seeds).
+    // The perception-reset above zeroed the cooldown; prime nudge fires immediately.
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 5101 }));
+    // Poll until the prime cycle ran (predictor initialized), then reset the cooldown
+    // so the novel keyboard frame's nudge fires immediately — no bare sleep needed.
+    await pollForInitialized(15_000);
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset (VWM stays clean)
+
+    // Novel frame: a NEW object (distinct label + fresh trackId, distinct
+    // embedding) → not in predictedScene → novel → surprise > 0.
+    // The initial reset cleared lastRoutedOutcome; the prime cup (surprise=0, below
+    // threshold) never sets it; so the first lastRoutedOutcome set after the novel
+    // frame is provably from the keyboard cycle.
+    await stub.injectFrame(
+      cassette,
+      makeDetectFixture({ label: 'keyboard', trackId: 5102, embeddingSeed: 4242 }),
+    );
+
+    // Phase 1: wait for the surprise ring to confirm the novel frame's nudge cycle
+    // completed — this means compareScene+advancePredictions ran and the ring entry
+    // was written. routeScenePredictionErrors fires in the same cycle tail, shortly
+    // after the ring write, so the outcome seam will be populated.
+    const stateP1a = await pollForNovelInRing('keyboard', 1, 25_000);
+    // Phase 2: poll for the last-scene-outcome seam to confirm the ScenePrediction
+    // outcome actually fired (sceneSurprise > 0.05 → routeScenePredictionErrors →
+    // reportOutcome → recordOutcomeRouted). This is the deterministic causal proof
+    // that scene-surprise moved Curiosity AND Anxiety — no net-delta polling needed.
+    const sceneOutcome = await pollForSceneOutcome(0.05, 10_000);
+    const ringP1a = stateP1a?.recentSurprise ?? [];
+    // The novel frame's surprise is the most recent observation carrying a novel
+    // magnitude for 'keyboard'; the prime frame's is the earlier ~0 observation.
+    const novelObs = [...ringP1a].reverse().find((o: any) => 'keyboard' in (o.novelMagnitudes ?? {}));
+    const novelSurprise = novelObs?.totalSurprise ?? 0;
+    const primeZero = ringP1a.length > 0 && ringP1a[0].totalSurprise <= 0.05;
+
+    const surpriseOk = novelSurprise > 0.05 && primeZero;
+    // Primary assertion: surprise ring + deterministic computedEffects from the seam.
+    // Both curiosity > 0 and anxiety > 0 are guaranteed by the drive rule when
+    // sceneSurprise > 0.05 (curiosity=0.02*s, anxiety=0.01*s from rules.ts:165-168).
+    const effectsCuriosityOk = (sceneOutcome?.computedEffects?.curiosity ?? 0) > 0;
+    const effectsAnxietyOk = (sceneOutcome?.computedEffects?.anxiety ?? 0) > 0;
+
+    recordBool('P1a', 'scene-surprise moves Curiosity AND Anxiety (assert on novel frame)',
+      surpriseOk && effectsCuriosityOk && effectsAnxietyOk,
+      `surprise: prime=${ringP1a[0]?.totalSurprise?.toFixed(3) ?? '?'} (≤0.05 reqd), ` +
+        `novel=${novelSurprise.toFixed(3)} (>0.05 reqd); ` +
+        `ScenePrediction outcome: sceneSurprise=${sceneOutcome?.sceneSurprise?.toFixed(4) ?? 'NONE'} ` +
+        `computedEffects.curiosity=${sceneOutcome?.computedEffects?.curiosity?.toFixed(4) ?? 'NONE'} (>0 reqd), ` +
+        `computedEffects.anxiety=${sceneOutcome?.computedEffects?.anxiety?.toFixed(4) ?? 'NONE'} (>0 reqd) ` +
+        `(default-affect ScenePrediction rule: curiosity=0.02·s, anxiety=0.01·s). ` +
+        (surpriseOk && effectsCuriosityOk && effectsAnxietyOk
+          ? 'scene-surprise reached the drive engine and produced positive effects on both drives.'
+          : !surpriseOk
+            ? 'surprise ordering wrong (prime not ~0, or novel not >0.05).'
+            : 'surprise fired but ScenePrediction outcome not detected in seam (routeScenePredictionErrors may not have run).'));
+
+    // ════════════════════════════════════════════════════════════════════════
+    // P1c — habituation: re-inject the SAME IDENTITY under a FRESH trackId; assert
+    // surprise₂ strictly < surprise₁ on the identity key. Reset the predictor so
+    // the identity starts at zero familiarity, then prime → novel#1 → novel#2.
+    // (Run before P1b so the unknown-person frame's counts don't perturb the
+    // surprise-comparison ring.)
+    //
+    // Per-row isolation: perception-reset clears VWM AND zeros the gateway's
+    // scene-cycle cooldown (WS5 T4 seam). Without the cooldown reset, P1c starts
+    // within 5s of P1a's final nudge and its first frame's scene-change is
+    // suppressed → only ONE teapot surprise lands. scene-predictor-reset zeros
+    // the familiarity map and surprise ring from a clean slate.
+    // ════════════════════════════════════════════════════════════════════════
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' });   // VWM + cooldown reset
+    await fetchJson('/api/metrics/scene-predictor-reset', { method: 'POST' }); // familiarity + ring
+    const IDENTITY_LABEL = 'teapot'; // identity key = label (no personId on object tracks)
+
+    // Prime cup: fires OBJECT_APPEARED → nudge cycle → predictor initialized.
+    // perception-reset zeroed the cooldown; nudge fires immediately.
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 5201 }));
+    // Poll until initialized (prime cycle ran + advancePredictions done), then
+    // reset cooldown before teapot#1 so its nudge fires immediately.
+    await pollForInitialized(15_000);
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset
+
+    // Novel#1: identity 'teapot' under trackId 5202 → first sighting, count 0 → mag 1.0.
+    await stub.injectFrame(
+      cassette,
+      makeDetectFixture({ label: IDENTITY_LABEL, trackId: 5202, embeddingSeed: 7001 }),
+    );
+    // Poll until 1st teapot surprise lands (confirms cycle ran + familiarityCount→1).
+    await pollForNovelInRing(IDENTITY_LABEL, 1, 25_000);
+    // Reset cooldown before the intervening cup frame.
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset
+
+    // An intervening frame WITHOUT the identity (cup only) so the identity's
+    // track is no longer the predicted track — its re-entry is genuinely novel.
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 5203 }));
+    // Brief wait for the cup's cycle to advance predictions (teapot now absent from
+    // predictedScene), then reset cooldown so teapot#2's nudge fires immediately.
+    await sleep(1200);
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset
+
+    // Novel#2: SAME identity 'teapot' under a FRESH trackId 5204 (simulating
+    // walk-out/walk-back). Familiarity map keyed on label, count=1 → mag 0.625.
+    await stub.injectFrame(
+      cassette,
+      makeDetectFixture({ label: IDENTITY_LABEL, trackId: 5204, embeddingSeed: 7001 }),
+    );
+    // Poll until BOTH teapot surprises are in the ring.
+    const stateP1c = await pollForNovelInRing(IDENTITY_LABEL, 2, 25_000);
+    const ringP1c = stateP1c?.recentSurprise ?? [];
+    // Per-identity novel magnitudes across the ring for the teapot identity.
+    const teapotMags = ringP1c
+      .map((o: any) => o.novelMagnitudes?.[IDENTITY_LABEL])
+      .filter((m: any): m is number => typeof m === 'number');
+    const surprise1 = teapotMags[0];
+    const surprise2 = teapotMags[teapotMags.length - 1];
+    const habituated =
+      teapotMags.length >= 2 &&
+      typeof surprise1 === 'number' &&
+      typeof surprise2 === 'number' &&
+      surprise2 < surprise1;
+    const familiarityCount = stateP1c?.familiarityCounts?.[IDENTITY_LABEL] ?? 0;
+
+    recordBool('P1c', 'habituation: surprise₂ < surprise₁ on the identity key (fresh trackId)',
+      habituated,
+      teapotMags.length >= 2
+        ? `identity='${IDENTITY_LABEL}' novel magnitudes: surprise₁=${surprise1?.toFixed(3)} ` +
+          `(trackId 5202) → surprise₂=${surprise2?.toFixed(3)} (trackId 5204, FRESH) — ` +
+          `${habituated ? 'strictly decreasing' : 'NOT decreasing'}; familiarityCount=${familiarityCount} (expect 2). ` +
+          `Proves familiarity decay (identity-keyed), not trackId persistence.`
+        : `expected ≥2 novel sightings of '${IDENTITY_LABEL}' on the identity key, got ` +
+          `${teapotMags.length} (${JSON.stringify(teapotMags)}) — habituation unprovable. ` +
+          `familiarityCount=${familiarityCount}`);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // P1b — unknown-person moves Social. Inject an unidentifiable `person` track
+    // so VWM getUnknownPersons() counts it → unknown_person_count>0 →
+    // UnknownPersonPressure → Social. UnknownPersonPressure ALSO moves Curiosity,
+    // which is why this runs AFTER the P1a/P1c surprise comparisons (kept
+    // person-free) — no contamination of those.
+    // ════════════════════════════════════════════════════════════════════════
+    const driveBeforeP1b = await fetchDriveVector();
+    const socialBase = driveBeforeP1b?.pressureVector['social'] ?? 0;
+
+    // A `person` entity enters VWM in 'entering' state immediately and is counted
+    // by getUnknownPersons() (label==='person', !discovered). Inject several
+    // frames so the gateway samples unknown_person_count>0 and the scene-change
+    // nudge fires a cycle that routes UnknownPersonPressure.
+    for (let i = 0; i < 4; i++) {
+      await stub.injectFrame(
+        cassette,
+        makeDetectFixture({ label: 'person', trackId: 5300, framesSeen: 8 + i, embeddingSeed: 8800 }),
+      );
+    }
+
+    const socialRise = await pollForDriveRise('social', socialBase, 8000);
+    recordBool('P1b', 'unknown-person moves Social (UnknownPersonPressure)',
+      socialRise !== null,
+      socialRise !== null
+        ? `Social rose +${socialRise.toFixed(4)} after an unidentified person track entered VWM ` +
+          `(unknown_person_count>0 → UnknownPersonPressure → Social). This is the ONLY path that ` +
+          `moves Social — scene-prediction does not (finding K).`
+        : `Social did NOT rise after the unknown-person frame. Either VWM did not count the person ` +
+          `(getUnknownPersons), the gateway did not surface unknown_person_count, or the outcome ` +
+          `did not route. Baseline social=${socialBase.toFixed(4)}.`);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // P3 — multimodal episode stored with visualContext + source='perception'.
+    // After a salient captioned injected frame, an episode must be stored whose
+    // source='perception' and whose caption/sceneLabels match the injection.
+    // (T1 proved this live; here we wire the assertion via /metrics/episodic-recent.)
+    // ════════════════════════════════════════════════════════════════════════
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' });
+    await fetchJson('/api/metrics/episodic-reset', { method: 'POST' });
+    await fetchJson('/api/metrics/scene-predictor-reset', { method: 'POST' });
+
+    const p3Caption = 'a green plant on the shelf';
+    // Prime cup: perception-reset above zeroed the cooldown → nudge fires immediately.
+    // Poll for initialized before the captioned scene so the prime cycle has landed.
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 5401 }));
+    await pollForInitialized(15_000);
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset before novel inject
+    const p3CaptionHit = await stub.injectCaptionedScene(
+      cassette,
+      p3Caption,
+      makeDetectFixture({ label: 'pottedplant', trackId: 5402, embeddingSeed: 5402 }),
+      makeDetectFixture({ label: 'pottedplant', trackId: 5402, embeddingSeed: 5402 }),
+    );
+    await sleep(2500); // let the nudged cycle + episodic encode land
+
+    const recent = await fetchJson('/api/metrics/episodic-recent?limit=20');
+    const episodes: any[] = recent.body?.episodes ?? [];
+    const perceptionEps = episodes.filter((e) => e.source === 'perception');
+    const matched = perceptionEps.find(
+      (e) =>
+        (e.visualContext?.caption?.text ?? '').toLowerCase().includes('plant') ||
+        (e.visualContext?.sceneLabels ?? []).some((l: string) => l === 'pottedplant'),
+    );
+    const anyGuardianStamp = perceptionEps.some((e) => e.speakerIsGuardian === true);
+    const p3Pass = !!matched && !anyGuardianStamp;
+    recordBool('P3', 'multimodal episode stored: visualContext + source=perception (not guardian-told)',
+      p3Pass,
+      perceptionEps.length === 0
+        ? `NO source='perception' episode stored after a salient captioned frame ` +
+          `(captionHit=${p3CaptionHit}). The encode gate may not have opened or the scene-change ` +
+          `cycle did not run.`
+        : matched
+          ? `episode stored: source='perception', caption="${matched.visualContext?.caption?.text ?? '∅'}", ` +
+            `labels=${JSON.stringify(matched.visualContext?.sceneLabels ?? [])}, ` +
+            `caption.provenanceSource=${matched.visualContext?.caption?.provenanceSource ?? 'n/a'}` +
+            (anyGuardianStamp ? ' — BUT a perception episode is guardian-stamped (T0.9 VIOLATION)' : '')
+          : `${perceptionEps.length} perception episode(s) stored but none carry the injected ` +
+            `plant caption/label.`);
+
+  } catch (err) {
+    failAll(`perception proof phase threw: ${err instanceof Error ? err.stack ?? err.message : err}`);
+  } finally {
+    stub.close();
+    // Clean up synthetic residue so later phases / provenance census are clean.
+    try { await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); } catch { /* */ }
+    try { await fetchJson('/api/metrics/scene-predictor-reset', { method: 'POST' }); } catch { /* */ }
+    await cassette.stop();
+    // Restore the LLM so the metrics/multi-person phases that follow run normally.
+    if (lesionedHere) {
+      try {
+        await llmCassette.healNow();
+        console.log('  LLM healed after the perception proof phase.');
+        await sleep(1000);
+      } catch { /* non-fatal */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase T4 (lesion): P6 — perception survives LLM disconnect.
+//
+// Under GATE_MODE=lesion (LLM severed), inject a detections-only novel-object
+// frame with the caption endpoint LESIONED (503). Assert:
+//   (a) scene-prediction surprise still fires — perception→drive coupling is
+//       LLM-INDEPENDENT (the surprise ring records a >0.05 novel surprise even
+//       with the LLM gone), AND
+//   (b) she does NOT fabricate a caption she cannot generate — no episode carries
+//       the withheld VLM caption string (the gateway falls back to a VWM-only
+//       scene description; it never invents the unavailable caption).
+//
+// Runs inside the lesion phase (the cassette is already severed). Uses its OWN
+// perception cassette + inbound stub (the perception path is independent of the
+// LLM cassette).
+// ---------------------------------------------------------------------------
+
+async function runPerceptionLesionRow(): Promise<void> {
+  banner('PHASE T4 (lesion): P6 — PERCEPTION SURVIVES LLM DISCONNECT');
+
+  const cassette = new PerceptionCassette();
+  const stub = new PerceptionCameraStub();
+
+  // A withheld caption with a DISTINCTIVE nonce noun that appears nowhere else,
+  // so any appearance in an episode would prove fabrication of the unavailable
+  // caption (it can only have come from the lesioned VLM endpoint).
+  const WITHHELD_CAPTION = 'a zorblax floating near the ceiling';
+  const NONCE = 'zorblax';
+
+  try {
+    await cassette.start();
+  } catch (err) {
+    recordBool('P6', 'perception survives LLM disconnect (drives move, no fabricated caption)', false,
+      `perception cassette failed to start: ${err instanceof Error ? err.message : err}`);
+    return;
+  }
+
+  try {
+    // In GATE_MODE=lesion, P1a-P3 are skipped, so the scene predictor is always cold
+    // (no prior perception rows warmed it). Reset perception + episodic only;
+    // scene-predictor-reset is omitted here because the predictor is already cold
+    // (server startup state = no frames received = !initialized). If something
+    // from a prior gate phase somehow warmed it, a fresh bowl frame still correctly
+    // seeds it as the predicted scene, making suitcase novel regardless.
+    for (const route of ['perception-reset', 'episodic-reset']) {
+      await fetchJson(`/api/metrics/${route}`, { method: 'POST' });
+    }
+
+    // Lesion the caption endpoint: /perception/caption returns 503 (T0.6).
+    cassette.setCaption(WITHHELD_CAPTION); // armed, but lesion mode returns 503 → never delivered
+    cassette.setCaptionLesion(true);
+
+    await stub.open();
+
+    // Prime bowl frame to seed the predictor. perception-reset above zeroed the
+    // cooldown, so the bowl's OBJECT_APPEARED fires a nudge → cycle runs →
+    // advancePredictions() seeds the predictor (initialized=true). Extended timeout
+    // (20s) guards against backend load during the lesion test recovery phase.
+    // The caption request is rejected with 503; the gateway falls back to VWM-only.
+    await stub.injectFrame(cassette, makeDetectFixture({ label: 'bowl', trackId: 6101, embeddingSeed: 6101 }));
+    const p6Initialized = await pollForInitialized(20_000);
+    if (!p6Initialized) {
+      console.log('  P6 warn: predictor not initialized after 20s; injecting novel frame anyway (may still pass if predictor was pre-warmed)');
+    }
+    // Reset cooldown after the bowl cycle so the suitcase's scene-change nudge fires
+    // immediately (the bowl primed a nudge; without this reset the suitcase arrives
+    // within the 5s window and its nudge is suppressed → surprise never fires).
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset (VWM stays clean)
+    await stub.injectFrame(
+      cassette,
+      makeDetectFixture({ label: 'suitcase', trackId: 6102, embeddingSeed: 6102 }),
+    );
+
+    // (a) scene surprise still fired despite the LLM being gone (ring poll — the
+    // nudge cycle is async).
+    const state = await pollForNovelInRing('suitcase');
+    const ring = state?.recentSurprise ?? [];
+    const novelObs = [...ring].reverse().find((o: any) => 'suitcase' in (o.novelMagnitudes ?? {}));
+    const surpriseFired = (novelObs?.totalSurprise ?? 0) > 0.05;
+
+    // (b) the caption endpoint was actually lesioned (rejections recorded) and no
+    // episode fabricated the withheld caption nonce.
+    const lesionRejected = cassette.stats.captionLesionRejections > 0;
+    const recent = await fetchJson('/api/metrics/episodic-recent?limit=20');
+    const episodes: any[] = recent.body?.episodes ?? [];
+    const fabricated = episodes.some((e) => {
+      const cap = (e.visualContext?.caption?.text ?? '').toLowerCase();
+      const summary = (e.inputSummary ?? '').toLowerCase();
+      return cap.includes(NONCE) || summary.includes(NONCE);
+    });
+
+    const p6Pass = surpriseFired && !fabricated;
+    recordBool('P6', 'perception survives LLM disconnect: drives move (LLM-independent) + no fabricated caption',
+      p6Pass,
+      `scene surprise on novel frame=${(novelObs?.totalSurprise ?? 0).toFixed(3)} ` +
+        `(>0.05 reqd, LLM severed) — ${surpriseFired ? 'FIRED' : 'DID NOT FIRE'}; ` +
+        `caption endpoint lesion rejections=${cassette.stats.captionLesionRejections}` +
+        `${lesionRejected ? '' : ' (WARNING: caption never even requested — fallback path untested)'}; ` +
+        `withheld nonce '${NONCE}' in any episode caption/summary=${fabricated} ` +
+        `(must be false — she cannot fabricate the caption she could not generate). ` +
+        (p6Pass
+          ? 'perception→drive coupling held without the LLM and no caption was invented.'
+          : !surpriseFired
+            ? 'scene surprise did not fire — perception→drive coupling appears LLM-dependent (regression).'
+            : 'a withheld caption nonce leaked into an episode — fabrication.'));
+
+  } catch (err) {
+    recordBool('P6', 'perception survives LLM disconnect (drives move, no fabricated caption)', false,
+      `P6 lesion row threw: ${err instanceof Error ? err.stack ?? err.message : err}`);
+  } finally {
+    stub.close();
+    try { await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); } catch { /* */ }
+    try { await fetchJson('/api/metrics/scene-predictor-reset', { method: 'POST' }); } catch { /* */ }
+    await cassette.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase: aggregate metric assertions vs baseline
 // ---------------------------------------------------------------------------
 
@@ -1430,6 +2118,7 @@ async function main(): Promise<void> {
   console.log(`  Mode:        ${MODE}`);
   console.log(`  Backend:     ${BASE}`);
   console.log(`  Cassette:    ${CASSETTE_URL}  (point OLLAMA_HOST here)`);
+  console.log(`  Perception:  ${PERCEPTION_CASSETTE_URL}  (point PERCEPTION_HOST here — WS5 T0)`);
   console.log(`  Tape exists: ${cassetteExists()}`);
   console.log(`  Time:        ${new Date().toISOString()}`);
 
@@ -1582,6 +2271,34 @@ async function main(): Promise<void> {
         'lesion mode — conversation path severed; T5 needs a live GROUNDED recall turn');
     }
 
+    // PHASE T0 — perception-frame injection seam (WS5 T0). MECHANICAL only — the
+    // full encode→recall smoke is deferred to T1.0. Needs the perception cassette
+    // + live gateway (LLM-independent), so it runs in replay/update-baseline.
+    // Under lesion it is skipped (the seam is identical; lesion focuses on the LLM).
+    if (MODE === 'replay' || MODE === 'update-baseline') {
+      await runPerceptionSeamPhase();
+    } else if (MODE === 'lesion') {
+      recordSkip('T0-A', 'perception reset endpoints respond', 'lesion mode — perception seam unchanged by LLM');
+      recordSkip('T0-B', 'inbound camera stub triggers handleFrame', 'lesion mode — perception seam unchanged by LLM');
+      recordSkip('T0-C', 'caption-settle barrier records a /perception/caption hit', 'lesion mode — perception seam unchanged by LLM');
+      recordSkip('T0-D', 'synthetic WORLD node written then removed', 'lesion mode — perception seam unchanged by LLM');
+    }
+
+    // PHASE T4 — WS5 perception proof rows P1a/P1b/P1c/P3 (LLM-independent). Runs
+    // in replay/update-baseline; lesions the LLM internally (X0-safe — nudge
+    // cycles degrade to no-LLM SHRUG, no cassette miss) and heals after. Under
+    // GATE_MODE=lesion the LLM is already severed; P6 is asserted in the lesion
+    // phase (runPerceptionLesionRow) and the P1a–P3 rows are recorded-skipped here
+    // (they need the salience/encode path which the lesion phase re-exercises via P6).
+    if (MODE === 'replay' || MODE === 'update-baseline') {
+      await runPerceptionProofPhase(cassette);
+    } else if (MODE === 'lesion') {
+      recordSkip('P1a', 'scene-surprise moves curiosity+anxiety', 'replay-only — asserted in the replay gate; lesion re-checks LLM-independence via P6');
+      recordSkip('P1b', 'unknown-person moves social', 'replay-only — asserted in the replay gate');
+      recordSkip('P1c', 'habituation: surprise₂ < surprise₁', 'replay-only — asserted in the replay gate');
+      recordSkip('P3', 'multimodal episode stored (source=perception)', 'replay-only — asserted in the replay gate');
+    }
+
     // PHASE 2 — metrics capture (M1–M4 anchored BEFORE multi-person phase).
     // Do NOT re-read metrics after Phase 2.5 per spec §2.
     const metrics = await runMetricAssertions(baseline);
@@ -1593,6 +2310,17 @@ async function main(): Promise<void> {
     // PHASE 3 — lesion test (only in lesion mode).
     if (MODE === 'lesion') {
       await runLesionTest(cassette);
+      // PHASE T4 (lesion) — P6: perception survives LLM disconnect. The lesion
+      // test heals the LLM at its end (cassette.healNow), so re-sever for P6: it
+      // proves perception→drive coupling fires WITHOUT the LLM and that she does
+      // not fabricate a caption she cannot generate.
+      await cassette.lesionNow();
+      await sleep(1000);
+      await runPerceptionLesionRow();
+      await cassette.healNow();
+    } else {
+      recordSkip('P6', 'perception survives LLM disconnect (drives move, no fabricated caption)',
+        'lesion-only — asserted in GATE_MODE=lesion');
     }
 
     if (MODE === 'update-baseline') {

@@ -63,6 +63,8 @@ export {
   type EncodingDepth,
   type EpisodeInput,
   type Episode,
+  type EpisodeSource,
+  type VisualContext,
   type Prediction,
   type PredictionEvaluation,
   type GapType,

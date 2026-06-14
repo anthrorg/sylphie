@@ -68,7 +68,7 @@ export { EPISODIC_MEMORY_SERVICE } from './decision-making.tokens';
 export type { IEpisodicMemoryService } from './interfaces/decision-making.interfaces';
 
 /** Scene prediction — per-object prediction errors for attention and drive routing. */
-export { ScenePredictionService, type ScenePredictionResult, type SceneObjectError } from './prediction/scene-prediction.service';
+export { ScenePredictionService, type ScenePredictionResult, type SceneObjectError, type ScenePredictionState, type SurpriseObservation, type LastScenePredictionOutcome } from './prediction/scene-prediction.service';
 
 // ---------------------------------------------------------------------------
 // Sensory Pipeline (re-exported for backward compatibility)
@@ -96,6 +96,18 @@ export {
   applyRecallGroundingFromRetrieval,
 } from './deliberation/recall-retrieval';
 export type { RecallRetrieval, RecallSource } from './deliberation/recall-retrieval';
+
+// ---------------------------------------------------------------------------
+// WS5 T4 (P2/P4) — test-only "last composed prompt" mirror. Read by the gate's
+// P2/P4 caption-in-prompt assertion (GET /metrics/last-deliberation-prompt).
+// Dark unless GATE_DEBUG_PROMPT_CAPTURE is set (data-exfil discipline).
+// ---------------------------------------------------------------------------
+export {
+  getLastCapturedPrompt,
+  resetPromptCapture,
+  isPromptCaptureEnabled,
+} from './deliberation/prompt-capture';
+export type { CapturedPrompt, PromptCompositionPath } from './deliberation/prompt-capture';
 
 /**
  * WS3 Ticket T2/T4 — the knowledge use→reinforce edge.

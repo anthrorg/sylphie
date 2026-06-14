@@ -4,10 +4,16 @@ import {
   ArbitrationService,
   ATTRACTOR_MONITOR_SERVICE,
   AttractorMonitorService,
+  EPISODIC_MEMORY_SERVICE,
+  type IEpisodicMemoryService,
   LatentSpaceService,
   ModalityRegistryService,
+  ScenePredictionService,
   WkgContextService,
   isDocumentEncoder,
+  getLastCapturedPrompt,
+  resetPromptCapture,
+  isPromptCaptureEnabled,
 } from '@sylphie/decision-making';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 import { LEARNING_SERVICE, type ILearningService } from '@sylphie/learning';
@@ -18,6 +24,8 @@ import {
   DriveName,
 } from '@sylphie/shared';
 import { PersonModelService } from '../services/person-model.service';
+import { VisualWorkingMemoryService } from '../services/visual-working-memory.service';
+import { PerceptionGateway } from '../gateways/perception.gateway';
 import type {
   Type1Type2Ratio,
   PredictionMAEMetric,
@@ -96,6 +104,24 @@ export class MetricsController {
     // by production decay code reading the production last_retrieval_at field.
     @Inject(LEARNING_SERVICE)
     private readonly learning: ILearningService,
+
+    // WS5 T0.7 — perception/episodic gate hermeticity reset surfaces.
+    // EpisodicMemoryService is internal to DecisionMakingModule but its token +
+    // interface are exported (index.ts) and the provider is a module export, so
+    // injection by token is isolation-clean (no concrete-class import).
+    @Inject(EPISODIC_MEMORY_SERVICE)
+    private readonly episodicMemory: IEpisodicMemoryService,
+
+    // WS5 T0.7 — scene-predictor reset (P1a determinism: carried state, not RNG).
+    private readonly scenePrediction: ScenePredictionService,
+
+    // WS5 T0.7 — VWM in-memory entity Map clear + synthetic WORLD node deletion.
+    private readonly vwm: VisualWorkingMemoryService,
+
+    // WS5 T0.5 — read-only `processing` flag observability so the inbound camera
+    // stub can await frame completion between injected frames (no GATE_MODE
+    // branch in the gateway — this is an accessor, not a test-only code path).
+    private readonly perceptionGateway: PerceptionGateway,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -325,6 +351,322 @@ export class MetricsController {
         `${factsCleared} attribute(s) deleted across all persons.`,
     );
     return { ok: factsCleared >= 0, clearedAt: new Date().toISOString(), factsCleared };
+  }
+
+  // ---------------------------------------------------------------------------
+  // WS5 T0.7 — perception/episodic gate hermeticity reset block
+  //
+  // Mirrors the existing latent-reset / person-facts-reset pattern: dedicated
+  // POST routes the Provability Gate calls in its hermeticity block before
+  // injecting perception frames. Each leaves the perception path in a known cold
+  // state so the next run's surprise/novelty/episode counts reflect ONLY that run.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /metrics/episodic-reset
+   *
+   * Clear the in-process episodic ring buffer (clear()) AND truncate the
+   * TimescaleDB checkpoint table. The in-memory clear alone is insufficient:
+   * the checkpoint is re-hydrated on backend restart (episodic-memory.service
+   * onModuleInit), so without the TRUNCATE a backend restart between gate phases
+   * contaminates P3 cross-run (finding M). DESTRUCTIVE for the episodic buffer,
+   * by design and gate-authorized — the gate re-encodes its own episodes.
+   */
+  @Post('episodic-reset')
+  @HttpCode(200)
+  async resetEpisodic(): Promise<{ ok: boolean; clearedAt: string; checkpointTruncated: boolean }> {
+    this.episodicMemory.clear();
+    let checkpointTruncated = false;
+    try {
+      await this.timescale.query('TRUNCATE episodic_memory_checkpoint');
+      checkpointTruncated = true;
+    } catch (err) {
+      // Table may not exist yet (no episodes ever persisted) — non-fatal.
+      this.logger.warn(
+        `episodic-reset: TRUNCATE episodic_memory_checkpoint failed ` +
+          `(${err instanceof Error ? err.message : err}) — buffer cleared in-memory regardless.`,
+      );
+    }
+    this.logger.warn(
+      `Episodic memory reset for gate hermeticity: ring buffer cleared, ` +
+        `checkpoint truncated=${checkpointTruncated}.`,
+    );
+    return { ok: true, clearedAt: new Date().toISOString(), checkpointTruncated };
+  }
+
+  /**
+   * POST /metrics/perception-reset
+   *
+   * Reset visual perception state: clear the VWM in-memory entity Map, DETACH
+   * DELETE the synthetic WORLD :VisualObject nodes (T0.8), TRUNCATE
+   * visual_object_embeddings, AND reset the gateway's scene-cycle cooldown
+   * timestamp (`lastSceneCycleAt = 0`). Synthetic-scoped so genuine SENSOR world
+   * facts are untouched. Without this, synthetic nodes + embedding rows accumulate
+   * across runs and contaminate P1c/P3 surprise/novelty (finding 4). WORLD-only —
+   * never touches SELF/OTHER (isolation-sound per atlas 2026-06-13).
+   *
+   * WS5 T4 isolation: folding the cooldown reset here means every per-row
+   * perception-reset also guarantees the row's first scene-change nudge fires
+   * immediately, eliminating cross-row cooldown contamination (the cause of P1c
+   * seeing only ONE teapot surprise instead of two when rows ran back-to-back).
+   */
+  @Post('perception-reset')
+  @HttpCode(200)
+  async resetPerception(): Promise<{
+    ok: boolean;
+    clearedAt: string;
+    entitiesCleared: number;
+    syntheticNodesDeleted: number;
+    embeddingsTruncated: boolean;
+  }> {
+    const r = await this.vwm.resetForGate();
+    // WS5 T4 — zero the gateway scene-cycle cooldown so the row's first
+    // scene-change event always fires a nudge, never suppressed by carry-over
+    // from the previous row's final frame.
+    this.perceptionGateway.resetCooldown();
+    return {
+      ok: true,
+      clearedAt: new Date().toISOString(),
+      entitiesCleared: r.entitiesCleared,
+      syntheticNodesDeleted: r.syntheticNodesDeleted,
+      embeddingsTruncated: r.embeddingsTruncated,
+    };
+  }
+
+  /**
+   * POST /metrics/scene-predictor-reset
+   *
+   * Zero the scene predictor's carried state so the FIRST frame after reset
+   * returns surprise 0 by construction. This is the determinism mechanism for
+   * the P1a "reset → prime-frame (surprise 0) → novel-frame" ordering — carried
+   * mutable state being cleared, NOT a seeded RNG (finding L).
+   */
+  @Post('scene-predictor-reset')
+  @HttpCode(200)
+  resetScenePredictor(): { ok: true; clearedAt: string } {
+    this.scenePrediction.reset();
+    this.logger.warn('Scene predictor reset for gate hermeticity (P1a determinism).');
+    return { ok: true, clearedAt: new Date().toISOString() };
+  }
+
+  /**
+   * GET /metrics/scene-prediction-state
+   *
+   * WS5 T4 (P1a/P1c) — read-only view of the scene predictor's per-frame surprise
+   * inspection ring + per-identity familiarity counts. Surfaces the EXACT
+   * `totalSurprise` the predictor emitted into the cognitive cycle each frame (the
+   * same number that fed both the encode-attention saliency term and the drive
+   * router) plus the per-identity novel magnitudes — so the gate can assert:
+   *   • P1a: surprise ≈0 on the prime frame, >0.05 on the NOVEL (second) frame.
+   *   • P1c: surprise₂ < surprise₁ on the same IDENTITY key (personId else label)
+   *     under a fresh trackId — proving familiarity habituation, NOT trackId
+   *     persistence.
+   * Read-only; no write path, no recomputation (Theater Prohibition — the gate
+   * asserts on the value the cycle actually consumed).
+   */
+  @Get('scene-prediction-state')
+  scenePredictionState(): ReturnType<ScenePredictionService['getState']> {
+    return this.scenePrediction.getState();
+  }
+
+  /**
+   * GET /metrics/last-scene-outcome
+   *
+   * WS5 P1a gate seam — the most recent ScenePrediction ACTION_OUTCOME that was
+   * routed to the drive engine (totalSurprise >= 0.05 threshold passed).
+   * Returns `lastRoutedOutcome` from the scene predictor, which carries:
+   *   sceneSurprise  — the totalSurprise value that triggered the outcome.
+   *   computedEffects — deterministic drive deltas ({curiosity, anxiety}) computed
+   *                     from the same rule table the drive engine applies
+   *                     (curiosity=0.02*s, anxiety=0.01*s), so P1a can assert on
+   *                     the CAUSAL effect without polling the noisy net drive-vector.
+   *   routedAt       — wall-clock when the outcome was routed.
+   * Returns null.lastRoutedOutcome when no outcome has fired since the last reset.
+   */
+  @Get('last-scene-outcome')
+  lastSceneOutcome(): { lastRoutedOutcome: ReturnType<ScenePredictionService['getState']>['lastRoutedOutcome'] } {
+    return { lastRoutedOutcome: this.scenePrediction.getState().lastRoutedOutcome };
+  }
+
+  /**
+   * GET /metrics/last-deliberation-prompt
+   *
+   * WS5 T4 (P2/P4) — read the test-only "last composed prompt" mirror: the
+   * visual/knowledge context summary the most recent deliberation embedded in the
+   * LLM prompt, plus which composition path produced it (production WM-snapshot vs
+   * flat fallback). P2/P4 read this to prove the injected perception caption is
+   * GENUINELY in the prompt the LLM saw — read directly off the real composed
+   * context, decoupled from cassette record/replay (mythos ruling 2026-06-13).
+   *
+   * DARK unless GATE_DEBUG_PROMPT_CAPTURE is set on the backend process (the ring
+   * is never populated otherwise — a standing "last prompt" surface would be a
+   * data-exfil seam over person facts + drive state). Returns `enabled:false` when
+   * capture is off so a caller can distinguish "disabled" from "no turn yet".
+   */
+  @Get('last-deliberation-prompt')
+  lastDeliberationPrompt(): {
+    enabled: boolean;
+    captured: ReturnType<typeof getLastCapturedPrompt>;
+  } {
+    return {
+      enabled: isPromptCaptureEnabled(),
+      captured: getLastCapturedPrompt(),
+    };
+  }
+
+  /**
+   * POST /metrics/prompt-capture-reset
+   *
+   * WS5 T4 — clear the prompt-capture ring between gate phases so a stale capture
+   * from a prior turn cannot satisfy a later assertion vacuously.
+   */
+  @Post('prompt-capture-reset')
+  @HttpCode(200)
+  resetPromptCapture(): { ok: true; clearedAt: string } {
+    resetPromptCapture();
+    return { ok: true, clearedAt: new Date().toISOString() };
+  }
+
+  /**
+   * GET /metrics/perception-status
+   *
+   * WS5 T0.5 — read-only view of the perception gateway's per-frame `processing`
+   * flag so the inbound camera stub can await frame completion before injecting
+   * the next frame (back-to-back frames are dropped by the gateway). Read-only;
+   * no GATE_MODE branch in the gateway — this is an accessor only.
+   */
+  @Get('perception-status')
+  perceptionStatus(): { processing: boolean } {
+    return { processing: this.perceptionGateway.isProcessing() };
+  }
+
+  /**
+   * GET /metrics/episodic-recent
+   *
+   * WS5 T1/P3 — read-only view of the most recent episodes in the in-process
+   * ring, surfacing the new `source` discriminant and `visualContext`
+   * (caption/sceneLabels/personIds with per-sub-field provenance). P3 asserts
+   * that after a salient injected frame an episode IS stored with
+   * `source='perception'` and the injected caption/sceneLabels — which it could
+   * not be before T1.0 wired sceneSurprise→encode-attention. Read-only; no write
+   * path here (CANON Theater Prohibition).
+   *
+   * @param limit max episodes to return (default 10).
+   */
+  @Get('episodic-recent')
+  episodicRecent(@Query('limit') limit?: string): {
+    count: number;
+    episodes: Array<{
+      id: string;
+      source: string;
+      timestamp: string;
+      inputSummary: string;
+      actionTaken: string;
+      speakerId?: string;
+      speakerIsGuardian?: boolean;
+      visualContext?: {
+        caption?: { text: string; provenanceSource: string };
+        sceneLabels?: readonly string[];
+        personIds?: { ids: readonly string[]; provenanceSource: string };
+        faceCount?: number;
+      };
+    }>;
+  } {
+    const n = limit ? Math.max(1, Math.min(50, parseInt(limit, 10) || 10)) : 10;
+    const episodes = this.episodicMemory.getRecentEpisodes(n);
+    return {
+      count: episodes.length,
+      episodes: episodes.map((ep) => ({
+        id: ep.id,
+        source: ep.source,
+        timestamp: ep.timestamp instanceof Date ? ep.timestamp.toISOString() : String(ep.timestamp),
+        inputSummary: ep.inputSummary,
+        actionTaken: ep.actionTaken,
+        ...(ep.speakerId !== undefined ? { speakerId: ep.speakerId } : {}),
+        ...(ep.speakerIsGuardian !== undefined ? { speakerIsGuardian: ep.speakerIsGuardian } : {}),
+        ...(ep.visualContext !== undefined ? { visualContext: ep.visualContext } : {}),
+      })),
+    };
+  }
+
+  /**
+   * GET /metrics/episodic-recall?q=<natural language query>&limit=<n>
+   *
+   * WS5 T2/P4 — drive the REAL free-text recall path (queryByContent) with a
+   * natural-language query and the LIVE drive snapshot as the query mood. This is
+   * the deterministic seam the T2 smoke (and P4) uses to exercise content recall
+   * + per-episode provenance WITHOUT depending on LLM tool-calling stochasticity:
+   * it calls the identical method the `episodic_search` tool calls.
+   *
+   * The returned shape mirrors the tool's surfaced episode (caption surfaced as
+   * its own LLM_GENERATED-tagged field; per-episode provenance derived from
+   * `source` — a perception episode is 'experiential', its caption is never
+   * experiential-GROUNDED). Read-only; no write path (Theater Prohibition).
+   */
+  @Get('episodic-recall')
+  episodicRecall(
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+  ): {
+    query: string;
+    count: number;
+    episodes: Array<{
+      id: string;
+      source: string;
+      provenance: string;
+      inputSummary: string;
+      timestamp: string;
+      caption?: string;
+      captionProvenance?: string;
+      sceneLabels?: readonly string[];
+      sceneLabelsProvenance?: string;
+    }>;
+  } {
+    const query = (q ?? '').trim();
+    const n = limit ? Math.max(1, Math.min(50, parseInt(limit, 10) || 5)) : 5;
+    // Live drive snapshot = query mood for the bounded mood-congruent blend.
+    // Read-only (IDriveStateReader) — never writes to the Drive Engine.
+    const queryMood = this.driveReader.getCurrentState();
+    const episodes = this.episodicMemory.queryByContent(query, n, queryMood);
+    return {
+      query,
+      count: episodes.length,
+      episodes: episodes.map((ep) => {
+        const provenance =
+          ep.source === 'perception'
+            ? 'experiential'
+            : ep.source === 'conversation'
+              ? 'medium_trust'
+              : 'unknown';
+        const caption = ep.visualContext?.caption;
+        const labels = ep.visualContext?.sceneLabels;
+        return {
+          id: ep.id,
+          source: ep.source,
+          provenance,
+          inputSummary: ep.inputSummary,
+          timestamp:
+            ep.timestamp instanceof Date ? ep.timestamp.toISOString() : String(ep.timestamp),
+          ...(caption ? { caption: caption.text, captionProvenance: caption.provenanceSource } : {}),
+          ...(labels && labels.length > 0
+            ? { sceneLabels: labels, sceneLabelsProvenance: 'SENSOR' }
+            : {}),
+        };
+      }),
+    };
+  }
+
+  /**
+   * GET /metrics/rumination-state
+   *
+   * WS5 T2.5 — read-only view of the rumination circuit-breaker (sliding-window
+   * retrieval-diversity detector). Surfaces suppressRemaining / tripCount /
+   * lastTripAt / window diagnostics so a future gate row can assert a trip (and a
+   * RUMINATION_BREAKER_TRIPPED event) directly. Std 6: read-only, no drive write.
+   */
+  @Get('rumination-state')
+  ruminationState(): ReturnType<IEpisodicMemoryService['getRuminationState']> {
+    return this.episodicMemory.getRuminationState();
   }
 
   // ---------------------------------------------------------------------------

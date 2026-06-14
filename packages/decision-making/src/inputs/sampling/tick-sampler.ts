@@ -121,6 +121,37 @@ export class TickSamplerService {
   }
 
   /**
+   * WS5 T1.0 — callback invoked when a SCENE CHANGE should nudge a cognitive
+   * cycle. Kept SEPARATE from the event-driven `inputCallback` so `scene` is NOT
+   * made a globally event-driven modality (which would fire a cycle on EVERY
+   * frame up to ~15fps and flood the queue — rejected option (a)). The gateway
+   * decides WHEN a scene change is salient enough to nudge (deduped + cooldown),
+   * and calls `nudgeSceneChange()`; this just forwards to the registered cycle
+   * trigger. Last registration wins.
+   */
+  private sceneNudgeCallback: (() => void) | null = null;
+
+  /** Register the scene-change cycle-nudge callback (WS5 T1.0). */
+  onSceneChange(callback: () => void): void {
+    this.sceneNudgeCallback = callback;
+  }
+
+  /**
+   * WS5 T1.0 — fire the scene-change cycle nudge. Called by the perception
+   * gateway when a confirmed-object scene change occurs (deduped gateway-side).
+   * Does NOT touch `lastInputAt` (this is not human input) and does NOT write any
+   * modality slot — the scene is already in the slot via `updateScene`. The nudge
+   * exists purely to get a cycle to RUN on a calm/cold backend where the
+   * pressure-gated self-tick would not sample the scene.
+   */
+  nudgeSceneChange(): void {
+    if (this.sceneNudgeCallback) {
+      vlog('scene-change cycle nudge fired', {});
+      this.sceneNudgeCallback();
+    }
+  }
+
+  /**
    * Update the latest raw value for any modality.
    * Called by input sources (gateways, sidecar clients, drive engine, etc.)
    *

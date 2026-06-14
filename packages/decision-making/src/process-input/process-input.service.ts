@@ -129,9 +129,14 @@ export class ProcessInputService {
     const contextFingerprint = this.generateFingerprint(frame, inputCategory, dominantDrive);
     vlog('context fingerprint', { fingerprint: contextFingerprint.substring(0, 16), dominantDrive });
 
-    // Step 6: Query episodic memory for similar contexts
+    // Step 6: Query episodic memory for similar contexts.
+    // WS5 T2.1 — this caller passes the SHA contextFingerprint, so it targets
+    // queryByFingerprint explicitly (the SHA-Jaccard path, threshold 0.70). The
+    // free-text recall path (queryByContent) is a SEPARATE method used by the
+    // episodic_search tool — splitting them prevents the per-cycle SHA lookup
+    // from silently returning [] under the content threshold.
     if (this.episodicMemory) {
-      const similarEpisodes = this.episodicMemory.queryByContext(
+      const similarEpisodes = this.episodicMemory.queryByFingerprint(
         contextFingerprint,
         DEFAULT_RECENT_EPISODES_FOR_CONTEXT,
       );
@@ -317,6 +322,23 @@ export class ProcessInputService {
         ? rawText.content.substring(0, 97) + '...'
         : rawText.content;
       return `[${category}] ${content}`;
+    }
+
+    // WS5 T1.2: vision-dominant frames carry a VLM caption (scene_description).
+    // Include it in the summary so the episode's text surface (and the T2
+    // queryByContent recall path) actually contains what she saw, not just the
+    // bare `[VISUAL_INPUT] entities: …` label. The caption's LLM_GENERATED
+    // provenance is carried separately, machine-readably, in visualContext.caption
+    // (built at the encode site) — this is the human-readable narration only.
+    const sceneDescription = frame.raw['scene_description'] as string | undefined;
+    if (sceneDescription && sceneDescription.trim()) {
+      const cap = sceneDescription.length > 100
+        ? sceneDescription.substring(0, 97) + '...'
+        : sceneDescription;
+      if (entities.length > 0) {
+        return `[${category}] ${cap} (entities: ${entities.slice(0, 5).join(', ')})`;
+      }
+      return `[${category}] ${cap}`;
     }
 
     if (entities.length > 0) {

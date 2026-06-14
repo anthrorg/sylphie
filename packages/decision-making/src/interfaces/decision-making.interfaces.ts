@@ -207,16 +207,65 @@ export interface IEpisodicMemoryService {
   /**
    * Query episodes by context fingerprint similarity.
    *
-   * Returns episodes whose contextFingerprint has cosine similarity > 0.7
-   * with the given fingerprint (CANON §A.15). Used by the guilt repair
-   * attribution logic and by IActionRetrieverService to find relevant prior
-   * episodes before candidate retrieval.
+   * Returns episodes whose contextFingerprint has Jaccard similarity > 0.70
+   * with the given fingerprint. Used by the per-cycle context lookup
+   * (process-input.service) and by IActionRetrieverService to find relevant
+   * prior episodes before candidate retrieval.
+   *
+   * WS5 T2.1 — this is now a thin alias to queryByFingerprint(), preserved so
+   * the IEpisodicMemoryService contract is unchanged for any legacy caller.
+   * New code should call queryByFingerprint (SHA path) or queryByContent
+   * (free-text recall path) directly.
    *
    * @param contextFingerprint - The fingerprint to query against.
    * @param limit              - Maximum results to return. Defaults to 5.
    * @returns Read-only array of matching episodes, sorted by ageWeight descending.
    */
   queryByContext(contextFingerprint: string, limit?: number): readonly Episode[];
+
+  /**
+   * WS5 T2.1 — Query episodes by SHA context-fingerprint Jaccard similarity.
+   *
+   * The existing fingerprint-matching behavior, split out verbatim from the old
+   * queryByContext so the per-cycle SHA lookup (process-input.service) keeps its
+   * exact semantics: token-Jaccard over the SHA fingerprint, threshold 0.70,
+   * sort by stored ageWeight descending. Used by the per-cycle context lookup.
+   *
+   * @param contextFingerprint - The SHA context fingerprint to match.
+   * @param limit              - Maximum results to return. Defaults to 5.
+   * @returns Read-only array of matching episodes, sorted by ageWeight descending.
+   */
+  queryByFingerprint(contextFingerprint: string, limit?: number): readonly Episode[];
+
+  /**
+   * WS5 T2.1 — Query episodes by free-text CONTENT similarity (the recall path).
+   *
+   * Matches a natural-language query ("did you see a cat earlier?") against each
+   * episode's CONTENT tokens (visualContext caption + sceneLabels + inputSummary),
+   * using a stopword-filtered token-Jaccard calibrated for NL-vs-caption recall
+   * (a much lower threshold than the near-binary SHA path — see CONTENT_*
+   * constants in the implementation). Folds in a bounded mood-congruent
+   * drive-cosine blend and a recall-local recency decay so a fresh moderate
+   * visual episode can outrank a stale high-attention one. Used by the
+   * `episodic_search` deliberation tool.
+   *
+   * This is the surface that makes "what did you see?" answerable by content.
+   *
+   * @param queryText  - The free-text query to match against episode content.
+   * @param limit      - Maximum results to return. Defaults to 5.
+   * @param queryMood  - Current drive snapshot at query time (optional). When
+   *                     present, its pressure vector is the mood cue for the
+   *                     bounded mood-congruent blend; when absent, alpha is
+   *                     treated as 0 (content-only). Passing it keeps the
+   *                     episodic service drive-isolation-clean — it never reads
+   *                     the Drive Engine itself.
+   * @returns Read-only array of matching episodes, ranked by blended recall score.
+   */
+  queryByContent(
+    queryText: string,
+    limit?: number,
+    queryMood?: DriveSnapshot,
+  ): readonly Episode[];
 
   /**
    * Return the total number of episodes currently stored.
@@ -228,6 +277,22 @@ export interface IEpisodicMemoryService {
    * @returns Non-negative integer count.
    */
   getEpisodeCount(): number;
+
+  /**
+   * WS5 T2.5 — inspectable rumination circuit-breaker state for a gate row.
+   *
+   * Read-only snapshot of the breaker: how many retrievals remain α-suppressed
+   * after a trip, the lifetime trip count, the last trip time, and the current
+   * sliding-window diagnostics. Never mutates drives or evaluation (Std 6).
+   */
+  getRuminationState(): {
+    suppressRemaining: number;
+    tripCount: number;
+    lastTripAt: string | null;
+    windowSize: number;
+    congruentInWindow: number;
+    distinctInWindow: number;
+  };
 
   /** Clear all episodes from memory (e.g., on system reset). */
   clear(): void;

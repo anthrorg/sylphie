@@ -85,4 +85,29 @@ export interface InboundTurn {
    * Used for targeted delivery in Ticket 4; carried here for future use.
    */
   socketId?: string;
+
+  // ----- Originator-less cycle triggers (WS5 T1.0) --------------------------
+
+  /**
+   * WS5 T1.0 — marks a cycle nudged by an exogenous SCENE CHANGE, not a human
+   * speaker. The perception gateway enqueues one of these (deduped, see
+   * PerceptionGateway) when a confirmed-object scene change occurs, so a
+   * salient-but-CALM visual frame reaches the cognitive cycle even when drives
+   * are cold (the self-tick is pressure-gated at IDLE_PRESSURE_THRESHOLD=4.0 and
+   * would otherwise never sample the scene). The frame's scene is read from the
+   * tick-sampler slot at drain via sample(), exactly like a self-tick.
+   *
+   * It carries NO originator: `runCycleForTurn` leaves `currentTurnContext` null
+   * for a sceneNudge turn, so the resulting episode has `speakerId`/
+   * `speakerIsGuardian` STRUCTURALLY ABSENT (T0.9 — a synthetic/exogenous
+   * seen-fact never masquerades as guardian-told). It is non-guardian, so it
+   * rides the evictable normal lane, never the guardian lane.
+   *
+   * Loop-safety (ashby, T1.0/finding-I): the trigger keys on an EXOGENOUS
+   * scene-change predicate (the world, not Sylphie's drives) and writes NOTHING
+   * to drives — so it does not by itself close a perception→drive→perception
+   * loop. The cooldown bound on the gateway side is ashby's loop-gain sign-off
+   * item (held conservative pending that sign-off).
+   */
+  sceneNudge?: boolean;
 }

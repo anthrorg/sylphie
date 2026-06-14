@@ -7,6 +7,7 @@ import {
   NotImplementedException,
 } from '@nestjs/common';
 import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
+import type { PressureVector, PressureDelta } from '@sylphie/shared';
 
 @Controller('drives')
 export class DrivesController {
@@ -29,6 +30,8 @@ export class DrivesController {
     totalPressure: number;
     timestamp: string;
     isConnected: boolean;
+    pressureVector: PressureVector;
+    driveDeltas: PressureDelta;
   } {
     const snapshot = this.driveReader.getCurrentState();
     const ts =
@@ -40,11 +43,20 @@ export class DrivesController {
     // forever. Mirror PressureController's 2s recency window so a stalled
     // process correctly reads as disconnected.
     const isRecent = Date.now() - ts.getTime() < 2000;
+    // WS5 T4 (P1a/P1b) — surface the per-drive pressure vector + per-tick deltas
+    // (read-only via IDriveStateReader — no isolation violation, reads already
+    // cross the boundary this way). The gate's P1a asserts Curiosity AND Anxiety
+    // move up on scene-surprise; P1b asserts Social moves up on an unknown person.
+    // The aggregate totalPressure cannot distinguish those, so the gate needs the
+    // per-drive channel. driveDeltas isolates the per-tick contribution so the
+    // assertion survives a busy live stack (mythos ruling — assert direction).
     return {
       tickNumber: snapshot.tickNumber,
       totalPressure: snapshot.totalPressure,
       timestamp: ts.toISOString(),
       isConnected: snapshot.tickNumber > 0 && isRecent,
+      pressureVector: snapshot.pressureVector,
+      driveDeltas: snapshot.driveDeltas,
     };
   }
 

@@ -21,6 +21,16 @@ export interface TrackedObjectDTO {
   embedding: number[] | null;
   /** Set by SceneEventDetector when face identification matches a person. */
   personId?: string;
+  /**
+   * WS5 T0.8 — synthetic-frame discriminator. The real Python sidecar never
+   * sets this (absent → false); the gate's perception cassette sets it `true`
+   * so VWM can mark the resulting WORLD :VisualObject node `synthetic:true`
+   * (atlas ruling 2026-06-13: a distinct boolean, NOT a provenance_type enum
+   * value — provenance_type stays 'SENSOR'). `perception-reset` then deletes
+   * `MATCH (n:VisualObject {synthetic:true})` cleanly. This is a data-carried
+   * value, not a GATE_MODE branch — the gateway has no test-only code path.
+   */
+  synthetic?: boolean;
 }
 
 /** Semantic event types detected from tracker state transitions. */
