@@ -104,6 +104,7 @@ export type { RecallRetrieval, RecallSource } from './deliberation/recall-retrie
 // ---------------------------------------------------------------------------
 export {
   getLastCapturedPrompt,
+  getCapturedPromptForTurn,
   resetPromptCapture,
   isPromptCaptureEnabled,
 } from './deliberation/prompt-capture';

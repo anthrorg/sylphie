@@ -54,6 +54,16 @@ export interface ActionCycleContext {
 
   /** One-line summary of the input extracted by ProcessInput. */
   readonly inputSummary: string;
+
+  /**
+   * WS5 T4/P2 — turnId of the in-flight cycle (from currentTurnContext), when the
+   * cycle originates from a human turn. Used ONLY to key the test-only
+   * prompt-capture mirror so the gate can read the composed prompt for the
+   * SPECIFIC "what do you see?" turn it sent, rather than the racy "latest"
+   * capture. Absent for self-ticks / scene-nudges (no originator). Not a
+   * cognitive input — never read by any decision path.
+   */
+  readonly turnId?: string | null;
 }
 
 /**
@@ -226,7 +236,12 @@ export class ActionHandlerRegistryService {
       // is the path the gate's "what do you see?" turn actually runs, so P2 reads
       // its caption-in-prompt assertion off THIS composition, tagged so the smoke
       // can confirm the procedure path (not deliberate) fired.
-      capturePrompt(sceneContext || systemPrompt, 'procedure-llm-generate', inputText ?? '');
+      capturePrompt(
+        sceneContext || systemPrompt,
+        'procedure-llm-generate',
+        inputText ?? '',
+        cycleCtx.turnId ?? (cycleCtx.frame.raw['turn_id'] as string | undefined) ?? null,
+      );
 
       // Build messages: recent conversation turns + current input.
       // Conversation history is passed as normal multi-turn chat messages

@@ -12,6 +12,7 @@ import {
   WkgContextService,
   isDocumentEncoder,
   getLastCapturedPrompt,
+  getCapturedPromptForTurn,
   resetPromptCapture,
   isPromptCaptureEnabled,
 } from '@sylphie/decision-making';
@@ -502,15 +503,28 @@ export class MetricsController {
    * is never populated otherwise — a standing "last prompt" surface would be a
    * data-exfil seam over person facts + drive state). Returns `enabled:false` when
    * capture is off so a caller can distinguish "disabled" from "no turn yet".
+   *
+   * WS5 T4/P2 turn-correlation: pass `?turnId=<id>` to read the capture for a
+   * SPECIFIC turn (the turnId echoed on that turn's cb_speech) rather than the
+   * racy "latest". Under queue backlog the real procedure cycle composes its
+   * prompt seconds after the probe returns, so the gate polls THIS turn's record
+   * by id instead of snapshotting "latest" at a fixed delay. Returns
+   * `captured:null` (not an error) until that turn's prompt has been composed.
    */
   @Get('last-deliberation-prompt')
-  lastDeliberationPrompt(): {
+  lastDeliberationPrompt(@Query('turnId') turnId?: string): {
     enabled: boolean;
+    turnId: string | null;
     captured: ReturnType<typeof getLastCapturedPrompt>;
   } {
+    const captured =
+      turnId && turnId.trim()
+        ? getCapturedPromptForTurn(turnId.trim())
+        : getLastCapturedPrompt();
     return {
       enabled: isPromptCaptureEnabled(),
-      captured: getLastCapturedPrompt(),
+      turnId: turnId?.trim() ?? null,
+      captured,
     };
   }
 

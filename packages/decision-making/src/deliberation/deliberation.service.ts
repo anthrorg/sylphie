@@ -269,7 +269,12 @@ export class DeliberationService {
     // Tags which path composed it so the smoke can assert the production
     // WM-snapshot path fired, not the flat fallback (finding 3). Read-only mirror,
     // never re-read by any cognitive path.
-    capturePrompt(wmSummary, wmSnapshot ? 'wm-snapshot' : 'flat-fallback', rawText);
+    capturePrompt(
+      wmSummary,
+      wmSnapshot ? 'wm-snapshot' : 'flat-fallback',
+      rawText,
+      (frame.raw['turn_id'] as string | undefined) ?? null,
+    );
 
     // ── Step 1: Inner Monologue (classification + potential early response) ──
     this.logger.debug('Deliberation step 1: Inner monologue');

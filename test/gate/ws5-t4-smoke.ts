@@ -77,15 +77,19 @@ async function fetchJson(path: string, init?: RequestInit): Promise<{ status: nu
   return { status: res.status, body };
 }
 
-/** Send one conversation turn over the WS and collect the cb_speech reply. */
-function converse(text: string, token: string, timeoutMs = 45_000): Promise<{
+interface SpeechReply {
   text?: string;
   knowledgeGrounding?: string;
   arbitrationType?: string;
   source?: string;
   provenance?: string;
+  /** turnId echoed on the cb_speech — keys the prompt-capture mirror (P2). */
+  turnId?: string;
   timedOut: boolean;
-}> {
+}
+
+/** Send one conversation turn over the WS and collect the cb_speech reply. */
+function converse(text: string, token: string, timeoutMs = 45_000): Promise<SpeechReply> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`${WS_BASE}/ws/conversation?token=${encodeURIComponent(token)}`);
     let speech: any = null;
@@ -118,6 +122,71 @@ function converse(text: string, token: string, timeoutMs = 45_000): Promise<{
   });
 }
 
+// ---------------------------------------------------------------------------
+// Persistent collector socket (turn-correlated read for P2).
+//
+// converse() opens a fresh socket and resolves on the FIRST cb_speech, which —
+// under queue backlog — can be a STALE earlier turn's reply routed to this
+// socket via USER_FALLBACK (same guardian userId, newest socket wins), or a
+// broadcast sceneNudge utterance. P2 must read the composed prompt for the
+// SPECIFIC "what do you see?" turn, so it sends on a persistent socket that
+// collects EVERY cb_speech, then polls the per-turnId prompt-capture mirror for
+// each newly-arrived turnId until the caption surfaces (bounded). This removes
+// the fixed-delay "latest"-snapshot race that made P2 flaky.
+// ---------------------------------------------------------------------------
+
+interface PersistentSocket {
+  ws: WebSocket;
+  /** Every cb_speech received on this socket, in arrival order. */
+  received: any[];
+  send(text: string): void;
+  close(): void;
+}
+
+function openPersistentSocket(token: string): Promise<PersistentSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/conversation?token=${encodeURIComponent(token)}`);
+    const received: any[] = [];
+    const openTimeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('openPersistentSocket timeout waiting for open'));
+    }, 5000);
+    ws.on('open', () => {
+      clearTimeout(openTimeout);
+      setTimeout(() => {
+        resolve({
+          ws,
+          received,
+          send(text: string) {
+            ws.send(JSON.stringify({ event: 'message', data: { text, type: 'text' } }));
+          },
+          close() {
+            try { ws.close(); } catch { /* already closing */ }
+          },
+        });
+      }, 600);
+    });
+    ws.on('message', (data: Buffer) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'cb_speech') received.push(msg);
+      } catch { /* binary frame */ }
+    });
+    ws.on('error', (err) => {
+      clearTimeout(openTimeout);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Fetch the prompt-capture record for a specific turnId (null until composed).
+ */
+async function fetchCaptureForTurn(turnId: string): Promise<any | null> {
+  const res = await fetchJson(`/api/metrics/last-deliberation-prompt?turnId=${encodeURIComponent(turnId)}`);
+  return res.body?.captured ?? null;
+}
+
 async function waitForBackend(timeoutMs = 90_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -130,6 +199,58 @@ async function waitForBackend(timeoutMs = 90_000): Promise<boolean> {
     await sleep(1000);
   }
   return false;
+}
+
+async function fetchScenePredictionState(): Promise<any | null> {
+  const { status, body } = await fetchJson('/api/metrics/scene-prediction-state');
+  if (status !== 200 || !body) return null;
+  return body;
+}
+
+/**
+ * Poll /api/metrics/scene-prediction-state until initialized===true (the prime
+ * frame's advancePredictions() call has completed), or until timeoutMs elapses.
+ * Returns true if initialized within the window, false on timeout. Mirrors the
+ * prows smoke: this is the deterministic substitute for a bare sleep between the
+ * prime frame and the captioned scene — it guarantees the prime's nudge cycle
+ * finished (predictor seeded) before the cat frame is sent.
+ */
+async function pollForInitialized(timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = await fetchScenePredictionState();
+    if (st?.initialized === true) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+/**
+ * Poll /api/metrics/episodic-recent until a source='perception' episode whose
+ * caption/sceneLabels carry `needle` appears, or the bounded deadline passes.
+ * Returns the matched episodes (possibly empty on timeout). This replaces the
+ * fixed sleep(2500) before P4's store-precondition assertion: the assertion then
+ * waits for the DETERMINISTIC encode (perception episode landed in the ring),
+ * not a wall-clock guess that flakes when the cycle runs slow under backlog.
+ */
+async function pollForPerceptionEpisode(needle: string, timeoutMs = 25_000): Promise<any[]> {
+  const n = needle.toLowerCase();
+  const deadline = Date.now() + timeoutMs;
+  let lastMatched: any[] = [];
+  while (Date.now() < deadline) {
+    const recent = await fetchJson('/api/metrics/episodic-recent?limit=20');
+    const stored: any[] = recent.body?.episodes ?? [];
+    const matched = stored.filter(
+      (e) =>
+        e.source === 'perception' &&
+        ((e.visualContext?.caption?.text ?? '').toLowerCase().includes(n) ||
+          (e.visualContext?.sceneLabels ?? []).includes(n)),
+    );
+    if (matched.length >= 1) return matched;
+    lastMatched = matched;
+    await sleep(400);
+  }
+  return lastMatched;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,11 +409,55 @@ async function main(): Promise<void> {
 
     // Reset the capture ring just before the probe so we read THIS turn's prompt.
     await fetchJson('/api/metrics/prompt-capture-reset', { method: 'POST' });
-    const p2Reply = await converse('what do you see?', token);
-    await sleep(300);
 
-    const cap2 = await fetchJson('/api/metrics/last-deliberation-prompt');
-    const captured2 = cap2.body?.captured;
+    // Turn-correlated P2 read. Send "what do you see?" on a persistent socket,
+    // then poll the per-turnId prompt-capture mirror for EACH cb_speech turnId
+    // that arrives, until one carries the caption — or the bounded deadline
+    // passes (cold-backend procedure cycle can compose its prompt ~8-9s after the
+    // probe, well past converse()'s old fixed ~300ms read). We do NOT snapshot
+    // "latest" at a fixed delay: that is the exact race that read a stale earlier
+    // turn's empty capture (mythos trace 2026-06-13).
+    const p2Sock = await openPersistentSocket(token);
+    // Drain any stale cb_speech queued during socket setup so a pre-probe reply
+    // can't be mistaken for our turn.
+    p2Sock.received.length = 0;
+    p2Sock.send('what do you see?');
+
+    let captured2: any = null;
+    let p2TurnId: string | null = null;
+    let p2Reply: SpeechReply = { timedOut: true };
+    const p2Deadline = Date.now() + 25_000; // cover cold-backend cycle latency under backlog
+    const seenTurnIds = new Set<string>();
+    while (Date.now() < p2Deadline) {
+      // For each cb_speech turnId we've observed, check its composed prompt.
+      for (const msg of p2Sock.received) {
+        const tid = msg?.turnId as string | undefined;
+        if (!tid || seenTurnIds.has(tid)) continue;
+        const cap = await fetchCaptureForTurn(tid);
+        if (cap) {
+          seenTurnIds.add(tid);
+          // Prefer the turn whose composed prompt actually carries the caption;
+          // that is unambiguously the "what do you see?" cycle.
+          if (normalize(cap.contextSummary ?? '').includes(normalize(p2Caption))) {
+            captured2 = cap;
+            p2TurnId = tid;
+            p2Reply = { timedOut: false, ...msg };
+            break;
+          }
+          // Hold the most recent captured turn as a fallback for the diagnostic
+          // (so a miss still reports a real path/summary, not 'none').
+          if (!captured2) {
+            captured2 = cap;
+            p2TurnId = tid;
+            p2Reply = { timedOut: false, ...msg };
+          }
+        }
+      }
+      if (captured2 && normalize(captured2.contextSummary ?? '').includes(normalize(p2Caption))) break;
+      await sleep(400);
+    }
+    p2Sock.close();
+
     const promptHasCaption =
       !!captured2 && normalize(captured2.contextSummary ?? '').includes(normalize(p2Caption));
     // The gate backend runs the conversation PROCEDURE path (LLM_GENERATE) for a
@@ -306,10 +471,12 @@ async function main(): Promise<void> {
       promptHasCaption,
       promptHasCaption
         ? `the composed prompt embedded the caption "${p2Caption}" (composition path: ` +
-          `${captured2?.compositionPath}). Closes the byte-identical-prompt theater hole — the ` +
-          `caption is GENUINELY in the prompt the LLM saw, not merely echoed in the response.`
+          `${captured2?.compositionPath}, turnId=${p2TurnId}). Closes the byte-identical-prompt ` +
+          `theater hole — the caption is GENUINELY in the prompt the LLM saw, not merely echoed in ` +
+          `the response. Read was turn-correlated (polled this turn's capture by turnId, not "latest").`
         : `the caption "${p2Caption}" was NOT in the composed prompt ` +
-          `(captured path=${captured2?.compositionPath ?? 'none'}, ` +
+          `(captured path=${captured2?.compositionPath ?? 'none'}, turnId=${p2TurnId ?? 'none'}, ` +
+          `cb_speech turnIds seen=[${p2Sock.received.map((m: any) => m?.turnId).filter(Boolean).join(', ')}], ` +
           `summary preview="${(captured2?.contextSummary ?? '').slice(0, 200)}")`,
     );
     record(
@@ -332,13 +499,29 @@ async function main(): Promise<void> {
     // episode, then ask "did you see a cat earlier?"; assert the recall path
     // surfaces it as experiential (source='perception'), not guardian-told.
     // ════════════════════════════════════════════════════════════════════════
+    // Per-row isolation (mirror the prows P3 store-then-assert discipline):
+    // reset the predictor + VWM, then re-zero the gateway scene-cycle cooldown
+    // (perception-reset does both) so the cat frame's scene-change nudge is NOT
+    // suppressed by the cooldown carried over from P2's turn. Without this, the
+    // cat frame runs no cycle → no perception encode → the store-precondition
+    // flakes red even though the capability is sound (mythos full gate + T2 ×2).
     await fetchJson('/api/metrics/episodic-reset', { method: 'POST' });
     await fetchJson('/api/metrics/scene-predictor-reset', { method: 'POST' });
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // VWM + cooldown reset
 
     const p4Caption = 'a cat on the windowsill';
     cassette.setCaption(p4Caption);
+
+    // Prime cup: cooldown zeroed by the reset above → OBJECT_APPEARED nudge fires
+    // immediately → predictor initialized. Poll for initialized rather than a bare
+    // sleep so the prime's cycle is provably complete before the cat frame.
     await stub.injectFrame(cassette, makeDetectFixture({ label: 'cup', trackId: 7201 }));
-    await sleep(1500);
+    await pollForInitialized(15_000);
+
+    // Re-zero the cooldown before the captioned cat scene so its scene-change
+    // nudge fires immediately (the prime's cycle just consumed the window).
+    await fetchJson('/api/metrics/perception-reset', { method: 'POST' }); // cooldown reset (VWM stays seeded)
+
     const p4CaptionHit = await stub.injectCaptionedScene(
       cassette,
       p4Caption,
@@ -346,17 +529,12 @@ async function main(): Promise<void> {
       makeDetectFixture({ label: 'cat', trackId: 7202, embeddingSeed: 7202 }),
     );
     record('p4:caption-barrier-hit', p4CaptionHit, p4CaptionHit ? 'cat caption settled' : 'cat caption never settled');
-    await sleep(2500); // let the perception episode encode
 
-    // Confirm the store landed a perception episode (recall precondition).
-    const recent = await fetchJson('/api/metrics/episodic-recent?limit=20');
-    const stored: any[] = recent.body?.episodes ?? [];
-    const catStored = stored.filter(
-      (e) =>
-        e.source === 'perception' &&
-        ((e.visualContext?.caption?.text ?? '').toLowerCase().includes('cat') ||
-          (e.visualContext?.sceneLabels ?? []).includes('cat')),
-    );
+    // Poll the episodic ring until the source='perception' cat episode lands —
+    // the deterministic encode signal — rather than a fixed sleep(2500) that
+    // flakes when the scene cycle runs slow under backlog. This is the store
+    // precondition the recall turn depends on.
+    const catStored = await pollForPerceptionEpisode('cat', 25_000);
     record(
       'P4:store-precondition',
       catStored.length >= 1,

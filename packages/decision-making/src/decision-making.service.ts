@@ -313,6 +313,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       const frame = await this.tickSampler.sample();
 
+      // WS5 T4/P2 — stamp the in-flight turnId onto the frame so BOTH composition
+      // paths (the LLM_GENERATE procedure handler AND deliberate()) can key the
+      // test-only prompt-capture mirror by turn, enabling the gate's turn-correlated
+      // read. Originator-less cycles (sceneNudge / self-tick) carry no turnId, so
+      // this is left unset for them. Debug telemetry only — not a cognitive input.
+      if (this.currentTurnContext?.turnId) {
+        (frame.raw as Record<string, unknown>)['turn_id'] = this.currentTurnContext.turnId;
+      }
+
       const rawText = frame.raw['text'] as string | undefined;
       vlog('queue cycle sampled frame', {
         turnId: turn.turnId,
@@ -1110,6 +1119,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         frame,
         cognitiveContext: contextForPrediction,
         inputSummary: processInputResult.inputSummary,
+        // WS5 T4/P2 — carry the in-flight turnId so the LLM_GENERATE handler can
+        // key the test-only prompt-capture mirror by turn (turn-correlated read).
+        // Null for originator-less cycles (self-tick / scene-nudge).
+        turnId: this.currentTurnContext?.turnId ?? null,
       };
 
       // Dispatch action steps. SHRUG results bypass the action handler registry —
