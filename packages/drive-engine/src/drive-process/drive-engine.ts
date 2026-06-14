@@ -37,6 +37,7 @@ import {
   SessionStartPayload,
   DriveSnapshotPayload,
   DriveEventPayload,
+  TheaterProhibitedPayload,
   OpportunityCreatedPayload,
 } from '@sylphie/shared';
 import { DriveStateManager } from './drive-state';
@@ -64,7 +65,12 @@ import {
 } from '../constants/events';
 import { EventEmitter, type IEventEmitter } from './event-emitter';
 import { TimescaleWriter } from './timescale-writer';
-import { detectTheater, type TheaterVerdict } from './theater-prohibition';
+import {
+  detectTheater,
+  PRESSURE_THRESHOLD,
+  RELIEF_THRESHOLD,
+  type TheaterVerdict,
+} from './theater-prohibition';
 import { logTheaterProhibition } from './reinforcement-blocking';
 import { getDefaultAffect } from './default-affect';
 import { getOrCreatePredictionEvaluator, PredictionEvaluator } from './prediction-evaluator';
@@ -690,9 +696,46 @@ export class DriveEngine {
     outcome: ActionOutcomePayload,
     verdict: TheaterVerdict,
   ): void {
-    // Event is logged to stderr above. Could also emit via event emitter
-    // or TimescaleDB if those systems are available.
-    // For now, the stderr log provides visibility into theater prohibitions.
+    // A theatrical verdict is, by construction, a 'pressure' or 'relief'
+    // expression that failed its directional drive check — 'none' can never be
+    // theatrical (detectTheater returns isTheatrical=false for 'none'). Guard
+    // defensively so the audit payload's type stays honest.
+    if (verdict.expressionType === 'none') {
+      return;
+    }
+
+    if (!this.lastPublishedSnapshot) {
+      // No snapshot yet (pre-first-tick). The stderr log already recorded the
+      // prohibition; we simply can't attach drive state to the audit event.
+      return;
+    }
+
+    const expectedThreshold =
+      verdict.expressionType === 'pressure' ? PRESSURE_THRESHOLD : RELIEF_THRESHOLD;
+
+    // CANON §Drive Isolation: emit over IPC; the PARENT persists to TimescaleDB.
+    // The drive engine never writes the DB directly.
+    //
+    // CANON Standard 1 GUARDRAIL: this is the AUDIT TRAIL ONLY. The zero-
+    // reinforcement decision was already taken at the call site (the early
+    // `return` after this call); nothing downstream of this event may convert it
+    // into any positive reinforcement contingency.
+    const message: DriveIPCMessage<TheaterProhibitedPayload> = {
+      type: DriveIPCMessageType.THEATER_PROHIBITED,
+      payload: {
+        actionId: outcome.actionId,
+        actionType: outcome.actionType,
+        offendingExpressionType: verdict.expressionType,
+        drive: verdict.drive,
+        expectedThreshold,
+        actualDriveValue: verdict.driveValue,
+        verdictReason: verdict.reason,
+        snapshot: this.lastPublishedSnapshot,
+      },
+      timestamp: new Date(),
+    };
+
+    this.transport.send(message);
   }
 
   /**

@@ -47,10 +47,12 @@ import type { DriveSnapshot } from './drive.types';
  *   SESSION_END:       The current session has ended.
  *
  * Outbound messages (sent FROM the Drive Engine process):
- *   DRIVE_SNAPSHOT:      Current drive state after a tick computation.
- *   OPPORTUNITY_CREATED: Drive Engine detected a pattern worth planning against.
- *   DRIVE_EVENT:         A specific drive event occurred (relief, rule applied, etc.)
- *   HEALTH_STATUS:       Drive process health check response.
+ *   DRIVE_SNAPSHOT:       Current drive state after a tick computation.
+ *   OPPORTUNITY_CREATED:  Drive Engine detected a pattern worth planning against.
+ *   DRIVE_EVENT:          A specific drive event occurred (relief, rule applied, etc.)
+ *   THEATER_PROHIBITED:   A theatrical (uncorrelated) expression was detected and
+ *                         zero-reinforced (CANON Standard 1 audit trail).
+ *   HEALTH_STATUS:        Drive process health check response.
  */
 export enum DriveIPCMessageType {
   // Inbound
@@ -62,6 +64,7 @@ export enum DriveIPCMessageType {
   DRIVE_SNAPSHOT = 'DRIVE_SNAPSHOT',
   OPPORTUNITY_CREATED = 'OPPORTUNITY_CREATED',
   DRIVE_EVENT = 'DRIVE_EVENT',
+  THEATER_PROHIBITED = 'THEATER_PROHIBITED',
   HEALTH_STATUS = 'HEALTH_STATUS',
 }
 
@@ -444,6 +447,64 @@ export interface DriveEventPayload {
   readonly ruleId: string | null;
 
   /** The current snapshot after this event was applied. */
+  readonly snapshot: DriveSnapshot;
+}
+
+/**
+ * Payload for THEATER_PROHIBITED messages (CANON Standard 1 — Theater Prohibition).
+ *
+ * Emitted by the Drive Engine when an action's emotional expression did NOT
+ * correlate with the actual drive state (a directional threshold breach) and was
+ * therefore zero-reinforced. This carries the full forensic record to the parent,
+ * which drains it to the TimescaleDB event backbone as the durable audit trail.
+ *
+ * CANON §Drive Isolation: the Drive Engine is a separate process and does NOT
+ * write TimescaleDB directly — it emits this over IPC and the parent persists it,
+ * mirroring DRIVE_EVENT / OPPORTUNITY_CREATED.
+ *
+ * CANON Standard 1 GUARDRAIL: this is an AUDIT/EVENT-TRAIL record ONLY. It must
+ * NEVER feed any positive reinforcement contingency. The reinforcement decision
+ * (zero reinforcement) has already been made at the point this is emitted; this
+ * payload exists solely to make the prohibition observable and reviewable.
+ */
+export interface TheaterProhibitedPayload {
+  /**
+   * WKG procedure node ID of the offending action (CANON Standard 2 trace).
+   * The specific behavior whose expression was theatrical.
+   */
+  readonly actionId: string;
+
+  /** Category of the offending action (procedure's category field). */
+  readonly actionType: string;
+
+  /**
+   * The offending expression: what the action CLAIMED to express.
+   * 'pressure' (distress/need/urgency) or 'relief' (contentment/calm/fulfillment).
+   * ('none' never reaches this payload — a non-expression cannot be theatrical.)
+   */
+  readonly offendingExpressionType: 'pressure' | 'relief';
+
+  /** The drive whose state was checked against the claimed expression. */
+  readonly drive: DriveName;
+
+  /**
+   * Expected-vs-actual: the directional threshold the expression needed to clear
+   * to be authentic, and the drive value actually observed.
+   *   - pressure: authentic iff actualDriveValue > expectedThreshold (0.2)
+   *   - relief:   authentic iff actualDriveValue < expectedThreshold (0.3)
+   */
+  readonly expectedThreshold: number;
+
+  /** The actual drive value at the time of the expression check. */
+  readonly actualDriveValue: number;
+
+  /**
+   * Human-readable verdict reason from the Theater Prohibition validator
+   * (e.g. "Pressure expression (anxiety) requires drive > 0.2, but was 0.05").
+   */
+  readonly verdictReason: string;
+
+  /** The drive snapshot at the time the prohibition was detected. */
   readonly snapshot: DriveSnapshot;
 }
 

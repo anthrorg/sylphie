@@ -190,6 +190,24 @@ const MIN_MODALITY_POPULATION = 3;
  */
 const MIN_TRUSTED_USECOUNT = 3;
 
+/**
+ * STANDARD 3 WRITE-TIME CONFIDENCE CEILING (CANON Immutable Standard 3).
+ *
+ * No node may exceed this confidence without a successful retrieval-and-use. A
+ * freshly-written pattern has useCount 0 — it has been proposed but never proven —
+ * so its confidence is hard-capped here at write time and in updateConfidence()
+ * until useCount > 0. Guardian-sourced knowledge STARTS at this value (guardian
+ * confirmation raises the *base*, it never lifts the ceiling); there is therefore
+ * NO guardian/provenance bypass at useCount 0. Once useCount > 0, the legitimate
+ * reinforced path (WS3 `max(current, min(0.60, recomputed))` discipline) governs,
+ * and confidence may rise above the ceiling only through earned, used reinforcement.
+ *
+ * STANDARD 6 (No self-modification of evaluation): this is a compile-time constant
+ * and the useCount rule is a compile-time guard. Neither is data-driven or learnable.
+ * Do NOT make this configurable, schema-sourced, or adjustable at runtime.
+ */
+const WRITE_TIME_CONFIDENCE_CEILING = 0.6;
+
 /** Modality weights for composite scoring. Text dominates to prevent drowning. */
 const MODALITY_WEIGHTS: Record<string, number> = {
   text: 0.50,
@@ -450,13 +468,19 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     const id = randomUUID();
     const now = new Date();
 
+    // STANDARD 3: write-time confidence ceiling. A new pattern has useCount 0
+    // (proposed, never proven), so its confidence is hard-capped at 0.60 here —
+    // unconditionally, with NO guardian/provenance bypass. Confidence may only
+    // exceed the ceiling later via the legitimate reinforced path (useCount > 0).
+    const clampedConfidence = Math.min(WRITE_TIME_CONFIDENCE_CEILING, pattern.confidence);
+
     this.hotLayer.push({
       id,
       modality: pattern.modality,
       embedding: pattern.stimulusEmbedding,
       responseText: pattern.responseText,
       procedureId: pattern.procedureId ?? null,
-      confidence: pattern.confidence,
+      confidence: clampedConfidence,
       useCount: 0,
       entityIds: [...pattern.entityIds],
       knowledgeGrounding: pattern.knowledgeGrounding ?? null,
@@ -466,7 +490,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     vlog('latent write', {
       modality: pattern.modality,
       patternId: id.substring(0, 8),
-      confidence: +pattern.confidence.toFixed(2),
+      confidence: +clampedConfidence.toFixed(2),
       entityCount: pattern.entityIds.length,
       hotLayerSize: this.hotLayer.length,
       responsePreview: pattern.responseText.substring(0, 60),
@@ -474,7 +498,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.debug(
       `Latent space write [${pattern.modality}]: pattern ${id.substring(0, 8)} ` +
-        `(confidence: ${pattern.confidence.toFixed(2)}, entities: ${pattern.entityIds.length}). ` +
+        `(confidence: ${clampedConfidence.toFixed(2)}, entities: ${pattern.entityIds.length}). ` +
         `Hot layer: ${this.hotLayer.length} patterns.`,
     );
 
@@ -493,7 +517,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
           embeddingLiteral,
           pattern.responseText,
           pattern.procedureId ?? null,
-          pattern.confidence,
+          clampedConfidence,
           0,
           0,
           pattern.deliberationSummary ?? null,
@@ -574,17 +598,42 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Update the confidence of a pattern (after outcome evaluation). */
+  /**
+   * Update the confidence of a pattern (after outcome evaluation).
+   *
+   * STANDARD 3: this is the SECOND write path to confidence and is gated by the
+   * same write-time ceiling as write(). At useCount 0 the pattern is still
+   * unproven, so confidence is hard-capped at 0.60 here too — a caller cannot set
+   * 0.95 on a never-used pattern. Only once useCount > 0 (the pattern has been
+   * retrieved and used) may the legitimate reinforced path raise it past the
+   * ceiling. Lowering confidence (e.g. on a counter-indicated outcome) is always
+   * allowed — a reduction never breaches a ceiling.
+   *
+   * The DB write applies the same gate atomically against the *persisted*
+   * use_count via CASE, so an in-memory/DB useCount skew cannot open a hole.
+   */
   updateConfidence(patternId: string, newConfidence: number): void {
     const entry = this.hotLayer.find((e) => e.id === patternId);
     if (entry) {
-      entry.confidence = newConfidence;
+      // Hot-layer gate: cap at the ceiling while the pattern is unproven (useCount 0).
+      entry.confidence =
+        entry.useCount > 0
+          ? newConfidence
+          : Math.min(WRITE_TIME_CONFIDENCE_CEILING, newConfidence);
     }
 
     if (this.timescale && this.schemaReady) {
+      // DB gate: enforce the ceiling against the persisted use_count. When
+      // use_count = 0 the stored value is LEAST(newConfidence, 0.60); once
+      // use_count > 0 the reinforced value is written verbatim.
       this.timescale.query(
-        `UPDATE learned_patterns SET confidence = $1 WHERE id = $2`,
-        [newConfidence, patternId],
+        `UPDATE learned_patterns
+         SET confidence = CASE
+           WHEN use_count > 0 THEN $1
+           ELSE LEAST($1, $3)
+         END
+         WHERE id = $2`,
+        [newConfidence, patternId, WRITE_TIME_CONFIDENCE_CEILING],
       ).catch((err) => {
         this.logger.warn(`Confidence update failed: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -746,6 +795,45 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
         ALTER TABLE learned_patterns
         ADD COLUMN IF NOT EXISTS grounding_person_id TEXT
       `);
+
+      // STANDARD 3 BACKSTOP — confidence ceiling enforced at the schema level.
+      // No row may exceed 0.60 confidence while use_count = 0 (proposed-but-never-
+      // used). This is the durable last line of defence behind the write() and
+      // updateConfidence() application-layer clamps: even a future code path that
+      // forgot to clamp cannot persist a Std-3 breach.
+      //
+      // Order matters: a populated table may already hold violating rows (written
+      // before this fix), so we CLAMP them first, THEN add the CHECK — otherwise
+      // the ALTER ... ADD CONSTRAINT fails validation on the existing data.
+      await this.timescale.query(`
+        UPDATE learned_patterns
+        SET confidence = 0.60
+        WHERE use_count = 0 AND confidence > 0.60
+      `);
+
+      // Constraint-add is guarded (idempotent): ADD CONSTRAINT is not IF-NOT-EXISTS
+      // in all PG versions, so we catch the duplicate_object error (42710) on a
+      // re-run rather than letting it abort schema setup.
+      try {
+        await this.timescale.query(`
+          ALTER TABLE learned_patterns
+          ADD CONSTRAINT learned_patterns_std3_confidence_ceiling
+          CHECK (use_count > 0 OR confidence <= 0.60)
+        `);
+      } catch (constraintErr: unknown) {
+        const code = (constraintErr as { code?: string })?.code;
+        const message =
+          constraintErr instanceof Error ? constraintErr.message : String(constraintErr);
+        // 42710 = duplicate_object (constraint already exists). Any other code is a
+        // real failure worth surfacing.
+        if (code === '42710' || /already exists/i.test(message)) {
+          this.logger.debug(
+            'Std-3 confidence-ceiling CHECK constraint already present — skipping.',
+          );
+        } else {
+          throw constraintErr;
+        }
+      }
 
       await this.timescale.query(`
         CREATE INDEX IF NOT EXISTS learned_patterns_embedding_idx

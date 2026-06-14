@@ -35,6 +35,7 @@ export {
   type DriveSnapshotPayload,
   type OpportunityCreatedPayload,
   type DriveEventPayload,
+  type TheaterProhibitedPayload,
   type HealthStatusPayload,
   type OpportunityPriority,
   type OpportunityClassification,

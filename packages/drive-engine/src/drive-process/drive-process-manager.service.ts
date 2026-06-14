@@ -27,6 +27,7 @@ import {
   DriveSnapshotPayload,
   TimescaleService,
   type OpportunityCreatedPayload,
+  type TheaterProhibitedPayload,
 } from '@sylphie/shared';
 import { IDriveProcessManager } from '../interfaces/drive-engine.interfaces';
 import { DriveReaderService } from '../drive-reader.service';
@@ -202,6 +203,21 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       },
     );
 
+    // THEATER_PROHIBITED: Write the audit record to the TimescaleDB event
+    // backbone (CANON Standard 1). The Drive Engine (separate process) detected
+    // a theatrical expression, zero-reinforced it, and emitted this over IPC;
+    // the parent persists it. AUDIT TRAIL ONLY — never reinforcement.
+    this.wsChannel.onMessage(
+      DriveIPCMessageType.THEATER_PROHIBITED,
+      (message: DriveIPCMessage<TheaterProhibitedPayload>) => {
+        this.logger.debug(
+          `Theater prohibited: action ${message.payload.actionId} ` +
+            `(${message.payload.offendingExpressionType} on ${message.payload.drive})`,
+        );
+        this.writeTheaterProhibitedEvent(message.payload);
+      },
+    );
+
     // HEALTH_STATUS: Internal response from health check pings
     this.wsChannel.onMessage(
       DriveIPCMessageType.HEALTH_STATUS,
@@ -274,6 +290,58 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       .catch((err: unknown) => {
         this.logger.warn(
           `Failed to write opportunity event: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+  }
+
+  /**
+   * Write a THEATER_PROHIBITED audit event to TimescaleDB (CANON Standard 1).
+   *
+   * Persists the forensic record of a theatrical (drive-uncorrelated) expression
+   * that was zero-reinforced by the Drive Engine. This is the durable audit trail
+   * the prohibition previously lacked (it only reached stderr).
+   *
+   * CANON Standard 1 GUARDRAIL: this is AUDIT/EVENT-TRAIL ONLY. It writes to the
+   * `events` backbone for observability/review and is NEVER read back into any
+   * positive reinforcement contingency. Fire-and-forget: errors are logged, not
+   * propagated.
+   */
+  private writeTheaterProhibitedEvent(payload: TheaterProhibitedPayload): void {
+    const id = randomUUID();
+    const timestamp = new Date();
+
+    this.timescale
+      .query(
+        `INSERT INTO events
+           (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          'THEATER_PROHIBITED',
+          timestamp,
+          'DRIVE_ENGINE',
+          payload.snapshot.sessionId ?? 'drive-engine-internal',
+          JSON.stringify(payload.snapshot),
+          JSON.stringify({
+            actionId: payload.actionId,
+            actionType: payload.actionType,
+            offendingExpressionType: payload.offendingExpressionType,
+            drive: payload.drive,
+            expectedThreshold: payload.expectedThreshold,
+            actualDriveValue: payload.actualDriveValue,
+            verdictReason: payload.verdictReason,
+            // Explicit, machine-readable marker that this record must never be
+            // consumed as a reinforcement signal (CANON Standard 1).
+            auditOnly: true,
+          }),
+          1,
+        ],
+      )
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Failed to write theater-prohibited event: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

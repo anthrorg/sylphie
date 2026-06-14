@@ -40,8 +40,8 @@ export interface TheaterVerdict {
  * Pressure expressions (distress, need, urgency) require drive > pressureThreshold
  * Relief expressions (contentment, calm) require drive < reliefThreshold
  */
-const PRESSURE_THRESHOLD = 0.2;   // drive > 0.2 for pressure to be authentic
-const RELIEF_THRESHOLD = 0.3;     // drive < 0.3 for relief to be authentic
+export const PRESSURE_THRESHOLD = 0.2;   // drive > 0.2 for pressure to be authentic
+export const RELIEF_THRESHOLD = 0.3;     // drive < 0.3 for relief to be authentic
 
 /**
  * Perform theater detection on an action outcome.

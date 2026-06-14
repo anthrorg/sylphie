@@ -216,6 +216,38 @@ const DriveEventPayloadSchema = z.object({
 });
 
 /**
+ * THEATER_PROHIBITED payload validation (CANON Standard 1).
+ *
+ * Validates the audit-trail record for a theatrical expression that was
+ * zero-reinforced. AUDIT ONLY — never feeds reinforcement.
+ */
+const TheaterProhibitedPayloadSchema = z.object({
+  actionId: z.string().min(1),
+  actionType: z.string(),
+  offendingExpressionType: z.enum(['pressure', 'relief']),
+  drive: DriveNameSchema,
+  expectedThreshold: z.number(),
+  actualDriveValue: z.number().min(-10.0).max(1.0),
+  verdictReason: z.string(),
+  snapshot: z.object({
+    pressureVector: z.record(
+      DriveNameSchema,
+      z.number().min(-10.0).max(1.0),
+    ),
+    timestamp: z.coerce.date(),
+    tickNumber: z.number().int().min(0),
+    driveDeltas: z.record(DriveNameSchema, z.number()),
+    ruleMatchResult: z.object({
+      ruleId: z.string().nullable(),
+      eventType: z.string(),
+      matched: z.boolean(),
+    }),
+    totalPressure: z.number().min(0).max(12.0),
+    sessionId: z.string(),
+  }),
+});
+
+/**
  * HEALTH_STATUS payload validation.
  *
  * Validates:
@@ -281,6 +313,10 @@ const OutboundMessageSchema = z.union([
   DriveIPCMessageEnvelopeSchema.extend({
     type: z.literal(DriveIPCMessageType.DRIVE_EVENT),
     payload: DriveEventPayloadSchema,
+  }),
+  DriveIPCMessageEnvelopeSchema.extend({
+    type: z.literal(DriveIPCMessageType.THEATER_PROHIBITED),
+    payload: TheaterProhibitedPayloadSchema,
   }),
   DriveIPCMessageEnvelopeSchema.extend({
     type: z.literal(DriveIPCMessageType.HEALTH_STATUS),

@@ -119,7 +119,45 @@ const mappings: Array<[string, ActionEmotionMapping]> = [
   }],
 ];
 
-export const ACTION_EMOTION_MAPPINGS: Readonly<Map<string, ActionEmotionMapping>> = new Map(mappings);
+/**
+ * Build a Map whose mutators are disabled at RUNTIME, then expose it as a
+ * `ReadonlyMap`.
+ *
+ * CANON Standard 6 (No self-modification of evaluation): the action→emotion
+ * table is the lookup Theater Prohibition consumes to decide whether an
+ * emotional expression is authentic. A runtime mutation API on it (the former
+ * `registerActionEmotionMapping`, which cast away `Readonly` and `.set()`) was a
+ * back-door for the evaluation criteria to modify themselves. That API is
+ * removed. The `Readonly<Map>` type only prevented mutation at COMPILE time — a
+ * `as Map` cast defeated it — so we also harden the runtime: `set`/`delete`/
+ * `clear` throw, and the object is frozen. Any future attempt to mutate the
+ * evaluation table fails loudly instead of silently succeeding.
+ *
+ * If new action→emotion mappings are ever genuinely needed, the CANON-correct
+ * path is the `proposed_drive_rules` review pipeline — NOT runtime mutation here.
+ */
+function freezeAsReadonlyMap<K, V>(entries: Array<[K, V]>): ReadonlyMap<K, V> {
+  const map = new Map<K, V>(entries);
+  const blocked = (op: string) => (): never => {
+    throw new Error(
+      `ACTION_EMOTION_MAPPINGS is immutable (CANON Standard 6): ${op} is prohibited. ` +
+        'The action→emotion evaluation table cannot be self-modified at runtime; ' +
+        'use the proposed_drive_rules review pipeline instead.',
+    );
+  };
+  // Disable every mutator on this instance. Reads (get/has/keys/values/entries/
+  // forEach/size/iteration) remain fully functional.
+  Object.defineProperties(map, {
+    set: { value: blocked('set'), configurable: false, writable: false },
+    delete: { value: blocked('delete'), configurable: false, writable: false },
+    clear: { value: blocked('clear'), configurable: false, writable: false },
+  });
+  Object.freeze(map);
+  return map;
+}
+
+export const ACTION_EMOTION_MAPPINGS: ReadonlyMap<string, ActionEmotionMapping> =
+  freezeAsReadonlyMap(mappings);
 
 /**
  * Look up an action type to get its emotional expression mapping.
@@ -129,20 +167,4 @@ export const ACTION_EMOTION_MAPPINGS: Readonly<Map<string, ActionEmotionMapping>
  */
 export function getActionEmotionMapping(actionType: string): ActionEmotionMapping | null {
   return ACTION_EMOTION_MAPPINGS.get(actionType) ?? null;
-}
-
-/**
- * Register a new action-to-emotion mapping at runtime.
- *
- * This allows Sylphie to learn new expression patterns as she encounters
- * them. Used by the Learning subsystem when extracting behavioral patterns.
- *
- * @param actionType - The action type to register
- * @param mapping - The emotional mapping for this action
- */
-export function registerActionEmotionMapping(
-  actionType: string,
-  mapping: ActionEmotionMapping,
-): void {
-  (ACTION_EMOTION_MAPPINGS as Map<string, ActionEmotionMapping>).set(actionType, mapping);
 }

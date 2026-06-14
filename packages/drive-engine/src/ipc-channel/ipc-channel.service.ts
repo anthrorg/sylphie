@@ -45,6 +45,7 @@ interface MessageHandlers {
   [DriveIPCMessageType.DRIVE_SNAPSHOT]?: MessageHandler;
   [DriveIPCMessageType.OPPORTUNITY_CREATED]?: MessageHandler;
   [DriveIPCMessageType.DRIVE_EVENT]?: MessageHandler;
+  [DriveIPCMessageType.THEATER_PROHIBITED]?: MessageHandler;
   [DriveIPCMessageType.HEALTH_STATUS]?: MessageHandler;
 }
 
