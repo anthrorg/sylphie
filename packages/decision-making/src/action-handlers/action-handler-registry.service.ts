@@ -11,21 +11,20 @@
  *   - Dispatch action steps to their registered handler at runtime
  *   - Warn and return null when no handler exists for a step type
  *
- * Built-in handlers are stubs that log intent. They will be replaced with wired
- * implementations as the dependent services come online:
- *   - LLM_GENERATE: will delegate to ILlmService (Communication module)
- *   - WKG_QUERY:    will delegate to IWkgService (Knowledge module)
- *   - TTS_SPEAK:    will delegate to the TTS service (Communication module)
- *   - LOG_EVENT:    logs the payload (functional now, no external dependency)
+ * Built-in handlers are fully wired to their dependent services:
+ *   - LLM_GENERATE:    delegates to ILlmService.complete() (Communication module)
+ *   - WKG_QUERY:       delegates to WkgContextService (Knowledge module)
+ *   - TTS_SPEAK:       returns text for CommunicationService to synthesize
+ *   - LOG_EVENT:       logs the payload (no external dependency)
+ *   - RESEARCH_ENTITY: web-searches via SearXNG, LLM-extracts a sub-graph, and
+ *                      writes low-confidence nodes/edges to the WKG
  *
  * CANON §Interface-First Design: The handler function type is defined here.
- * When ILlmService and IWkgService are injected later, the registry handlers
- * will be replaced via re-registration — no new injection tokens needed.
+ * Handlers may be re-registered at runtime via register() to swap an
+ * implementation without changing injection tokens.
  *
- * No external DI dependencies. All handler implementations in this file are
- * stubs with clear TODOs for wiring. The registry itself is fully functional.
- *
- * Dependencies: @sylphie/shared (ActionStep), NestJS Logger.
+ * Dependencies (@Optional, degrade gracefully when absent): LLM_SERVICE,
+ * WkgContextService, ConfigService, @sylphie/shared (ActionStep), NestJS Logger.
  */
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
@@ -114,9 +113,8 @@ export class ActionHandlerRegistryService {
    * Register a handler function for the given step type.
    *
    * If a handler already exists for the step type, it is overwritten. This
-   * is intentional — it allows built-in stub handlers to be replaced with
-   * wired implementations once their dependencies are available (e.g., after
-   * ILlmService is injected into the module).
+   * is intentional — it allows a built-in handler to be swapped for an
+   * alternate implementation at runtime without changing injection tokens.
    *
    * @param stepType - The step type string to register the handler for.
    * @param handler  - The async handler function to call for this step type.
@@ -167,15 +165,14 @@ export class ActionHandlerRegistryService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Register the four core built-in step type handlers.
+   * Register the built-in step type handlers.
    *
-   * Called once during construction. Handlers are stubs — they log intent
-   * but do not yet invoke real services. They will be re-registered (via
-   * register()) once the dependent services are available.
-   *
-   * Stub behavior is explicit and clearly logged. The memory note
-   * [No stubs without flagging] is observed: each stub logs a warning
-   * that it is unimplemented.
+   * Called once during construction. Each handler invokes its real dependent
+   * service: LLM_GENERATE and RESEARCH_ENTITY call ILlmService.complete(),
+   * WKG_QUERY and RESEARCH_ENTITY call WkgContextService, TTS_SPEAK returns
+   * text for CommunicationService to synthesize, and LOG_EVENT logs. When an
+   * @Optional dependency is absent the handler logs a warning and returns null
+   * rather than fabricating output (Theater Prohibition).
    */
   private registerBuiltins(): void {
     // LLM_GENERATE — delegates to ILlmService using cycle context from the fused stream

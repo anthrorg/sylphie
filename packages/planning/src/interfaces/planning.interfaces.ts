@@ -284,6 +284,7 @@ export interface PlanOutcomeData {
 export type PlanningEventType =
   | 'OPPORTUNITY_RECEIVED'
   | 'OPPORTUNITY_INTAKE'
+  | 'OPPORTUNITY_INTAKE_ERROR'
   | 'OPPORTUNITY_DROPPED'
   | 'RESEARCH_COMPLETED'
   | 'RESEARCH_INSUFFICIENT'

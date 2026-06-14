@@ -23,6 +23,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import type { Session } from 'neo4j-driver';
 import {
   Neo4jService,
   Neo4jInstanceName,
@@ -83,18 +84,29 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     let created = 0;
     let updated = 0;
 
-    for (const label of labels) {
-      const nodeId = await this.mergeEntityNode(label, provenance, confidence);
-      if (nodeId) {
-        // Distinguish created vs updated by checking if nodeId matches the generated UUID prefix.
-        if (nodeId.startsWith('entity-')) {
-          created++;
-        } else {
-          updated++;
+    // Open a single WRITE session and reuse it for every entity label in this
+    // event, instead of opening/closing a fresh session per label. With up to
+    // MAX_ENTITIES_PER_EVENT (20) labels per event and up to 5 events per
+    // maintenance cycle, this cuts ~100 session checkout/teardown round-trips
+    // down to one per event. Per-entity error isolation is preserved inside
+    // mergeEntityNode: one failing label does not abort the rest.
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      for (const label of labels) {
+        const nodeId = await this.mergeEntityNode(session, label, provenance, confidence);
+        if (nodeId) {
+          // Distinguish created vs updated by checking if nodeId matches the generated UUID prefix.
+          if (nodeId.startsWith('entity-')) {
+            created++;
+          } else {
+            updated++;
+          }
+          results.push({ nodeId, label, provenance, confidence });
+          vlog('entity upserted', { eventId: event.id, label, nodeId, provenance, confidence });
         }
-        results.push({ nodeId, label, provenance, confidence });
-        vlog('entity upserted', { eventId: event.id, label, nodeId, provenance, confidence });
       }
+    } finally {
+      await session.close();
     }
 
     vlog('upsertEntities complete', {
@@ -115,18 +127,22 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
   // ---------------------------------------------------------------------------
 
   /**
-   * MERGE an entity node into Neo4j WORLD.
+   * MERGE an entity node into Neo4j WORLD using a caller-provided session.
+   *
+   * The session is owned and closed by the caller (upsertEntities), so all
+   * labels from one event share a single session. Each call is still isolated
+   * by its own try/catch: a failed label returns '' and the loop continues.
    *
    * Returns the node_id of the created or matched node. Returns an empty string
    * if Neo4j is unavailable or the query fails.
    */
   private async mergeEntityNode(
+    session: Session,
     label: string,
     provenance: ProvenanceSource,
     confidence: number,
   ): Promise<string> {
     const nodeId = `entity-${randomUUID().substring(0, 8)}`;
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
 
     try {
       const result = await session.run(
@@ -157,8 +173,6 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
         }`,
       );
       return '';
-    } finally {
-      await session.close();
     }
   }
 }

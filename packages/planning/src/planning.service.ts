@@ -238,6 +238,11 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
       );
 
       for (const row of result.rows) {
+       // Per-row isolation: a single malformed row must not abort the whole
+       // ingest batch (mirrors pollAndEvaluateOutcomes). On parse/processing
+       // failure we log and still mark the row ingested below so the bad row
+       // cannot wedge intake by being re-polled every cycle.
+       try {
         const opportunityPayload: OpportunityCreatedPayload = JSON.parse(
           typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload),
         );
@@ -304,18 +309,41 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
             });
           }
         }
-
-        // Mark as ingested in TimescaleDB so we don't re-poll it.
-        await this.timescale.query(
-          `UPDATE events
-           SET payload = jsonb_set(
-             COALESCE(payload::jsonb, '{}'::jsonb),
-             '{has_planned}',
-             'true'::jsonb
-           )
-           WHERE id = $1`,
-          [row.id],
+       } catch (rowErr) {
+        // Skip the bad row, keep ingesting the rest of the batch. The row is
+        // still marked ingested in the finally block so it does not block
+        // intake by re-appearing on every poll.
+        this.eventLogger.log('OPPORTUNITY_INTAKE_ERROR', {
+          rowId: row.id,
+          error: rowErr instanceof Error ? rowErr.message : String(rowErr),
+        });
+        this.logger.warn(
+          `ingestOpportunities: skipping malformed row ${row.id} -- ${
+            rowErr instanceof Error ? rowErr.message : String(rowErr)
+          }`,
         );
+       } finally {
+        // Mark as ingested in TimescaleDB so we don't re-poll it.
+        // Runs for both good and bad rows so a corrupt payload ages out.
+        try {
+          await this.timescale.query(
+            `UPDATE events
+             SET payload = jsonb_set(
+               COALESCE(payload::jsonb, '{}'::jsonb),
+               '{has_planned}',
+               'true'::jsonb
+             )
+             WHERE id = $1`,
+            [row.id],
+          );
+        } catch (markErr) {
+          this.logger.warn(
+            `ingestOpportunities: failed to mark row ${row.id} ingested -- ${
+              markErr instanceof Error ? markErr.message : String(markErr)
+            }`,
+          );
+        }
+       }
       }
     } catch (err) {
       this.logger.warn(

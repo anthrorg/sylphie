@@ -53,6 +53,7 @@ import type {
   InsightType,
 } from '../interfaces/learning.interfaces';
 import { LEARNING_EVENT_LOGGER } from '../learning.tokens';
+import { withTimeout } from '../util/llm-timeout';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -60,6 +61,14 @@ import { LEARNING_EVENT_LOGGER } from '../learning.tokens';
 
 /** How long a session must be quiet before it is eligible for reflection. */
 const SESSION_QUIET_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Deadline for the reflection LLM call. Reflection sends up to ~8k chars of
+ * conversation and asks for a 1536-token completion, so it legitimately takes
+ * longer than edge refinement. A hang past this point fails the reflection
+ * cycle (5m timer) instead of stalling it indefinitely.
+ */
+const REFLECTION_LLM_TIMEOUT_MS = 60_000;
 
 /** Minimum events in a session before reflection is worthwhile. */
 const MIN_EVENTS_FOR_REFLECTION = 4;
@@ -249,7 +258,11 @@ export class ConversationReflectionService implements IConversationReflectionSer
 
     let responseContent: string;
     try {
-      const response = await this.llm.complete(request);
+      const response = await withTimeout(
+        this.llm.complete(request),
+        REFLECTION_LLM_TIMEOUT_MS,
+        'CONVERSATION_REFLECTION',
+      );
       responseContent = response.content;
     } catch (err) {
       this.logger.warn(

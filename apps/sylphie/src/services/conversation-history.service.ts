@@ -222,36 +222,44 @@ export class ConversationHistoryService implements OnModuleInit, OnModuleDestroy
     const summaryParts: string[] = [];
     const pending: LlmMessage[] = [];
 
-    // Walk through history, collecting answered exchanges into summary
-    // and unanswered user messages into pending.
-    let i = 0;
-    while (i < this.history.length) {
+    // Single forward pass (O(n)). An answered user message is paired with the
+    // FIRST assistant message that follows it before the next user message —
+    // exactly what the previous nested look-ahead computed, but without the
+    // per-user forward rescan. `pendingAnswered` holds an answered user awaiting
+    // its assistant: the next assistant pairs with it; a subsequent user before
+    // any assistant flushes it as a bare line (no response found).
+    let pendingAnswered: string | null = null;
+    for (let i = 0; i < this.history.length; i++) {
       const entry = this.history[i];
 
-      if (entry.role === 'user' && !entry.answered) {
-        // Unanswered user message — goes into pending as a real user turn
-        pending.push({ role: 'user', content: entry.content });
-      } else if (entry.role === 'user' && entry.answered) {
-        // Answered user message — find the matching assistant response
-        // and collapse both into a summary line
-        const userText = entry.content;
-        // Look ahead for the assistant response
-        let assistantText = '';
-        for (let j = i + 1; j < this.history.length; j++) {
-          if (this.history[j].role === 'assistant') {
-            assistantText = this.history[j].content;
-            break;
-          }
-          if (this.history[j].role === 'user') break; // no assistant response found
+      if (entry.role === 'user') {
+        // A new user message ends the previous answered user's look-ahead window:
+        // if no assistant was seen in between, the prior answered user had no
+        // response → emit it as a bare summary line (matches the old `break`).
+        if (pendingAnswered !== null) {
+          summaryParts.push(pendingAnswered);
+          pendingAnswered = null;
         }
-        if (assistantText) {
-          summaryParts.push(`${userText} → ${assistantText}`);
+        if (entry.answered) {
+          // Answered user — start a look-ahead window for its assistant response.
+          pendingAnswered = entry.content;
         } else {
-          summaryParts.push(userText);
+          // Unanswered user message — goes into pending as a real user turn.
+          pending.push({ role: 'user', content: entry.content });
+        }
+      } else {
+        // Assistant message. It pairs with the awaiting answered user (if any);
+        // an assistant with no awaiting answered user is skipped, exactly as the
+        // old loop only consumed assistants via the per-user look-ahead.
+        if (pendingAnswered !== null) {
+          summaryParts.push(`${pendingAnswered} → ${entry.content}`);
+          pendingAnswered = null;
         }
       }
-      // Skip assistant messages — they're captured in the summary pairing above
-      i++;
+    }
+    // Trailing answered user with no following assistant → bare line.
+    if (pendingAnswered !== null) {
+      summaryParts.push(pendingAnswered);
     }
 
     const summary = summaryParts.length > 0

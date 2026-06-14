@@ -55,6 +55,7 @@ import type {
 } from '../interfaces/learning.interfaces';
 import { LEARNING_EVENT_LOGGER } from '../learning.tokens';
 import type { ILearningEventLogger } from '../interfaces/learning.interfaces';
+import { withTimeout } from '../util/llm-timeout';
 
 const vlog = verboseFor('Learning');
 
@@ -64,6 +65,14 @@ const vlog = verboseFor('Learning');
 
 /** Maximum pairs processed per synthesis cycle (token budget control). */
 const MAX_PAIRS_PER_CYCLE = 3;
+
+/**
+ * Deadline for each per-pair synthesis LLM call. Synthesis runs on the 30m
+ * timer and processes up to MAX_PAIRS_PER_CYCLE pairs sequentially; a hang on
+ * any one pair would otherwise wedge the whole synthesis cycle. The deadline is
+ * per-call, so one slow pair fails on its own and the cycle moves on.
+ */
+const SYNTHESIS_LLM_TIMEOUT_MS = 60_000;
 
 /** Provenance for synthesis-derived nodes. Synthesis is derived reasoning. */
 const SYNTHESIS_PROVENANCE = 'INFERENCE' as const;
@@ -272,7 +281,11 @@ export class CrossSessionSynthesisService implements ICrossSessionSynthesisServi
 
     let responseContent: string;
     try {
-      const response = await this.llm.complete(request);
+      const response = await withTimeout(
+        this.llm.complete(request),
+        SYNTHESIS_LLM_TIMEOUT_MS,
+        'CROSS_SESSION_SYNTHESIS',
+      );
       responseContent = response.content;
     } catch (err) {
       this.logger.warn(

@@ -41,8 +41,16 @@ import type {
   ExtractedEdge,
   UnlearnedEvent,
 } from '../interfaces/learning.interfaces';
+import { withTimeout } from '../util/llm-timeout';
 
 const vlog = verboseFor('Learning');
+
+/**
+ * Deadline for the edge-refinement LLM call. Edge refinement uses a small
+ * 512-token budget on the 'medium' tier, so a healthy call returns quickly.
+ * A hang past this point fails the step rather than wedging the 60s cycle.
+ */
+const REFINE_LLM_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -255,7 +263,11 @@ export class RefineEdgesService implements IRefineEdgesService {
 
     let response: Awaited<ReturnType<ILlmService['complete']>>;
     try {
-      response = await this.llm.complete(request);
+      response = await withTimeout(
+        this.llm.complete(request),
+        REFINE_LLM_TIMEOUT_MS,
+        'EDGE_REFINEMENT',
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       vlog('refineEdges: LLM call failed', { eventId: event.id, error: message });

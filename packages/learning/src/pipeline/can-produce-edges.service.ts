@@ -25,6 +25,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import type { Session } from 'neo4j-driver';
 import { Neo4jService, Neo4jInstanceName, verboseFor } from '@sylphie/shared';
 import type { ICanProduceEdgesService, UnlearnedEvent } from '../interfaces/learning.interfaces';
 
@@ -88,12 +89,22 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
 
     let created = 0;
 
-    for (const phrase of phrases) {
-      const wordNodeId = await this.mergeWordNode(phrase);
-      if (!wordNodeId) continue;
+    // Reuse a single WRITE session across every phrase in this event. Each
+    // phrase previously opened two sessions (Word node + CAN_PRODUCE edge);
+    // with up to MAX_PHRASES_PER_EVENT (15) phrases that was up to 30 session
+    // checkout/teardown round-trips per event. Batching to one session keeps
+    // per-phrase error isolation (each helper still try/catches its own run).
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      for (const phrase of phrases) {
+        const wordNodeId = await this.mergeWordNode(session, phrase);
+        if (!wordNodeId) continue;
 
-      const edgeCreated = await this.mergeCanProduceEdge(conversationNodeId, phrase, wordNodeId);
-      if (edgeCreated) created++;
+        const edgeCreated = await this.mergeCanProduceEdge(session, conversationNodeId, phrase, wordNodeId);
+        if (edgeCreated) created++;
+      }
+    } finally {
+      await session.close();
     }
 
     vlog('canProduceEdges complete', {
@@ -112,9 +123,8 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private async mergeWordNode(phrase: string): Promise<string> {
+  private async mergeWordNode(session: Session, phrase: string): Promise<string> {
     const nodeId = `word-${randomUUID().substring(0, 8)}`;
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
 
     try {
       const result = await session.run(
@@ -149,18 +159,15 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
         }`,
       );
       return '';
-    } finally {
-      await session.close();
     }
   }
 
   private async mergeCanProduceEdge(
+    session: Session,
     convNodeId: string,
     phraseLabel: string,
     _wordNodeId: string,
   ): Promise<boolean> {
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
-
     try {
       await session.run(
         `MATCH (c:Conversation {node_id: $convId}), (w:Word {label: $label})
@@ -186,8 +193,6 @@ export class CanProduceEdgesService implements ICanProduceEdgesService {
         }`,
       );
       return false;
-    } finally {
-      await session.close();
     }
   }
 }

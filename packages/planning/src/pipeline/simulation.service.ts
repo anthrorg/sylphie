@@ -64,20 +64,32 @@ export class SimulationService implements ISimulationService {
     const affectedDrive = opportunity.payload.affectedDrive;
     const outcomes: SimulatedOutcome[] = [];
 
-    for (const category of CANDIDATE_CATEGORIES) {
-      try {
-        const outcome = await this.evaluateCategory(category, affectedDrive, research);
-        if (outcome) {
-          outcomes.push(outcome);
+    // Each category evaluation is an independent, read-only TimescaleDB query
+    // (no shared mutable state -- evaluateCategory only reads affectedDrive +
+    // research and returns a fresh object). Run them concurrently and bound
+    // wall-clock time by the slowest query rather than their sum. A slow or
+    // failing category no longer blocks the others; failures are logged per
+    // category via the settled result status.
+    const settled = await Promise.allSettled(
+      CANDIDATE_CATEGORIES.map((category) =>
+        this.evaluateCategory(category, affectedDrive, research),
+      ),
+    );
+
+    settled.forEach((res, idx) => {
+      const category = CANDIDATE_CATEGORIES[idx];
+      if (res.status === 'fulfilled') {
+        if (res.value) {
+          outcomes.push(res.value);
         }
-      } catch (err) {
+      } else {
         this.logger.warn(
           `Simulation failed for category ${category}: ${
-            err instanceof Error ? err.message : String(err)
+            res.reason instanceof Error ? res.reason.message : String(res.reason)
           }`,
         );
       }
-    }
+    });
 
     // Sort by estimated benefit (most negative drive effect = most relief).
     outcomes.sort((a, b) => {
