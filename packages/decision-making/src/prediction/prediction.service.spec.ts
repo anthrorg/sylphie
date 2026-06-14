@@ -58,7 +58,6 @@ function makeCandidate(id: string, confidence = 0.8): ActionCandidate {
       actionSequence: [{ index: 0, stepType: 'LLM_GENERATE', params: {} }],
       provenance: 'INFERENCE' as any,
       confidence,
-      driveEffects: {},
     },
     confidence,
     motivatingDrive: DriveName.Curiosity,

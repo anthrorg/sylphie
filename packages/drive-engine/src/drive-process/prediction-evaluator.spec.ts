@@ -51,13 +51,13 @@ describe('PredictionEvaluator', () => {
   });
 
   describe('MAE computation', () => {
-    it('should return INSUFFICIENT_DATA for types with < 3 predictions', () => {
-      evaluator.recordPrediction('p1', 'ask_question', 0.5, 0.6);
-      evaluator.recordPrediction('p2', 'ask_question', 0.5, 0.7);
-
+    it('should return INSUFFICIENT_DATA for a type with no recorded predictions', () => {
+      // Production contract: MIN_SAMPLE_COUNT = 1 (see constants/prediction-evaluation.ts),
+      // so INSUFFICIENT_DATA is only produced when zero samples exist for the type.
       const result = evaluator.getMAE('ask_question');
       expect(result.classification).toBe('INSUFFICIENT_DATA');
       expect(result.mae).toBe(0);
+      expect(result.sampleCount).toBe(0);
     });
 
     it('should compute accurate MAE for predictions with small error', () => {

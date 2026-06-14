@@ -250,10 +250,25 @@ describe('applyCrossModulation (full pipeline)', () => {
 
     applyCrossModulation(state);
 
-    // All drive values should be unchanged
+    // No cross-modulation rule fires, so all *rule-targeted* drives are unchanged.
+    // SystemHealth is exempt: it is a derived composite (mean of MoralValence,
+    // Integrity, CognitiveAwareness) that is ALWAYS recomputed at the end of
+    // applyCrossModulation regardless of whether any rule fired — see
+    // cross-modulation.ts (SystemHealth composite block). Here Integrity=0.5
+    // with MoralValence=CognitiveAwareness=0 makes the composite 0.5/3.
     for (const drive of Object.values(DriveName)) {
+      if (drive === DriveName.SystemHealth) continue;
       expect(state[drive]).toBe(before[drive]);
     }
+
+    // SystemHealth composite is recomputed deterministically from its sources.
+    expect(state[DriveName.SystemHealth]).toBeCloseTo(
+      (state[DriveName.MoralValence] +
+        state[DriveName.Integrity] +
+        state[DriveName.CognitiveAwareness]) /
+        3,
+      10,
+    );
   });
 
   it('should apply multiple rules when multiple sources exceed thresholds', () => {

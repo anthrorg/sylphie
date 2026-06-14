@@ -9,26 +9,26 @@
  */
 
 import { DecisionEventLoggerService } from './decision-event-logger.service';
-import type { DriveSnapshot } from '@sylphie/shared';
+import { INITIAL_DRIVE_STATE, type DriveSnapshot } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Structurally-valid DriveSnapshot matching the current @sylphie/shared shape.
+// The logger only JSON.stringifies the snapshot (it never reads individual drive
+// fields), so the exact drive values are immaterial — only the shape must be
+// current. The previous flat {curiosity, satisfaction, ...} fixture predated the
+// DriveSnapshot refactor (pressureVector + metadata envelope).
 const STUB_DRIVE_SNAPSHOT: DriveSnapshot = {
-  curiosity: 0.5,
-  satisfaction: 0.4,
-  social: 0.3,
-  mastery: 0.2,
-  autonomy: 0.1,
-  security: 0.6,
-  energy: 0.7,
-  comfort: 0.8,
-  novelty: 0.35,
-  attachment: 0.45,
-  play: 0.55,
-  competence: 0.65,
-} as DriveSnapshot;
+  pressureVector: { ...INITIAL_DRIVE_STATE },
+  timestamp: new Date(),
+  tickNumber: 1,
+  driveDeltas: {} as any,
+  ruleMatchResult: { ruleId: null, eventType: 'TEST', matched: false },
+  totalPressure: 0,
+  sessionId: 'test-session',
+};
 
 /** Minimal mock for TimescaleService — only needs a query() method. */
 function createMockTimescale() {
