@@ -6,6 +6,17 @@
 
 ---
 
+## ✅ WAVE 1 — COMPLETE (2026-06-14, on `main` @ `6a86d12`)
+Tier-1 CANON hazards + Tier-2 quick wins. 5 commits (`a5d6648`, `e82c9e8`, `4122668`, `6a86d12` + the `fefdc4d` baseline). All per-package builds + test suites green.
+- **CANON hazards:** Std-3 latent-space ceiling (clamp `write()` + `updateConfidence()` + schema CHECK), Std-6 action-emotion eval-table immutability (removed runtime-registration), Std-1 theater-prohibited audit trail (IPC→parent→TimescaleDB). `attractor-monitor-placeholder-detectors` **closed as STALE** (all 5 detectors verified live).
+- **Quick wins:** cognition (§2.3/§2.7/bootstrap-norm), perception (class-aware IoU, timeout guards, embedding-dedup, concurrency, §4.1 dead-endpoint deletion), drive-engine (guilt-repair, circuit-breaker, recovery-jitter), supervisor (§2.4 reasoning-trace, pricing-config), planning (per-row isolation, parallel sim-eval), learning (neo4j session batching, LLM timeout guards), apps (§4.2 DebugController deletion, getSplitHistory O(n²)→O(n)), action-handler stale-comments, recallKeyForQuestion spec, `.env.example` JWT hazard, M2 baseline (re-anchored w/ M1), **all stale jest suites greened** (174/174 + 70/70).
+- **Deferred-with-reason (NOT in Wave 1):** §2.8 privacy leak → WS5.5 (atlas design); theater-prohibition-*real-validation* → needs sentiment-vs-drive design; sensory-logger standin → load-bearing (sole `[sensory]` telemetry producer).
+- **Carried flags:** Std-3 schema CHECK untested vs live DB; perception stub-inventory/cv-framework docs still list the deleted `/perception/stream` endpoints (docs pass owed).
+
+**Next:** Tier-3 clusters (drive-IPC root, supervisor loop, drive-audit) → WS5.5 (Tier 4a) → remaining Tiers.
+
+---
+
 ## Tier 0 — By-design / NOT work (record, don't build)
 - **Guardian-fact compounding = decay-resistance only** (Std 3, correct). Doc-note only.
 - **Global voice cache** (TTS audio, not knowledge) — acceptable unless per-person voice is wanted (Jim).
