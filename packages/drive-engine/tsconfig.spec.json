@@ -1,0 +1,10 @@
+{
+  "//": "ts-jest-only tsconfig. Maps @sylphie/shared to the SOURCE (../shared/src) so ts-jest type-checks specs against the live monorepo source instead of a possibly-stale ../shared/dist build (which caused TS2339 'THEATER_PROHIBITED does not exist' when the worktree dist predated the enum addition). Kept separate from tsconfig.json so the package's `tsc -p` build (separate-process deploy) is NOT affected — exactly the split decision-making uses via its tsconfig paths.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@sylphie/shared": ["../shared/src/index.ts"]
+    }
+  }
+}

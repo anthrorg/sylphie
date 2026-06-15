@@ -13,11 +13,16 @@ module.exports = {
   // does not mis-collect it (its custom globals + process.exit would corrupt the run).
   testPathIgnorePatterns: [
     '/node_modules/',
-    '<rootDir>/src/drive-process/opportunity-queue.spec.ts',
+    // Separator-agnostic: the '<rootDir>/...' form expands to backslashes on
+    // Windows and fails to match jest's forward-slash-normalized test paths, so
+    // jest mis-collected this standalone tsx script. Match by filename suffix.
+    'opportunity-queue\\.spec\\.ts$',
   ],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
-      tsconfig: '<rootDir>/tsconfig.json',
+      // tsconfig.spec.json maps @sylphie/shared -> ../shared/src (live source) so
+      // ts-jest does not type-check specs against a stale ../shared/dist build.
+      tsconfig: '<rootDir>/tsconfig.spec.json',
     }],
   },
   moduleNameMapper: {
