@@ -332,6 +332,12 @@ Hypertable: chunked 1 hour, indexed by `(session_id, type, timestamp DESC)` and 
 5. **Guardian Asymmetry** — confirmation ×2, correction ×3, algorithmic ×1.
 6. **No Self-Modification of Evaluation** — drive isolation as process boundary, RLS-enforced, no introspection RPC.
 
+### Std-6 clarification — INFERENCE-grade self-capability writes (ratified by Jim, 2026-06-14)
+
+> Learning may write INFERENCE-grade self-capability nodes to KG(Self) that feed drive baseline-adjustment, provided: (a) provenance is stamped `INFERENCE` (never `GUARDIAN`) at the source, (b) confidence is clamped ≤0.60 (Std-3), and (c) the data is honest telemetry, never fabricated (Std-1). **Reduction authority over drive baselines remains GUARDIAN-only** — an INFERENCE assessment may only *recover* a baseline toward its CANON default (`INITIAL_DRIVE_STATE`), never depress it and never exceed default. This is bounded self-recovery, not self-modification of evaluation; Std-6 is preserved.
+
+Precedent: `SelfModelWriterService` (`packages/learning`, commit `56af7a3`) — the first automated recurring SELF-writer feeding baseline-adjustment. The guard chain (`CachedSelfKgReader.allowReduction=false` for non-GUARDIAN → `DriveBaselineAdjustment` reduction gated on `allowReduction`, recovery bounded by `INITIAL_DRIVE_STATE`) was verified in code (canon) and live (mythos, PASS 7/7). Any *new mapped* capability name reopens the Std-6 question and needs a fresh canon sign-off.
+
 ---
 
 ## 10. Health Metrics (Development Telemetry)
