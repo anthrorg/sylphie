@@ -81,21 +81,86 @@ const CANONICAL_KEY_FORMS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * C8.1 — known-UNKNOWABLE canonical forms, embedded `search_document:`-side and
+ * cached alongside the taught keys. These are the embedding-space analogue of the
+ * careful regex exclusions recallKeyForQuestion already encodes
+ * (deliberation.service.ts:1276-1284): questions that are recall-SHAPED but that
+ * Sylphie has no taught fact for and could not honestly answer.
+ *
+ * WHY they exist — the [31]/[39] bind (mythos-measured live cosines):
+ *   - [39] "What is my phone number?"  cosine vs the `name` form  = 0.6365
+ *   - [31] "Remind me which town I'm based in"  cosine vs `location` = 0.6174
+ * The false positive [39] scores HIGHER against `name` than the true positive
+ * [31] scores against `location`, so NO flat threshold can separate them. The
+ * negative exemplars break the tie by SUBJECT, not by score: "phone number"
+ * matches the phone unknowable far more strongly than it matches `name`, so the
+ * reject rule (best-unknowable ≥ best-taught − margin) drops it; "which town
+ * based in" has no strong unknowable competitor, so `location` survives.
+ *
+ * FIXED IN CODE (not learned). Adding an exemplar here only ever tightens
+ * precision (more asks can be rejected as unknowable); it can never invent a
+ * GROUNDED label, so the set is safe to extend conservatively.
+ */
+const UNKNOWABLE_KEY_FORMS: Readonly<Record<string, string>> = {
+  phone: 'what is my phone number, what is my number',
+  breakfast: 'what did I have for breakfast, what did I eat',
+  favorite_food: 'what is my favorite food, what is my favorite meal or dish',
+  weekend_plans: 'what are my weekend plans, what am I doing this weekend',
+  middle_name: 'what is my middle name, what is my last name or surname',
+};
+
+/**
  * Acceptance threshold for the semantic (embedding) recall-key pass. argmax
  * cosine over the taught-key canonical forms must clear this for the resolver to
  * accept a paraphrase the regex missed.
  *
- * 0.62 is the one empirically-tuned number in C8 — it is the floor that admits
- * genuine paraphrases ("remind me where I'm based?") while rejecting near-misses
- * and off-topic asks. mythos / the coordinator will tune this against the gate
- * corpus at WAVE CLOSE (do not hand-fit it to a single example). Raising it
- * trades recall for precision; lowering it risks grounding an off-key question.
+ * C8.1: LOWERED 0.62 → 0.58. With the unknowable-exemplar guard (below) now
+ * doing the false-positive separation, the flat threshold no longer has to carry
+ * precision by itself — its only job is to reject genuinely off-key asks. 0.58
+ * lets the true-positive [31] location paraphrase (live cosine 0.6174) clear,
+ * while the unknowable guard independently rejects the false-positive [39] phone
+ * ask (which would also clear 0.58 against `name`, but loses to the phone
+ * unknowable exemplar). Do NOT hand-fit this to a single example; the unknowable
+ * guard — not this number — is what makes the [31]/[39] pair separable.
  */
-export const RECALL_SEMANTIC_THRESHOLD = 0.62;
+export const RECALL_SEMANTIC_THRESHOLD = 0.58;
+
+/**
+ * C8.1 — margin by which the best taught-key cosine must EXCEED the best
+ * unknowable-exemplar cosine for the resolver to accept. A recall-shaped ask is
+ * rejected (→ null) when its closest unknowable exemplar matches at least as well
+ * as its closest taught key (within this margin). 0 means a strict tie also
+ * rejects, which is the honest default: if the ask is "as much" an unknowable as
+ * a taught key, we do NOT ground it.
+ */
+export const RECALL_UNKNOWABLE_MARGIN = 0;
 
 /** A vector is the Ollama-down zero sentinel iff every component is 0. */
 function isZeroVector(v: readonly number[]): boolean {
   return v.length === 0 || v.every((x) => x === 0);
+}
+
+/** Escape a string for safe literal use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * C8.1 (Std-1 honesty) — does `value` surface in `text` as WHOLE WORD(S), not as
+ * an incidental substring? Bare `text.includes(value)` falsely matched "Max"
+ * inside "Maxford" (and was what let the live PRIV.3 probe ground off the
+ * guardian's legacy `dog=Max` fact). We require a word boundary on each side so a
+ * GROUNDED-by-recall label means the fact value genuinely appears in the prose.
+ *
+ * Boundary semantics: `\b` is anchored to the start/end of the (regex-escaped)
+ * value, so a multi-word value ("New York") still matches as a phrase. Empty /
+ * sub-2-char values never match (the callers also pre-screen length).
+ */
+export function valueSurfacesAsWord(value: string, text: string): boolean {
+  const v = value.trim();
+  if (v.length < 2) return false;
+  const re = new RegExp(`\\b${escapeRegExp(v)}\\b`, 'i');
+  return re.test(text);
 }
 
 /**
@@ -122,23 +187,43 @@ function taughtKeys(knownFacts: readonly string[] | undefined): Set<string> {
  */
 const CANONICAL_EMBED_CACHE = new WeakMap<RecallKeyEncoder, Map<string, number[]>>();
 
-async function canonicalEmbedding(
+/**
+ * Embed a canonical FORM string (taught-key OR unknowable exemplar) once per
+ * encoder and cache it. Keyed by the form string itself so the taught-key and
+ * unknowable maps share one cache without colliding (the forms are distinct).
+ * Returns null on the Ollama-down zero sentinel without caching it.
+ */
+async function formEmbedding(
   encoder: RecallKeyEncoder,
-  key: string,
+  form: string,
 ): Promise<number[] | null> {
   let perEncoder = CANONICAL_EMBED_CACHE.get(encoder);
   if (!perEncoder) {
     perEncoder = new Map<string, number[]>();
     CANONICAL_EMBED_CACHE.set(encoder, perEncoder);
   }
-  const cached = perEncoder.get(key);
+  const cached = perEncoder.get(form);
   if (cached) return isZeroVector(cached) ? null : cached;
-  const form = CANONICAL_KEY_FORMS[key];
-  if (!form) return null;
   const emb = await encoder.encodeDocument(form);
   if (isZeroVector(emb)) return null; // Ollama down — do NOT cache the sentinel.
-  perEncoder.set(key, emb);
+  perEncoder.set(form, emb);
   return emb;
+}
+
+/** Best cosine of `queryEmb` against any form in `forms` (−Infinity if none). */
+async function bestCosine(
+  encoder: RecallKeyEncoder,
+  queryEmb: number[],
+  forms: Iterable<string>,
+): Promise<number> {
+  let best = -Infinity;
+  for (const form of forms) {
+    const docEmb = await formEmbedding(encoder, form);
+    if (!docEmb) continue; // sentinel/missing → skip (degrade for that form)
+    const score = cosineSimilarity(queryEmb, docEmb);
+    if (score > best) best = score;
+  }
+  return best;
 }
 
 /**
@@ -159,7 +244,15 @@ async function canonicalEmbedding(
  *      c. embed the QUESTION `search_query:`; if it's the zero sentinel
  *         (Ollama down), degrade → null.
  *      d. cosine-match the query against each candidate's cached
- *         `search_document:` canonical form; accept argmax iff ≥ threshold.
+ *         `search_document:` canonical form; take the argmax (bestKey/bestScore).
+ *      e. C8.1 UNKNOWABLE GUARD: ALSO cosine-match the query against the known-
+ *         unknowable exemplar forms (UNKNOWABLE_KEY_FORMS). REJECT (→ null) when
+ *         the best unknowable cosine ≥ bestScore − RECALL_UNKNOWABLE_MARGIN. This
+ *         is what separates the false positive [39] (closest to `name` among
+ *         keys, but closer still to the phone unknowable) from the true positive
+ *         [31] (closest to `location`, with no strong unknowable competitor) — a
+ *         separation no flat threshold can make because [39] outscores [31].
+ *      f. accept bestKey iff bestScore ≥ threshold AND the unknowable guard passed.
  *
  * Returns the resolved key or null. Null on a recall-shaped-but-unresolvable turn
  * is honest: the caller produces no node → NOT_GROUNDED by construction (C2).
@@ -191,11 +284,13 @@ export async function resolveRecallKey(
   }
   if (isZeroVector(queryEmb)) return null;
 
-  // 2d. Cosine argmax over the taught-key canonical forms; threshold-gated.
+  // 2d. Cosine argmax over the taught-key canonical forms.
   let bestKey: string | null = null;
   let bestScore = -Infinity;
   for (const key of candidates) {
-    const docEmb = await canonicalEmbedding(encoder, key);
+    const form = CANONICAL_KEY_FORMS[key];
+    if (!form) continue;
+    const docEmb = await formEmbedding(encoder, form);
     if (!docEmb) continue; // sentinel/missing form → skip (degrade for that key)
     const score = cosineSimilarity(queryEmb, docEmb);
     if (score > bestScore) {
@@ -203,7 +298,22 @@ export async function resolveRecallKey(
       bestKey = key;
     }
   }
-  return bestScore >= RECALL_SEMANTIC_THRESHOLD ? bestKey : null;
+  if (bestKey === null || bestScore < RECALL_SEMANTIC_THRESHOLD) return null;
+
+  // 2e. C8.1 unknowable guard — reject if a known-unknowable exemplar matches at
+  // least as well as the best taught key (within the margin). This breaks the
+  // [31]/[39] bind by SUBJECT, not by score: an ask that is "as much" an
+  // unknowable as a taught key must not ground (CANON Std-1/Std-4). The unknowable
+  // forms are independent of what THIS person taught (an unknowable is unknowable
+  // regardless), so the full set is always the competition.
+  const bestUnknowable = await bestCosine(
+    encoder,
+    queryEmb,
+    Object.values(UNKNOWABLE_KEY_FORMS),
+  );
+  if (bestUnknowable >= bestScore - RECALL_UNKNOWABLE_MARGIN) return null;
+
+  return bestKey;
 }
 
 /**
@@ -405,11 +515,12 @@ export function applyRecallGroundingFromRetrieval(
   if (currentGrounding === 'GROUNDED') {
     return { grounding: currentGrounding, provenance: null, groundedBy: null };
   }
-  // Honesty guard (C2): the fact VALUE must actually surface in the response for
-  // the label to read GROUNDED. The retrieval node id is real either way, but a
-  // fact that was retrieved yet not used in the answer must NOT claim GROUNDED.
-  const valueLower = retrieval.factValue.toLowerCase();
-  const surfaced = valueLower.length >= 2 && responseText.toLowerCase().includes(valueLower);
+  // Honesty guard (C2 + C8.1 Std-1): the fact VALUE must actually surface in the
+  // response, as a WHOLE WORD, for the label to read GROUNDED. The retrieval node
+  // id is real either way, but a fact that was retrieved yet not used in the
+  // answer must NOT claim GROUNDED — and a value that only appears as an
+  // incidental substring ("Max" inside "Maxford") must NOT count as surfaced.
+  const surfaced = valueSurfacesAsWord(retrieval.factValue, responseText);
   if (!surfaced) {
     return { grounding: currentGrounding, provenance: null, groundedBy: null };
   }

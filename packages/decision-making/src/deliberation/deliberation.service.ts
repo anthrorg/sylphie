@@ -34,7 +34,7 @@ import {
 
 const vlog = verboseFor('Deliberation');
 import { WkgContextService, type WkgContext } from '../wkg/wkg-context.service';
-import { applyRecallGroundingFromRetrieval, type RecallRetrieval } from './recall-retrieval';
+import { applyRecallGroundingFromRetrieval, valueSurfacesAsWord, type RecallRetrieval } from './recall-retrieval';
 import { capturePrompt } from './prompt-capture';
 import type { OllamaLlmService } from '../llm/ollama-llm.service';
 import { ToolRegistryService } from './tools/tool-registry';
@@ -1391,11 +1391,16 @@ export function personFactRecalled(
   responseText: string,
 ): boolean {
   if (!knownFacts?.length) return false;
-  const text = responseText.toLowerCase();
   return knownFacts.some((kf) => {
     // Value side of "key: value" (re-join in case the value itself has a colon).
-    const value = kf.split(':').slice(1).join(':').trim().toLowerCase();
-    return value.length >= 2 && text.includes(value);
+    const value = kf.split(':').slice(1).join(':').trim();
+    // C8.1 (Std-1 honesty): WHOLE-WORD surface match, not a bare substring. A
+    // value like "Max" must NOT match inside "Maxford"; this is the same class of
+    // false-GROUNDED that let the live PRIV.3 probe ground off the guardian's
+    // legacy dog=Max fact. Word-boundary is necessary but not sufficient for the
+    // semantic false-positive (Defect 1) — that is handled in the resolver's
+    // unknowable guard; here we only fix the substring-honesty leak.
+    return valueSurfacesAsWord(value, responseText);
   });
 }
 
