@@ -518,3 +518,63 @@ export interface ICrossSessionSynthesisService {
    */
   runSynthesisCycle(): Promise<SynthesisCycleResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Self-Model Writer
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a single self-model write cycle.
+ */
+export interface SelfModelCycleResult {
+  /**
+   * Whether the cycle wrote nodes. False when sample_count = 0 (no honest
+   * telemetry available in the 24-hour window) — in which case stale nodes
+   * are DETACH DELETE'd rather than written.
+   */
+  readonly wrote: boolean;
+  /** Number of non-empty PREDICTION_EVALUATED rows in the query window. */
+  readonly sampleCount: number;
+  /** Computed success rate, or null when sampleCount = 0. */
+  readonly successRate: number | null;
+  /** Stored confidence (clamped ≤ 0.60), or null when sampleCount = 0. */
+  readonly confidence: number | null;
+  /** Whether this cycle was a no-op due to an in-flight guard or error. */
+  readonly wasNoop: boolean;
+}
+
+/**
+ * SelfModelWriterService interface.
+ *
+ * Aggregates PREDICTION_EVALUATED events from TimescaleDB and writes a single
+ * :Capability {name:'prediction_accuracy'} + paired :PredictionAccuracy
+ * {domain:'drive_effects'} node to the SELF Neo4j graph.
+ *
+ * CANON compliance:
+ *   - Std-1 (theater prohibition): only rows with non-empty predictedEffects
+ *     are counted. Rows with empty predictedEffects are trivially "accurate"
+ *     (random-delta novel predictions) and are excluded from success_rate.
+ *   - Std-2 (provenance required): provenance_type = 'INFERENCE' (system-
+ *     computed aggregate, not a guardian judgment).
+ *   - Std-3 (confidence ceiling): confidence = min(0.60, n/(n+50)). Stored
+ *     at the source so the SELF graph is honest before the reader reads it.
+ *   - When sampleCount = 0, NO nodes are written and stale nodes are
+ *     DETACH DELETE'd so the reader never serves a fabricated rate.
+ *
+ * Deliberately OMITTED capabilities (no honest telemetry today):
+ *   - social_interaction: unblock by persisting a social-outcome resolution event.
+ *   - knowledge_retrieval: unblock by persisting grounding provenance to events payload.
+ *   - error_correction: unblock by persisting a contradiction-resolution event.
+ *   - :DrivePattern nodes: unblock by persisting observed drive-stimulus pairs.
+ */
+export interface ISelfModelWriterService {
+  /**
+   * Run one self-model write cycle.
+   *
+   * Queries TimescaleDB for PREDICTION_EVALUATED events in the last 24 hours
+   * (filtered to non-empty predictedEffects), computes success_rate, writes
+   * :Capability + :PredictionAccuracy MERGE to SELF, or DETACH DELETEs stale
+   * nodes when sample_count = 0.
+   */
+  runSelfModelCycle(): Promise<SelfModelCycleResult>;
+}

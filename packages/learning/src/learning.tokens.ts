@@ -128,3 +128,16 @@ export const CONVERSATION_REFLECTION_SERVICE = Symbol('CONVERSATION_REFLECTION_S
  * LLM-assisted (deep tier), skipped if unavailable (Lesion Test support).
  */
 export const CROSS_SESSION_SYNTHESIS_SERVICE = Symbol('CROSS_SESSION_SYNTHESIS_SERVICE');
+
+/**
+ * Injection token for SelfModelWriterService.
+ * INTERNAL TO LearningModule ONLY. Not exported from index.ts.
+ *
+ * Aggregates PREDICTION_EVALUATED events from TimescaleDB and writes the
+ * prediction_accuracy :Capability + :PredictionAccuracy nodes to the SELF
+ * Neo4j graph so the SelfAssessmentService has real telemetry to read.
+ *
+ * Runs on a 10-minute timer (SELF_MODEL_INTERVAL_MS). Enforces theater
+ * prohibition (Std-1): rows with empty predictedEffects are excluded.
+ */
+export const SELF_MODEL_WRITER_SERVICE = Symbol('SELF_MODEL_WRITER_SERVICE');
