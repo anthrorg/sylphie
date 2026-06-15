@@ -26,6 +26,7 @@ import {
   DriveIPCMessageType,
   DriveSnapshotPayload,
   TimescaleService,
+  type DriveEventPayload,
   type OpportunityCreatedPayload,
   type TheaterProhibitedPayload,
 } from '@sylphie/shared';
@@ -191,15 +192,19 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       },
     );
 
-    // DRIVE_EVENT: Reserved for event logging
-    // For now, log and ignore
+    // DRIVE_EVENT: Forward to the TimescaleDB event backbone for audit
+    // (CANON Standard 2 — provenance). The Drive Engine (separate process)
+    // computed a drive relief / rule application and emitted it over IPC; the
+    // parent persists it. Mirrors the THEATER_PROHIBITED / OPPORTUNITY_CREATED
+    // forwarding pattern — the drive engine never writes the DB directly.
     this.wsChannel.onMessage(
       DriveIPCMessageType.DRIVE_EVENT,
-      (message: DriveIPCMessage<any>) => {
+      (message: DriveIPCMessage<DriveEventPayload>) => {
         this.logger.debug(
-          `Drive event: ${message.payload.driveEventType} on ${message.payload.drive}`,
+          `Drive event: ${message.payload.driveEventType} on ${message.payload.drive}` +
+            ` (corr=${message.payload.correlationId ?? 'none'})`,
         );
-        // TODO: Forward to event backbone (TimescaleDB)
+        this.writeDriveEvent(message.payload);
       },
     );
 
@@ -342,6 +347,55 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       .catch((err: unknown) => {
         this.logger.warn(
           `Failed to write theater-prohibited event: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+  }
+
+  /**
+   * Forward a DRIVE_EVENT (relief / rule application) to the TimescaleDB event
+   * backbone for audit (CANON Standard 2 — provenance).
+   *
+   * The Drive Engine computed this drive change and emitted it over IPC; the
+   * parent persists it as the durable audit record. The `correlationId` ties
+   * the event back to the originating action / inbound event so provenance is
+   * auditable end-to-end. Fire-and-forget: errors are logged, not propagated.
+   *
+   * This is an OBSERVABILITY/AUDIT record. It reflects a drive change that the
+   * isolated Drive Engine already applied; persisting it here does NOT feed back
+   * into the evaluation function (CANON Standard 6 — no self-modification).
+   */
+  private writeDriveEvent(payload: DriveEventPayload): void {
+    const id = randomUUID();
+    const timestamp = new Date();
+
+    this.timescale
+      .query(
+        `INSERT INTO events
+           (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version, correlation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          id,
+          payload.driveEventType,
+          timestamp,
+          'DRIVE_ENGINE',
+          payload.snapshot.sessionId ?? 'drive-engine-internal',
+          JSON.stringify(payload.snapshot),
+          JSON.stringify({
+            driveEventType: payload.driveEventType,
+            drive: payload.drive,
+            delta: payload.delta,
+            ruleId: payload.ruleId,
+            correlationId: payload.correlationId,
+          }),
+          1,
+          payload.correlationId,
+        ],
+      )
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `Failed to write drive event: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );

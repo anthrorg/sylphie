@@ -94,6 +94,16 @@ class CognitionCycleResponse(BaseModel):
     # the LLM's decision when it submits the TrainingSample.
     tensor_top_category: str | None = None
 
+    # The exact 1561-dim assembled global input vector for THIS cycle
+    # (fused_embedding[768] + drive_vector[12] + drive_deltas[12] +
+    #  total_pressure[1] + episodic_context[768] == GLOBAL_INPUT_DIM).
+    #
+    # Surfaced so the supervisor can thread it back into reinforce/correct
+    # control signals — the sidecar's _split_input_vector() requires the
+    # byte-identical assembled vector and cannot reconstruct it. Optional and
+    # back-compatible: omitted when no tensor was assembled for the cycle.
+    global_input_vector: list[float] | None = None
+
 
 # ---------------------------------------------------------------------------
 # Training — /cognition/train

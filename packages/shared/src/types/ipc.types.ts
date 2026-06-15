@@ -7,7 +7,7 @@
  * the process boundary in both directions.
  *
  * Inbound (main process → Drive Engine):
- *   ACTION_OUTCOME, SOFTWARE_METRICS, SESSION_START, SESSION_END
+ *   ACTION_OUTCOME, SOFTWARE_METRICS, SESSION_START, SESSION_END, SELF_ASSESSMENT
  *
  * Outbound (Drive Engine → main process):
  *   DRIVE_SNAPSHOT, OPPORTUNITY_CREATED, DRIVE_EVENT, HEALTH_STATUS
@@ -45,6 +45,10 @@ import type { DriveSnapshot } from './drive.types';
  *   SOFTWARE_METRICS:  Periodic system load data (LLM usage, cognitive effort).
  *   SESSION_START:     A new interaction session has begun.
  *   SESSION_END:       The current session has ended.
+ *   SELF_ASSESSMENT:   A KG(Self) self-evaluation snapshot pushed by MAIN. The
+ *                      drive caches it and judges it on its own self-eval cadence.
+ *                      No actionId, no theater check, no reinforcement — this is
+ *                      NOT an outcome and must never ride the contingency path.
  *
  * Outbound messages (sent FROM the Drive Engine process):
  *   DRIVE_SNAPSHOT:       Current drive state after a tick computation.
@@ -60,6 +64,7 @@ export enum DriveIPCMessageType {
   SOFTWARE_METRICS = 'SOFTWARE_METRICS',
   SESSION_START = 'SESSION_START',
   SESSION_END = 'SESSION_END',
+  SELF_ASSESSMENT = 'SELF_ASSESSMENT',
   // Outbound
   DRIVE_SNAPSHOT = 'DRIVE_SNAPSHOT',
   OPPORTUNITY_CREATED = 'OPPORTUNITY_CREATED',
@@ -117,6 +122,21 @@ export interface ActionOutcomePayload {
    * must trace to a specific behavior. This field is that trace.
    */
   readonly actionId: string;
+
+  /**
+   * OPTIONAL correlation id tying this outcome back to the originating
+   * action / inbound event for end-to-end provenance (CANON Standard 2 —
+   * Contingency Requirement: every reinforcement event must be auditable to a
+   * specific behavior).
+   *
+   * If the main process already mints a correlation id at the originating
+   * event (e.g. the inbound perception/communication event that produced this
+   * action), it should be propagated here so the Drive Engine can stamp it onto
+   * every drive event it emits in response. If absent, the Drive Engine derives
+   * a DETERMINISTIC correlation id from `actionId` at the ingestion boundary
+   * (see queueOutcome), so provenance is never lost — only less precise.
+   */
+  readonly correlationId?: string;
 
   /**
    * Category of action for diversity tracking and rule matching.
@@ -235,6 +255,13 @@ export interface ActionOutcomePayload {
    * occurred during action execution.
    *
    * If absent, the curiosity contingency degrades gracefully (returns 0).
+   *
+   * CANON §A.14 + Standard 2 honesty gate: curiosity relief is earned ONLY from
+   * a real, action-attributed WKG diff. The `source` field carries that
+   * provenance. The Drive Engine grants relief only when source === 'WKG_DIFF'
+   * (an atlas-computed before/after diff attributed to THIS action). Any other
+   * value ('UNVERIFIED' or omitted metrics) yields zero relief — the system
+   * must never defraud curiosity with guessed numbers.
    */
   readonly informationGainMetrics?: {
     /** Number of new WKG nodes created during this action's execution. */
@@ -243,6 +270,14 @@ export interface ActionOutcomePayload {
     readonly confidenceDeltas: number;
     /** Number of prediction errors that were resolved by the outcome. */
     readonly resolvedErrors: number;
+    /**
+     * Provenance of these metrics.
+     * 'WKG_DIFF':   atlas computed a real before/after WKG diff attributed to
+     *               this action only. Earns proportional curiosity relief.
+     * 'UNVERIFIED': metrics could not be attributed to this action
+     *               (concurrency, no snapshot). Drive grants zero relief.
+     */
+    readonly source: 'WKG_DIFF' | 'UNVERIFIED';
   };
 
   /**
@@ -330,6 +365,111 @@ export interface SessionEndPayload {
 
   /** Duration of the session in milliseconds. */
   readonly durationMs: number;
+}
+
+/**
+ * Provenance of a self-assessment snapshot.
+ *
+ * CANON Standard 3 (Confidence Ceiling) + Standard 6 (No Self-Modification of
+ * Evaluation): an inferred self-assessment ("I'm bad at X") must NOT be trusted
+ * like a guardian-confirmed fact. The Drive Engine uses provenance to (a) clamp
+ * capability confidence to the ≤0.60 ceiling unless GUARDIAN, and (b) suppress
+ * baseline reduction from inferred/bootstrap assessments to avoid driving the
+ * Depressive Attractor from unverified self-judgement.
+ *
+ * 'GUARDIAN':                    Guardian-confirmed assessment (full trust).
+ * 'GUARDIAN_APPROVED_INFERENCE': System inference the guardian reviewed/approved.
+ * 'INFERENCE':                   System-inferred from experience (unverified).
+ * 'SYSTEM_BOOTSTRAP':            Cold-start default assessment (unverified).
+ */
+export type SelfAssessmentProvenance =
+  | 'GUARDIAN'
+  | 'GUARDIAN_APPROVED_INFERENCE'
+  | 'INFERENCE'
+  | 'SYSTEM_BOOTSTRAP';
+
+/**
+ * Payload for SELF_ASSESSMENT messages.
+ *
+ * A KG(Self) self-evaluation snapshot computed by MAIN (apps/sylphie + atlas)
+ * and pushed to the Drive Engine. The drive caches the latest snapshot on
+ * receipt and consumes it on its own self-evaluation cadence (every 10 ticks).
+ *
+ * CANON §E4-T008 (KG(Self) self-evaluation on slower timescale) + §Drive
+ * Isolation: this is the event-judge model. MAIN computes from Grafeo/KG(Self)
+ * and PUSHES; the Drive Engine never pulls/queries MAIN. Before the first push
+ * arrives the drive degrades to today's safe neutral (no assessment data → no
+ * baseline adjustment). MAIN must never fabricate: an empty KG(Self) yields
+ * empty arrays here, not invented capabilities.
+ *
+ * This is NOT an ActionOutcome: it has no actionId, no theaterCheck, no
+ * feedbackSource, and produces NO reinforcement. Routing it through the
+ * contingency path would violate CANON Standard 2 (Contingency Requirement).
+ */
+export interface SelfAssessmentPayload {
+  /** Wall-clock time MAIN computed this assessment snapshot. */
+  readonly assessedAt: Date;
+
+  /**
+   * Self-assessed capabilities. `name` MUST match a key in the Drive Engine's
+   * CAPABILITY_TO_DRIVE_MAP to influence a drive baseline:
+   *   social_interaction, knowledge_retrieval, prediction_accuracy, error_correction.
+   * Unknown names are ignored by the reader.
+   */
+  readonly capabilities: ReadonlyArray<{
+    /** Unique identifier for this capability node in KG(Self). */
+    readonly id: string;
+    /** Capability name (see CAPABILITY_TO_DRIVE_MAP keys). */
+    readonly name: string;
+    /** Success rate over recent uses [0.0, 1.0]. */
+    readonly successRate: number;
+    /** Confidence in this success-rate estimate [0.0, 1.0]. */
+    readonly confidence: number;
+    /** Number of samples used to compute successRate. */
+    readonly sampleCount: number;
+    /** Wall-clock time this capability was last executed. */
+    readonly lastExecuted: Date;
+  }>;
+
+  /**
+   * Observed drive patterns (informational; not used for baseline reduction).
+   */
+  readonly drivePatterns: ReadonlyArray<{
+    /** The drive involved in the pattern. */
+    readonly drive: DriveName;
+    /** Human-readable stimulus description. */
+    readonly stimulus: string;
+    /** Typical response strength [0.0, 1.0]. */
+    readonly responseStrength: number;
+    /** Example observations of this pattern. */
+    readonly examples: ReadonlyArray<string>;
+    /** Wall-clock time of the most recent observation. */
+    readonly lastObserved: Date;
+    /** Confidence in this pattern [0.0, 1.0]. */
+    readonly confidence: number;
+  }>;
+
+  /**
+   * Prediction accuracy per domain (informational; used for Integrity context).
+   */
+  readonly predictionAccuracy: ReadonlyArray<{
+    /** Domain name (e.g., "user_behavior", "action_outcomes"). */
+    readonly domain: string;
+    /** Mean Absolute Error of predictions in this domain. */
+    readonly mae: number;
+    /** Number of predictions analyzed. */
+    readonly sampleCount: number;
+    /** Confidence in this MAE estimate [0.0, 1.0]. */
+    readonly confidence: number;
+    /** Wall-clock time of the last prediction in this domain. */
+    readonly lastUpdated: Date;
+  }>;
+
+  /**
+   * Provenance of this assessment. Gates trust (CANON Standard 3 ceiling) and
+   * whether baseline reduction is permitted (Depressive Attractor guard).
+   */
+  readonly provenance: SelfAssessmentProvenance;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +586,17 @@ export interface DriveEventPayload {
    */
   readonly ruleId: string | null;
 
+  /**
+   * Correlation id tying this drive event back to the originating action /
+   * inbound event (CANON Standard 2 — provenance is auditable end-to-end).
+   *
+   * Propagated from the triggering ActionOutcomePayload.correlationId (or the
+   * deterministic id derived from its actionId). Null for drive events that do
+   * not originate from a specific inbound action (e.g. routine tick-driven
+   * events), which keeps the contingency trace honest rather than fabricated.
+   */
+  readonly correlationId: string | null;
+
   /** The current snapshot after this event was applied. */
   readonly snapshot: DriveSnapshot;
 }
@@ -473,6 +624,14 @@ export interface TheaterProhibitedPayload {
    * The specific behavior whose expression was theatrical.
    */
   readonly actionId: string;
+
+  /**
+   * Correlation id tying this prohibition back to the originating action /
+   * inbound event (CANON Standard 2 — auditable provenance). Propagated from
+   * the triggering ActionOutcomePayload.correlationId (or the deterministic id
+   * derived from its actionId). Null only if no correlation could be resolved.
+   */
+  readonly correlationId: string | null;
 
   /** Category of the offending action (procedure's category field). */
   readonly actionType: string;

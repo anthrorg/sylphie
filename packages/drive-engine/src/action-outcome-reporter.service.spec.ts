@@ -145,6 +145,88 @@ describe('ActionOutcomeReporterService', () => {
     });
   });
 
+  describe('reportMetrics — cost + window', () => {
+    /** Build a reporter whose enqueued metrics payloads we can capture. */
+    function buildReporterCapturingMetrics() {
+      const wsChannel = createMockWsChannel();
+      const driveReader = createMockDriveReader(0);
+      const service = new ActionOutcomeReporterService(
+        wsChannel as any,
+        driveReader as any,
+      );
+      const captured: any[] = [];
+      // OutcomeQueue is private; spy on the enqueueMetrics it calls.
+      const queue = (service as any).outcomeQueue;
+      jest
+        .spyOn(queue, 'enqueueMetrics')
+        .mockImplementation((p: any) => captured.push(p));
+      return { service, captured };
+    }
+
+    const baseMetrics = {
+      llmCallCount: 1,
+      llmLatencyMs: 100,
+      cognitiveEffortPressure: 0.1,
+    };
+
+    it('computes a non-zero USD cost from the token split using default DeepSeek rates', () => {
+      const { service, captured } = buildReporterCapturingMetrics();
+
+      // 1M prompt + 1M completion → 0.28 + 0.42 = 0.70 at default rates.
+      service.reportMetrics({
+        ...baseMetrics,
+        tokenCount: 2_000_000,
+        promptTokens: 1_000_000,
+        completionTokens: 1_000_000,
+      } as any);
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].estimatedCostUsd).toBeCloseTo(0.7, 6);
+    });
+
+    it('never reports a silent $0 when only tokenCount is available', () => {
+      const { service, captured } = buildReporterCapturingMetrics();
+
+      // No split → whole tokenCount priced at the input rate: 1M * 0.28 = 0.28.
+      service.reportMetrics({
+        ...baseMetrics,
+        tokenCount: 1_000_000,
+      } as any);
+
+      expect(captured[0].estimatedCostUsd).toBeCloseTo(0.28, 6);
+      expect(captured[0].estimatedCostUsd).toBeGreaterThan(0);
+    });
+
+    it('threads caller-supplied window boundaries through unchanged', () => {
+      const { service, captured } = buildReporterCapturingMetrics();
+      const start = new Date('2026-06-14T10:00:00.000Z');
+      const end = new Date('2026-06-14T10:00:05.000Z');
+
+      service.reportMetrics({
+        ...baseMetrics,
+        tokenCount: 1000,
+        windowStartAt: start,
+        windowEndAt: end,
+      } as any);
+
+      expect(captured[0].windowStartAt).toBe(start);
+      expect(captured[0].windowEndAt).toBe(end);
+    });
+
+    it('falls back to flush time and warns when windowStartAt is missing', () => {
+      const { service, captured } = buildReporterCapturingMetrics();
+      const warn = jest.spyOn((service as any).logger, 'warn');
+
+      service.reportMetrics({ ...baseMetrics, tokenCount: 1000 } as any);
+
+      // start == end fallback (degraded, but never silent).
+      expect(captured[0].windowStartAt).toEqual(captured[0].windowEndAt);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('windowStartAt not supplied'),
+      );
+    });
+  });
+
   describe('feedbackSource mapping', () => {
     it('should map GUARDIAN provenance to guardian_confirmation', () => {
       const wsChannel = createMockWsChannel();

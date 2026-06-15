@@ -16,6 +16,10 @@ import {
   type DriveSnapshot,
   DRIVE_INDEX_ORDER,
 } from '@sylphie/shared';
+import {
+  SidecarCircuitBreaker,
+  SidecarBreakerState,
+} from './sidecar-circuit-breaker';
 
 const vlog = verboseFor('Cognition');
 
@@ -42,6 +46,13 @@ export interface CognitionCycleResult {
   deliberation_confidence?: number | null;
   deliberation_pipeline_weights?: number[] | null;
   tensor_top_category?: string | null;
+  /**
+   * The exact 1561-dim assembled global input vector for this cycle, surfaced
+   * by CognitiveCycle._assemble_global_input(). Threaded through to the
+   * supervisor so reinforce/correct can send the byte-identical vector the
+   * sidecar's _split_input_vector() requires. Optional / back-compatible.
+   */
+  global_input_vector?: number[] | null;
 }
 
 /** Health response from GET /cognition/health */
@@ -98,11 +109,27 @@ export class CognitionGatewayService implements OnModuleInit {
   private available = false;
   private bootstrapMode = 'shadow';
 
+  /**
+   * Circuit breaker on the sidecar control/cycle path. Opens after repeated
+   * failures so a down sidecar fails fast (no per-call timeout tax), probes on
+   * a fixed cooldown, and closes on a successful probe. Without it, the loop
+   * pays the full timeout on every cycle while the sidecar is hard-down.
+   */
+  private readonly breaker = new SidecarCircuitBreaker({
+    failureThreshold: 5,
+    cooldownMs: 30_000,
+  });
+
   constructor(private readonly config: ConfigService) {
     this.host = this.config.get<string>(
       'COGNITION_HOST',
       'http://localhost:8431',
     );
+  }
+
+  /** Current circuit-breaker state (diagnostics / dashboard). */
+  getBreakerState(): SidecarBreakerState {
+    return this.breaker.getState();
   }
 
   async onModuleInit() {
@@ -144,6 +171,14 @@ export class CognitionGatewayService implements OnModuleInit {
   ): Promise<CognitionCycleResult | null> {
     if (!this.available) return null;
 
+    // Circuit breaker: if the sidecar has failed repeatedly, fail fast instead
+    // of paying the per-cycle timeout. canAttempt() also performs the
+    // OPEN→HALF_OPEN probe transition once the cooldown elapses.
+    if (!this.breaker.canAttempt()) {
+      vlog('cognition cycle skipped — breaker open');
+      return null;
+    }
+
     // Assemble the request payload
     const driveVector = DRIVE_INDEX_ORDER.map(
       (name) => driveSnapshot.pressureVector[name] ?? 0,
@@ -178,10 +213,13 @@ export class CognitionGatewayService implements OnModuleInit {
         this.logger.warn(
           `Cognition sidecar returned ${response.status}: ${response.statusText}`,
         );
+        this.breaker.recordFailure();
+        this.maybeLogBreakerTrip();
         return null;
       }
 
       const result = (await response.json()) as CognitionCycleResult;
+      this.breaker.recordSuccess();
       vlog('cognition cycle', {
         inference_ms: result.inference_ms,
         urgency: result.global_prior.urgency,
@@ -189,6 +227,11 @@ export class CognitionGatewayService implements OnModuleInit {
       });
       return result;
     } catch (err) {
+      // A timeout or connection failure both count against the breaker — a
+      // hung sidecar that times out every call is exactly what should trip it.
+      this.breaker.recordFailure();
+      this.maybeLogBreakerTrip();
+
       // Don't flood logs on expected timeout/connection failures
       if ((err as Error).name === 'TimeoutError') {
         vlog('cognition sidecar timeout');
@@ -201,6 +244,16 @@ export class CognitionGatewayService implements OnModuleInit {
         setTimeout(() => this.checkHealth(), 30_000);
       }
       return null;
+    }
+  }
+
+  /** Log once when the breaker has just transitioned to OPEN. */
+  private maybeLogBreakerTrip(): void {
+    if (this.breaker.getState() === SidecarBreakerState.OPEN) {
+      this.logger.warn(
+        `Cognition sidecar circuit breaker OPEN after ${this.breaker.getConsecutiveFailures()} ` +
+          'consecutive failures — skipping sidecar calls until cooldown probe',
+      );
     }
   }
 
@@ -307,7 +360,10 @@ export class CognitionGatewayService implements OnModuleInit {
         const health = (await response.json()) as CognitionHealthResult;
         this.available = health.models_loaded;
         this.bootstrapMode = health.bootstrap_mode ?? 'shadow';
+        // A reachable, models-loaded sidecar is a recovery signal — close the
+        // breaker so the next cycle is attempted immediately.
         if (this.available) {
+          this.breaker.recordSuccess();
           this.logger.log(
             `Cognition sidecar connected (${health.total_parameters} params, mode=${health.bootstrap_mode})`,
           );

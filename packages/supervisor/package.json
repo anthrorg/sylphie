@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch"
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "npx tsx src/cost-tracker.service.spec.ts && npx tsx src/adaptive-sampler.service.spec.ts && npx tsx src/verdict-audit.service.spec.ts && npx tsx src/intervention-tracker.service.spec.ts && npx tsx src/narration-builder.service.spec.ts && npx tsx src/supervisor.always-evaluate.spec.ts && npx tsx src/supervisor.reasoner-verdict.spec.ts && npx tsx src/supervisor.input-vector-thread.spec.ts && npx tsx src/sidecar-circuit-breaker.spec.ts && npx tsx src/sidecar-control.service.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

@@ -174,6 +174,28 @@ export interface CycleResponse {
   readonly bootstrapMode?: string;
 
   /**
+   * The exact 1561-dim assembled global input vector for this cycle, surfaced
+   * by the cognition sidecar (fused_embedding[768] + drive_vector[12] +
+   * drive_deltas[12] + total_pressure[1] + episodic_context[768]).
+   *
+   * Carried so the supervisor can thread it into reinforce/correct control
+   * signals — the sidecar requires the byte-identical assembled vector and
+   * cannot reconstruct it from CycleResponse fields. The vector is produced by
+   * CognitiveCycle._assemble_global_input() and split back by the sidecar's
+   * _split_input_vector(); copying it through (never reconstructing it) keeps
+   * the two byte-identical.
+   *
+   * Optional and back-compatible: present only on cycles where the sidecar ran
+   * and assembled a tensor. Undefined for non-tensor paths — in which case
+   * reinforce/correct honestly skip for that cycle rather than fabricating one.
+   *
+   * Weight note: ~1561 floats ≈ 12KB of JSON per cycle. The supervisor samples
+   * cycles, so it must be present on sampled cycles; correctness takes priority
+   * over the payload cost.
+   */
+  readonly globalInputVector?: readonly number[];
+
+  /**
    * Input category that triggered this cycle, from ProcessInputResult.
    *
    * Supervisor uses this for always-evaluate routing: GUARDIAN_FEEDBACK cycles

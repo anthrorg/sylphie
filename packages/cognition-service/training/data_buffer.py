@@ -3,6 +3,14 @@
 Fixed-capacity FIFO buffer with thread-safe access. Supports experience replay
 via mixed batching: a configurable fraction of each batch comes from random
 positions in the buffer (replay), the rest from the most recent additions.
+
+Each sample carries a ``salience`` weight (default 1.0). The replay slice of a
+batch is drawn with probability proportional to salience, so supervisor-injected
+corrective / reinforced samples (which arrive with salience > 1.0) are
+preferentially replayed rather than being diluted into the uniform pool and
+evicted FIFO before they ever influence the weights. This is the mechanism that
+lets a reinforce / correct / boost-salience signal actually *land* on the model
+instead of being a transient, quickly-overwritten ring entry.
 """
 
 from __future__ import annotations
@@ -52,6 +60,14 @@ class DataBuffer:
                     converted from the Pydantic model via model_dump()).
         """
         converted = _convert_to_numpy(sample)
+        # Every buffered sample carries a replay-salience weight. Normal-path
+        # samples (from /cognition/train) default to 1.0; reinforce / correct /
+        # boost-salience override it. Stored as a plain float so sample_batch()
+        # can read it without a type check.
+        if converted.get("salience") is None:
+            converted["salience"] = 1.0
+        else:
+            converted["salience"] = max(0.0, float(converted["salience"]))
         with self._lock:
             self._buffer[self._head] = converted
             self._head = (self._head + 1) % self._capacity
@@ -66,8 +82,13 @@ class DataBuffer:
         """Return a mixed batch of training samples.
 
         The batch consists of:
-          - ``replay_fraction`` * batch_size samples drawn uniformly at random
-            from the entire valid buffer (experience replay).
+          - ``replay_fraction`` * batch_size samples drawn from the entire valid
+            buffer with probability proportional to each sample's ``salience``
+            (salience-weighted experience replay). A sample injected by the
+            supervisor with salience 3.0 is ~3× more likely to be drawn than a
+            default salience-1.0 sample, so corrective / reinforced signal is
+            preferentially trained on instead of being diluted to a uniform
+            1/N chance.
           - The remainder drawn from the most recently added samples (recency
             bias ensures the model learns from fresh experience quickly).
 
@@ -109,11 +130,32 @@ class DataBuffer:
 
             batch: list[dict[str, Any]] = []
 
-            # Replay slice: uniform random from all valid entries.
+            # Replay slice: salience-weighted random draw across all valid
+            # entries. Salience defaults to 1.0; supervisor reinforce / correct
+            # / boost-salience samples carry > 1.0, biasing the draw toward them.
             if n_replay > 0:
-                replay_picks = np.random.choice(total_available, size=n_replay, replace=False)
+                weights = np.array(
+                    [
+                        float(self._buffer[gi].get("salience", 1.0) or 1.0)
+                        for gi in valid_indices
+                    ],
+                    dtype=np.float64,
+                )
+                weight_sum = weights.sum()
+                if weight_sum <= 0.0 or not np.isfinite(weight_sum):
+                    # Degenerate weights — fall back to uniform so a bad salience
+                    # value can never deadlock the training loop.
+                    probs = None
+                else:
+                    probs = weights / weight_sum
+                replay_picks = np.random.choice(
+                    total_available,
+                    size=n_replay,
+                    replace=False,
+                    p=probs,
+                )
                 for idx in replay_picks:
-                    batch.append(self._buffer[valid_indices[idx]])
+                    batch.append(self._buffer[valid_indices[int(idx)]])
 
             # Recent slice: the most recent n_recent entries (end of valid_indices).
             if n_recent > 0:
@@ -221,6 +263,7 @@ class DataBuffer:
         episodic_context: list[float] | np.ndarray,
         action_category: str | None = None,
         arbitration_type: str = "TYPE_1",
+        salience: float = 1.0,
         **extra: Any,
     ) -> None:
         """Convenience constructor + add for an explicitly-componented sample.
@@ -238,6 +281,10 @@ class DataBuffer:
             episodic_context: 768-float episodic context embedding.
             action_category:  Category label for the one-hot training target.
             arbitration_type: Arbitration type tag (default TYPE_1).
+            salience:         Replay weight (default 1.0). Values > 1.0 make the
+                              sample proportionally more likely to be drawn in
+                              the replay slice of a batch — this is how a
+                              reinforce / correct signal is made to land durably.
             **extra:          Any additional fields to store on the sample dict.
         """
         sample: dict[str, Any] = {
@@ -248,9 +295,53 @@ class DataBuffer:
             "episodic_context": episodic_context,
             "action_category": action_category,
             "arbitration_type": arbitration_type,
+            "salience": max(0.0, float(salience)),
         }
         sample.update(extra)
         self.add(sample)
+
+    def boost_category_salience(
+        self,
+        category: str,
+        multiplier: float,
+        max_salience: float = 10.0,
+    ) -> int:
+        """Multiply the replay salience of every buffered sample of a category.
+
+        This is the in-buffer half of the supervisor ``boost_salience``
+        intervention: "pay more attention to this pattern when it recurs". It
+        raises the replay-draw probability of the matching samples already in
+        the buffer (capped at ``max_salience`` so one over-eager boost can't
+        starve every other sample out of the replay mix).
+
+        Args:
+            category:    The action_category whose samples should be boosted
+                         (matched case-insensitively, trimmed — same
+                         normalisation the ActionVocabulary applies).
+            multiplier:  Salience multiplier (> 0). 1.0 is a no-op; 2.0 doubles.
+            max_salience: Per-sample salience ceiling after the boost.
+
+        Returns:
+            The number of buffered samples whose salience was raised.
+        """
+        if multiplier <= 0:
+            raise ValueError(f"multiplier must be > 0, got {multiplier}")
+        key = (category or "").strip().lower()
+        if not key:
+            return 0
+        boosted = 0
+        with self._lock:
+            for i in range(self._capacity):
+                sample = self._buffer[i]
+                if sample is None:
+                    continue
+                cat = sample.get("action_category")
+                if cat is None or str(cat).strip().lower() != key:
+                    continue
+                current = float(sample.get("salience", 1.0) or 1.0)
+                sample["salience"] = min(max_salience, current * multiplier)
+                boosted += 1
+        return boosted
 
     # ------------------------------------------------------------------
     # Dunder helpers

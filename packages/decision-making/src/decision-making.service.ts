@@ -1884,6 +1884,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             tensorUrgency: tensorResult.urgency,
             tensorConsensus: tensorResult.consensus,
             bootstrapMode: tensorResult.bootstrapMode,
+            // The exact 1561-dim assembled vector for this cycle — copied (never
+            // reconstructed) from the sidecar so it stays byte-identical to what
+            // the sidecar's _split_input_vector() expects. Lets the supervisor
+            // thread it into reinforce/correct. Omitted when the sidecar did not
+            // surface one (older build / non-tensor path) so reinforce/correct
+            // skip honestly rather than firing on a fabricated vector.
+            ...(tensorResult.globalInputVector
+              ? { globalInputVector: tensorResult.globalInputVector }
+              : {}),
           } : {}),
           inputCategory: processInputResult.inputCategory,
         });

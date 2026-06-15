@@ -102,3 +102,26 @@ export const DRIVE_TICK_SAMPLE_INTERVAL = 1;
  * At 1Hz, interval = 60 fires every 60 seconds.
  */
 export const HEALTH_STATUS_INTERVAL_TICKS = 60;
+
+/**
+ * Window (in ticks) over which the tick loop measures its ACTUAL vs TARGET
+ * tick rate and logs the result.
+ *
+ * The tick loop can silently drift (e.g. target 1Hz but the event loop is
+ * starved and it only fires at 0.5Hz) with no signal. Every
+ * TICK_RATE_SAMPLE_WINDOW_TICKS the engine compares wall-clock elapsed time
+ * against the expected elapsed time and logs measured Hz, target Hz, and the
+ * drift ratio. Sampled (not per-tick) so it does not spam the log.
+ *
+ * At 1Hz target, 60 ticks ≈ 60 seconds — one drift reading per minute.
+ */
+export const TICK_RATE_SAMPLE_WINDOW_TICKS = 60;
+
+/**
+ * Drift ratio threshold beyond which the tick-rate sample is logged at WARN
+ * instead of DEBUG/info. A ratio of measured/target outside [1 - X, 1 + X]
+ * means the loop is running materially slower or faster than intended.
+ *
+ * 0.10 = a 10% deviation (e.g. 0.9Hz or 1.1Hz against a 1Hz target) is flagged.
+ */
+export const TICK_RATE_DRIFT_WARN_RATIO = 0.1;

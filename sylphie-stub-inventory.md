@@ -267,17 +267,11 @@ Separately, the **live** TS port `spreadActivation` (`packages/decision-making/s
 
 ## TIER 4 — LOW: Already-Handled or Cosmetic
 
-### 4.1 Perception streaming endpoints are dead code
+### 4.1 Perception streaming endpoints are dead code — ✅ RESOLVED (Phase 4 Wave 1, 2026-06-14)
 
-**Where:** `packages/perception-service/main.py:1053-1071, 1086-1091`
+**Was:** `/perception/stream` and `/stream/raw` were defined but `_state.debug_frame_store` was never populated (the in-process camera pipeline is disabled — frames come from the browser via NestJS), so they always returned 503. Pure dead code from the pre-browser-camera era, with no live consumer.
 
-**What:** `/perception/stream` and `/stream/raw` are defined but `_state.debug_frame_store` is never populated since the camera pipeline path is `# No camera pipeline — frames come from the browser via NestJS` (`main.py:181-183`). Always returns 503.
-
-**Impact:**
-- Pure dead code from the pre-browser-camera era. No live consumer.
-- Confuses anyone doing endpoint discovery.
-
-**Fix complexity:** Trivial. Delete the routes.
+**Fix:** the routes and `debug_frame_store` were deleted from `packages/perception-service/main.py`. Verified absent (`grep` for `/perception/stream`, `/stream/raw`, `debug_frame_store` → no matches).
 
 ---
 

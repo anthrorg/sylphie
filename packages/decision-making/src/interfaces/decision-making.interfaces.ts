@@ -968,6 +968,17 @@ export interface TensorInferenceResult {
   shouldUseTensor(category: string): boolean;
   /** Sidecar inference wall-clock time in ms. */
   readonly inferenceMs: number;
+  /**
+   * The exact 1561-dim assembled global input vector for this cycle, as
+   * surfaced by the sidecar (CognitionCycleResponse.global_input_vector).
+   *
+   * Threaded through so the supervisor can feed it back into reinforce/correct
+   * control signals — the sidecar requires the byte-identical assembled vector
+   * and cannot reconstruct it. Undefined when the sidecar did not surface one
+   * (older sidecar build or a non-tensor path); in that case reinforce/correct
+   * honestly skip for the cycle rather than fabricating a vector.
+   */
+  readonly globalInputVector?: readonly number[];
 }
 
 /**

@@ -42,6 +42,9 @@ import { DrivePublisherService } from './services/drive-publisher.service';
 import { WkgQueryService } from './services/wkg-query.service';
 import { PkgQueryService } from './services/pkg-query.service';
 import { WkgBootstrapService } from './services/wkg-bootstrap.service';
+import { WkgDiffService } from './services/wkg-diff.service';
+import { SelfAssessmentService } from './services/self-assessment.service';
+import { SelfAssessmentPusherService } from './services/self-assessment-pusher.service';
 import { SttService } from './services/stt.service';
 import { TtsService } from './services/tts.service';
 import { CommunicationService } from './services/communication.service';
@@ -195,6 +198,14 @@ class CognitionModule {}
     WkgQueryService,
     PkgQueryService,
     WkgBootstrapService,
+    // Phase 4 Wave 2 (3a) graph-compute layer — atlas side of the event-judge
+    // model. These compute graph values; the apps push agent wires the cadence
+    // and reporter that send the events for the drive to judge.
+    WkgDiffService,
+    SelfAssessmentService,
+    // Ticket 1 push producer: ~10s cadence, coalesced ≤1/interval. Pushes the
+    // SELF_ASSESSMENT event the drive judges (event-judge model, no read path).
+    SelfAssessmentPusherService,
     SttService,
     TtsService,
     // Communication subsystem

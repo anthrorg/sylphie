@@ -32,6 +32,8 @@ export {
   type SoftwareMetricsPayload,
   type SessionStartPayload,
   type SessionEndPayload,
+  type SelfAssessmentPayload,
+  type SelfAssessmentProvenance,
   type DriveSnapshotPayload,
   type OpportunityCreatedPayload,
   type DriveEventPayload,

@@ -74,17 +74,31 @@ export class CuriosityInformationGain {
   /**
    * Compute curiosity relief from an ActionOutcomePayload's informationGainMetrics.
    *
-   * Extracts newNodes, confidenceDeltas, and resolvedErrors from the
-   * structured metrics object. Degrades gracefully: if the metrics object
-   * is absent or any field is missing, those fields default to 0.
+   * HONESTY GATE (Ticket 2 / §A.14 + CANON Standard 2): curiosity relief is
+   * earned ONLY from a real, action-attributed WKG diff. If the metrics object
+   * is absent, or its `source` is anything other than 'WKG_DIFF' (i.e.
+   * 'UNVERIFIED'), this returns 0 — the system must never defraud curiosity with
+   * guessed numbers. Only atlas-computed WKG diffs attributed to THIS action
+   * earn relief. The Drive Engine still never touches the WKG; it only judges
+   * the pushed, provenance-tagged metric.
+   *
+   * MAIN contract: until the apps-side reporter threads real metrics and atlas
+   * supplies a WKG_DIFF, this stays honest-red (zero relief). That is correct
+   * and intended — see wiki/phase4-3a-event-model-plan.md Ticket 2.
    *
    * @param metrics - Optional informationGainMetrics from ActionOutcomePayload
-   * @returns Relief amount (negative value = curiosity satisfied, 0 if no metrics)
+   * @returns Relief amount (negative value = curiosity satisfied, 0 if unverified)
    */
   public computeReliefFromMetrics(
-    metrics?: { newNodes?: number; confidenceDeltas?: number; resolvedErrors?: number },
+    metrics?: {
+      newNodes?: number;
+      confidenceDeltas?: number;
+      resolvedErrors?: number;
+      source?: 'WKG_DIFF' | 'UNVERIFIED';
+    },
   ): number {
-    if (!metrics) {
+    // Honesty gate: no metrics, or not a verified WKG diff → zero relief.
+    if (!metrics || metrics.source !== 'WKG_DIFF') {
       return 0;
     }
 

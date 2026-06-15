@@ -21,9 +21,13 @@ import {
 import {
   ActionOutcomePayload,
   SoftwareMetricsPayload,
+  SelfAssessmentPayload,
   DriveIPCMessageType,
   INITIAL_DRIVE_STATE,
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
+  type LlmPricingRates,
 } from '@sylphie/shared';
 
 const vlog = verboseFor('DriveEngine');
@@ -38,10 +42,37 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
   private readonly logger = new Logger(ActionOutcomeReporterService.name);
   private outcomeQueue: OutcomeQueue;
 
+  /**
+   * LLM pricing rates resolved once from the environment (same env vars as the
+   * Supervisor's CostTrackerService: DEEPSEEK_INPUT/OUTPUT_PRICE_PER_M). Used to
+   * convert per-window token counts into a USD cost estimate for the
+   * SoftwareMetricsPayload the Cognitive Effort drive consumes.
+   */
+  private readonly pricingRates: LlmPricingRates;
+
   constructor(
     private wsChannel: WsChannelService,
     private driveReader: DriveReaderService,
   ) {
+    // Resolve LLM pricing once at construction. If the operator hasn't set the
+    // pricing env vars we fall back to documented DeepSeek defaults — but we
+    // log it loudly here so a fallback rate is never mistaken for configured
+    // pricing (CANON theater prohibition — no silent defaults).
+    this.pricingRates = resolveLlmPricingFromEnv();
+    if (this.pricingRates.usedDefault) {
+      this.logger.warn(
+        'LLM pricing env vars (DEEPSEEK_INPUT_PRICE_PER_M / ' +
+          'DEEPSEEK_OUTPUT_PRICE_PER_M) not fully configured — using documented ' +
+          `DeepSeek defaults ($${this.pricingRates.inputPricePerM}/M in, ` +
+          `$${this.pricingRates.outputPricePerM}/M out) for cost estimation.`,
+      );
+    } else {
+      this.logger.log(
+        `LLM cost estimation rates: $${this.pricingRates.inputPricePerM}/M in, ` +
+          `$${this.pricingRates.outputPricePerM}/M out (operator-configured).`,
+      );
+    }
+
     // Initialize the queue with a send function that dispatches via WebSocket
     this.outcomeQueue = new OutcomeQueue(
       (message) => {
@@ -90,6 +121,12 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       readonly predictedValue: number;
       readonly actualValue: number;
     };
+    readonly informationGainMetrics?: {
+      readonly newNodes: number;
+      readonly confidenceDeltas: number;
+      readonly resolvedErrors: number;
+      readonly source: 'WKG_DIFF' | 'UNVERIFIED';
+    };
     readonly socialCommentTimestamp?: number;
   }): void {
     // Map success boolean to outcome enum
@@ -121,6 +158,10 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       },
       anxietyAtExecution: this.driveReader.getCurrentState().pressureVector[DriveName.Anxiety] ?? 0,
       predictionData: outcome.predictionData,
+      // Curiosity information-gain (§A.14). Threaded verbatim from the caller's
+      // WkgDiffService result — never synthesized here. Omitted (undefined) for
+      // non-WKG actions, in which case the drive grants zero curiosity relief.
+      informationGainMetrics: outcome.informationGainMetrics,
       socialCommentTimestamp: outcome.socialCommentTimestamp,
     };
 
@@ -131,6 +172,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       feedbackSource: feedbackSource,
       metadata: outcome.metadata,
       hasPredictionData: !!outcome.predictionData,
+      infoGainSource: outcome.informationGainMetrics?.source,
     });
 
     // Enqueue for async delivery
@@ -149,15 +191,47 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
   reportMetrics(metrics: SoftwareMetrics): void {
     const now = new Date();
 
+    // --- Real cost: token count × configured model pricing -------------------
+    // Prefer the caller's prompt/completion split (priced at different rates).
+    // When the caller can't split tokens, price the whole tokenCount at the
+    // input rate — a documented approximation, never a silent $0.
+    const hasTokenSplit =
+      metrics.promptTokens !== undefined || metrics.completionTokens !== undefined;
+    const inputTokens = hasTokenSplit
+      ? metrics.promptTokens ?? 0
+      : metrics.tokenCount;
+    const outputTokens = hasTokenSplit ? metrics.completionTokens ?? 0 : 0;
+    const estimatedCostUsd = estimateLlmCostUsd(
+      inputTokens,
+      outputTokens,
+      this.pricingRates,
+    );
+
+    // --- Real window boundaries: thread from the caller ----------------------
+    // windowStartAt is the time the caller began accumulating LLM usage. If the
+    // caller did not supply it we fall back to `now`, but flag it loudly: a
+    // start==end window makes temporal analysis impossible, so a missing window
+    // is a wiring gap, not an acceptable default.
+    const windowEndAt = metrics.windowEndAt ?? now;
+    let windowStartAt = metrics.windowStartAt;
+    if (windowStartAt === undefined) {
+      windowStartAt = windowEndAt;
+      this.logger.warn(
+        'SoftwareMetrics.windowStartAt not supplied by caller — falling back to ' +
+          'flush time (windowStartAt == windowEndAt). Temporal LLM-usage analysis ' +
+          'is degraded until the caller threads the real measurement window.',
+      );
+    }
+
     // Construct the SoftwareMetricsPayload
     const payload: SoftwareMetricsPayload = {
       llmCallCount: metrics.llmCallCount,
       llmLatencyMs: metrics.llmLatencyMs,
       cognitiveEffortPressure: metrics.cognitiveEffortPressure,
       tokenCount: metrics.tokenCount,
-      estimatedCostUsd: 0, // TODO: Compute from token count and model pricing
-      windowStartAt: now, // TODO: Track actual window boundaries from caller
-      windowEndAt: now,
+      estimatedCostUsd,
+      windowStartAt,
+      windowEndAt,
     };
 
     vlog('metrics reported', {
@@ -165,6 +239,8 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       llmLatencyMs: metrics.llmLatencyMs,
       cognitiveEffortPressure: metrics.cognitiveEffortPressure,
       tokenCount: metrics.tokenCount,
+      estimatedCostUsd,
+      windowMs: windowEndAt.getTime() - windowStartAt.getTime(),
     });
 
     // Enqueue for async delivery
@@ -202,6 +278,38 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
     });
 
     this.logger.warn(`Drive state reset to INITIAL_DRIVE_STATE (session: ${sessionId})`);
+  }
+
+  /**
+   * Push a KG(Self) self-assessment snapshot to the Drive Engine.
+   *
+   * Phase 4 Wave 2 cluster 3a — Ticket 1 (event-judge model). Sent directly
+   * over the WebSocket channel, NOT through the OutcomeQueue: the queue only
+   * carries ACTION_OUTCOME / SOFTWARE_METRICS, and a self-assessment is neither
+   * (it has no actionId, no theaterCheck, no reinforcement). The drive caches
+   * it on receipt (CachedSelfKgReader.ingest) and reads it on its own
+   * self-evaluation cadence.
+   *
+   * An empty payload (empty arrays) is valid and is still sent — the drive's
+   * reader flips ready on the first push and self-heals neutrally thereafter.
+   *
+   * Fire-and-forget. WsChannelService.send() queues internally when the socket
+   * is not yet open, so a push before the channel connects is not lost.
+   */
+  pushSelfAssessment(payload: SelfAssessmentPayload): void {
+    this.wsChannel.send({
+      type: DriveIPCMessageType.SELF_ASSESSMENT,
+      payload,
+      timestamp: new Date(),
+    });
+
+    vlog('self-assessment pushed', {
+      assessedAt: payload.assessedAt,
+      capabilities: payload.capabilities.length,
+      drivePatterns: payload.drivePatterns.length,
+      predictionAccuracy: payload.predictionAccuracy.length,
+      provenance: payload.provenance,
+    });
   }
 
   // ---------------------------------------------------------------------------
