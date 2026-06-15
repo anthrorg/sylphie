@@ -27,6 +27,15 @@
  * Adapted from sylphie-old:
  * - Type imports from @sylphie/shared instead of local definitions.
  * - Event logging via DECISION_EVENT_LOGGER.
+ *
+ * Provenance (Wave 3 / C5, §2.12, CANON Std-2): semantic provenance is derived
+ * from `episode.source` (+ `visualContext` sub-field provenance for perception
+ * episodes), NOT a hardcoded INFERENCE blanket. `visualContext` is carried
+ * through onto the SemanticConversion so visual grounding survives. NOTE: this
+ * service produces SemanticConversion *records only* and does NOT itself mint
+ * groundable WKG nodes (see runConsolidationCycle — the result is consumed for
+ * event logging/counts), so no `:Candidate` routing is required here; see the
+ * C5 report for the no-op evidence.
  */
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
@@ -38,6 +47,8 @@ import type {
   ConsolidationResult,
   EncodingDepth,
   DriveSnapshot,
+  ProvenanceSource,
+  VisualContext,
 } from '@sylphie/shared';
 import type {
   IConsolidationService,
@@ -59,8 +70,41 @@ const MIN_AGE_HOURS = 2;
 /** Minimum estimated confidence required for a consolidation candidate. */
 const MIN_CONFIDENCE_THRESHOLD = 0.65;
 
-/** Provenance tag applied to all extracted semantic content. */
-const EXTRACTION_PROVENANCE = 'INFERENCE' as const;
+/**
+ * Derive the honest provenance of consolidated semantic content from the
+ * episode's modality (`episode.source`) and, for perception episodes, the
+ * per-sub-field provenance carried on `episode.visualContext` (WS5 T1.2).
+ *
+ * CANON Std-2 (provenance-required): a perception-derived memory (scene labels,
+ * a VLM caption) must NOT be laundered into a blanket `INFERENCE` tag. The old
+ * `EXTRACTION_PROVENANCE = 'INFERENCE'` constant did exactly that — this fix
+ * replaces it with the real source.
+ *
+ * Mapping (deliberately never `GUARDIAN` — consolidation extractions are
+ * machine-derived, never guardian-taught):
+ *   - `'perception'` with directly-observed `sceneLabels` (YOLO/tracker)
+ *       → `SENSOR` (the strongest, directly-observed signal on the frame).
+ *   - `'perception'` with only a VLM `caption` and no scene labels
+ *       → `LLM_GENERATED` (the caption's own per-sub-field provenance).
+ *   - `'perception'` with neither (e.g. a bare face frame)
+ *       → `SENSOR` (it was *seen*, not inferred — never the INFERENCE blanket).
+ *   - `'conversation'` → `LLM_GENERATED` (extracted from a text/voice turn;
+ *       matches the WS5 T2 recall surface, which derives provenance from
+ *       `episode.source` rather than the old hardcoded medium-trust default).
+ *   - `'legacy'` / unknown → `INFERENCE` (honest "we cannot positively
+ *       attribute the modality" floor — the only case the old blanket was right).
+ */
+function deriveConsolidationProvenance(episode: Episode): ProvenanceSource {
+  if (episode.source === 'perception') {
+    const vc: VisualContext | undefined = episode.visualContext;
+    if (vc?.sceneLabels && vc.sceneLabels.length > 0) return 'SENSOR';
+    if (vc?.caption) return vc.caption.provenanceSource; // 'LLM_GENERATED'
+    return 'SENSOR';
+  }
+  if (episode.source === 'conversation') return 'LLM_GENERATED';
+  // 'legacy' / any future unknown source: honest inference floor.
+  return 'INFERENCE';
+}
 
 // ---------------------------------------------------------------------------
 // ConsolidationService
@@ -132,8 +176,10 @@ export class ConsolidationService implements IConsolidationService {
    *   1. inputSummary (truncated) -> "triggered" -> actionTaken
    *   2. actionTaken -> "produced" -> "observed_outcome"
    *
-   * Provenance: always 'INFERENCE' — these are machine-derived extractions,
-   * not guardian-taught facts.
+   * Provenance: derived from `episode.source` via deriveConsolidationProvenance
+   * (CANON Std-2, §2.12) — perception scene-labels → SENSOR, a VLM caption →
+   * LLM_GENERATED, conversation → LLM_GENERATED, legacy/unknown → INFERENCE.
+   * Never GUARDIAN (machine-derived, not guardian-taught).
    *
    * Confidence: derived from the episode's estimatedConfidence (computed
    * from ageWeight and encodingDepth).
@@ -143,15 +189,21 @@ export class ConsolidationService implements IConsolidationService {
    */
   convertToSemantic(episode: Episode): SemanticConversion {
     const confidence = estimateConfidence(episode.ageWeight, episode.encodingDepth);
+    // CANON Std-2: derive honest provenance from the episode's modality, not a
+    // hardcoded INFERENCE blanket (§2.12 fix).
+    const provenance = deriveConsolidationProvenance(episode);
     const entities = extractEntities(episode.inputSummary, episode.actionTaken);
-    const relationships = extractRelationships(episode, confidence);
+    const relationships = extractRelationships(episode, confidence, provenance);
 
     return {
       sourceEpisodeId: episode.id,
       entities,
       relationships,
-      provenance: EXTRACTION_PROVENANCE,
+      provenance,
       confidence,
+      // Attach visual grounding context so it survives consolidation (§2.12).
+      // Only perception episodes carry it; absent otherwise.
+      ...(episode.visualContext ? { visualContext: episode.visualContext } : {}),
     };
   }
 
@@ -346,6 +398,7 @@ function extractEntities(inputSummary: string, actionTaken: string): readonly st
 function extractRelationships(
   episode: Episode,
   confidence: number,
+  provenance: ProvenanceSource,
 ): readonly SemanticRelationship[] {
   const subject = episode.inputSummary.slice(0, 80);
   const predicate = 'triggered';
@@ -356,7 +409,7 @@ function extractRelationships(
     predicate,
     object,
     confidence,
-    provenance: EXTRACTION_PROVENANCE,
+    provenance,
   };
 
   const secondary: SemanticRelationship = {
@@ -364,7 +417,7 @@ function extractRelationships(
     predicate: 'produced',
     object: 'observed_outcome',
     confidence: confidence * 0.8,
-    provenance: EXTRACTION_PROVENANCE,
+    provenance,
   };
 
   return [primary, secondary];

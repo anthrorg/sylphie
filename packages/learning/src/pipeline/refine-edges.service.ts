@@ -408,8 +408,12 @@ export class RefineEdgesService implements IRefineEdgesService {
 
     try {
       // Create the refined typed relationship.
+      // Wave 3 / C3: MATCH by node_id alone (label-agnostic), NOT `(:Entity ...)`.
+      // Conversation-derived endpoints may be `:Candidate` now; an `:Entity`-scoped
+      // MATCH would silently fail to refine a candidate↔candidate RELATED_TO edge,
+      // leaving a dangling generic edge. Candidates stay non-groundable regardless.
       await session.run(
-        `MATCH (a:Entity {node_id: $sourceId}), (b:Entity {node_id: $targetId})
+        `MATCH (a {node_id: $sourceId}), (b {node_id: $targetId})
          MERGE (a)-[r:${sanitized}]->(b)
          ON CREATE SET
            r.confidence      = $confidence,
@@ -431,8 +435,9 @@ export class RefineEdgesService implements IRefineEdgesService {
       );
 
       // Remove the original RELATED_TO edge now that it has been refined.
+      // Label-agnostic for the same reason as above (endpoints may be :Candidate).
       await session.run(
-        `MATCH (a:Entity {node_id: $sourceId})-[r:RELATED_TO]->(b:Entity {node_id: $targetId})
+        `MATCH (a {node_id: $sourceId})-[r:RELATED_TO]->(b {node_id: $targetId})
          DELETE r`,
         { sourceId: edge.sourceId, targetId: edge.targetId },
       );

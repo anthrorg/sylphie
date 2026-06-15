@@ -414,8 +414,56 @@ export class ConversationGateway
 
   @SubscribeMessage('guardian_feedback')
   handleGuardianFeedback(
-    @MessageBody() data: { turnId: string; feedbackType: 'confirmation' | 'correction' },
+    @MessageBody()
+    data: {
+      turnId?: string;
+      feedbackType?: 'confirmation' | 'correction';
+      // Wave 3 / C4 — candidate-promotion variant. When a `candidateId` (or
+      // `candidateLabel`) is present, this guardian_feedback message confirms a
+      // staged `:Candidate` proper noun, promoting it `:Candidate → :Entity`.
+      candidateId?: string;
+      candidateLabel?: string;
+    },
+    @ConnectedSocket() client: WebSocket,
   ): void {
+    // CANON Std-5 (guardian asymmetry) — resolve the speaker's VERIFIED guardian
+    // status from the connection's JWT-derived identity. Tokenless / non-guardian
+    // sockets are isGuardian=false (WS4 Ticket 7 default). This is the SAME gate
+    // the guardian-feedback path elsewhere relies on; we read it here and thread
+    // it into the promotion so the graph op can hard-reject a non-guardian.
+    const user = this.clientUsers.get(client);
+    const isGuardian = user?.isGuardian ?? false;
+
+    // Wave 3 / C4 — candidate promotion variant (presence of a candidate selector
+    // routes here instead of the per-turn outcome feedback).
+    if (data.candidateId || data.candidateLabel) {
+      this.logger.log(
+        `Guardian feedback (candidate promotion): ` +
+          `${data.candidateId ? `id="${data.candidateId}"` : `label="${data.candidateLabel}"`} ` +
+          `(isGuardian=${isGuardian})`,
+      );
+      void this.communication
+        .promoteCandidate(
+          { candidateId: data.candidateId, label: data.candidateLabel },
+          isGuardian,
+        )
+        .then((res) => {
+          // Echo the outcome to the requesting socket so a guardian client knows
+          // whether the promotion landed (and a non-guardian sees the rejection).
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(
+              JSON.stringify({ type: 'candidate_promotion_result', ...res }),
+            );
+          }
+        });
+      return;
+    }
+
+    // Per-turn outcome feedback (the original confirmation/correction path).
+    if (!data.turnId || !data.feedbackType) {
+      this.logger.warn('guardian_feedback ignored: no candidate selector and no turnId/feedbackType.');
+      return;
+    }
     this.logger.log(`Guardian feedback: ${data.feedbackType} for turn ${data.turnId}`);
     void this.communication.reportGuardianFeedback(data.turnId, data.feedbackType);
   }

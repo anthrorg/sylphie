@@ -46,6 +46,10 @@ import {
   wkgDiffAsBool,
   type WkgSnapshot,
   type WkgNodeState,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+  GUARDIAN_CONFIRMED_CONFIDENCE,
 } from '@sylphie/shared';
 import { TextEncoder } from '../inputs/encoders/text.encoder';
 import type { RecallSource } from '../deliberation/recall-retrieval';
@@ -116,6 +120,38 @@ export interface NewRelationship {
   readonly properties?: Record<string, unknown>;
   readonly confidence: number;
   readonly provenance: ProvenanceSource;
+}
+
+/**
+ * Outcome of a guardian candidate-promotion (Wave 3 / chunk C4).
+ *
+ * `promoted` is true only when a `:Candidate` node was actually found and
+ * relabeled to `:Entity`. A non-guardian attempt (rejected: false) and a
+ * not-found candidate (promoted: false) are BOTH honest no-ops, distinguished
+ * by `reason` so the caller can log/route them differently.
+ */
+export interface CandidatePromotionResult {
+  /** True iff a `:Candidate` was relabeled `:Entity` and re-provenanced. */
+  readonly promoted: boolean;
+  /**
+   * The node_id of the promoted node (or the candidate that matched), when one
+   * was resolved; null when nothing matched the selector.
+   */
+  readonly nodeId: string | null;
+  /** The label of the matched candidate, for audit logging. */
+  readonly label: string | null;
+  /** The confidence the node carries AFTER promotion (the lifted value). */
+  readonly newConfidence: number | null;
+  /** The provenance_type stamped on the promoted node. */
+  readonly provenanceType: string | null;
+  /**
+   * Why a promotion did NOT happen, when `promoted` is false:
+   *   'not_guardian'  — Std-5: caller lacked verified guardian status (rejected).
+   *   'not_found'     — no `:Candidate` matched the selector.
+   *   'unavailable'   — Neo4j not wired.
+   * Undefined on success.
+   */
+  readonly reason?: 'not_guardian' | 'not_found' | 'unavailable';
 }
 
 /** Parameters for writing a new action procedure. */
@@ -247,6 +283,11 @@ export class WkgContextService {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
       const result = await session.run(
+        // Wave 3 / C0: `WHERE node IS NOT NULL AND NOT node:Candidate` keeps
+        // staged proper nouns out of subgraph enrichment — a `:Candidate`
+        // neighbour must never surface as grounding-eligible context (CANON
+        // Std-3 §2.8). OPTIONAL MATCH can yield a null `m`, so the null guard
+        // stays explicit.
         `MATCH (n)
          WHERE n.node_id IN $ids
          OPTIONAL MATCH path = (n)-[r*1..${depth}]-(m)
@@ -254,6 +295,7 @@ export class WkgContextService {
               [rel IN collect(DISTINCT last(relationships(path))) WHERE rel IS NOT NULL] AS allRels
          UNWIND allNodes AS node
          WITH DISTINCT node, allRels
+         WHERE node IS NOT NULL AND NOT node:Candidate
          RETURN node.node_id AS nodeId, node.label AS label, labels(node)[0] AS nodeType,
                 properties(node) AS props, node.confidence AS confidence,
                 node.provenance_type AS provenance`,
@@ -285,8 +327,14 @@ export class WkgContextService {
 
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
+      // Wave 3 / C0: exclude `:Candidate` on BOTH endpoints. Defensive on `n`
+      // (a candidate node_id should never reach here — matchEntities won't
+      // surface one — but if a caller passes one we refuse to emit facts for
+      // it), and required on `m` so a candidate neighbour never appears as a
+      // fact object that could ground an answer (CANON Std-3 §2.8).
       const result = await session.run(
         `MATCH (n {node_id: $id})-[r]-(m)
+         WHERE NOT n:Candidate AND NOT m:Candidate
          RETURN n.label AS subject, type(r) AS predicate, m.label AS object,
                 r.confidence AS confidence, n.provenance_type AS provenance
          LIMIT 50`,
@@ -417,6 +465,165 @@ export class WkgContextService {
       this.logger.debug(`WKG relationship written: ${rel.sourceId} -[${rel.type}]-> ${rel.targetId}`);
     } catch (err) {
       this.logger.error(`WKG relationship write failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wave 3 / chunk C4 — Guardian promotion `:Candidate → :Entity`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Promote a staged `:Candidate` proper noun to a live, grounding-eligible
+   * `:Entity` (Wave 3 / C4 — closes ws5-t1 world-fact promotion).
+   *
+   * This is the ONLY operation that lifts a node out of candidate (non-groundable)
+   * status. It:
+   *   1. RELABELS the node `:Candidate → :Entity` (`REMOVE n:Candidate SET n:Entity`)
+   *      so every grounding read-path (matchEntities / getSubgraph / getEntityFacts
+   *      / getRelationships — each carries `NOT <var>:Candidate`) now RETURNS it.
+   *   2. Stamps `provenance_type = 'GUARDIAN_APPROVED_INFERENCE'` (CANON Std-2: the
+   *      node was inferred from conversation, then guardian-approved — honest
+   *      provenance, never upgraded to SENSOR/GUARDIAN).
+   *   3. Lifts the ≤0.60 candidate cap to GUARDIAN_CONFIRMED_CONFIDENCE (0.90) —
+   *      the same legitimate guardian exception to the Std-3 ceiling that
+   *      `deriveOkgFactTier` uses for a guardian's own self-report.
+   *
+   * CANON Std-5 (guardian asymmetry) — LOAD-BEARING: promotion is reachable ONLY
+   * with verified guardian status. A non-guardian call is REJECTED as a no-op
+   * (`promoted: false, reason: 'not_guardian'`) and NEVER touches the graph — the
+   * candidate stays a candidate, still non-groundable. This is the single CANON
+   * standard C4 exists to honor; the `isGuardian` gate is asserted FIRST, before
+   * any session is even opened.
+   *
+   * Selector: pass EITHER a `candidateId` (the candidate's `node_id`) OR a `label`.
+   * When both are given, `candidateId` wins. The MATCH is scoped to `:Candidate`
+   * so a node already promoted (now `:Entity`) is a `not_found` no-op (idempotent —
+   * re-confirming an already-promoted entity does nothing rather than re-lifting).
+   *
+   * @param selector  `{ candidateId }` or `{ label }` identifying the candidate.
+   * @param isGuardian  the caller's VERIFIED guardian status (from the JWT claim).
+   * @returns the promotion outcome (honest no-op on rejection / not-found).
+   */
+  async promoteCandidate(
+    selector: { candidateId?: string; label?: string },
+    isGuardian: boolean,
+  ): Promise<CandidatePromotionResult> {
+    // CANON Std-5: assert guardian status FIRST. A non-guardian promotion never
+    // reaches the graph — the candidate remains non-groundable.
+    if (!isGuardian) {
+      this.logger.warn(
+        `Candidate promotion REJECTED (CANON Std-5): non-guardian attempt for ` +
+          `${selector.candidateId ? `id="${selector.candidateId}"` : `label="${selector.label ?? ''}"`}.`,
+      );
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_guardian',
+      };
+    }
+
+    if (!this.neo4j) {
+      this.logger.warn('Candidate promotion skipped: Neo4jService unavailable.');
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'unavailable',
+      };
+    }
+
+    const byId = typeof selector.candidateId === 'string' && selector.candidateId.trim().length > 0;
+    const byLabel = !byId && typeof selector.label === 'string' && selector.label.trim().length > 0;
+    if (!byId && !byLabel) {
+      this.logger.warn('Candidate promotion no-op: neither candidateId nor label supplied.');
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_found',
+      };
+    }
+
+    // MATCH is `:Candidate`-scoped so an already-promoted (`:Entity`) node is a
+    // not_found no-op — idempotent re-confirmation, never a second cap-lift.
+    const matchClause = byId
+      ? `MATCH (n:${CANDIDATE_NODE_LABEL} {node_id: $candidateId})`
+      : `MATCH (n:${CANDIDATE_NODE_LABEL} {label: $label})`;
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      const result = await session.run(
+        `${matchClause}
+         REMOVE n:${CANDIDATE_NODE_LABEL}
+         SET n:Entity,
+             n.provenance_type = $provenanceType,
+             n.confidence = $newConfidence,
+             n.promoted_at = datetime(),
+             n.promoted_by = 'guardian',
+             n.promoted_from = $candidateProvenance
+         RETURN n.node_id AS nodeId, n.label AS label,
+                n.confidence AS confidence, n.provenance_type AS provenanceType`,
+        {
+          candidateId: selector.candidateId ?? null,
+          label: selector.label ?? null,
+          provenanceType: CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+          newConfidence: GUARDIAN_CONFIRMED_CONFIDENCE,
+          candidateProvenance: CANDIDATE_PROVENANCE_TYPE,
+        },
+      );
+
+      const rec = result.records[0];
+      if (!rec) {
+        this.logger.warn(
+          `Candidate promotion no-op: no :Candidate matched ` +
+            `${byId ? `node_id="${selector.candidateId}"` : `label="${selector.label}"`} ` +
+            `(already promoted, or never staged).`,
+        );
+        return {
+          promoted: false,
+          nodeId: selector.candidateId ?? null,
+          label: selector.label ?? null,
+          newConfidence: null,
+          provenanceType: null,
+          reason: 'not_found',
+        };
+      }
+
+      const nodeId = (rec.get('nodeId') as string | null) ?? null;
+      const label = (rec.get('label') as string | null) ?? null;
+      const newConfidence = toFloat(rec.get('confidence'), GUARDIAN_CONFIRMED_CONFIDENCE);
+      const provenanceType =
+        (rec.get('provenanceType') as string | null) ?? CANDIDATE_PROMOTION_PROVENANCE_TYPE;
+
+      this.logger.log(
+        `Candidate PROMOTED (guardian, CANON Std-5): "${label}" (node_id=${nodeId}) ` +
+          `:Candidate → :Entity, provenance ${provenanceType}, confidence → ${newConfidence}. ` +
+          `Now grounding-eligible.`,
+      );
+      vlog('candidate promoted', { nodeId, label, newConfidence, provenanceType });
+
+      return { promoted: true, nodeId, label, newConfidence, provenanceType };
+    } catch (err) {
+      this.logger.error(
+        `Candidate promotion FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        promoted: false,
+        nodeId: selector.candidateId ?? null,
+        label: selector.label ?? null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_found',
+      };
     } finally {
       await session.close();
     }
@@ -842,6 +1049,14 @@ export class WkgContextService {
    * Match entity names against WKG node labels using the kg_label_fulltext
    * index. Falls back to CONTAINS substring matching if the full-text query
    * fails (e.g., index not yet created).
+   *
+   * GROUNDING GATE (Wave 3 / C0 — CANON Std-3 isolation §2.8). This is THE
+   * WKG grounding read-path: its output (`wkg.entities`) is what
+   * retrieveWkgRecall() picks a topical entity from to produce a GROUNDED label
+   * (recall-retrieval.ts). Therefore `:Candidate` nodes MUST be excluded here —
+   * both in the fulltext branch (`NOT node:Candidate`) and the CONTAINS fallback
+   * (`NOT n:Candidate`) — so a staged proper noun can NEVER become grounding
+   * provenance. Mirrors the long-standing `:Word` exclusion.
    */
   private async matchEntities(session: any, names: string[]): Promise<WkgEntity[]> {
     if (names.length === 0) return [];
@@ -857,6 +1072,7 @@ export class WkgContextService {
         `CALL db.index.fulltext.queryNodes('kg_label_fulltext', $query)
          YIELD node, score
          WHERE NOT node:Word
+           AND NOT node:Candidate
          RETURN DISTINCT node.node_id AS nodeId, node.label AS label,
                 labels(node)[0] AS nodeType, properties(node) AS props,
                 node.confidence AS confidence, node.provenance_type AS provenance
@@ -880,6 +1096,7 @@ export class WkgContextService {
          MATCH (n)
          WHERE toLower(n.label) CONTAINS toLower(name)
            AND NOT n:Word
+           AND NOT n:Candidate
          RETURN DISTINCT n.node_id AS nodeId, n.label AS label,
                 labels(n)[0] AS nodeType, properties(n) AS props,
                 n.confidence AS confidence, n.provenance_type AS provenance
@@ -902,9 +1119,14 @@ export class WkgContextService {
   private async getRelationships(session: any, entityIds: string[]): Promise<WkgRelationship[]> {
     if (entityIds.length === 0) return [];
 
+    // Wave 3 / C0: defensively exclude `:Candidate` on both endpoints. Ids here
+    // already come from candidate-free readers (matchEntities / getSubgraph), but
+    // a caller could pass a candidate id in `$ids`; we never surface a relationship
+    // touching a staged proper noun as grounding context (CANON Std-3 §2.8).
     const result = await session.run(
       `MATCH (a)-[r]-(b)
        WHERE a.node_id IN $ids AND b.node_id IN $ids
+         AND NOT a:Candidate AND NOT b:Candidate
        RETURN a.node_id AS sourceId, b.node_id AS targetId,
               type(r) AS relType, properties(r) AS props,
               r.confidence AS confidence
@@ -1177,6 +1399,9 @@ function actrTierForProvenance(provenanceType: string): { base: number; decayRat
     case 'BEHAVIORAL_INFERENCE':
     case 'SELF_REPORTED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
     case 'OBSERVED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
+    case 'CANDIDATE': // Wave 3 / C0 — staged proper noun. Inference-grade floor;
+      // a candidate is non-groundable so this path should not normally be hit,
+      // but if it ever is, the 0.60 ceiling clamp in reinforceFactNode() holds.
     default:
       return { base: PROVENANCE_BASE_CONFIDENCE.INFERENCE, decayRate: DEFAULT_DECAY_RATES.INFERENCE };
   }

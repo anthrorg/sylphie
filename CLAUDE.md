@@ -26,3 +26,10 @@ Don't try to out-reason `mythos` on architecture or novel problems — escalate.
 - **Do exactly what's asked.** Confirm before irreversible or outward-facing actions unless explicitly authorized for that specific one.
 
 A fuller architecture reference lives in `sylphie-tech-spec.md`; the honest gap list in `sylphie-stub-inventory.md`.
+
+## Architecture map (file-by-file)
+
+`wiki/architecture/` is a living, file-by-file map of the whole codebase — **476 first-party source files across 12 subsystems**, each read in full. Start at `wiki/architecture/INDEX.md`; there's one doc per subsystem (`perception-service`, `decision-making`, `drive-engine`, `learning`, `planning`, `cognition-service`, `shared`, `app-sylphie`, `sylphie-pkg`, `supervisor`, `app-drive-server`, `frontend`). `wiki/cv-framework.md` is the hand-verified deep-dive exemplar (the computer-vision pipeline). Use these to **locate** code fast — but they are auto-generated from per-file summaries, so verify against source before betting on any single line.
+
+- **Generated at commit `4f0b473` (2026-06-13).** Staleness check: run `git rev-parse --short HEAD`. If it differs and source has moved much since, treat the maps as possibly out of date — confirm against the actual file. The CV deep-dive was cross-verified against the per-file fragments (Round 4).
+- **To refresh:** the readers wrote JSON fragments to `wiki/architecture/_data/<subsystem>/`; `python wiki/_assemble.py` re-renders the markdown from them. `wiki/architecture-manifest.json` is the file inventory. A full re-read is a fan-out workflow (one agent per file) — see the build notes in the `project_architecture_docs` memory.

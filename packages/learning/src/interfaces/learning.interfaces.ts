@@ -116,6 +116,10 @@ export interface MaintenanceCycleResult {
  *
  * The payload column is JSONB — its shape varies by event type. The fields
  * we care about are content (for INPUT_RECEIVED) and entities (for INPUT_PARSED).
+ * Both INPUT_RECEIVED and INPUT_PARSED also carry payload.speakerId (= the
+ * PostgreSQL User.id of the speaker; Wave 3 C2). C3 reads it to person-scope
+ * conversation-derived entities as :Candidate nodes (grounding_person_id =
+ * speakerId) instead of shared :Entity — CANON Std-3 isolation, §2.8 leak fix.
  */
 export interface UnlearnedEvent {
   readonly id: string;
@@ -144,6 +148,25 @@ export interface ExtractedEntity {
   readonly provenance: ProvenanceSource;
   /** Base confidence at upsert time. */
   readonly confidence: number;
+  /**
+   * Wave 3 C3 — true when this node was minted as a `:Candidate` (a
+   * conversation-derived proper noun staged in the WORLD graph, NOT a live
+   * `:Entity`). Candidates carry provenance 'CANDIDATE', confidence ≤0.60, and a
+   * `grounding_person_id`; they are excluded from every WKG grounding read-path
+   * (CANON Std-3 §2.8). Downstream edge writers read this so they MATCH the node
+   * by `node_id` alone (label-agnostic) rather than `(:Entity {node_id})`, which
+   * would silently fail to bind a `:Candidate`. Absent/false for guardian-taught
+   * `:Entity` nodes.
+   */
+  readonly isCandidate?: boolean;
+  /**
+   * Wave 3 C3 — the speaker/person id (PostgreSQL User.id) under which a
+   * `:Candidate` was scoped (`grounding_person_id`). Present only when
+   * `isCandidate` is true and a speaker was known; undefined for unscoped world
+   * candidates and for live `:Entity` nodes. Read by the guardian promotion
+   * path (C4).
+   */
+  readonly groundingPersonId?: string;
 }
 
 // ---------------------------------------------------------------------------

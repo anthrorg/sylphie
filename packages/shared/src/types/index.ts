@@ -55,6 +55,14 @@ export {
   PROVENANCE_BASE_CONFIDENCE,
   resolveBaseConfidence,
   deriveOkgFactTier,
+  // `:Candidate` contract (Wave 3 / C0 — CANON Std-3 isolation fix §2.8).
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_CONFIDENCE_CAP,
+  CANDIDATE_PERSON_ID_PROP,
+  // Guardian promotion of a candidate (Wave 3 / C4 — CANON Std-5 asymmetry).
+  CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+  GUARDIAN_CONFIRMED_CONFIDENCE,
 } from './provenance.types';
 
 // Event types

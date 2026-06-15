@@ -272,6 +272,17 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
   /** Track pending warm-layer writes so we can flush on shutdown. */
   private pendingWrites: Promise<void>[] = [];
 
+  /**
+   * Wave 3 / C6 — audit counter for modality writes intentionally dropped by
+   * writeMultiModal (drives/faces). These modalities are NOT written to the
+   * shared conversational latent index yet: faces carry identity/privacy weight
+   * (CANON Std-3) and want a separate person-scoped index, which is deferred to
+   * a later wave (Jim's decision, 2026-06-15). Until then the drop is honest and
+   * audited rather than silent (Std-1 — no silent stubs). A dedicated index, not
+   * an unconditional skip, is the end state.
+   */
+  private readonly droppedModalityWrites = new Map<string, number>();
+
   constructor(
     private readonly timescale: TimescaleService,
   ) {}
@@ -631,8 +642,23 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     const ids: string[] = [];
 
     for (const [modality, embedding] of Object.entries(modalityEmbeddings)) {
-      // Skip drive/face modalities for now — they don't carry conversational signal
-      if (modality === 'drives' || modality === 'faces') continue;
+      // Wave 3 / C6 — drive/face modalities are intentionally NOT written to the
+      // shared conversational index (a separate person-scoped index is deferred
+      // to a later wave). Audit the drop instead of swallowing it silently
+      // (Std-1): count it and emit a one-time warn per modality so callers can
+      // see that supplied drive/face embeddings are being dropped, not stored.
+      if (modality === 'drives' || modality === 'faces') {
+        const prior = this.droppedModalityWrites.get(modality) ?? 0;
+        this.droppedModalityWrites.set(modality, prior + 1);
+        if (prior === 0) {
+          this.logger.warn(
+            `writeMultiModal: dropping '${modality}' modality writes — not yet ` +
+              `indexed (separate person-scoped index deferred; Wave 3 C6). ` +
+              `Supplied ${modality} embeddings are NOT persisted.`,
+          );
+        }
+        continue;
+      }
 
       const id = await this.write({
         modality,
@@ -644,6 +670,15 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     }
 
     return ids;
+  }
+
+  /**
+   * Wave 3 / C6 — observability for intentionally-dropped modality writes
+   * (drives/faces). Returns a snapshot of how many writes were dropped per
+   * modality this process lifetime, so the drop is auditable rather than silent.
+   */
+  getDroppedModalityWriteCounts(): Record<string, number> {
+    return Object.fromEntries(this.droppedModalityWrites);
   }
 
   // ---------------------------------------------------------------------------

@@ -59,7 +59,8 @@ export const CORPUS: ReadonlyArray<CorpusTurn> = [
   { label: 'teach: favorite color cerulean', text: 'My favorite color is cerulean.' },
   { label: 'teach: I work in software', text: 'I work in software.' },
 
-  // ── 15 recall probes for taught facts (expect GROUNDED) ───────────────────
+  // ── 16 recall probes for taught facts (expect GROUNDED) — 15 regex-resolved
+  //    + 1 WS3 C8 semantic-only paraphrase (see below) ───────────────────────
   { label: 'recall: my name', text: 'What is my name?', expectGrounding: 'GROUNDED' },
   { label: 'recall: where I live', text: 'Where do I live?', expectGrounding: 'GROUNDED' },
   { label: "recall: dog's name", text: "What is my dog's name?", expectGrounding: 'GROUNDED' },
@@ -75,6 +76,12 @@ export const CORPUS: ReadonlyArray<CorpusTurn> = [
   { label: 'recall: location confirm', text: 'Am I in Seattle?', expectGrounding: 'GROUNDED' },
   { label: 'recall: dog confirm', text: 'Is my dog named Max?', expectGrounding: 'GROUNDED' },
   { label: 'recall: name confirm', text: 'Is my name Jim?', expectGrounding: 'GROUNDED' },
+  // ── WS3 C8 acceptance signal — a location paraphrase the recallKeyForQuestion
+  //    regex MISSES (no live/city/location/where trigger word). It must still
+  //    read GROUNDED via the semantic recall-key resolver (regex-first → embed →
+  //    cosine-match against the taught 'location' key). Proves C8 generalizes
+  //    beyond the brittle regex WITHOUT regressing the C2 unknowables below.
+  { label: 'recall: location paraphrase (C8 semantic)', text: "Remind me which town I'm based in.", expectGrounding: 'GROUNDED' },
 
   // ── 10 unknowable questions (expect NOT_GROUNDED; SHRUG is asserted under
   //    lesion, L6 — with the LLM available she deliberates honestly instead) ──

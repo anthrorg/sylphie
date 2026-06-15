@@ -119,3 +119,9 @@ export type { CapturedPrompt, PromptCompositionPath } from './deliberation/promp
  * cognitive cycle calls, so a green C3 row proves the live mechanism.
  */
 export { WkgContextService } from './wkg/wkg-context.service';
+/**
+ * Wave 3 / C4 — the guardian candidate-promotion outcome type, re-exported so
+ * CommunicationService (apps/sylphie) can type the `promoteCandidate()` result it
+ * forwards from the guardian_feedback channel.
+ */
+export type { CandidatePromotionResult } from './wkg/wkg-context.service';

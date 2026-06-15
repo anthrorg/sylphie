@@ -129,8 +129,12 @@ export class DetectContradictionsService implements IDetectContradictionsService
 
     try {
       // Check for the antonym edge in either direction.
+      // Wave 3 / C3: label-agnostic MATCH — endpoints may be `:Candidate` now;
+      // an `:Entity`-scoped MATCH would silently miss candidate↔candidate
+      // contradictions. (Candidates remain non-groundable; this only affects
+      // CONTRADICTS bookkeeping, which is correct to run over them too.)
       const checkResult = await session.run(
-        `MATCH (a:Entity {node_id: $sourceId})-[existing:${sanitize(antonym)}]-(b:Entity {node_id: $targetId})
+        `MATCH (a {node_id: $sourceId})-[existing:${sanitize(antonym)}]-(b {node_id: $targetId})
          RETURN existing.confidence AS existingConfidence
          LIMIT 1`,
         { sourceId: edge.sourceId, targetId: edge.targetId },
@@ -143,8 +147,9 @@ export class DetectContradictionsService implements IDetectContradictionsService
       const existingConf = checkResult.records[0].get('existingConfidence') as number;
 
       // Create a CONTRADICTS edge with conflict metadata.
+      // Label-agnostic (endpoints may be :Candidate — see note above).
       await session.run(
-        `MATCH (a:Entity {node_id: $sourceId}), (b:Entity {node_id: $targetId})
+        `MATCH (a {node_id: $sourceId}), (b {node_id: $targetId})
          MERGE (a)-[c:CONTRADICTS]->(b)
          ON CREATE SET
            c.claim = $claim,
