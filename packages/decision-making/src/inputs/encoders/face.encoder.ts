@@ -77,8 +77,14 @@ const BLENDSHAPE_GROUPS = [
  */
 const FEATURE_DIM = 20;
 const FACE_PROJECTION_SEED = 0xface0;
-const FRAME_W = 640;
-const FRAME_H = 480;
+/**
+ * P2.1 — default frame size used when a FaceDetection carries no real
+ * `frameWidth`/`frameHeight` (legacy / cassette frames). The live path threads
+ * the TRUE decoded dims from the sidecar; absent → these defaults, so the math
+ * is byte-identical to the old hardcoded 640x480.
+ */
+const DEFAULT_FRAME_W = 640;
+const DEFAULT_FRAME_H = 480;
 
 @Injectable()
 export class FaceEncoder
@@ -124,12 +130,17 @@ export class FaceEncoder
       f.confidence > best.confidence ? f : best,
     );
 
+    // P2.1 — normalize bbox/landmark/head-pose geometry by the REAL frame dims
+    // when the detection carries them (live sidecar path), else legacy defaults.
+    const frameW = primary.frameWidth ?? DEFAULT_FRAME_W;
+    const frameH = primary.frameHeight ?? DEFAULT_FRAME_H;
+
     // [1-4] Primary face bounding box
     const [x1, y1, x2, y2] = primary.bbox;
-    features[1] = ((x1 + x2) / 2) / FRAME_W; // center X
-    features[2] = ((y1 + y2) / 2) / FRAME_H; // center Y
-    features[3] = (x2 - x1) / FRAME_W;        // width
-    features[4] = (y2 - y1) / FRAME_H;        // height
+    features[1] = ((x1 + x2) / 2) / frameW; // center X
+    features[2] = ((y1 + y2) / 2) / frameH; // center Y
+    features[3] = (x2 - x1) / frameW;        // width
+    features[4] = (y2 - y1) / frameH;        // height
 
     // [5] Confidence
     features[5] = primary.confidence;
@@ -158,8 +169,8 @@ export class FaceEncoder
       const n = landmarks.length;
 
       for (const lm of landmarks) {
-        sumX += (lm[0] ?? 0) / FRAME_W;
-        sumY += (lm[1] ?? 0) / FRAME_H;
+        sumX += (lm[0] ?? 0) / frameW;
+        sumY += (lm[1] ?? 0) / frameH;
       }
 
       const meanX = sumX / n;
@@ -171,8 +182,8 @@ export class FaceEncoder
       // Spread (standard deviation, normalized)
       let varX = 0, varY = 0;
       for (const lm of landmarks) {
-        varX += ((lm[0] ?? 0) / FRAME_W - meanX) ** 2;
-        varY += ((lm[1] ?? 0) / FRAME_H - meanY) ** 2;
+        varX += ((lm[0] ?? 0) / frameW - meanX) ** 2;
+        varY += ((lm[1] ?? 0) / frameH - meanY) ** 2;
       }
 
       features[14] = Math.sqrt(varX / n);
@@ -200,7 +211,7 @@ export class FaceEncoder
         if (noseTip && leftEye && rightEye) {
           const eyeLineY = ((leftEye[1] ?? 0) + (rightEye[1] ?? 0)) / 2;
           // Normalize by frame height; positive = looking down
-          features[17] = ((noseTip[1] ?? 0) - eyeLineY) / FRAME_H;
+          features[17] = ((noseTip[1] ?? 0) - eyeLineY) / frameH;
         }
 
         // Roll: tilt of the eye line

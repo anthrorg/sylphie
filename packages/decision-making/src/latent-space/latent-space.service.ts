@@ -142,6 +142,36 @@ const MAX_HOT_ENTRIES = 6000;
 const DEFAULT_SIMILARITY_THRESHOLD = 0.80;
 
 /**
+ * P1 #0 — `visual_embedding` per-modality similarity threshold (PROVISIONAL).
+ *
+ * Deliberately NOT silently defaulted to 0.80: the visual_embedding modality is
+ * a JL-projected, L2-normalized appearance vector whose cosine geometry differs
+ * from the text/audio nomic spaces, so its accept threshold must be set from the
+ * LIVE cosine-histogram measurement (mug-vs-book intra-modality cosine; two
+ * different-COCO scenes), NOT inherited from the text default. Marked provisional
+ * so the measurement phase replaces it.
+ */
+// cortex-set (2026-06-14, live measurement): conservative — sits above every
+// observed off-target cosine (max 0.563 on real EfficientNet features) so it
+// never false-merges. The true instance-re-id knee is UNMEASURABLE on
+// EfficientNet classifier features (same-class bands overlap); residual is a
+// mug/book/desk same-instance capture, falling to the P3 DINOv2 swap if those
+// features still overlap. Conservative-high = safe failure direction (miss → fall
+// to deliberation, never a confabulated merge).
+const VISUAL_EMBEDDING_SIMILARITY_THRESHOLD = 0.80;
+
+/**
+ * Per-modality similarity thresholds for searchByModality. A modality NOT listed
+ * here falls back to DEFAULT_SIMILARITY_THRESHOLD (0.80) — so every existing
+ * modality is byte-for-byte unchanged. visual_embedding has an EXPLICIT entry
+ * (its named provisional const) so it is never silently inheriting the text
+ * default; the live measurement sets its final value.
+ */
+const MODALITY_SIMILARITY_THRESHOLDS: Record<string, number> = {
+  visual_embedding: VISUAL_EMBEDDING_SIMILARITY_THRESHOLD,
+};
+
+/**
  * Minimum margin by which the best match must beat the SECOND-best match to be
  * accepted as a Type 1 reflex.
  *
@@ -215,6 +245,11 @@ const MODALITY_WEIGHTS: Record<string, number> = {
   video: 0.25,
   faces: 0.15,
   drives: 0.10,
+  // P1 #0 — visual_embedding composite weight. cortex-set (2026-06-14, live
+  // measurement) to the floor (0.15): EfficientNet classifier-feature cosines are
+  // noisy and class-overlapping, so visual_embedding is a tie-breaker on a
+  // text-anchored multimodal hit, not a driver. Revisit after the P3 DINOv2 swap.
+  visual_embedding: 0.15,
 };
 
 /** Default weight for unknown modalities. */
@@ -280,8 +315,17 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
   searchByModality(
     modality: string,
     embedding: number[],
-    threshold = DEFAULT_SIMILARITY_THRESHOLD,
+    threshold?: number,
   ): LatentMatch | null {
+    // P1 #0 — resolve the effective accept threshold: an explicit caller value
+    // wins; otherwise the per-modality threshold (MODALITY_SIMILARITY_THRESHOLDS)
+    // applies; otherwise DEFAULT_SIMILARITY_THRESHOLD (0.80). Every existing
+    // modality is absent from the map → falls back to 0.80, so passing nothing
+    // is byte-for-byte unchanged for them. visual_embedding uses its named
+    // provisional const instead of silently inheriting the text default.
+    const effectiveThreshold =
+      threshold ?? MODALITY_SIMILARITY_THRESHOLDS[modality] ?? DEFAULT_SIMILARITY_THRESHOLD;
+
     // Zero-vector guard: a zero embedding (cassette synthetic fallback, encoder
     // failure) has no semantic content. cosineSimilarity returns 0 for any
     // dot product against it, so it would never exceed 0.80 anyway — but
@@ -315,8 +359,8 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (!bestEntry || bestSimilarity < threshold) {
-      vlog('latent searchByModality MISS', { modality, threshold, hotLayerSize: this.hotLayer.length });
+    if (!bestEntry || bestSimilarity < effectiveThreshold) {
+      vlog('latent searchByModality MISS', { modality, threshold: effectiveThreshold, hotLayerSize: this.hotLayer.length });
       return null;
     }
 
@@ -387,13 +431,16 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
    */
   searchMultiModal(
     modalityEmbeddings: Record<string, number[]>,
-    threshold = DEFAULT_SIMILARITY_THRESHOLD,
+    threshold?: number,
   ): MultiModalLatentMatch | null {
     if (this.hotLayer.length === 0) return null;
 
     const matches: LatentMatch[] = [];
 
     for (const [modality, embedding] of Object.entries(modalityEmbeddings)) {
+      // P1 #0 — pass threshold through; when the caller omits it, searchByModality
+      // resolves the PER-MODALITY threshold (visual_embedding gets its provisional
+      // const; every other modality falls back to DEFAULT_SIMILARITY_THRESHOLD).
       const match = this.searchByModality(modality, embedding, threshold);
       if (match) {
         matches.push(match);
@@ -402,16 +449,40 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
 
     if (matches.length === 0) return null;
 
-    // Text match is required for a meaningful multi-modal hit.
-    // If text was searched but didn't match, or if text was absent entirely
-    // (self-initiated tick with no user input), audio/video/drive similarity
-    // alone is not meaningful — it just replays stale latent space patterns.
+    // Recall gate (P1.5 — cortex-ratified). The original rule REQUIRED a text
+    // match, so a vision-only frame (no user text) could never recall a scene —
+    // even though writeMultiModal persists a visual_embedding pattern for it.
+    // That left a Fork-C (P4) vision-only trigger entering deliberation with
+    // nothing retrievable (ungrounded Type-2 load). Split the two cases the old
+    // gate conflated, keyed on whether text was PRESENT, not whether it matched.
+    const textPresent = 'text' in modalityEmbeddings;
     const textMatched = matches.some(m => m.modality === 'text');
-    if (!textMatched) {
+
+    // (1) Text was offered but didn't match → still a stale replay; discard.
+    //     This preserves the original guard BYTE-FOR-BYTE for text-bearing frames.
+    if (textPresent && !textMatched) {
       this.logger.debug(
-        'searchMultiModal: no text match — discarding audio/video matches.',
+        'searchMultiModal: text present but unmatched — discarding stale matches.',
       );
       return null;
+    }
+
+    // (2) Text ABSENT (a vision-only perception) → permit a hit ONLY if it is
+    //     anchored by a visual_embedding match. searchByModality already gated
+    //     that match on the conservative 0.80 cosine + min-population + runner-up
+    //     + zero-vector guards, so an UNSEEN scene returns null here (no
+    //     confabulation). Audio/drive-only self-ticks (no visual anchor) still
+    //     discard, preserving the stale-replay guard.
+    if (!textPresent) {
+      const visualAnchored = matches.some(
+        m => m.modality === 'visual_embedding',
+      );
+      if (!visualAnchored) {
+        this.logger.debug(
+          'searchMultiModal: no text and no visual_embedding anchor — discarding.',
+        );
+        return null;
+      }
     }
 
     // Find best individual match

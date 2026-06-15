@@ -10,6 +10,11 @@ import {
 } from '@sylphie/shared';
 import { FaceSnapshotService } from './face-snapshot.service';
 import { PersonModelService } from './person-model.service';
+import {
+  BindingService,
+  type BindingCandidate,
+  type BindingObservation,
+} from './binding.service';
 
 const vlog = verboseFor('Perception');
 
@@ -32,14 +37,35 @@ const GONE_RATIO = 0.0;     // Must be completely absent to become 'gone'
 /** Minimum time (ms) in 'leaving' before transitioning to 'gone'. */
 const LEAVING_TIMEOUT_MS = 2000;
 
-/** Cosine similarity threshold for matching against stored object embeddings. */
-const OBJECT_MATCH_THRESHOLD = 0.75;
+/**
+ * How many nearest candidates to fetch for the multi-signal BindingService (#1).
+ * The match / ambiguity thresholds now live in BindingConfig (this replaces the
+ * old single-signal `OBJECT_MATCH_THRESHOLD = 0.75` cosine cutoff).
+ */
+const OBJECT_CANDIDATE_LIMIT = 5;
 
 /** IoU threshold for re-associating a new track with a leaving entity. */
 const REASSOCIATION_IOU_THRESHOLD = 0.3;
 
 /** Max entities to keep in memory (prune oldest 'gone' entries). */
 const MAX_SCENE_ENTITIES = 100;
+
+/**
+ * P3.A — current object-embedding version. The stored embeddings are 1280-D
+ * EfficientNet-B0 = version 1. Persisted on INSERT and stamped on every
+ * centroid fold; the fold GUARD refuses to mix versions (a post-P3.1 768/1024-D
+ * DINOv2 obs must never fold into a 1280-D centroid). P3.1's backbone swap
+ * bumps this to 2 — a frozen+versioned transition, not a learned drift.
+ */
+const CURRENT_OBJECT_EMBEDDING_VERSION = 1;
+
+/**
+ * P3.A — default frame dims for bbox normalization when the sidecar omits
+ * frameWidth/frameHeight (legacy / cassette frames). Mirrors the P2.1
+ * convention so absent-and-defaulted is zero behavior change.
+ */
+const DEFAULT_FRAME_W = 640;
+const DEFAULT_FRAME_H = 480;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -79,6 +105,27 @@ interface SceneEntity {
   leavingAt: number | null;
   /** 1280D embedding for cosine matching (from tracker). */
   embedding: number[] | null;
+  /**
+   * P3.A — top-K dominant colors of the bbox crop (`[r,g,b]` triples), carried
+   * from the TrackedObjectDTO. Session-invariant appearance signal fed to the
+   * BindingService (color scorer) and persisted to `dominant_colors`. Null when
+   * the sidecar omitted it (legacy/cassette frames) → color signal dropped.
+   */
+  dominantColors: Array<[number, number, number]> | null;
+  /**
+   * P3.A — base64 JPEG crop of the bbox region (forward crop retention). Carried
+   * from the DTO and persisted to `object_crop_b64` at node creation; NOT a
+   * scorer input. Null when crop encoding failed or off-sidecar.
+   */
+  cropB64: string | null;
+  /**
+   * P3.A — real camera frame dims (P2.1) carried from the track, used to
+   * normalize this entity's bbox to [0,1] before binding/persisting (atlas
+   * BLOCKER-2). Undefined for legacy/cassette frames → normalizeBbox defaults
+   * to 640×480, keeping cross-resolution comparisons valid.
+   */
+  frameWidth?: number;
+  frameHeight?: number;
   /**
    * WS5 T0.8 — synthetic-frame discriminator carried from the detection DTO.
    * Real sensor frames leave it false; gate-injected (cassette) frames set it
@@ -125,6 +172,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
     private readonly neo4j: Neo4jService | null,
     private readonly faceSnapshot: FaceSnapshotService,
     private readonly personModel: PersonModelService,
+    private readonly binding: BindingService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -157,6 +205,26 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           sighting_count  INTEGER DEFAULT 1
         )
       `);
+      // P3.A — additive, idempotent upgrade. Existing installs gain the four new
+      // A.5 columns; fresh installs already had the base CREATE above and now get
+      // these too. bounding_box / dominant_colors are JSON-string TEXT (the exact
+      // string is reused byte-for-byte in the WORLD :VisualObject MERGE so the
+      // Timescale TEXT and the Neo4j property stay identical). object_crop_b64 is
+      // the forward crop-retention blob (NOT a scorer input — never selected on
+      // the hot re-ID path). embedding_version defaults to 1: the current rows are
+      // 1280-D EfficientNet (version 1); P3.1's DINOv2 swap writes version 2.
+      await this.timescale.query(
+        `ALTER TABLE visual_object_embeddings ADD COLUMN IF NOT EXISTS bounding_box      TEXT`,
+      );
+      await this.timescale.query(
+        `ALTER TABLE visual_object_embeddings ADD COLUMN IF NOT EXISTS dominant_colors   TEXT`,
+      );
+      await this.timescale.query(
+        `ALTER TABLE visual_object_embeddings ADD COLUMN IF NOT EXISTS object_crop_b64   TEXT`,
+      );
+      await this.timescale.query(
+        `ALTER TABLE visual_object_embeddings ADD COLUMN IF NOT EXISTS embedding_version INTEGER DEFAULT 1`,
+      );
       // Index creation may fail if not enough rows yet for ivfflat; catch gracefully.
       try {
         await this.timescale.query(`
@@ -238,6 +306,15 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           entity.bbox = matchingTrack.bbox;
           entity.confidence = matchingTrack.confidence;
           if (matchingTrack.embedding) entity.embedding = matchingTrack.embedding;
+          // P3.A — refresh the appearance color/crop from the freshest sighting
+          // (keep the prior value if this frame omitted it, never clobber to null).
+          if (matchingTrack.dominantColors) {
+            entity.dominantColors = matchingTrack.dominantColors;
+          }
+          if (matchingTrack.cropB64) entity.cropB64 = matchingTrack.cropB64;
+          // Keep frame dims aligned with the latest box's source resolution.
+          if (matchingTrack.frameWidth) entity.frameWidth = matchingTrack.frameWidth;
+          if (matchingTrack.frameHeight) entity.frameHeight = matchingTrack.frameHeight;
         }
       }
 
@@ -363,6 +440,12 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       presenceRatio: 1.0,
       leavingAt: null,
       embedding: track.embedding,
+      // P3.A — carry the appearance color signature + crop from the DTO.
+      dominantColors: track.dominantColors ?? null,
+      cropB64: track.cropB64 ?? null,
+      // P3.A — real frame dims for bbox normalization (atlas BLOCKER-2).
+      frameWidth: track.frameWidth,
+      frameHeight: track.frameHeight,
       // WS5 T0.8 — carry the synthetic discriminator from the detection DTO.
       synthetic: track.synthetic ?? false,
     };
@@ -394,6 +477,11 @@ export class VisualWorkingMemoryService implements OnModuleInit {
         entity.confidence = track.confidence;
         entity.state = 'present';
         if (track.embedding) entity.embedding = track.embedding;
+        // P3.A — carry the fresh appearance color/crop on re-association too.
+        if (track.dominantColors) entity.dominantColors = track.dominantColors;
+        if (track.cropB64) entity.cropB64 = track.cropB64;
+        if (track.frameWidth) entity.frameWidth = track.frameWidth;
+        if (track.frameHeight) entity.frameHeight = track.frameHeight;
         // WS5 T0.8 — once a synthetic track re-associates onto an entity, the
         // entity is synthetic (so its WORLD node, if/when created, is reset-clean).
         if (track.synthetic) entity.synthetic = true;
@@ -447,48 +535,177 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       return;
     }
 
-    // Search visual_object_embeddings by cosine similarity
+    // #1 — Multi-signal re-identification. Fetch the top-K nearest candidates by
+    // cosine, then let the BindingService decide via the weighted A.5 score
+    // (embedding/spatial/color/size/label, Piaget dynamic weights, ambiguity
+    // band, surprise flag) — replacing the old single-signal cosine 0.75 cutoff.
     if (entity.embedding && this.schemaReady && this.timescale) {
       try {
         const result = await this.timescale.query<{
+          id: string;
           node_id: string;
           label: string;
           display_name: string | null;
           discovered: boolean;
+          embedding: string | null;
+          // P3.A — JSON-string columns; null on legacy rows (pre-P3.A).
+          bounding_box: string | null;
+          dominant_colors: string | null;
+          embedding_version: number | null;
+          sighting_count: number;
+          last_seen_ms: number | null;
           distance: number;
         }>(
-          `SELECT node_id, label, display_name, discovered,
+          // P3.A — fetch bounding_box + dominant_colors (the box/color scorer
+          // inputs) and embedding_version (the fold guard). object_crop_b64 is
+          // deliberately NOT selected: it's a retention blob, never a scorer
+          // input, and pulling a base64 JPEG on every hot re-ID is pure waste.
+          `SELECT id, node_id, label, display_name, discovered, embedding,
+                  bounding_box, dominant_colors, embedding_version, sighting_count,
+                  EXTRACT(EPOCH FROM COALESCE(last_seen_at, created_at)) * 1000 AS last_seen_ms,
                   embedding <=> $1::vector AS distance
            FROM visual_object_embeddings
            WHERE embedding IS NOT NULL
            ORDER BY distance
-           LIMIT 1`,
-          [`[${entity.embedding.join(',')}]`],
+           LIMIT $2`,
+          [`[${entity.embedding.join(',')}]`, OBJECT_CANDIDATE_LIMIT],
         );
 
         if (result.rows.length > 0) {
-          const match = result.rows[0];
-          const similarity = 1 - match.distance;
+          // P3.A — bbox + dominant_colors now ride alongside embedding + label,
+          // so all 5 A.5 signals can engage. The stored bounding_box was
+          // persisted ALREADY NORMALIZED to [0,1] (see createUndiscoveredNode),
+          // so it's directly comparable to the normalized observation box below.
+          // parseJsonOrNull drops a corrupt row's box/colors (→ that signal is
+          // simply absent for that candidate) rather than throwing. BindingService
+          // still renormalizes over the AVAILABLE signals, so a legacy row with
+          // null box/colors degrades cleanly to {embedding,label} (atlas #1).
+          const candidates: BindingCandidate[] = result.rows.map((r) => ({
+            nodeId: r.node_id,
+            embedding: parseVectorLiteral(r.embedding),
+            bbox: parseJsonOrNull<[number, number, number, number]>(r.bounding_box),
+            dominantColors: parseJsonOrNull<Array<[number, number, number]>>(
+              r.dominant_colors,
+            ),
+            labelRaw: r.label,
+            confirmationCount: Number(r.sighting_count) || 1,
+            lastSeenAtMs: r.last_seen_ms != null ? Number(r.last_seen_ms) : null,
+          }));
+          const observation: BindingObservation = {
+            embedding: entity.embedding,
+            // P3.A — normalize the observation box to [0,1] (atlas BLOCKER-2) so
+            // it lives in the same space as the stored candidates; cross-resolution
+            // IoU/size stay valid (640×480 stored vs 1280×720 obs).
+            bbox: normalizeBbox(entity.bbox, entity.frameWidth, entity.frameHeight),
+            dominantColors: entity.dominantColors ?? null,
+            labelRaw: entity.label,
+          };
+          const match = this.binding.findMatch(observation, candidates, Date.now());
 
-          if (similarity >= OBJECT_MATCH_THRESHOLD) {
-            // Known object — associate with existing WKG node
-            entity.nodeId = match.node_id;
-            entity.displayName = match.display_name;
-            entity.discovered = match.discovered;
+          // surprise_flag is COMPUTED but deliberately NOT forwarded to a drive
+          // event here: its consumer is Fork C (P4), sequenced last. Emitting to
+          // a non-existent consumer would violate the theater gate (atlas #4).
+          if (match.surpriseFlag) {
+            vlog('binding surprise (no drive consumer until P4)', {
+              entityId: entity.id,
+              label: entity.label,
+              confidence: parseFloat(match.confidence.toFixed(3)),
+            });
+          }
 
-            // Update sighting count
-            await this.timescale.query(
-              `UPDATE visual_object_embeddings
-               SET last_seen_at = NOW(), sighting_count = sighting_count + 1
-               WHERE node_id = $1`,
-              [match.node_id],
-            ).catch(() => {});
+          if (match.matchedNodeId) {
+            const row = result.rows.find((r) => r.node_id === match.matchedNodeId);
+            if (row) {
+              // Known object — associate with existing WKG node.
+              entity.nodeId = row.node_id;
+              entity.displayName = row.display_name;
+              entity.discovered = row.discovered;
 
-            this.logger.log(
-              `VWM: matched known object: ${entity.displayName ?? entity.label} ` +
-              `(sim=${similarity.toFixed(3)}, node=${entity.nodeId})`,
-            );
-            return;
+              // #2 — Mutable instance centroid. Fold this sighting's embedding
+              // into the matched row's stored running mean (incremental mean,
+              // mirroring FaceSnapshotService.updateCentroid). Bounded
+              // assimilation within the FIXED EfficientNet space — NOT a
+              // learned-backbone drift (stability invariant #2); same fixed dim,
+              // so the fused-latent fingerprint is untouched. Mutated in place
+              // (no new node) → accommodation without a duplicate :VisualObject.
+              // CONCURRENCY: read-in-JS / write-absolute-value, safe under the
+              // current SERIAL per-frame resolveEntityIdentity. If ever
+              // parallelized, two re-sightings on this row could overwrite each
+              // other's fold (count still right via server-side +1, but desyncs
+              // from effective N) — guard then with `SELECT … FOR UPDATE` (pgvector
+              // 0.8.1 has no scalar ops, so an atomic server-side fold is
+              // unavailable). FaceSnapshot shares this shape.
+              //
+              // P3.A — VERSION GUARD (atlas item 4). Only fold when the stored
+              // row's embedding_version matches the CURRENT version (or is
+              // NULL/legacy → treated as current and upgraded in the same write).
+              // This closes the pre-acknowledged P3 TODO and prevents a post-P3.1
+              // 768/1024-D DINOv2 observation from folding into a 1280-D
+              // EfficientNet centroid (mixing dims would corrupt the centroid).
+              // On a genuine version mismatch we DON'T fold the embedding — only
+              // bump the count + last_seen — and we DON'T overwrite the stored
+              // version (the row keeps its own version until a same-version
+              // observation or an explicit migration re-bases it).
+              const n = Number(row.sighting_count) || 1;
+              const storedVersion =
+                row.embedding_version == null
+                  ? CURRENT_OBJECT_EMBEDDING_VERSION // NULL/legacy → adopt current
+                  : Number(row.embedding_version);
+              const versionMatches =
+                storedVersion === CURRENT_OBJECT_EMBEDDING_VERSION;
+              const stored = parseVectorLiteral(row.embedding);
+              const updated =
+                versionMatches && stored && entity.embedding
+                  ? foldObjectCentroid(stored, entity.embedding, n)
+                  : null;
+
+              await this.timescale
+                .query(
+                  updated
+                    ? `UPDATE visual_object_embeddings
+                       SET last_seen_at = NOW(),
+                           sighting_count = sighting_count + 1,
+                           embedding = $2::vector,
+                           embedding_version = $3
+                       WHERE id = $1`
+                    : `UPDATE visual_object_embeddings
+                       SET last_seen_at = NOW(), sighting_count = sighting_count + 1
+                       WHERE id = $1`,
+                  updated
+                    ? [
+                        row.id,
+                        `[${updated.join(',')}]`,
+                        CURRENT_OBJECT_EMBEDDING_VERSION,
+                      ]
+                    : [row.id],
+                )
+                .catch(() => {});
+
+              this.logger.log(
+                `VWM: matched known object (binding): ${entity.displayName ?? entity.label} ` +
+                  `(score=${match.confidence.toFixed(3)}, node=${entity.nodeId}, ` +
+                  `centroid n=${n}→${n + 1}${
+                    updated
+                      ? ''
+                      : versionMatches
+                        ? ' (hold)'
+                        : ` (version-guard: stored v${storedVersion} ≠ current v${CURRENT_OBJECT_EMBEDDING_VERSION}, count-only)`
+                  })`,
+              );
+              return;
+            }
+          }
+
+          if (match.ambiguousCandidates.length > 0) {
+            // Ambiguous (score in [0.45, 0.75)) — not a confident re-ID. Day-one
+            // we surface it and fall through to a new node (the prior sub-0.75
+            // behavior); guardian disambiguation of the ambiguous set is future UX.
+            vlog('binding ambiguous (no confident re-id)', {
+              entityId: entity.id,
+              label: entity.label,
+              confidence: parseFloat(match.confidence.toFixed(3)),
+              candidates: match.ambiguousCandidates.length,
+            });
           }
         }
       } catch (err) {
@@ -496,7 +713,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       }
     }
 
-    // No match — create new WKG node for undiscovered object
+    // No confident match — create a new WKG node for the undiscovered object.
     await this.createUndiscoveredNode(entity);
   }
 
@@ -504,6 +721,25 @@ export class VisualWorkingMemoryService implements OnModuleInit {
     const nodeId = `vobj-${randomUUID().substring(0, 8)}`;
     entity.nodeId = nodeId;
     entity.discovered = false;
+
+    // P3.A — serialize the A.5 box/color signals ONCE. The bbox is stored
+    // NORMALIZED to [0,1] (atlas BLOCKER-2) so it's directly comparable to a
+    // future re-sighting's normalized observation box across resolutions. The
+    // EXACT same JSON strings are reused for both the Timescale TEXT columns and
+    // the WORLD :VisualObject MERGE properties (byte-identical between stores).
+    // dominant_colors / bounding_box are `null` (SQL NULL / Cypher null) when the
+    // signal is absent, so a row without color/box simply drops those signals.
+    const normalizedBbox = normalizeBbox(
+      entity.bbox,
+      entity.frameWidth,
+      entity.frameHeight,
+    );
+    const bboxJson = normalizedBbox ? JSON.stringify(normalizedBbox) : null;
+    const colorsJson = entity.dominantColors
+      ? JSON.stringify(entity.dominantColors)
+      : null;
+    const cropB64 = entity.cropB64 ?? null;
+    const embVersion = CURRENT_OBJECT_EMBEDDING_VERSION;
 
     // Write to WKG
     if (this.neo4j) {
@@ -521,12 +757,28 @@ export class VisualWorkingMemoryService implements OnModuleInit {
              n.yolo_class = $label,
              n.sighting_count = 1,
              n.synthetic = $synthetic,
+             n.bounding_box = $bboxJson,
+             n.dominant_colors = $colorsJson,
+             n.object_crop_b64 = $cropB64,
+             n.embedding_version = $embVersion,
              n.created_at = datetime()
            RETURN n.node_id AS id`,
           // WS5 T0.8 (atlas ruling 2026-06-13): provenance_type stays 'SENSOR';
           // the synthetic:true boolean is the SOLE discriminator. Real frames
           // leave entity.synthetic false. perception-reset deletes synthetic nodes.
-          { nodeId, label: entity.label, synthetic: entity.synthetic },
+          // P3.A — bboxJson/colorsJson are the SAME JSON STRINGS persisted to the
+          // Timescale TEXT columns (NOT a Cypher list/map — passing a string keeps
+          // the WORLD property byte-identical to the TEXT column; a native list
+          // would diverge in representation).
+          {
+            nodeId,
+            label: entity.label,
+            synthetic: entity.synthetic,
+            bboxJson,
+            colorsJson,
+            cropB64,
+            embVersion,
+          },
         );
       } catch (err) {
         this.logger.warn(`VWM: WKG node creation failed: ${err}`);
@@ -539,9 +791,14 @@ export class VisualWorkingMemoryService implements OnModuleInit {
     if (entity.embedding && this.schemaReady && this.timescale) {
       try {
         await this.timescale.query(
+          // P3.A — persist the four new A.5 columns. bounding_box/dominant_colors
+          // are the SAME serialized strings written to the WORLD node above (one
+          // serialize, reused). object_crop_b64 is the retention blob.
+          // embedding_version = 1 (EfficientNet-B0); P3.1 DINOv2 writes version 2.
           `INSERT INTO visual_object_embeddings
-             (id, node_id, label, embedding, confidence, discovered, created_at)
-           VALUES ($1, $2, $3, $4::vector, $5, false, NOW())
+             (id, node_id, label, embedding, confidence, discovered, created_at,
+              bounding_box, dominant_colors, object_crop_b64, embedding_version)
+           VALUES ($1, $2, $3, $4::vector, $5, false, NOW(), $6, $7, $8, $9)
            ON CONFLICT (id) DO NOTHING`,
           [
             randomUUID(),
@@ -549,6 +806,10 @@ export class VisualWorkingMemoryService implements OnModuleInit {
             entity.label,
             `[${entity.embedding.join(',')}]`,
             entity.confidence,
+            bboxJson,
+            colorsJson,
+            cropB64,
+            embVersion,
           ],
         );
       } catch (err) {
@@ -887,4 +1148,100 @@ function bboxIoU(
   const union = areaA + areaB - intersection;
 
   return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * #2 — Fold a new sighting's embedding into a stored object centroid via the
+ * incremental mean `centroid[i] = (centroid[i]*n + next[i]) / (n+1)`, where `n`
+ * is the sighting count BEFORE this sighting. Mirrors
+ * `FaceSnapshotService.updateCentroid` (face-snapshot.service.ts:535-553) for
+ * objects.
+ *
+ * Because the centroid started equal to the first sighting with `n=1`, repeated
+ * folding yields the true running mean of all sightings. This is bounded
+ * assimilation within a FIXED embedding space — never a learned-backbone drift
+ * (stability invariant #2). Returns a NEW vector (does not mutate `centroid`);
+ * defensively no-ops (returns the original centroid) on dimension mismatch or
+ * non-positive/NaN `n`, so a malformed stored row never corrupts the centroid.
+ */
+export function foldObjectCentroid(
+  centroid: number[],
+  next: number[],
+  n: number,
+): number[] {
+  if (centroid.length === 0) return next.slice();
+  if (next.length !== centroid.length || !Number.isFinite(n) || n < 1) {
+    return centroid;
+  }
+  const out = centroid.slice();
+  for (let i = 0; i < out.length; i++) {
+    out[i] = (out[i] * n + next[i]) / (n + 1);
+  }
+  return out;
+}
+
+/**
+ * P3.A (atlas BLOCKER-2) — normalize a pixel-space bbox `[xMin,yMin,xMax,yMax]`
+ * to `[0,1]` by the frame dims, so spatial IoU / size ratios are comparable
+ * across resolutions (a 640×480 stored box vs a 1280×720 observation would
+ * otherwise never overlap in raw pixels). Both the persisted box and the
+ * observation box go through this, so they live in the SAME normalized space.
+ *
+ * `frameWidth`/`frameHeight` default to 640×480 (P2.1 convention) when absent.
+ * Returns `null` on a null/degenerate box or non-positive frame dims, so a
+ * malformed box simply drops the spatial/size signals rather than poisoning them.
+ */
+export function normalizeBbox(
+  bbox: [number, number, number, number] | null | undefined,
+  frameWidth: number | null | undefined,
+  frameHeight: number | null | undefined,
+): [number, number, number, number] | null {
+  if (!bbox || bbox.length !== 4) return null;
+  const w = frameWidth && frameWidth > 0 ? frameWidth : DEFAULT_FRAME_W;
+  const h = frameHeight && frameHeight > 0 ? frameHeight : DEFAULT_FRAME_H;
+  const [xMin, yMin, xMax, yMax] = bbox;
+  if (![xMin, yMin, xMax, yMax].every((v) => Number.isFinite(v))) return null;
+  return [xMin / w, yMin / h, xMax / w, yMax / h];
+}
+
+/**
+ * P3.A — parse a JSON-string DB column (`bounding_box`, `dominant_colors`) into
+ * its value, mirroring `parseVectorLiteral`'s defensive contract: returns `null`
+ * on null/empty/malformed input so a corrupt row DROPS that binding signal
+ * rather than throwing on the hot re-ID path. Only arrays/objects are accepted
+ * (a bare scalar string column is treated as malformed).
+ */
+export function parseJsonOrNull<T = unknown>(
+  raw: string | null | undefined,
+): T | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return parsed as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a pgvector text literal (`'[1,2,3]'`) into a `number[]`. pgvector's text
+ * format is valid JSON, so `JSON.parse` suffices. Returns `null` on
+ * empty/invalid/non-finite input so the caller falls back to a count-only update
+ * rather than writing a corrupted centroid.
+ */
+export function parseVectorLiteral(
+  literal: string | null | undefined,
+): number[] | null {
+  if (!literal) return null;
+  try {
+    const parsed: unknown = JSON.parse(literal);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    if (!parsed.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+      return null;
+    }
+    return parsed as number[];
+  } catch {
+    return null;
+  }
 }

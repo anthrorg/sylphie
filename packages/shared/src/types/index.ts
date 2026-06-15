@@ -1,6 +1,8 @@
 // Sensory pipeline types
 export {
   EMBEDDING_DIM,
+  OBJECT_EMBEDDING_DIM,
+  EMBEDDING_VERSION,
   type VideoDetection,
   type FaceDetection,
   type SensoryFrame,

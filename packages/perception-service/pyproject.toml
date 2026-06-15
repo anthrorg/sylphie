@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+# Pytest scaffold for the perception-service (Python sidecar).
+# Tests live under ./tests and import the in-tree `cobeing` package, which is
+# resolved by adding the package root (this directory) to sys.path. Pytest does
+# this automatically because this file anchors the rootdir here and conftest.py
+# sits alongside it.
+testpaths = ["tests"]
+
+# Registered markers. Registering them silences pytest's
+# "PytestUnknownMarkWarning" for marks used in the suite, and lets
+# `-m "not requires_models"` / `-m "not slow"` selection work cleanly.
+markers = [
+    "requires_models: test needs heavy model deps (onnxruntime/mediapipe/insightface/neo4j); skipped LOUDLY when an import fails",
+    "slow: test is slow (loads real models, downloads weights, or runs end-to-end); deselect with -m 'not slow'",
+]

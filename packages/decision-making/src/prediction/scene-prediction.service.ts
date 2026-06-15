@@ -34,8 +34,15 @@ export interface ScenePredictionResult {
 
 /** Threshold for bbox centroid movement to count as "moved" (fraction of frame). */
 const MOVEMENT_THRESHOLD = 0.15;
-const FRAME_W = 640;
-const FRAME_H = 480;
+/**
+ * P2.1 — default frame size used to normalize bbox-centroid movement when a
+ * SceneSnapshot carries no real `frameWidth`/`frameHeight` (legacy / cassette
+ * frames). The live path threads the TRUE decoded dims from the sidecar via the
+ * snapshot; absent → these defaults, so the math is byte-identical to the old
+ * hardcoded 640x480.
+ */
+const DEFAULT_FRAME_W = 640;
+const DEFAULT_FRAME_H = 480;
 
 /**
  * WS5 T4 / P1c — familiarity habituation decay constant.
@@ -278,6 +285,11 @@ export class ScenePredictionService {
   compareScene(snapshot: SceneSnapshot): ScenePredictionResult {
     const confirmed = snapshot.objects.filter(o => o.state === 'confirmed');
 
+    // P2.1 — normalize bbox-centroid movement by the REAL frame dims when the
+    // snapshot carries them (live sidecar path), else the legacy defaults.
+    const frameW = snapshot.frameWidth ?? DEFAULT_FRAME_W;
+    const frameH = snapshot.frameHeight ?? DEFAULT_FRAME_H;
+
     // On first frame (cold start), there is nothing to compare against — no
     // errors, surprise 0. Predictions are seeded by the subsequent
     // advancePredictions() call, NOT here (this method is pure).
@@ -340,7 +352,12 @@ export class ScenePredictionService {
       }
 
       // Check if it moved significantly.
-      const movement = bboxCentroidDistance(obj.bbox, predicted.expectedBbox);
+      const movement = bboxCentroidDistance(
+        obj.bbox,
+        predicted.expectedBbox,
+        frameW,
+        frameH,
+      );
       if (movement > MOVEMENT_THRESHOLD) {
         errors.push({
           trackId: obj.trackId,
@@ -440,10 +457,12 @@ export class ScenePredictionService {
 function bboxCentroidDistance(
   a: [number, number, number, number],
   b: [number, number, number, number],
+  frameW: number = DEFAULT_FRAME_W,
+  frameH: number = DEFAULT_FRAME_H,
 ): number {
-  const cx_a = (a[0] + a[2]) / 2 / FRAME_W;
-  const cy_a = (a[1] + a[3]) / 2 / FRAME_H;
-  const cx_b = (b[0] + b[2]) / 2 / FRAME_W;
-  const cy_b = (b[1] + b[3]) / 2 / FRAME_H;
+  const cx_a = (a[0] + a[2]) / 2 / frameW;
+  const cy_a = (a[1] + a[3]) / 2 / frameH;
+  const cx_b = (b[0] + b[2]) / 2 / frameW;
+  const cy_b = (b[1] + b[3]) / 2 / frameH;
   return Math.sqrt((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2);
 }

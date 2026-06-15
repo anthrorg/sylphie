@@ -85,6 +85,9 @@ class _AppState:
     detector: Any | None = None          # YoloDetector, for the /detect endpoint
     face_detector: Any | None = None     # MediaPipeFaceDetector, for face detection
     embedding_extractor: Any | None = None  # OnnxEmbeddingExtractor, lazy-init
+    # P3.A — DominantColorExtractor (8x8x8 RGB histogram, no cv2/numpy hard dep),
+    # lazy-init like embedding_extractor so a fresh process pays the cost once.
+    color_extractor: Any | None = None
     config: Any | None = None            # PerceptionConfig
     model_loaded: bool = False
     face_model_loaded: bool = False
@@ -489,10 +492,23 @@ async def detect(request: Request) -> JSONResponse:
 
             # Extract embedding for CONFIRMED tracks (lazy-init extractor).
             embedding: list[float] | None = None
+            # P3.A — per-track dominant colors + JPEG crop (CONFIRMED only).
+            dominant_colors: list[list[int]] | None = None
+            crop_b64: str | None = None
             if is_confirmed:
                 embedding = await loop.run_in_executor(
                     None,
                     _extract_track_embedding,
+                    frame,
+                    t.detection,
+                )
+                # Color + crop are best-effort: `_extract_track_color_and_crop`
+                # catches every error and returns (None, None) — it NEVER raises
+                # out of /detect (hot-path failure-mode discipline). Run off the
+                # event loop (pixel iteration is CPU-bound) like the embedding.
+                dominant_colors, crop_b64 = await loop.run_in_executor(
+                    None,
+                    _extract_track_color_and_crop,
                     frame,
                     t.detection,
                 )
@@ -517,6 +533,11 @@ async def detect(request: Request) -> JSONResponse:
                     t.last_seen_at.isoformat() if t.last_seen_at else None
                 ),
                 "embedding": embedding,
+                # P3.A — top-K dominant colors [[r,g,b], ...] and a base64 JPEG
+                # crop of the bbox region. Both null on extraction failure or for
+                # non-CONFIRMED tracks (degrade, never crash).
+                "dominant_colors": dominant_colors,
+                "crop_b64": crop_b64,
             })
 
         scene_summary = {
@@ -546,6 +567,13 @@ async def detect(request: Request) -> JSONResponse:
         "face_oval": face_oval,
         "tracked_objects": tracked_objects_json,
         "scene_summary": scene_summary,
+        # Real decoded frame size (pixels). The frame was decoded from the
+        # submitted JPEG in `_decode_jpeg_to_frame`, which populates these from
+        # img_rgb.shape[:2]. Threaded so downstream spatial normalizers divide
+        # by the TRUE dims instead of a hardcoded 640x480 (consumers default to
+        # 640x480 when absent, so legacy/cassette frames stay byte-identical).
+        "frame_width": frame.width,
+        "frame_height": frame.height,
     })
 
 
@@ -607,6 +635,9 @@ async def detect_annotated(request: Request) -> JSONResponse:
             for d in detections
         ],
         "annotated_frame": base64.b64encode(annotated_jpeg).decode("ascii"),
+        # Real decoded frame size (pixels) — same contract as /detect.
+        "frame_width": frame.width,
+        "frame_height": frame.height,
     })
 
 
@@ -954,6 +985,124 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
     except Exception as exc:
         logger.warning("Track embedding extraction failed: %s", exc)
         return None
+
+
+_color_init_lock = threading.Lock()
+
+
+def _get_masked_rgb_bytes(frame: Any, detection: Any) -> bytes:  # noqa: ANN401
+    """Return the frame's raw-RGB bytes with background outside the segmentation
+    mask zeroed (when a mask is present), matching `_extract_track_embedding`.
+
+    The embedding path masks the crop so the appearance vector captures only the
+    object, not the surrounding scene; P3.A computes dominant colors over the
+    SAME masked region so the color signature is consistent with the embedding.
+    When the detection carries no usable mask (or cv2/numpy are unavailable),
+    the raw frame bytes are returned unchanged (the DominantColorExtractor then
+    bins the full bbox crop — still correct, just not background-suppressed).
+    """
+    frame_data = frame.data
+    mask_polygon = getattr(detection, "mask_polygon", None)
+    if not (mask_polygon and len(mask_polygon) > 2):
+        return frame_data
+    try:
+        import cv2  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+
+        arr = np.frombuffer(frame_data, dtype=np.uint8).reshape(
+            (frame.height, frame.width, 3),
+        ).copy()  # copy because frombuffer returns read-only
+        pts = np.array(mask_polygon, dtype=np.int32)
+        mask = np.zeros(arr.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 255)
+        arr[mask == 0] = 0
+        return arr.tobytes()
+    except Exception:
+        # Masking is best-effort; fall back to the unmasked crop.
+        return frame_data
+
+
+def _extract_track_color_and_crop(
+    frame: Any,  # noqa: ANN401
+    detection: Any,  # noqa: ANN401
+) -> tuple[list[list[int]] | None, str | None]:
+    """P3.A — extract per-track ``dominant_colors`` and a JPEG ``crop_b64``.
+
+    Returns ``(dominant_colors, crop_b64)`` where:
+
+    - ``dominant_colors`` is the top-K dominant colors of the track's (masked)
+      bbox crop as ``[[r, g, b], ...]`` via the existing ``DominantColorExtractor``
+      (8x8x8 RGB histogram — no cv2/numpy hard dependency). Computed over the
+      SAME masked region the embedding uses, so the color signature aligns with
+      the appearance vector. ``None`` on any failure.
+    - ``crop_b64`` is the track's bbox region of the frame, JPEG-encoded then
+      base64-encoded (forward crop retention, plan §9.3.6). ``None`` on failure.
+
+    Each leg degrades independently to ``None`` — never raises — so a color or
+    encode failure never takes down ``/detect`` (mirrors the embedding path's
+    ``except -> None`` discipline).
+    """
+    dominant_colors: list[list[int]] | None = None
+    crop_b64: str | None = None
+
+    bbox = (
+        detection.bbox_x_min,
+        detection.bbox_y_min,
+        detection.bbox_x_max,
+        detection.bbox_y_max,
+    )
+
+    # --- dominant_colors over the masked crop (DominantColorExtractor) ---
+    try:
+        if _state.color_extractor is None:
+            with _color_init_lock:
+                if _state.color_extractor is None:
+                    from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                        DominantColorExtractor,
+                    )
+                    _state.color_extractor = DominantColorExtractor(n_colors=4)
+        masked = _get_masked_rgb_bytes(frame, detection)
+        colors = _state.color_extractor.extract(
+            masked, bbox, frame.width, frame.height,
+        )
+        # Normalize tuples -> plain lists so the JSON payload is [[r,g,b], ...].
+        dominant_colors = [[int(c[0]), int(c[1]), int(c[2])] for c in colors]
+    except Exception as exc:
+        logger.warning("Track dominant-color extraction failed: %s", exc)
+        dominant_colors = None
+
+    # --- crop_b64: JPEG-encode the bbox region, then base64 ---
+    try:
+        import base64  # noqa: PLC0415
+
+        import cv2  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+
+        arr = np.frombuffer(frame.data, dtype=np.uint8).reshape(
+            (frame.height, frame.width, 3),
+        )
+        x_min = max(0, int(detection.bbox_x_min))
+        y_min = max(0, int(detection.bbox_y_min))
+        x_max = min(frame.width, int(detection.bbox_x_max))
+        y_max = min(frame.height, int(detection.bbox_y_max))
+        if x_min >= x_max or y_min >= y_max:
+            crop_b64 = None
+        else:
+            crop_rgb = arr[y_min:y_max, x_min:x_max]
+            # frame.data is RGB; cv2.imencode expects BGR for correct colors.
+            crop_bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+            ok, encoded = cv2.imencode(
+                ".jpg", crop_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75],
+            )
+            if ok:
+                crop_b64 = base64.b64encode(encoded.tobytes()).decode("ascii")
+            else:
+                crop_b64 = None
+    except Exception as exc:
+        logger.warning("Track crop encode failed: %s", exc)
+        crop_b64 = None
+
+    return dominant_colors, crop_b64
 
 
 def _annotate_frame(jpeg_bytes: bytes, detections: list) -> bytes:

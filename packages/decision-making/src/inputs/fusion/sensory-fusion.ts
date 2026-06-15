@@ -8,6 +8,38 @@ import { xavierMatrix, linearProject } from '../linear-algebra';
 const FUSION_PROJECTION_SEED = 0xf05e;
 
 /**
+ * P1 #0 — `visual_embedding` fusion scale (PROVISIONAL — cortex sets the final
+ * value from the live cosine-histogram measurement; see the P1 MEASUREMENT-SPEC).
+ *
+ * The visual_embedding encoder L2-normalizes its pooled vector to unit norm
+ * before projection (the primary dominance guard), so its projected block is
+ * already magnitude-bounded. This scale is the SECOND, parameterized knob: it
+ * multiplies the visual_embedding 768-block AFTER projection and BEFORE it joins
+ * the concat, letting cortex tune the modality's fused influence from one place
+ * without touching encoder or fusion-dispatch logic. 1.0 = parity with the other
+ * modalities pending measurement.
+ */
+// cortex-set (2026-06-14, live measurement): 0.5 keeps the L2-normed block
+// bounded (~0.44x a unit text block) while still breaking the scene-collapse #0
+// targets; full parity (1.0) over-weights EfficientNet classifier features whose
+// cosine bands are noisy. Both bounded-both-directions checks hold at 0.5.
+const VISUAL_EMBEDDING_FUSION_SCALE = 0.5;
+
+/**
+ * Per-modality post-projection fusion scale. Applied to each modality's
+ * EMBEDDING_DIM block AFTER the encoder produced it and BEFORE concatenation,
+ * so the registry/fusion stays modality-agnostic (a general map, not a
+ * visual_embedding special-case). Any modality NOT listed defaults to 1.0 via
+ * DEFAULT_FUSION_SCALE — so existing modalities are byte-for-byte unchanged.
+ */
+const MODALITY_FUSION_SCALES: Record<string, number> = {
+  visual_embedding: VISUAL_EMBEDDING_FUSION_SCALE,
+};
+
+/** Default post-projection scale for any modality not in MODALITY_FUSION_SCALES. */
+const DEFAULT_FUSION_SCALE = 1.0;
+
+/**
  * Modalities whose encoders perform a blocking network call to produce their
  * embedding (currently only 'text', which embeds via the Ollama HTTP endpoint).
  *
@@ -141,18 +173,26 @@ export class SensoryFusionService {
   }
 
   /**
-   * Concatenate all registered modality embeddings in deterministic order,
-   * then project via W * concat + b.
+   * Concatenate all registered modality embeddings in deterministic order
+   * (registry order is ALPHABETICAL — the concat offset for every modality is
+   * DERIVED from modalityOrder, never a literal), then project via W*concat + b.
+   *
+   * P1 #0 — each modality's EMBEDDING_DIM block is multiplied by its
+   * per-modality fusion scale (MODALITY_FUSION_SCALES, default 1.0) AFTER the
+   * encoder produced it and BEFORE concatenation. This is the parameterized
+   * influence knob (provisional 1.0 for visual_embedding); every other modality
+   * defaults to 1.0 so the concat is byte-identical to pre-#0 behavior for them.
    */
   private concatAndProject(embeddings: Record<string, number[]>): number[] {
     const zero = new Array(EMBEDDING_DIM).fill(0);
 
-    // Build concatenated vector in registry order
+    // Build concatenated vector in registry (alphabetical) order.
     const concat: number[] = [];
     for (const name of this.modalityOrder!) {
       const emb = embeddings[name] ?? zero;
+      const scale = MODALITY_FUSION_SCALES[name] ?? DEFAULT_FUSION_SCALE;
       for (let i = 0; i < EMBEDDING_DIM; i++) {
-        concat.push(emb[i]);
+        concat.push(emb[i] * scale);
       }
     }
 

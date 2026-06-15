@@ -11,3 +11,6 @@ mediapipe>=0.10,<1.0
 onnxruntime>=1.17,<2.0
 transformers>=4.44,<5.0
 einops>=0.7
+neo4j>=5.13,<6.0
+insightface>=1.0,<2.0
+accelerate>=0.26,<2.0

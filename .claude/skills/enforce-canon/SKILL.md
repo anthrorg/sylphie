@@ -20,7 +20,7 @@ Run a CANON compliance check against a proposal, plan, or code change.
 
 ## Workflow
 
-1. Read `wiki/CANON.md` in full
+1. Read `sylphie-tech-spec.md` §9 (Constraint Canon — the Six Immutable Standards) and §3.2 (Drive Isolation) in full
 2. Identify the subject under review (diff, epic plan, or proposal)
 3. Spawn the **canon** agent to run the full enforcement checklist
 4. Return structured verdict: COMPLIANT, NON-COMPLIANT, or COMPLIANT WITH CONCERNS

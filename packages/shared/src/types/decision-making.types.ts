@@ -158,6 +158,16 @@ export interface EpisodeInput {
   readonly contextFingerprint: string;
 
   /**
+   * Embedding/fingerprint scheme version (P1 #0+#3). First-class provenance for
+   * the fused-vector scheme that produced `contextFingerprint`. The version is
+   * ALSO baked into the fingerprint's hash preimage, so v(N) and v(N+1) can
+   * never cross-version-collide; this field makes the version queryable/auditable
+   * on the episode itself. Rides free in the checkpoint JSONB (no DB migration).
+   * Optional on input: when omitted the encoder stamps EMBEDDING_VERSION.
+   */
+  readonly embeddingVersion?: number;
+
+  /**
    * Attention level at encoding time. In [0.0, 1.0].
    * Used by the encoding gate: attention > 0.60 passes the gate.
    */
@@ -252,6 +262,15 @@ export interface Episode {
 
   /** Context fingerprint for Jaccard/cosine similarity matching. */
   readonly contextFingerprint: string;
+
+  /**
+   * Embedding/fingerprint scheme version (P1 #0+#3). First-class provenance for
+   * the fused-vector scheme behind `contextFingerprint`. Pre-P1 checkpoint rows
+   * have no `embeddingVersion`; the deserialization shim back-fills `1` so the
+   * field is always present after restore (a legacy v1 fingerprint stays a clean
+   * versioned MISS against current-version queries — never a corrupted hit).
+   */
+  readonly embeddingVersion?: number;
 
   /**
    * Speaker identity for conversation-triggered episodes (WS4 Ticket 3,

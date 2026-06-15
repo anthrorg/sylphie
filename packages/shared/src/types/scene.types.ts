@@ -19,8 +19,31 @@ export interface TrackedObjectDTO {
   lastSeenAt: string | null;
   /** 1280D EfficientNet-B0 embedding, only present for CONFIRMED tracks. */
   embedding: number[] | null;
+  /**
+   * P3.A — top-K dominant colors of the (masked) bbox crop as `[r, g, b]`
+   * triples, from the Python `DominantColorExtractor`. Present only for
+   * CONFIRMED tracks; absent/undefined for legacy or cassette frames (the
+   * BindingService then simply drops the color signal). Lives alongside the
+   * embedding as a session-invariant appearance signal for A.5 re-ID.
+   */
+  dominantColors?: Array<[number, number, number]>;
+  /**
+   * P3.A — base64-encoded JPEG of the track's bbox region (forward crop
+   * retention, plan §9.3.6). Persisted to `visual_object_embeddings.object_crop_b64`
+   * on node creation; deliberately NOT a scorer input (not fetched on the hot
+   * re-ID path). Absent/undefined when crop encoding fails or off the sidecar.
+   */
+  cropB64?: string;
   /** Set by SceneEventDetector when face identification matches a person. */
   personId?: string;
+  /**
+   * Real camera frame size in pixels (P2.1). Threaded from the perception
+   * sidecar's decoded frame so spatial normalizers (bbox centers/sizes,
+   * centroid distance) divide by the TRUE dims. Defaults 640x480 when absent
+   * (legacy / cassette frames) — absent + defaulted = zero behavior change.
+   */
+  frameWidth?: number;
+  frameHeight?: number;
   /**
    * WS5 T0.8 — synthetic-frame discriminator. The real Python sidecar never
    * sets this (absent → false); the gate's perception cassette sets it `true`
@@ -79,4 +102,11 @@ export interface SceneSnapshot {
   objects: TrackedObjectDTO[];
   events: SceneEvent[];
   summary: SceneSummary;
+  /**
+   * Real camera frame size in pixels (P2.1); defaults 640x480 when absent
+   * (legacy / cassette frames). The SceneEncoder and ScenePredictionService
+   * read these to normalize bbox geometry by the TRUE frame dims.
+   */
+  frameWidth?: number;
+  frameHeight?: number;
 }

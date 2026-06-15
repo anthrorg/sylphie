@@ -105,6 +105,7 @@ import { FaceEncoder } from './inputs/encoders/face.encoder';
 import { DriveEncoder } from './inputs/encoders/drive.encoder';
 import { AudioEncoder } from './inputs/encoders/audio.encoder';
 import { SceneEncoder } from './inputs/encoders/scene.encoder';
+import { VisualEmbeddingEncoder } from './inputs/encoders/visual-embedding.encoder';
 import { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
@@ -234,6 +235,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     DriveEncoder,
     AudioEncoder,
     SceneEncoder,
+    VisualEmbeddingEncoder,
     SensoryFusionService,
     TickSamplerService,
   ],
@@ -273,6 +275,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     DriveEncoder,
     AudioEncoder,
     SceneEncoder,
+    VisualEmbeddingEncoder,
     SensoryFusionService,
     TickSamplerService,
 

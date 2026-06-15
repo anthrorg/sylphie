@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -1545,6 +1545,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           inputSummary,
           actionTaken: actionId,
           contextFingerprint,
+          // P1 #0+#3 — stamp the embedding/fingerprint scheme version that
+          // produced `contextFingerprint` (generateFingerprint bakes the same
+          // EMBEDDING_VERSION into the hash preimage). First-class provenance.
+          embeddingVersion: EMBEDDING_VERSION,
           attention,
           arousal,
           ...(this.currentTurnContext !== null ? {

@@ -35,8 +35,14 @@ const CLASS_INDEX: Map<string, number> = new Map(
  */
 const FEATURE_DIM = 35;
 const SCENE_PROJECTION_SEED = 0x5ce0e;
-const FRAME_W = 640;
-const FRAME_H = 480;
+/**
+ * P2.1 — default frame size used when a SceneSnapshot carries no real
+ * `frameWidth`/`frameHeight` (legacy / cassette frames). The live path threads
+ * the TRUE decoded dims from the sidecar; absent → these defaults, so the math
+ * is byte-identical to the old hardcoded 640x480.
+ */
+const DEFAULT_FRAME_W = 640;
+const DEFAULT_FRAME_H = 480;
 
 /**
  * Encodes a SceneSnapshot (tracked objects + events) into a 768-dimensional
@@ -87,6 +93,11 @@ export class SceneEncoder
     const features = new Array(FEATURE_DIM).fill(0);
     const n = confirmed.length;
 
+    // P2.1 — normalize bbox geometry by the REAL frame dims when the snapshot
+    // carries them (live sidecar path), else the legacy defaults.
+    const frameW = snapshot.frameWidth ?? DEFAULT_FRAME_W;
+    const frameH = snapshot.frameHeight ?? DEFAULT_FRAME_H;
+
     // [0..19] Per-class count histogram
     for (const obj of confirmed) {
       const idx = CLASS_INDEX.get(obj.label);
@@ -114,10 +125,10 @@ export class SceneEncoder
         }
       }
       const [x1, y1, x2, y2] = bestPerson.bbox;
-      features[22] = (x1 + x2) / 2 / FRAME_W; // center X
-      features[23] = (y1 + y2) / 2 / FRAME_H; // center Y
-      features[24] = (x2 - x1) / FRAME_W;     // width
-      features[25] = (y2 - y1) / FRAME_H;     // height
+      features[22] = (x1 + x2) / 2 / frameW; // center X
+      features[23] = (y1 + y2) / 2 / frameH; // center Y
+      features[24] = (x2 - x1) / frameW;     // width
+      features[25] = (y2 - y1) / frameH;     // height
     }
 
     // [26] Mean confidence
@@ -149,8 +160,8 @@ export class SceneEncoder
 
     // [31..34] Quadrant density (TL, TR, BL, BR)
     const quadrants = [0, 0, 0, 0]; // TL, TR, BL, BR
-    const midX = FRAME_W / 2;
-    const midY = FRAME_H / 2;
+    const midX = frameW / 2;
+    const midY = frameH / 2;
     for (const obj of confirmed) {
       const cx = (obj.bbox[0] + obj.bbox[2]) / 2;
       const cy = (obj.bbox[1] + obj.bbox[3]) / 2;

@@ -26,7 +26,7 @@ import type {
   DriveName,
   SceneSnapshot,
 } from '@sylphie/shared';
-import { DRIVE_INDEX_ORDER, verboseFor } from '@sylphie/shared';
+import { DRIVE_INDEX_ORDER, EMBEDDING_VERSION, verboseFor } from '@sylphie/shared';
 
 const vlog = verboseFor('Cortex');
 import type { IEpisodicMemoryService, IActionRetrieverService } from '../interfaces/decision-making.interfaces';
@@ -351,20 +351,35 @@ export class ProcessInputService {
   /**
    * Generate a deterministic context fingerprint.
    *
-   * Uses SHA-256 of the fused embedding's first 64 values + category + dominant drive.
-   * This produces consistent fingerprints for similar sensory contexts.
+   * P1 #3 — widened from the first-64-dims slice to the FULL fused vector. With a
+   * random fusion matrix the variance is NOT concentrated early, so the old
+   * slice(0,64) let ~8% of dims decide identity: two visually-distinct same-COCO
+   * scenes (mug-on-desk vs book-on-desk) collapsed to ONE fingerprint. Hashing
+   * the full quantized vector restores discrimination — once the `visual_embedding`
+   * modality (#0) is fused, those scenes now produce DIFFERENT fingerprints.
+   *
+   * P1 #0+#3 HARD REQUIREMENT 1 — EMBEDDING_VERSION leads the hash PREIMAGE so a
+   * v(N) fingerprint can NEVER cross-version-collide with a v(N+1) fingerprint.
+   * Bumping the version (e.g. adding a fused modality or widening the slice) makes
+   * the migration a clean one-time recall MISS, not a silent corrupted HIT. v1
+   * episodes simply stop matching `queryByFingerprint` and remain reachable via
+   * the UNAFFECTED `queryByContent` free-text path; the 50-slot ring rolls them
+   * over naturally — no deletion or migration of v1 episodes.
+   *
+   * 2dp quantization is preserved so near-identical frames still collapse to one
+   * fingerprint (the intended exact-dedup behavior).
    */
   private generateFingerprint(
     frame: SensoryFrame,
     category: InputCategory,
     dominantDrive: DriveName,
   ): string {
-    // Use first 64 values of fused embedding for fingerprint (sufficient for uniqueness)
-    const embeddingSlice = frame.fused_embedding.slice(0, 64);
-    // Quantize to 2 decimal places to allow near-identical frames to match
-    const quantized = embeddingSlice.map((v) => Math.round(v * 100) / 100);
+    // Quantize the FULL fused vector to 2 decimal places (collapse near-identical
+    // frames; discriminate genuinely-different ones across ALL dims, not just 64).
+    const quantized = frame.fused_embedding.map((v) => Math.round(v * 100) / 100);
 
-    const fingerprintString = `${category}::${quantized.join(',')}::${dominantDrive}`;
+    // EMBEDDING_VERSION leads the preimage — cross-version collision-free (HR1).
+    const fingerprintString = `${EMBEDDING_VERSION}::${category}::${quantized.join(',')}::${dominantDrive}`;
     return createHash('sha256').update(fingerprintString).digest('hex');
   }
 

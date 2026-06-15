@@ -51,6 +51,7 @@ import { FaceSnapshotService } from './services/face-snapshot.service';
 import { VoiceLatentSpaceService } from './services/voice-latent-space.service';
 import { SceneEventDetectorService } from './services/scene-event-detector.service';
 import { VisualWorkingMemoryService } from './services/visual-working-memory.service';
+import { BindingService } from './services/binding.service';
 import { TelemetryBroadcastService } from './services/telemetry-broadcast.service';
 import { SupervisorBroadcastService } from './services/supervisor-broadcast.service';
 import { CognitionGatewayService } from './services/cognition-gateway.service';
@@ -205,6 +206,7 @@ class CognitionModule {}
     VoiceLatentSpaceService,
     SceneEventDetectorService,
     VisualWorkingMemoryService,
+    BindingService,
     TelemetryBroadcastService,
     SupervisorBroadcastService,
     CognitionBridgeService,

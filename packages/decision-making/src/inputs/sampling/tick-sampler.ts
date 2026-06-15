@@ -229,6 +229,20 @@ export class TickSamplerService {
     this.update('scene', snapshot);
   }
 
+  /**
+   * P1 #0 — feed the `visual_embedding` modality slot with the SAME
+   * SceneSnapshot that backs the `scene` slot. The VisualEmbeddingEncoder pools
+   * `objects[].embedding` (the per-CONFIRMED-track appearance vectors) that the
+   * SceneEncoder does NOT consume — this is the cross-array signal that was
+   * previously discarded at the fusion boundary. Kept as a distinct slot (not a
+   * reuse of `scene`) so the registry/fusion dispatch stays modality-agnostic:
+   * each encoder reads its OWN named slot. Gateways call this alongside
+   * updateScene so a single frame populates both.
+   */
+  updateVisualEmbedding(snapshot: SceneSnapshot): void {
+    this.update('visual_embedding', snapshot);
+  }
+
   updateSceneDescription(description: string): void {
     this.latestValues.set('scene_description', description);
   }

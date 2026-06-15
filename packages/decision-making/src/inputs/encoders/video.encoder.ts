@@ -30,8 +30,14 @@ const CLASS_INDEX: Map<string, number> = new Map(
  */
 const FEATURE_DIM = 26;
 const VIDEO_PROJECTION_SEED = 0xa1de0;
-const FRAME_W = 640;
-const FRAME_H = 480;
+/**
+ * P2.1 — default frame size used to normalize bbox geometry when a detection
+ * carries no real `frameWidth`/`frameHeight` (legacy / cassette frames). The
+ * live path threads the TRUE decoded dims from the sidecar; absent → these
+ * defaults, so the math is byte-identical to the old hardcoded 640x480.
+ */
+const DEFAULT_FRAME_W = 640;
+const DEFAULT_FRAME_H = 480;
 
 /**
  * Encodes structured video detections from the Python sidecar (OpenCV + YOLO)
@@ -90,16 +96,19 @@ export class VideoEncoder
     // Detection count (slot 20), clamped to [0, 1]
     features[20] = Math.min(n / 20, 1);
 
-    // Spatial features (slots 21-23)
+    // Spatial features (slots 21-23). P2.1 — divide by the REAL frame dims when
+    // the detections carry them (live sidecar path), else the legacy defaults.
+    const frameW = detections[0]?.frameWidth ?? DEFAULT_FRAME_W;
+    const frameH = detections[0]?.frameHeight ?? DEFAULT_FRAME_H;
     let sumCx = 0;
     let sumCy = 0;
     let sumArea = 0;
-    const frameArea = FRAME_W * FRAME_H;
+    const frameArea = frameW * frameH;
 
     for (const det of detections) {
       const [x1, y1, x2, y2] = det.bbox;
-      sumCx += (x1 + x2) / 2 / FRAME_W;
-      sumCy += (y1 + y2) / 2 / FRAME_H;
+      sumCx += (x1 + x2) / 2 / frameW;
+      sumCy += (y1 + y2) / 2 / frameH;
       sumArea += ((x2 - x1) * (y2 - y1)) / frameArea;
     }
 

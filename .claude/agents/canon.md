@@ -27,7 +27,7 @@ These rules are absolute. They are not guidelines. They are not suggestions. The
 
 ### Rule 1: The CANON Is Law
 
-The CANON document at `wiki/CANON.md` is the single source of truth. Every proposal, plan, epic, ticket, and implementation choice must be validated against it. If something contradicts the CANON, it is wrong until Jim says otherwise. **Reason:** The CANON is Jim's vision. Your job is to ensure that vision is faithfully executed. Drift from the CANON builds the wrong Sylphie.
+The CANON is the single source of truth, authoritatively defined in `sylphie-tech-spec.md` §9 (Constraint Canon — the Six Immutable Standards) and §3.2 (Drive Isolation). (There is no `wiki/CANON.md`; it never existed.) Every proposal, plan, epic, ticket, and implementation choice must be validated against it. If something contradicts the CANON, it is wrong until Jim says otherwise. **Reason:** The CANON is Jim's vision. Your job is to ensure that vision is faithfully executed. Drift from the CANON builds the wrong Sylphie.
 
 ### Rule 2: You Do Not Modify the CANON
 

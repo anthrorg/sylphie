@@ -32,6 +32,7 @@ import {
   type DriveSnapshot,
   DriveName,
   DRIVE_INDEX_ORDER,
+  EMBEDDING_VERSION,
   TimescaleService,
   verboseFor,
 } from '@sylphie/shared';
@@ -248,6 +249,13 @@ export class EpisodicMemoryService implements IEpisodicMemoryService, OnModuleIn
           // perception episode that failed to persist its source. 'legacy' rows
           // are neither, so they never vacuously pass a perception assertion.
           ep.source ??= 'legacy';
+          // P1 #0+#3 — deserialization shim. Pre-P1 checkpoint rows have no
+          // `embeddingVersion`. Back-fill `1` (the original 6-modality + first-64
+          // fingerprint scheme) BEFORE the cast, so the field is always present.
+          // A legacy v1 fingerprint stays a clean versioned MISS against the
+          // current EMBEDDING_VERSION query path — never a corrupted cross-version
+          // hit (the version is also baked into the fingerprint hash preimage).
+          ep.embeddingVersion ??= 1;
           this.buffer[row.slot] = ep as Episode;
           if (row.slot > maxSlot) maxSlot = row.slot;
         }
@@ -337,6 +345,10 @@ export class EpisodicMemoryService implements IEpisodicMemoryService, OnModuleIn
       ageWeight,
       encodingDepth: effectiveDepth,
       contextFingerprint: input.contextFingerprint,
+      // P1 #0+#3: persist the embedding/fingerprint scheme version as first-class
+      // provenance. Defaults to the current EMBEDDING_VERSION when the caller does
+      // not supply one. Rides free in the checkpoint JSONB (no DB migration).
+      embeddingVersion: input.embeddingVersion ?? EMBEDDING_VERSION,
       // WS4 T3: persist speaker attribution (absent for self-initiated cycles).
       ...(input.speakerId !== undefined
         ? { speakerId: input.speakerId, speakerIsGuardian: input.speakerIsGuardian ?? false }

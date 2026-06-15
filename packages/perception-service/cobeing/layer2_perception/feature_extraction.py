@@ -327,16 +327,20 @@ class MockEmbeddingExtractor:
 # OnnxEmbeddingExtractor
 # ---------------------------------------------------------------------------
 
-# Default URL and filename for the EfficientNet-B0 ONNX model.
-# The model is auto-downloaded on first use if not already present at
-# ``model_path``.  The output of the penultimate layer (before the
-# classification head) is a 1280-dimensional feature vector.
+# Filename for the EfficientNet-B0 feature-extractor ONNX model.
+# The model MUST be present at ``model_path`` (baked into the image — see the
+# Dockerfile ``COPY efficientnet_b0.onnx``). It is a real efficientnet_b0
+# feature extractor: input NCHW ``[1, 3, 224, 224]``, output ``[1, 1280]`` (the
+# penultimate avg-pool layer, before the FC classification head).
+#
+# Auto-download has been REMOVED. The previous URL pointed to
+# ``efficientnet-lite4-11.onnx`` — a 1000-class NHWC *classifier*, which is
+# incompatible with this extractor in BOTH layout (NHWC vs NCHW) and output
+# (1000-class softmax vs 1280-D features). At runtime it produced only
+# ``ONNXRuntimeError: INVALID_ARGUMENT: Got invalid dimensions for input``,
+# so every embedding was silently null. The model is now a build artifact.
 _DEFAULT_MODEL_FILENAME = "efficientnet_b0.onnx"
-_DEFAULT_MODEL_URL = (
-    "https://github.com/onnx/models/raw/main/validated/"
-    "vision/classification/efficientnet-lite4/model/"
-    "efficientnet-lite4-11.onnx"
-)
+_DEFAULT_MODEL_URL = None  # no auto-download — model must be provided/baked
 _MODEL_INPUT_SIZE = 224  # EfficientNet-B0 input: 224x224 RGB
 _EMBEDDING_DIM = 1280  # Feature vector dimension before the FC head
 
@@ -484,30 +488,23 @@ class OnnxEmbeddingExtractor:
     # ------------------------------------------------------------------
 
     def _download_model(self, dest_path: str) -> str:
-        """Download the EfficientNet-B0 ONNX model to ``dest_path``.
+        """Fail loudly — the model is NOT auto-downloaded, it must be provided.
 
-        Uses only stdlib ``urllib`` -- no requests/httpx dependency.
-
-        Args:
-            dest_path: Local file path where the model should be saved.
-
-        Returns:
-            ``dest_path`` after successful download.
+        Auto-download was removed: the prior URL fetched efficientnet-lite4 (a
+        1000-class NHWC classifier), which is incompatible with this NCHW 1280-D
+        feature extractor. Raising here ensures a missing model is never silently
+        replaced by a wrong one (which would make every embedding null).
 
         Raises:
-            RuntimeError: If the download fails.
+            RuntimeError: Always — directs the operator to provide the model.
         """
-        import urllib.request
-
-        try:
-            urllib.request.urlretrieve(_DEFAULT_MODEL_URL, dest_path)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to download EfficientNet-B0 ONNX model from "
-                f"{_DEFAULT_MODEL_URL} to {dest_path}: {exc}"
-            ) from exc
-
-        return dest_path
+        raise RuntimeError(
+            f"EfficientNet-B0 feature model not found at '{dest_path}'. It must "
+            f"be provided as a build artifact (Dockerfile 'COPY efficientnet_b0.onnx'). "
+            f"Auto-download was removed because the prior URL pointed to "
+            f"efficientnet-lite4 (a 1000-class NHWC classifier) incompatible with "
+            f"this NCHW 1280-D feature extractor."
+        )
 
 
 def _path_exists(path: str) -> bool:

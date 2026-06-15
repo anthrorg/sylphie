@@ -86,8 +86,14 @@ const IDENTIFICATION_THRESHOLD = 0.55;
 
 // Yaw proxy: negative = face turned left, positive = right, range ~[-1, 1]
 // Pitch proxy: positive = looking down, negative = looking up, range ~[-0.1, 0.1]
-const FRAME_W = 640;
-const FRAME_H = 480;
+//
+// P2.1 — default frame height used to normalize the pitch proxy when the face
+// frame carries no real `frameHeight` (legacy / cassette frames). The live path
+// threads the TRUE decoded dims from the sidecar via the FaceDetection; absent →
+// this default, so angle classification is byte-identical to the old hardcoded
+// 480. (Yaw is a dimensionless cheek-asymmetry ratio, so no width default is
+// needed.)
+const DEFAULT_FRAME_H = 480;
 
 // ---------------------------------------------------------------------------
 // FaceSnapshotService
@@ -261,8 +267,12 @@ export class FaceSnapshotService implements OnModuleInit {
     if (primary.confidence < MIN_CONFIDENCE) return;
     if (!primary.landmarks || primary.landmarks.length < 455) return;
 
-    // Classify head angle
-    const angle = this.classifyAngle(primary.landmarks);
+    // Classify head angle. P2.1 — pass the real decoded frame height so the
+    // pitch proxy normalizes by the TRUE size (defaults 480 when absent).
+    const angle = this.classifyAngle(
+      primary.landmarks,
+      primary.frameHeight ?? DEFAULT_FRAME_H,
+    );
     if (!angle) return;
 
     vlog('face frame processed', { personId, faceCount: faces.length, confidence: primary.confidence, angle });
@@ -344,8 +354,12 @@ export class FaceSnapshotService implements OnModuleInit {
    *   454 = right cheek
    *   159 = left eye top
    *   386 = right eye top
+   *
+   * P2.1 — `frameH` is the real decoded frame height used to normalize the pitch
+   * proxy; defaults to DEFAULT_FRAME_H (480) when the caller has no real dims
+   * (legacy / cassette frames), keeping the classification byte-identical.
    */
-  classifyAngle(landmarks: number[][]): AngleCategory | null {
+  classifyAngle(landmarks: number[][], frameH: number = DEFAULT_FRAME_H): AngleCategory | null {
     const noseTip = landmarks[1];
     const leftCheek = landmarks[234];
     const rightCheek = landmarks[454];
@@ -364,7 +378,7 @@ export class FaceSnapshotService implements OnModuleInit {
 
     // Pitch: vertical offset of nose relative to eye line, normalized
     const eyeLineY = ((leftEye[1] ?? 0) + (rightEye[1] ?? 0)) / 2;
-    const pitch = ((noseTip[1] ?? 0) - eyeLineY) / FRAME_H;
+    const pitch = ((noseTip[1] ?? 0) - eyeLineY) / frameH;
 
     // Classify with dead zones between categories
     const absYaw = Math.abs(yaw);

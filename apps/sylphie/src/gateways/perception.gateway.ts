@@ -131,6 +131,15 @@ export class PerceptionGateway
 
       const result = await response.json();
 
+      // P2.1 — real decoded frame size from the sidecar. Threaded onto every
+      // spatial DTO below so downstream normalizers divide by the TRUE dims.
+      // Absent (legacy/cassette frames) → undefined → each consumer defaults to
+      // 640x480, keeping byte-identical behavior. We deliberately leave the
+      // values undefined when the sidecar omits them (no `?? 640` here) so the
+      // "absent = legacy default" path is exercised end-to-end.
+      const frameWidth: number | undefined = result.frame_width ?? undefined;
+      const frameHeight: number | undefined = result.frame_height ?? undefined;
+
       // Feed object detections into the sensory pipeline
       const detections = result.detections ?? [];
       const faces = result.faces ?? [];
@@ -146,6 +155,8 @@ export class PerceptionGateway
             class: d.label_raw,
             confidence: d.confidence,
             bbox: [d.bbox_x_min, d.bbox_y_min, d.bbox_x_max, d.bbox_y_max],
+            frameWidth,
+            frameHeight,
           })),
         );
       }
@@ -156,6 +167,8 @@ export class PerceptionGateway
         bbox: [f.bbox_x_min, f.bbox_y_min, f.bbox_x_max, f.bbox_y_max] as [number, number, number, number],
         landmarks: f.landmarks ?? null,
         blendshapes: f.blendshapes ?? null,
+        frameWidth,
+        frameHeight,
       }));
 
       if (mappedFaces.length > 0) {
@@ -187,6 +200,15 @@ export class PerceptionGateway
           firstSeenAt: t.first_seen_at ?? null,
           lastSeenAt: t.last_seen_at ?? null,
           embedding: t.embedding ?? null,
+          // P3.A — per-track dominant colors + base64 JPEG crop from the
+          // sidecar. snake_case → camelCase; absent (legacy/cassette frames) →
+          // undefined → the color signal is simply dropped downstream.
+          dominantColors: t.dominant_colors ?? undefined,
+          cropB64: t.crop_b64 ?? undefined,
+          // P2.1 — real frame dims ride on each tracked object so the
+          // SceneEncoder/predictor normalize bbox geometry by the true size.
+          frameWidth,
+          frameHeight,
           // WS5 T0.8 — data-carried synthetic discriminator. Real sidecar omits
           // it (→ undefined → false downstream); the gate cassette sets it true.
           // This is a value off the detection payload, NOT a GATE_MODE branch.
@@ -207,8 +229,24 @@ export class PerceptionGateway
           summary,
         );
 
+        // P2.1 — carry the real frame dims onto the snapshot itself so the
+        // SceneEncoder and ScenePredictionService normalize by the true size
+        // (the SceneEventDetector builds the snapshot from tracks/summary and
+        // doesn't see the dims; setting them here keeps the change minimal).
+        sceneSnapshot.frameWidth = frameWidth;
+        sceneSnapshot.frameHeight = frameHeight;
+
         // Feed scene snapshot into the sensory pipeline
         this.tickSampler.updateScene(sceneSnapshot);
+
+        // P1 #0 — feed the SAME snapshot into the `visual_embedding` modality
+        // slot. The VisualEmbeddingEncoder pools the per-CONFIRMED-track
+        // `objects[].embedding` appearance vectors (the 1280-D EfficientNet /
+        // P3 DINOv2 1024-D vectors) that the SceneEncoder discards — closing the
+        // cross-array discard so two visually-distinct same-COCO scenes are
+        // distinguishable in the fused latent. Distinct slot keeps fusion
+        // modality-agnostic (each encoder reads its own named slot).
+        this.tickSampler.updateVisualEmbedding(sceneSnapshot);
 
         // Update Visual Working Memory (stabilization + WKG resolution)
         this.vwm.updateScene(sceneSnapshot);
