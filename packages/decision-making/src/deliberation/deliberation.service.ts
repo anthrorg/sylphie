@@ -89,6 +89,16 @@ export interface DeliberationResult {
   readonly knowledgeGrounding: KnowledgeGrounding;
 
   /**
+   * The inner-monologue intent classification for this turn
+   * (MonologueClassification.intent): GREETING | EMOTION | QUESTION | FACT |
+   * COMMAND | UNKNOWN. Threaded out so the decision layer can stamp it onto the
+   * CycleResponse → RESPONSE_GENERATED event, where the self-model writer's
+   * knowledge_retrieval metric gates its denominator on intent='QUESTION'.
+   * 'UNKNOWN' on the degraded no-LLM fallback (classification could not run).
+   */
+  readonly intent: MonologueClassification['intent'];
+
+  /**
    * Provenance id backing a GROUNDED result, when grounding came from a
    * system-verified OKG recall (the deterministic `attr-${personId}-${key}` id
    * PersonModelService.writeFact computes). Null/undefined when grounding was
@@ -441,6 +451,7 @@ export class DeliberationService {
         confidence: monologueParsed.intent === 'GREETING' || monologueParsed.intent === 'EMOTION' ? 0.85 : 0.6,
         rationale: monologueParsed.thought ?? 'Resolved by inner monologue',
         knowledgeGrounding,
+        intent: monologueParsed.intent,
         groundingProvenance,
         groundedBy,
         candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
@@ -799,6 +810,7 @@ export class DeliberationService {
       confidence,
       rationale,
       knowledgeGrounding,
+      intent: monologueParsed.intent,
       groundingProvenance,
       groundedBy,
       candidates,
@@ -885,6 +897,8 @@ export class DeliberationService {
       confidence: 0,
       rationale: reason,
       knowledgeGrounding: 'UNKNOWN',
+      // Classification could not run (LLM unavailable) — honest UNKNOWN intent.
+      intent: 'UNKNOWN',
       candidates: [],
       trace: {
         innerMonologue: reason,

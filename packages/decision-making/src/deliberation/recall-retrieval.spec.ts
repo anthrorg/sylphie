@@ -16,6 +16,7 @@ import {
   retrieveRecallGrounding,
   applyRecallGroundingFromRetrieval,
 } from './recall-retrieval';
+import { recallKeyForQuestion } from './deliberation.service';
 import type { WkgContext } from '../wkg/wkg-context.service';
 
 // Suppress verbose logs.
@@ -158,5 +159,59 @@ describe('WS3-T1 — applyRecallGroundingFromRetrieval (label upgrade + honesty 
     expect(out.grounding).toBe('GROUNDED');
     expect(out.provenance).toBe('wkg-paris-1');
     expect(out.groundedBy).toBe('WKG');
+  });
+});
+
+/**
+ * knowledge_retrieval metric gate — pre-arbitration QUESTION intent for the
+ * procedure-handler and latent-reflex branches.
+ *
+ * Those two branches skip the LLM inner-monologue, so they have no
+ * monologueParsed.intent in scope. The cycle reuses recallKeyForQuestion() — the
+ * SAME deterministic recall classifier that backs computeRecallRetrieval — to
+ * stamp intent='QUESTION' (CANON Std-1: reused, never recomputed, never defaulted
+ * to a passing value). This block pins the exact mapping the fix relies on:
+ *
+ *   const cycleRecallIntent = recallKeyForQuestion(inputText) ? 'QUESTION' : undefined;
+ *
+ * The CRITICAL property the metric needs: a recall question is classified QUESTION
+ * even when no fact node grounds it (UNKNOWN outcome). That is why the fix keys off
+ * recallKeyForQuestion (the question classifier), NOT recallRetrieval!==null (the
+ * grounding result) — the latter would drop tried-and-failed turns the metric must
+ * count in its denominator.
+ */
+describe('knowledge_retrieval gate — procedure/latent pre-arbitration intent', () => {
+  // The exact expression the cycle evaluates once and stamps on both branches.
+  const cycleRecallIntent = (text: string): 'QUESTION' | undefined =>
+    recallKeyForQuestion(text) ? 'QUESTION' : undefined;
+
+  it('recall question → QUESTION (procedure/latent branch stamps it)', () => {
+    expect(cycleRecallIntent('what is my name?')).toBe('QUESTION');
+    expect(cycleRecallIntent('where do I live?')).toBe('QUESTION');
+    expect(cycleRecallIntent('what is my dog called?')).toBe('QUESTION');
+  });
+
+  it('recall question with NO grounding still classifies QUESTION (denominator-correct)', () => {
+    // 'occupation' is a recall key but not in KNOWN_FACTS, so retrieveRecall-
+    // Grounding returns null (no node). The intent is STILL QUESTION — this is a
+    // tried-and-failed retrieval turn the metric must count (UNKNOWN outcome).
+    expect(retrieveRecallGrounding(PERSON, 'what do I do for work?', KNOWN_FACTS, EMPTY_WKG)).toBeNull();
+    expect(cycleRecallIntent('what do I do for work?')).toBe('QUESTION');
+  });
+
+  it('non-recall input → undefined (left unset → persists as null → excluded)', () => {
+    // Std-1: never fabricate QUESTION. A greeting / statement / non-recall ask
+    // carries no recall key, so the branch leaves intent unset and the row is
+    // correctly excluded from the QUESTION-gated denominator.
+    expect(cycleRecallIntent('hello there!')).toBeUndefined();
+    expect(cycleRecallIntent('I had a great day today')).toBeUndefined();
+    expect(cycleRecallIntent('tell me a story about dragons')).toBeUndefined();
+    expect(cycleRecallIntent('what is my favorite food?')).toBeUndefined(); // not a recall key
+  });
+
+  it('empty / missing input text → undefined (watchdog / self-tick honesty)', () => {
+    // A self-initiated tick with no input has no classification → null, never
+    // a fabricated QUESTION (matches the fix\'s `frame.raw.text ?? \'\'` default).
+    expect(cycleRecallIntent('')).toBeUndefined();
   });
 });

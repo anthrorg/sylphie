@@ -872,6 +872,33 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       }
 
+      // ── knowledge_retrieval metric gate — pre-arbitration intent ───────────
+      // The self-model knowledge_retrieval :Capability gates its denominator on
+      // RESPONSE_GENERATED rows where payload.intent='QUESTION' (turns where
+      // retrieval was actually DEMANDED). The deliberate() path threads
+      // monologueParsed.intent, but the procedure-handler and latent-reflex
+      // branches deliberately skip the LLM monologue, so they had NO intent in
+      // scope and persisted intent=NULL — making the QUESTION gate match 0 rows
+      // and leaving the capability inert in production (~100% of turns resolve via
+      // those two branches).
+      //
+      // recallKeyForQuestion() is the SAME deterministic, pre-arbitration recall
+      // classifier the cycle already runs for grounding (it backs computeRecall-
+      // Retrieval above and runs for EVERY cycle, no LLM). A non-null key means the
+      // input is a recall QUESTION ("what is my name / where do I live / ...") —
+      // exactly the "retrieval demanded" turns the metric counts, INCLUDING the
+      // tried-and-failed (UNKNOWN) ones where no node grounded (so we key off the
+      // question classifier, NOT recallRetrieval!==null, which would drop those).
+      //
+      // CANON Std-1: we REUSE this already-computed classification; we never call
+      // the LLM, never recompute the monologue, and never default to 'QUESTION'.
+      // When the input is not a recall question, cycleRecallIntent stays undefined
+      // → the branch leaves result.intent unset → it persists as null → correctly
+      // EXCLUDED from the QUESTION-gated denominator (honest, not fabricated).
+      const cycleInputText = (frame.raw['text'] as string | undefined) ?? '';
+      const cycleRecallIntent: 'QUESTION' | undefined =
+        recallKeyForQuestion(cycleInputText) ? 'QUESTION' : undefined;
+
       // Check per-modality latent spaces FIRST — if we find a high-similarity
       // match on any modality, inject it as a Type 1 candidate. Each modality's
       // embedding is searched independently so text changes aren't drowned out
@@ -1268,6 +1295,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             // UNKNOWN by groundingForCachedPattern (reflex replay has no LLM).
             knowledgeGrounding: latentGrounding,
             groundingProvenance: latentProvenance ?? undefined,
+            // knowledge_retrieval metric gate: stamp the pre-arbitration recall
+            // QUESTION classification (CANON Std-1 — reused, never recomputed; the
+            // latent reflex runs no LLM monologue). Undefined for non-recall input
+            // → persists as null → excluded from the QUESTION-gated denominator.
+            intent: cycleRecallIntent,
           });
         } else if (arbitrationChoseLatent && latentMatch) {
           // Latent match found but responseText is empty — fall through to deliberation.
@@ -1283,6 +1315,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             deliberationTrace: deliberationResult.trace,
             confidence: deliberationResult.confidence,
             knowledgeGrounding: deliberationResult.knowledgeGrounding,
+            intent: deliberationResult.intent,
             groundingProvenance: deliberationResult.groundingProvenance ?? null,
             groundedBy: deliberationResult.groundedBy ?? null,
             degradedNoLlm: deliberationResult.degradedNoLlm,
@@ -1355,6 +1388,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               result['knowledgeGrounding'] = procedureGrounding;
               if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
               result['groundedBy'] = procedureGroundedBy;
+              // knowledge_retrieval metric gate: stamp the pre-arbitration recall
+              // QUESTION classification (CANON Std-1 — reused, never recomputed;
+              // the procedure handler runs no LLM monologue). Only set when the
+              // input is a recall question; otherwise left unset → persists as null
+              // → correctly excluded from the QUESTION-gated denominator.
+              if (cycleRecallIntent) result['intent'] = cycleRecallIntent;
             }
             executionResults.push(result);
           }
@@ -1394,6 +1433,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               actionResult,
@@ -1407,6 +1447,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               degradedNoLlm: deliberationResult.degradedNoLlm,
@@ -1472,6 +1513,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline+action',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
@@ -1485,6 +1527,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
@@ -1630,6 +1673,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Authoritative input to the write-time person-scoper below.
       let responseGroundedBy: 'OKG' | 'WKG' | null = null;
       let responseDegradedNoLlm = false;
+      // Deliberation intent for this turn (knowledge_retrieval metric gate).
+      // Undefined for procedure/latent reflex paths that never classify intent —
+      // those turns are correctly excluded from the QUESTION-gated metric rather
+      // than fabricating an intent (CANON Std-1).
+      let responseIntent: string | undefined;
 
       for (const result of executionResults) {
         if (result && typeof result['content'] === 'string') {
@@ -1639,6 +1687,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // Extract knowledge grounding from deliberation results
           if (result['knowledgeGrounding']) {
             responseGrounding = result['knowledgeGrounding'] as KnowledgeGrounding;
+          }
+          // Thread deliberation intent (copied, never recomputed) for the
+          // knowledge_retrieval self-model metric. Only the deliberation paths
+          // set this key; procedure/latent results leave it undefined.
+          if (typeof result['intent'] === 'string') {
+            responseIntent = result['intent'];
           }
           // Thread OKG provenance reference (Standard 1: GROUNDED must carry the node id).
           if (typeof result['groundingProvenance'] === 'string') {
@@ -1960,6 +2014,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // WS3 T5: thread the GROUNDED source ('OKG'|'WKG') so a consumer can
           // verify groundingProvenance against the correct live Neo4j instance.
           groundedBy: responseGroundedBy ?? undefined,
+          // Deliberation intent — persisted on RESPONSE_GENERATED so the
+          // knowledge_retrieval metric can gate its denominator on QUESTION turns.
+          ...(responseIntent !== undefined ? { intent: responseIntent } : {}),
           preExecutionDriveSnapshot: driveSnapshot.pressureVector,
           latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
           // Tensor metadata — populated when sidecar was available this cycle

@@ -338,6 +338,8 @@ Hypertable: chunked 1 hour, indexed by `(session_id, type, timestamp DESC)` and 
 
 Precedent: `SelfModelWriterService` (`packages/learning`, commit `56af7a3`) — the first automated recurring SELF-writer feeding baseline-adjustment. The guard chain (`CachedSelfKgReader.allowReduction=false` for non-GUARDIAN → `DriveBaselineAdjustment` reduction gated on `allowReduction`, recovery bounded by `INITIAL_DRIVE_STATE`) was verified in code (canon) and live (mythos, PASS 7/7). Any *new mapped* capability name reopens the Std-6 question and needs a fresh canon sign-off.
 
+Second live edge (2026-06-14): `knowledge_retrieval → CognitiveAwareness` — honest metric `GROUNDED / (GROUNDED|UNKNOWN)` over `RESPONSE_GENERATED` telemetry gated on `intent='QUESTION'` (LLM_ASSISTED / non-QUESTION / null excluded). Same guard chain, recovery-only. Got its fresh canon sign-off (CLEAN-WITH-NOTE) and mythos live-verification (PASS 7/7). The guard is provably capability-agnostic, so the allowance generalizes to all `CAPABILITY_TO_DRIVE_MAP` entries — though each new mapped edge still gets a confirming canon sign-off before going live.
+
 ---
 
 ## 10. Health Metrics (Development Telemetry)

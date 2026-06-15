@@ -202,6 +202,24 @@ export interface CycleResponse {
    * bypass the sampling gate regardless of cycleCount % sampleRate.
    */
   readonly inputCategory?: string;
+
+  /**
+   * Deliberation intent classification for this turn, copied (never recomputed)
+   * from the inner-monologue classifier (MonologueClassification.intent):
+   * GREETING | EMOTION | QUESTION | FACT | COMMAND | UNKNOWN.
+   *
+   * Threaded so Communication can persist it on the RESPONSE_GENERATED event,
+   * where the self-model writer's knowledge_retrieval metric uses intent='QUESTION'
+   * to restrict its denominator to turns where knowledge retrieval was actually
+   * DEMANDED (CANON Std-1: counting social/greeting turns would measure chat
+   * volume, not retrieval competence).
+   *
+   * Optional: present only on turns resolved through the deliberation pipeline
+   * (the path where intent is reliably classified). Absent for procedure/latent
+   * reflex turns and self-initiated ticks — those are correctly excluded from
+   * the QUESTION-gated metric rather than fabricating an intent.
+   */
+  readonly intent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,4 +335,12 @@ export interface DeliveryPayload {
    * groundingProvenance against. Absent/null when not GROUNDED or ambiguous.
    */
   readonly groundedBy?: 'OKG' | 'WKG' | null;
+
+  /**
+   * Deliberation intent classification for this turn (forwarded from
+   * CycleResponse.intent): GREETING | EMOTION | QUESTION | FACT | COMMAND |
+   * UNKNOWN. Optional and back-compatible — absent for non-deliberation paths.
+   * Carried so the gateway/log layer can persist it (knowledge_retrieval metric).
+   */
+  readonly intent?: string;
 }

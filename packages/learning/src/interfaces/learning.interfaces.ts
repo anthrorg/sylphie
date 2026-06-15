@@ -524,23 +524,57 @@ export interface ICrossSessionSynthesisService {
 // ---------------------------------------------------------------------------
 
 /**
- * Result of a single self-model write cycle.
+ * Outcome of a single capability's self-model write within a cycle.
+ *
+ * One :Capability node is governed by one of these. Reused for both
+ * prediction_accuracy and knowledge_retrieval so each capability reports its
+ * own honest sample window independently.
  */
-export interface SelfModelCycleResult {
+export interface CapabilityWriteResult {
   /**
-   * Whether the cycle wrote nodes. False when sample_count = 0 (no honest
-   * telemetry available in the 24-hour window) — in which case stale nodes
-   * are DETACH DELETE'd rather than written.
+   * Whether this capability wrote nodes. False when sample_count = 0 (no honest
+   * telemetry in the 24-hour window) — in which case its stale node is
+   * DETACH DELETE'd rather than written.
    */
   readonly wrote: boolean;
-  /** Number of non-empty PREDICTION_EVALUATED rows in the query window. */
+  /** Number of qualifying rows in this capability's query window. */
   readonly sampleCount: number;
   /** Computed success rate, or null when sampleCount = 0. */
   readonly successRate: number | null;
   /** Stored confidence (clamped ≤ 0.60), or null when sampleCount = 0. */
   readonly confidence: number | null;
+}
+
+/**
+ * Result of a single self-model write cycle.
+ *
+ * The top-level fields (wrote/sampleCount/successRate/confidence) report the
+ * prediction_accuracy capability — preserved for backward compatibility with
+ * existing callers and tests. The knowledge_retrieval capability is reported
+ * additively in the nested `knowledgeRetrieval` field. Both capabilities refresh
+ * together in the same cycle (each with its own honest 24-hour sample window).
+ */
+export interface SelfModelCycleResult {
+  /**
+   * Whether the prediction_accuracy capability wrote nodes. False when its
+   * sample_count = 0 (no honest telemetry available in the 24-hour window) — in
+   * which case stale nodes are DETACH DELETE'd rather than written.
+   */
+  readonly wrote: boolean;
+  /** Number of non-empty PREDICTION_EVALUATED rows in the query window. */
+  readonly sampleCount: number;
+  /** Computed prediction_accuracy success rate, or null when sampleCount = 0. */
+  readonly successRate: number | null;
+  /** Stored prediction_accuracy confidence (clamped ≤ 0.60), or null when sampleCount = 0. */
+  readonly confidence: number | null;
   /** Whether this cycle was a no-op due to an in-flight guard or error. */
   readonly wasNoop: boolean;
+  /**
+   * Outcome of the knowledge_retrieval capability write within this same cycle.
+   * Optional/back-compatible: absent when the whole cycle errored before the
+   * knowledge_retrieval block ran (wasNoop=true path).
+   */
+  readonly knowledgeRetrieval?: CapabilityWriteResult;
 }
 
 /**
@@ -561,9 +595,13 @@ export interface SelfModelCycleResult {
  *   - When sampleCount = 0, NO nodes are written and stale nodes are
  *     DETACH DELETE'd so the reader never serves a fabricated rate.
  *
+ * Now SHIPPED:
+ *   - prediction_accuracy: from PREDICTION_EVALUATED telemetry.
+ *   - knowledge_retrieval: from RESPONSE_GENERATED knowledgeGrounding + intent
+ *     (GROUNDED / GROUNDED|UNKNOWN over intent='QUESTION' turns).
+ *
  * Deliberately OMITTED capabilities (no honest telemetry today):
  *   - social_interaction: unblock by persisting a social-outcome resolution event.
- *   - knowledge_retrieval: unblock by persisting grounding provenance to events payload.
  *   - error_correction: unblock by persisting a contradiction-resolution event.
  *   - :DrivePattern nodes: unblock by persisting observed drive-stimulus pairs.
  */

@@ -48,6 +48,7 @@ import {
   classifyMismatch,
   type TextTheaterVerdict,
 } from './theater-affect-scorer';
+import { buildResponseGeneratedPayload } from './response-generated-payload';
 
 const vlog = verboseFor('Communication');
 import {
@@ -573,16 +574,15 @@ export class CommunicationService implements OnModuleInit {
     // should never reach the user or TTS.
     response = { ...response, text: sanitizeResponseText(response.text) };
 
-    // Log RESPONSE_GENERATED
-    this.logEvent('RESPONSE_GENERATED', sessionId, {
-      turnId: response.turnId,
-      arbitrationType: response.arbitrationType,
-      actionId: response.actionId,
-      text: response.text,
-      textLength: response.text.length,
-      model: response.model,
-      latencyMs: response.latencyMs,
-    });
+    // Log RESPONSE_GENERATED.
+    // The payload (built by buildResponseGeneratedPayload) now carries
+    // knowledgeGrounding + intent (reused from the response, never recomputed)
+    // so the learning subsystem's knowledge_retrieval self-model metric has an
+    // honest telemetry source: numerator = GROUNDED, denominator =
+    // (GROUNDED|UNKNOWN) AND intent=QUESTION. intent is null on non-deliberation
+    // paths (procedure/latent reflex) — correctly excluded from the QUESTION-
+    // gated metric (CANON Std-1).
+    this.logEvent('RESPONSE_GENERATED', sessionId, buildResponseGeneratedPayload(response));
 
     // Theater Prohibition check (CANON Standard 1). Audit + zero-reinforce on a
     // violation; delivery is NOT blocked — the response still reaches the guardian.

@@ -49,24 +49,55 @@ interface FakeStatsRow {
   avg_mae: string | null;
 }
 
-class FakeTimescale {
-  constructor(private readonly row: FakeStatsRow) {}
+interface FakeKnowledgeRow {
+  sample_count: string;
+  success_count: string;
+}
 
-  async query<T>(_sql: string): Promise<{ rows: T[] }> {
-    return { rows: [this.row as unknown as T] };
+/**
+ * SQL-aware fake: the writer now issues TWO distinct aggregate queries in one
+ * cycle — PREDICTION_EVALUATED (prediction_accuracy) and RESPONSE_GENERATED
+ * (knowledge_retrieval). Route on the event type named in the SQL so each
+ * capability sees its own controlled row. The knowledge row defaults to a
+ * zero-sample window so the legacy prediction_accuracy tests are unaffected by
+ * the second capability (its zero-sample path only DETACH DELETEs its own node).
+ */
+class FakeTimescale {
+  constructor(
+    private readonly predictionRow: FakeStatsRow,
+    private readonly knowledgeRow: FakeKnowledgeRow = { sample_count: '0', success_count: '0' },
+  ) {}
+
+  async query<T>(sql: string): Promise<{ rows: T[] }> {
+    if (sql.includes('RESPONSE_GENERATED')) {
+      return { rows: [this.knowledgeRow as unknown as T] };
+    }
+    return { rows: [this.predictionRow as unknown as T] };
   }
 }
 
 function makeService(
   statsRow: FakeStatsRow,
+  knowledgeRow?: FakeKnowledgeRow,
 ): { service: SelfModelWriterService; neo: CapturingNeo4j } {
   const neo = new CapturingNeo4j();
-  const timescale = new FakeTimescale(statsRow);
+  const timescale = new FakeTimescale(statsRow, knowledgeRow);
   const service = new SelfModelWriterService(
     neo as unknown as never,
     timescale as unknown as never,
   );
   return { service, neo };
+}
+
+/**
+ * Helper for knowledge_retrieval-focused tests: prediction defaults to a
+ * zero-sample window (so it only DETACH DELETEs its own nodes), letting the
+ * knowledge_retrieval assertions stand alone.
+ */
+function makeKnowledgeService(
+  knowledgeRow: FakeKnowledgeRow,
+): { service: SelfModelWriterService; neo: CapturingNeo4j } {
+  return makeService({ sample_count: '0', accurate_count: '0', avg_mae: null }, knowledgeRow);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,10 +178,19 @@ describe('SelfModelWriterService — (a) healthy window', () => {
     });
   });
 
-  it('issues NO DETACH DELETE in a healthy window', () => {
+  it('issues NO DETACH DELETE of the prediction_accuracy nodes in a healthy window', () => {
+    // The knowledge_retrieval capability defaults to a zero-sample window here
+    // (makeService default), which legitimately DETACH DELETEs its OWN node;
+    // assert specifically that the prediction_accuracy + PredictionAccuracy
+    // nodes are NOT deleted when the prediction window is healthy.
     return service.runSelfModelCycle().then(() => {
-      const deletes = neo.runs.filter((r) => /DETACH DELETE/.test(r.cypher));
-      expect(deletes.length).toBe(0);
+      const predictionDeletes = neo.runs.filter(
+        (r) =>
+          /DETACH DELETE/.test(r.cypher) &&
+          (/self-cap-prediction_accuracy/.test(JSON.stringify(r.params)) ||
+            /PredictionAccuracy/.test(r.cypher)),
+      );
+      expect(predictionDeletes.length).toBe(0);
     });
   });
 
@@ -375,5 +415,190 @@ describe('SelfModelWriterService — (d) provenance is always INFERENCE', () => 
     await service.runSelfModelCycle();
     const nonSelf = neo.runs.filter((r) => r.instance !== Neo4jInstanceName.SELF);
     expect(nonSelf.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) knowledge_retrieval — theater defense (CANON Std-1, the whole point)
+// ---------------------------------------------------------------------------
+//
+// Conceptual seed set of RESPONSE_GENERATED rows in the 24h window:
+//   3 × { knowledgeGrounding:'GROUNDED',      intent:'QUESTION' }   ← num + denom
+//   1 × { knowledgeGrounding:'UNKNOWN',       intent:'QUESTION' }   ← denom only
+//   5 × { knowledgeGrounding:'LLM_ASSISTED',  intent:'QUESTION' }   ← EXCLUDED (social)
+//   2 × { knowledgeGrounding:'GROUNDED',      intent:'STATEMENT' }  ← EXCLUDED (not QUESTION)
+//   2 × { knowledgeGrounding:null,            intent:'QUESTION' }   ← EXCLUDED (null)
+//
+// After the SQL FILTERs: sample_count=4 (3 GROUNDED + 1 UNKNOWN), success_count=3.
+// successRate = 3/4 = 0.75.  We model what the DB would AGGREGATE for that seed
+// set (the exclusion logic is SQL, asserted separately below) and verify the
+// writer's arithmetic + write are honest.
+describe('SelfModelWriterService — (e) knowledge_retrieval theater defense', () => {
+  const knowledgeRow: FakeKnowledgeRow = { sample_count: '4', success_count: '3' };
+
+  it('computes successRate = success_count / sample_count = 0.75', async () => {
+    const { service } = makeKnowledgeService(knowledgeRow);
+    const result = await service.runSelfModelCycle();
+    expect(result.knowledgeRetrieval).toBeDefined();
+    expect(result.knowledgeRetrieval!.wrote).toBe(true);
+    expect(result.knowledgeRetrieval!.sampleCount).toBe(4);
+    expect(result.knowledgeRetrieval!.successRate).toBeCloseTo(0.75);
+  });
+
+  it('writes name=knowledge_retrieval with success_rate=0.75 to the SELF instance', async () => {
+    const { service, neo } = makeKnowledgeService(knowledgeRow);
+    await service.runSelfModelCycle();
+    const krRun = neo.runs.find(
+      (r) =>
+        r.instance === Neo4jInstanceName.SELF &&
+        /MERGE.*Capability/.test(r.cypher) &&
+        /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(krRun).toBeDefined();
+    expect(krRun!.params['nodeId']).toBe('self-cap-knowledge_retrieval');
+    expect(krRun!.params['successRate']).toBeCloseTo(0.75);
+    expect(krRun!.params['sampleCount']).toBe(4);
+  });
+
+  it('provenance_type is INFERENCE on the knowledge_retrieval node', async () => {
+    const { service, neo } = makeKnowledgeService(knowledgeRow);
+    await service.runSelfModelCycle();
+    const krRun = neo.runs.find(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(krRun!.cypher).toContain("'INFERENCE'");
+  });
+
+  it('writes NO paired node for knowledge_retrieval (only the :Capability node)', async () => {
+    const { service, neo } = makeKnowledgeService(knowledgeRow);
+    await service.runSelfModelCycle();
+    // The only MERGE issued (prediction defaults to zero-sample here) is the
+    // knowledge_retrieval Capability — no second paired-node MERGE.
+    const merges = neo.runs.filter((r) => /MERGE/.test(r.cypher));
+    expect(merges.length).toBe(1);
+    expect(merges[0].cypher).toContain('knowledge_retrieval');
+  });
+
+  it('the SQL excludes LLM_ASSISTED, non-QUESTION, and null (theater filter)', async () => {
+    // Capture the exact SQL the writer issues for the knowledge metric and
+    // assert the exclusion predicates are present — this is the Std-1 guarantee.
+    const captured: string[] = [];
+    const neo = new CapturingNeo4j();
+    const timescale = {
+      async query<T>(sql: string): Promise<{ rows: T[] }> {
+        captured.push(sql);
+        if (sql.includes('RESPONSE_GENERATED')) {
+          return { rows: [knowledgeRow as unknown as T] };
+        }
+        return {
+          rows: [{ sample_count: '0', accurate_count: '0', avg_mae: null } as unknown as T],
+        };
+      },
+    };
+    const service = new SelfModelWriterService(
+      neo as unknown as never,
+      timescale as unknown as never,
+    );
+    await service.runSelfModelCycle();
+
+    const krSql = captured.find((s) => s.includes('RESPONSE_GENERATED'));
+    expect(krSql).toBeDefined();
+    // Denominator = GROUNDED|UNKNOWN (LLM_ASSISTED NOT in the IN-list → excluded).
+    expect(krSql!).toMatch(/IN\s*\('GROUNDED','UNKNOWN'\)/);
+    expect(krSql!).not.toContain('LLM_ASSISTED');
+    // Option-A QUESTION gate.
+    expect(krSql!).toContain("payload->>'intent' = 'QUESTION'");
+    // Null exclusion.
+    expect(krSql!).toContain("payload->>'knowledgeGrounding' IS NOT NULL");
+    // Numerator = GROUNDED only.
+    expect(krSql!).toMatch(/= 'GROUNDED'\)\s+AS success_count/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) knowledge_retrieval — Std-3 clamp, zero-sample, idempotency
+// ---------------------------------------------------------------------------
+
+describe('SelfModelWriterService — (f) knowledge_retrieval Std-3 + zero-sample', () => {
+  it('clamps confidence to exactly 0.60 when n large', async () => {
+    const { service, neo } = makeKnowledgeService({ sample_count: '10000', success_count: '9000' });
+    const result = await service.runSelfModelCycle();
+    expect(result.knowledgeRetrieval!.confidence).toBe(0.60);
+    const krRun = neo.runs.find(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(krRun!.params['confidence']).toBe(0.60);
+  });
+
+  it('confidence matches min(0.60, n/(n+50)) for a small n', async () => {
+    const { service } = makeKnowledgeService({ sample_count: '10', success_count: '7' });
+    const result = await service.runSelfModelCycle();
+    expect(result.knowledgeRetrieval!.confidence).toBeCloseTo(expectedConfidence(10));
+  });
+
+  it('zero-sample window writes NO knowledge_retrieval MERGE and DETACH DELETEs its node', async () => {
+    const { service, neo } = makeKnowledgeService({ sample_count: '0', success_count: '0' });
+    const result = await service.runSelfModelCycle();
+    expect(result.knowledgeRetrieval!.wrote).toBe(false);
+    expect(result.knowledgeRetrieval!.successRate).toBeNull();
+    expect(result.knowledgeRetrieval!.confidence).toBeNull();
+
+    const krMerge = neo.runs.find(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(krMerge).toBeUndefined();
+
+    const krDelete = neo.runs.find(
+      (r) =>
+        r.instance === Neo4jInstanceName.SELF &&
+        /DETACH DELETE/.test(r.cypher) &&
+        r.params['nodeId'] === 'self-cap-knowledge_retrieval',
+    );
+    expect(krDelete).toBeDefined();
+  });
+
+  it('is idempotent — MERGE on node_id, identical params across two runs', async () => {
+    const { service, neo } = makeKnowledgeService({ sample_count: '4', success_count: '3' });
+    await service.runSelfModelCycle();
+    await service.runSelfModelCycle();
+    const krMerges = neo.runs.filter(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(krMerges.length).toBe(2); // one per run
+    // MERGE key is node_id → same node, so re-runs upsert rather than duplicate.
+    expect(krMerges[0].params['nodeId']).toBe('self-cap-knowledge_retrieval');
+    expect(krMerges[1].params['nodeId']).toBe('self-cap-knowledge_retrieval');
+    expect(krMerges[0].params['successRate']).toBe(krMerges[1].params['successRate']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) both capabilities refresh together in one cycle
+// ---------------------------------------------------------------------------
+
+describe('SelfModelWriterService — (g) both capabilities in one cycle', () => {
+  it('writes BOTH prediction_accuracy and knowledge_retrieval when both windows are healthy', async () => {
+    const { service, neo } = makeService(
+      { sample_count: '20', accurate_count: '15', avg_mae: '0.12' },
+      { sample_count: '4', success_count: '3' },
+    );
+    const result = await service.runSelfModelCycle();
+
+    // Top-level (back-compat) = prediction_accuracy.
+    expect(result.wrote).toBe(true);
+    expect(result.sampleCount).toBe(20);
+    expect(result.successRate).toBeCloseTo(15 / 20);
+    // Nested = knowledge_retrieval.
+    expect(result.knowledgeRetrieval!.wrote).toBe(true);
+    expect(result.knowledgeRetrieval!.successRate).toBeCloseTo(0.75);
+
+    const predMerge = neo.runs.find(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'prediction_accuracy'/.test(r.cypher),
+    );
+    const krMerge = neo.runs.find(
+      (r) => /MERGE.*Capability/.test(r.cypher) && /'knowledge_retrieval'/.test(r.cypher),
+    );
+    expect(predMerge).toBeDefined();
+    expect(krMerge).toBeDefined();
   });
 });
