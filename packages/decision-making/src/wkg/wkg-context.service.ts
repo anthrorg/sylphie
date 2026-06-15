@@ -247,6 +247,11 @@ export class WkgContextService {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
       const result = await session.run(
+        // Wave 3 / C0: `WHERE node IS NOT NULL AND NOT node:Candidate` keeps
+        // staged proper nouns out of subgraph enrichment — a `:Candidate`
+        // neighbour must never surface as grounding-eligible context (CANON
+        // Std-3 §2.8). OPTIONAL MATCH can yield a null `m`, so the null guard
+        // stays explicit.
         `MATCH (n)
          WHERE n.node_id IN $ids
          OPTIONAL MATCH path = (n)-[r*1..${depth}]-(m)
@@ -254,6 +259,7 @@ export class WkgContextService {
               [rel IN collect(DISTINCT last(relationships(path))) WHERE rel IS NOT NULL] AS allRels
          UNWIND allNodes AS node
          WITH DISTINCT node, allRels
+         WHERE node IS NOT NULL AND NOT node:Candidate
          RETURN node.node_id AS nodeId, node.label AS label, labels(node)[0] AS nodeType,
                 properties(node) AS props, node.confidence AS confidence,
                 node.provenance_type AS provenance`,
@@ -285,8 +291,14 @@ export class WkgContextService {
 
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
+      // Wave 3 / C0: exclude `:Candidate` on BOTH endpoints. Defensive on `n`
+      // (a candidate node_id should never reach here — matchEntities won't
+      // surface one — but if a caller passes one we refuse to emit facts for
+      // it), and required on `m` so a candidate neighbour never appears as a
+      // fact object that could ground an answer (CANON Std-3 §2.8).
       const result = await session.run(
         `MATCH (n {node_id: $id})-[r]-(m)
+         WHERE NOT n:Candidate AND NOT m:Candidate
          RETURN n.label AS subject, type(r) AS predicate, m.label AS object,
                 r.confidence AS confidence, n.provenance_type AS provenance
          LIMIT 50`,
@@ -842,6 +854,14 @@ export class WkgContextService {
    * Match entity names against WKG node labels using the kg_label_fulltext
    * index. Falls back to CONTAINS substring matching if the full-text query
    * fails (e.g., index not yet created).
+   *
+   * GROUNDING GATE (Wave 3 / C0 — CANON Std-3 isolation §2.8). This is THE
+   * WKG grounding read-path: its output (`wkg.entities`) is what
+   * retrieveWkgRecall() picks a topical entity from to produce a GROUNDED label
+   * (recall-retrieval.ts). Therefore `:Candidate` nodes MUST be excluded here —
+   * both in the fulltext branch (`NOT node:Candidate`) and the CONTAINS fallback
+   * (`NOT n:Candidate`) — so a staged proper noun can NEVER become grounding
+   * provenance. Mirrors the long-standing `:Word` exclusion.
    */
   private async matchEntities(session: any, names: string[]): Promise<WkgEntity[]> {
     if (names.length === 0) return [];
@@ -857,6 +877,7 @@ export class WkgContextService {
         `CALL db.index.fulltext.queryNodes('kg_label_fulltext', $query)
          YIELD node, score
          WHERE NOT node:Word
+           AND NOT node:Candidate
          RETURN DISTINCT node.node_id AS nodeId, node.label AS label,
                 labels(node)[0] AS nodeType, properties(node) AS props,
                 node.confidence AS confidence, node.provenance_type AS provenance
@@ -880,6 +901,7 @@ export class WkgContextService {
          MATCH (n)
          WHERE toLower(n.label) CONTAINS toLower(name)
            AND NOT n:Word
+           AND NOT n:Candidate
          RETURN DISTINCT n.node_id AS nodeId, n.label AS label,
                 labels(n)[0] AS nodeType, properties(n) AS props,
                 n.confidence AS confidence, n.provenance_type AS provenance
@@ -902,9 +924,14 @@ export class WkgContextService {
   private async getRelationships(session: any, entityIds: string[]): Promise<WkgRelationship[]> {
     if (entityIds.length === 0) return [];
 
+    // Wave 3 / C0: defensively exclude `:Candidate` on both endpoints. Ids here
+    // already come from candidate-free readers (matchEntities / getSubgraph), but
+    // a caller could pass a candidate id in `$ids`; we never surface a relationship
+    // touching a staged proper noun as grounding context (CANON Std-3 §2.8).
     const result = await session.run(
       `MATCH (a)-[r]-(b)
        WHERE a.node_id IN $ids AND b.node_id IN $ids
+         AND NOT a:Candidate AND NOT b:Candidate
        RETURN a.node_id AS sourceId, b.node_id AS targetId,
               type(r) AS relType, properties(r) AS props,
               r.confidence AS confidence
@@ -1177,6 +1204,9 @@ function actrTierForProvenance(provenanceType: string): { base: number; decayRat
     case 'BEHAVIORAL_INFERENCE':
     case 'SELF_REPORTED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
     case 'OBSERVED': // OKG-scoped (WS4-T5) — treat as inference-grade non-guardian.
+    case 'CANDIDATE': // Wave 3 / C0 — staged proper noun. Inference-grade floor;
+      // a candidate is non-groundable so this path should not normally be hit,
+      // but if it ever is, the 0.60 ceiling clamp in reinforceFactNode() holds.
     default:
       return { base: PROVENANCE_BASE_CONFIDENCE.INFERENCE, decayRate: DEFAULT_DECAY_RATES.INFERENCE };
   }

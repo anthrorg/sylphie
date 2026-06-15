@@ -71,8 +71,19 @@ const FAVORITE_PREFIX = 'favorite_';
 // ---------------------------------------------------------------------------
 
 interface ParsedTriple {
-  /** The subject entity label (e.g. the speaker's name, or "Sylphie"). */
-  readonly subjectHint: 'speaker' | 'sylphie' | null;
+  /**
+   * Who or what the triple is about.
+   *
+   * - 'speaker'  — first-person statement ("I like X", "my dog is Max").
+   * - 'sylphie'  — directed at or about Sylphie ("Sylphie, you are great").
+   * - 'world'    — factual statement about a named entity that is neither the
+   *               speaker nor Sylphie ("The Eiffel Tower is in Paris").
+   *               C3 will branch on this value to route into `:Candidate` staging
+   *               instead of a live `:Entity`.
+   * - null       — third-person personal statement resolved via _subjectLabel
+   *               (existing path, e.g. "Jim likes coffee").
+   */
+  readonly subjectHint: 'speaker' | 'sylphie' | 'world' | null;
   /** Fact key (maps to edge type). */
   readonly key: string;
   /** The object entity label (the value). */
@@ -81,6 +92,33 @@ interface ParsedTriple {
   readonly source: 'self_reported' | 'observed';
 }
 
+// ---------------------------------------------------------------------------
+// World-fact subject detection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Syllphie's own name variants used to identify Sylphie-directed statements.
+ * Case-insensitive match against these before falling back to 'world'.
+ */
+const SYLPHIE_NAMES = /\bsylphie\b/i;
+
+/**
+ * First-person subject indicators — statements that start with these are
+ * speaker facts regardless of what follows.
+ */
+const FIRST_PERSON_SUBJECT = /^\s*(?:i\b|my\b|i'm\b|i've\b|i'd\b|i'll\b)/i;
+
+/**
+ * Copula patterns for world-facts.
+ * Matches: "is in", "is at", "is on", "is a", "is the", "is located", "is part of",
+ *          "are in", "was in", "were in", "is [adjective]", etc.
+ * The full pattern is: [article?] [CapWord(s)] COPULA [rest]
+ *
+ * Intentionally conservative: we require at least one capitalized word in the
+ * subject position so we don't misclassify bare common-noun sentences.
+ */
+const WORLD_FACT_PATTERN = /^(?:the\s+|a\s+|an\s+)?([A-Z][A-Za-z]+(?:\s+[A-Za-z]+){0,4}?)\s+(?:is|are|was|were)\s+(?:in|at|on|a|an|the|located|part\s+of|made\s+of|known\s+as|called|named|founded|built|created|invented|discovered)\s+(.+?)(?:\.|!|\?|,|$)/;
+
 /**
  * Parse structured (subject, predicate, object) triples from text.
  *
@@ -88,7 +126,7 @@ interface ParsedTriple {
  * where the predicate becomes the edge type and both subject/object
  * become Entity nodes in the graph.
  */
-function parseTriples(text: string): ParsedTriple[] {
+export function parseTriples(text: string): ParsedTriple[] {
   const triples: ParsedTriple[] = [];
   const lower = text.toLowerCase();
 
@@ -270,6 +308,56 @@ function parseTriples(text: string): ParsedTriple[] {
     (triples[triples.length - 1] as any)._subjectLabel = thirdKnowMatch[1];
   }
 
+  // ── World-fact patterns ─────────────────────────────────────────────
+  //
+  // A "world fact" is a copular statement about a named entity that is
+  // neither the speaker (first-person) nor Sylphie.  Examples:
+  //   "The Eiffel Tower is in Paris."
+  //   "Mount Everest is the tallest mountain."
+  //   "Python was created by Guido van Rossum."
+  //
+  // Classification priority (high to low):
+  //   1. First-person subject → 'speaker'  (handled above; early-return via regex)
+  //   2. Sylphie as subject   → 'sylphie'
+  //   3. Capitalized proper-noun subject + copula → 'world'
+  //
+  // IMPORTANT: only fires if text does NOT start with a first-person subject
+  // (those cases already produced a 'speaker' triple above).
+
+  if (!FIRST_PERSON_SUBJECT.test(text)) {
+    // Check for Sylphie-directed copula first.
+    const sylphieCopula = text.match(/\bsylphie\s+(?:is|are|was|were)\s+(.+?)(?:\.|!|\?|,|$)/i);
+    if (sylphieCopula) {
+      triples.push({
+        subjectHint: 'sylphie',
+        key: 'identity',
+        objectLabel: capitalize(sylphieCopula[1].trim()),
+        source: 'observed',
+      });
+    }
+
+    // World-fact copula ("The Eiffel Tower is in Paris").
+    const worldFactMatch = text.match(WORLD_FACT_PATTERN);
+    if (worldFactMatch) {
+      const subjectLabel = worldFactMatch[1].trim();
+      const objectLabel = worldFactMatch[2].trim();
+
+      // Guard: if the subject is Sylphie, the block above already handled it.
+      if (!SYLPHIE_NAMES.test(subjectLabel)) {
+        triples.push({
+          subjectHint: 'world',
+          key: 'location',  // default fact key for "is in/at/on" world facts
+          objectLabel: capitalize(objectLabel),
+          source: 'observed',
+        });
+        // Store the actual subject label so C3 can use it when minting `:Candidate`.
+        // C3: branch here on subjectHint === 'world' → mint `:Candidate {label: _subjectLabel}`
+        //     in the WORLD Neo4j graph (scoped, capped at 0.60, grounding_person_id = speakerId).
+        (triples[triples.length - 1] as any)._subjectLabel = subjectLabel;
+      }
+    }
+  }
+
   return triples;
 }
 
@@ -315,6 +403,19 @@ export class ExtractTypedEdgesService implements IExtractTypedEdgesService {
     const speakerEntity = findSpeakerEntity(entities);
 
     for (const triple of triples) {
+      // C3: world-fact triples (subjectHint === 'world') must be routed to
+      //     `:Candidate` staging in the WORLD Neo4j graph instead of being
+      //     written as live `:Entity` nodes here.  Skip them entirely until C3
+      //     lands the Candidate minting path (C0+C1+C2 prereqs required).
+      if (triple.subjectHint === 'world') {
+        vlog('extractTypedEdges: deferring world-fact triple to C3 Candidate path', {
+          subjectLabel: (triple as any)._subjectLabel,
+          key: triple.key,
+          objectLabel: triple.objectLabel,
+        });
+        continue;
+      }
+
       // Resolve subject
       let subjectEntity: ExtractedEntity | undefined;
       if (triple.subjectHint === 'speaker' && speakerEntity) {

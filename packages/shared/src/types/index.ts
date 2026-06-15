@@ -55,6 +55,11 @@ export {
   PROVENANCE_BASE_CONFIDENCE,
   resolveBaseConfidence,
   deriveOkgFactTier,
+  // `:Candidate` contract (Wave 3 / C0 — CANON Std-3 isolation fix §2.8).
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_CONFIDENCE_CAP,
+  CANDIDATE_PERSON_ID_PROP,
 } from './provenance.types';
 
 // Event types

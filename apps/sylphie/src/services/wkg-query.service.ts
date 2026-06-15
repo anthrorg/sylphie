@@ -126,8 +126,24 @@ const KG_INDEX_STATEMENTS = [
 
   // Full-text index for fuzzy label searches (wkg-context matchEntities).
   // Spans all common knowledge-bearing labels.
+  //
+  // Wave 3 / C0 (CANON Std-3 isolation §2.8): `:Candidate` IS included here on
+  // purpose. Staged conversation-derived proper nouns must be VISIBLE to the
+  // fulltext query so that matchEntities' explicit `WHERE NOT node:Candidate`
+  // clause is the single, auditable gate that drops them from grounding context
+  // — rather than relying on the index silently not covering the label. C3 mints
+  // `:Candidate` nodes with a `label` property; this keeps the exclusion clause
+  // backed by real nodes to exclude.
+  //
+  // ⚠ `IF NOT EXISTS` will NOT alter an index that already exists with the old
+  // label set. On a database created before this change, the running index will
+  // still span only the original 7 labels until it is dropped+recreated. C7's
+  // data-reset utility (which keeps schema) must DROP `kg_label_fulltext` so this
+  // definition is recreated with `:Candidate`, OR C3 must drop+recreate it as
+  // part of enabling minting. Flagged loudly — do not assume a live DB picks this
+  // up automatically.
   `CREATE FULLTEXT INDEX kg_label_fulltext IF NOT EXISTS
-   FOR (n:Entity|ActionProcedure|CoBeing|Drive|Insight|Conversation|Attribute)
+   FOR (n:Entity|ActionProcedure|CoBeing|Drive|Insight|Conversation|Attribute|Candidate)
    ON EACH [n.label]`,
 ];
 

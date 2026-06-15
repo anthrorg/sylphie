@@ -116,6 +116,10 @@ export interface MaintenanceCycleResult {
  *
  * The payload column is JSONB — its shape varies by event type. The fields
  * we care about are content (for INPUT_RECEIVED) and entities (for INPUT_PARSED).
+ * Both INPUT_RECEIVED and INPUT_PARSED also carry payload.speakerId (= the
+ * PostgreSQL User.id of the speaker; Wave 3 C2). C3 reads it to person-scope
+ * conversation-derived entities as :Candidate nodes (grounding_person_id =
+ * speakerId) instead of shared :Entity — CANON Std-3 isolation, §2.8 leak fix.
  */
 export interface UnlearnedEvent {
   readonly id: string;

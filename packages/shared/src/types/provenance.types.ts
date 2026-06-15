@@ -34,12 +34,19 @@ export type CoreProvenanceSource =
  *   than explicit reasoning — e.g., "she always does X before Y".
  * - SYSTEM_BOOTSTRAP: Seed knowledge injected at cold start. Should be minimal
  *   and progressively superseded by experiential provenance.
+ * - CANDIDATE: A conversation-derived proper noun staged in the WORLD graph as a
+ *   `:Candidate` node (NOT a live `:Entity`). It is visible to reasoning as
+ *   low-confidence context but is NEVER grounding-eligible until a guardian
+ *   promotes it (`:Candidate → :Entity`). This is the CANON Std-3 three-graph
+ *   isolation fix for the §2.8 person-fact leak (Wave 3 / chunk C0). See the
+ *   `:Candidate` contract block below.
  */
 export type ExtendedProvenanceSource =
   | 'GUARDIAN_APPROVED_INFERENCE'
   | 'TAUGHT_PROCEDURE'
   | 'BEHAVIORAL_INFERENCE'
-  | 'SYSTEM_BOOTSTRAP';
+  | 'SYSTEM_BOOTSTRAP'
+  | 'CANDIDATE';
 
 /**
  * Union of all valid provenance sources. Use this type at persistence
@@ -91,8 +98,79 @@ export function resolveBaseConfidence(provenance: ProvenanceSource): number {
       return PROVENANCE_BASE_CONFIDENCE.INFERENCE;
     case 'SYSTEM_BOOTSTRAP':
       return PROVENANCE_BASE_CONFIDENCE.SENSOR;
+    case 'CANDIDATE':
+      // A staged candidate is the weakest, least-trusted provenance: a raw
+      // conversation-derived proper noun with no observation, no teaching, and
+      // no successful retrieval behind it. It sits at the INFERENCE floor and is
+      // additionally hard-capped at CANDIDATE_CONFIDENCE_CAP (≤0.60, CANON Std-3
+      // ceiling) by the minting path (C3). It must NEVER ground a label.
+      return Math.min(CANDIDATE_CONFIDENCE_CAP, PROVENANCE_BASE_CONFIDENCE.INFERENCE);
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// The `:Candidate` contract (Wave 3 / chunk C0 — CANON Std-3 isolation fix §2.8)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// `:Candidate` is a Neo4j node label that lives in the **WORLD** Neo4j instance
+// ALONGSIDE `:Entity` (same graph, NOT a separate store — graph isolation is
+// preserved because the SELF/OTHER instances are untouched). It is the staging
+// form for conversation-derived proper nouns.
+//
+// INVARIANTS (all three are load-bearing; violating any reopens §2.8):
+//
+//   1. PROVENANCE.  Every `:Candidate` carries `provenance_type: 'CANDIDATE'`
+//      (the value `CANDIDATE_PROVENANCE_TYPE` below). This is honest provenance
+//      (CANON Std-2): the node was inferred from conversation, not observed,
+//      taught, or guardian-confirmed.
+//
+//   2. CONFIDENCE CAP.  A `:Candidate` confidence is hard-capped at
+//      `CANDIDATE_CONFIDENCE_CAP` (0.60 — exactly the CANON Std-3 ceiling). It
+//      can never be lifted above this while it remains a candidate; only a
+//      guardian promotion (`:Candidate → :Entity`, chunk C4) changes that.
+//
+//   3. GROUNDING EXCLUSION.  A `:Candidate` is visible to reasoning as
+//      low-confidence CONTEXT but is NEVER eligible to produce a GROUNDED
+//      grounding label. Every WKG grounding read-path MUST exclude `:Candidate`
+//      (see WkgContextService.matchEntities / getSubgraph / getEntityFacts /
+//      getRelationships — each carries an explicit `NOT <var>:Candidate` clause).
+//
+//   4. PERSON SCOPING.  A `:Candidate` minted from conversation carries
+//      `grounding_person_id` = the speaker who introduced it (the key under
+//      which C3 mints it). This keeps the candidate attributable to its source
+//      person and is what a later guardian promotion / OKG cross-check reads.
+//
+// MINTING (C3) and PROMOTION (C4) are NOT implemented here — C0 is defensive
+// groundwork ONLY: the contract + the exclusion of candidates from every
+// grounding read-path, so that once C3 starts minting them they are already
+// non-groundable by construction.
+
+/**
+ * The `provenance_type` string stamped on every `:Candidate` node (CANON Std-2).
+ * A conversation-derived proper noun is an inference, never an observation.
+ */
+export const CANDIDATE_PROVENANCE_TYPE = 'CANDIDATE' as const;
+
+/**
+ * The Neo4j node label for staged conversation-derived proper nouns. Lives in
+ * the WORLD instance beside `:Entity`; excluded from all grounding read-paths.
+ */
+export const CANDIDATE_NODE_LABEL = 'Candidate' as const;
+
+/**
+ * Hard confidence ceiling for a `:Candidate` node — exactly the CANON Std-3
+ * ceiling (0.60). A candidate must never exceed this while unpromoted. The
+ * minting path (C3) clamps to this; the contract documents it here so every
+ * consumer reads one number.
+ */
+export const CANDIDATE_CONFIDENCE_CAP = 0.6 as const;
+
+/**
+ * The candidate property carrying the speaker/person id that introduced the
+ * proper noun (its grounding scope). Set by the minting path (C3); read by the
+ * guardian promotion path (C4).
+ */
+export const CANDIDATE_PERSON_ID_PROP = 'grounding_person_id' as const;
 
 // ───────────────────────────────────────────────────────────────────────────
 // WS4 Ticket 5 (§1) — OKG self-fact tiering (guardian-aware, identity-blind)

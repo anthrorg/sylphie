@@ -204,10 +204,15 @@ export class CommunicationService implements OnModuleInit {
     const inputType = classifyInput(text);
     const guardianFeedbackType = detectGuardianFeedback(text);
 
-    // Log INPUT_RECEIVED event
+    // Log INPUT_RECEIVED event.
+    // speakerId (= userId, the PostgreSQL User.id) is threaded so the 60s
+    // learning cycle can person-scope conversation-derived entities (Wave 3 C3:
+    // mint them as :Candidate with grounding_person_id = speakerId, not shared
+    // :Entity — CANON Std-3 three-graph isolation, §2.8 leak fix).
     this.logEvent('INPUT_RECEIVED', sessionId, {
       content: text,
       inputLength: text.length,
+      speakerId: userId,
     });
 
     // Log INPUT_PARSED event
@@ -216,6 +221,7 @@ export class CommunicationService implements OnModuleInit {
       entityCount: entities.length,
       entities,
       guardianFeedbackType,
+      speakerId: userId,
     });
 
     // Self-model `social_interaction` (additive telemetry, no behavioral
