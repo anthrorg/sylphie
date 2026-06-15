@@ -74,20 +74,25 @@ export class SceneEventDetectorService {
     for (const [trackId, obj] of currentConfirmed) {
       if (this.previousObjects.has(trackId)) continue;
 
-      // Attempt face identification for person tracks with embeddings.
-      if (obj.label === 'person' && obj.embedding) {
-        const personId = this.faceSnapshot.identifyFace(obj.embedding);
-        if (personId) {
-          obj.personId = personId;
-          events.push({
-            type: SceneEventType.FACE_IDENTIFIED,
-            trackId,
-            label: obj.label,
-            confidence: obj.confidence,
-            bbox: obj.bbox,
-            timestamp: now,
-            personId,
-          });
+      // Person tracks always emit PERSON_ARRIVED; identity is attempted only when
+      // an ArcFace FACE embedding is present. P3.2 PRONG 4 — identify on the FACE
+      // embedding (`faceEmbedding`), NOT the body-track `embedding` (OPEN-12
+      // decontamination). No face crop → PERSON_ARRIVED fires unidentified.
+      if (obj.label === 'person') {
+        if (obj.faceEmbedding) {
+          const personId = this.faceSnapshot.identifyFace(obj.faceEmbedding);
+          if (personId) {
+            obj.personId = personId;
+            events.push({
+              type: SceneEventType.FACE_IDENTIFIED,
+              trackId,
+              label: obj.label,
+              confidence: obj.confidence,
+              bbox: obj.bbox,
+              timestamp: now,
+              personId,
+            });
+          }
         }
         events.push({
           type: SceneEventType.PERSON_ARRIVED,
@@ -154,13 +159,15 @@ export class SceneEventDetectorService {
     }
 
     // --- Re-identify existing person tracks that don't have a personId yet ---
+    // P3.2 PRONG 4 — re-identify on the ArcFace FACE embedding (`faceEmbedding`),
+    // NOT the body-track `embedding` (OPEN-12 decontamination).
     for (const [trackId, obj] of currentConfirmed) {
       if (obj.personId) continue; // already identified
       if (obj.label !== 'person') continue;
-      if (!obj.embedding) continue;
+      if (!obj.faceEmbedding) continue;
       if (!this.previousObjects.has(trackId)) continue; // handled above in appearances
 
-      const personId = this.faceSnapshot.identifyFace(obj.embedding);
+      const personId = this.faceSnapshot.identifyFace(obj.faceEmbedding);
       if (personId) {
         obj.personId = personId;
         events.push({

@@ -46,12 +46,40 @@ const ALL_ANGLES: readonly AngleCategory[] = [
   'down',
 ] as const;
 
-/** Face embedding dimension from EfficientNet-B0. */
-const FACE_EMBEDDING_DIM = 1280;
+/**
+ * Face embedding dimension. P3.2 — ArcFace (insightface buffalo_l / w600k_r50)
+ * outputs a 512-D L2-normalized vector (was 1280-D EfficientNet-B0). MUST stay
+ * in lockstep with `_ARCFACE_EMBEDDING_DIM` in the Python perception service
+ * (feature_extraction.py) and the migrated `face_embeddings.embedding vector(512)`
+ * column.
+ *
+ * !!! ATOMICITY TRAP (atlas MAKE-OR-BREAK) !!! The hydrate guard
+ * (`embedding.length === FACE_EMBEDDING_DIM`, the hydrate() loop) and the write
+ * guard (the saveSnapshot INSERT precondition)
+ * SILENTLY DROP a row on a dim mismatch — no error is thrown. So a HALF-DEPLOY
+ * (code says 512 but the live table is still vector(1280), or vice-versa) yields
+ * a SILENT IDENTITY BLACKOUT: every centroid is empty, identifyFace/matchFace
+ * always return null, and nothing logs an error. The destructive table migration
+ * (test/fixtures/vision/p3.2-arcface-migration.sql) and this FACE_EMBEDDING_DIM=512
+ * code MUST land ATOMICALLY in the SAME stack-down window — table first, then
+ * code — and the operator MUST assert `getCentroidCount() > 0` after restart
+ * before closing the window (see the migration script header).
+ */
+const FACE_EMBEDDING_DIM = 512;
+
+/**
+ * Current face-embedding version. P3.2 — ArcFace 512-D = version 2 (was 1280-D
+ * EfficientNet = version 1). Persisted on INSERT and stamped on writes; parity
+ * with `CURRENT_OBJECT_EMBEDDING_VERSION` in visual-working-memory.service.ts.
+ * All pre-P3.2 rows are version 1 (and are DELETED by the destructive migration,
+ * since a 1280-D EfficientNet vector is incomparable to a 512-D ArcFace vector).
+ */
+const FACE_EMBEDDING_VERSION = 2;
 
 /** Result from the Python /perception/crop-face endpoint. */
 interface CropResult {
   face_crop_b64: string;
+  /** P3.2 — 512-D ArcFace (buffalo_l/w600k_r50) embedding, or [] on degrade. */
   embedding: number[];
 }
 
@@ -74,11 +102,32 @@ const MIN_CONFIDENCE = 0.65;
 
 /**
  * Cosine similarity threshold for face identification.
- * EfficientNet-B0 embeddings vary significantly across angles, so this
- * needs to be lower than you'd expect. 0.55 catches same-person matches
- * while still rejecting genuinely different faces.
+ *
+ * !!! PROVISIONAL_ARCFACE — NOT THE FINAL VALUE — DO NOT TRUST THIS NUMBER !!!
+ *
+ * P3.2: the face backbone swapped EfficientNet-B0 → ArcFace (buffalo_l /
+ * w600k_r50). This 0.55 was tuned for EfficientNet classifier-FEATURE cosine
+ * spreads (deliberately low because those features vary wildly across head
+ * angles). ArcFace is a MARGIN-LOSS metric-learning model with a COMPLETELY
+ * DIFFERENT operating point: genuine pairs typically sit ~0.4-0.7 cosine and
+ * impostors ~0.0-0.3 on normed embeddings, so 0.55 here will REJECT many genuine
+ * ArcFace matches (false-negative identity blackout) while the old value's
+ * "looseness" no longer means what it did.
+ *
+ * The REAL threshold MUST be re-derived from measured ArcFace genuine/impostor
+ * cosine distributions on a DECONTAMINATED 512-D gallery — a luria/skinner
+ * measurement run POST-build on real vectors, NOT guessed here. The WS4
+ * multi-person gate is the regression sentinel for whatever value is ultimately
+ * set. Until then this is a mythos-grounded PROVISIONAL of 0.36 — the conservative
+ * end of insightface's documented 0.30-0.45 cosine band for w600k_r50 (FMR 1e-4..1e-5),
+ * well above the measured impostor mass (cross-face ~0.0-0.05) and below the 0.55
+ * that was clipping genuine matches. Still flagged so it is never mistaken for a
+ * tuned, measured operating point.
+ *
+ * TODO(P3.2-threshold, luria/skinner): re-derive IDENTIFICATION_THRESHOLD from
+ * measured ArcFace genuine/impostor distributions on the decontaminated gallery.
  */
-const IDENTIFICATION_THRESHOLD = 0.55;
+const IDENTIFICATION_THRESHOLD = 0.36; // PROVISIONAL_ARCFACE (mythos-grounded) — see TODO above
 
 // ---------------------------------------------------------------------------
 // Angle classification thresholds
@@ -517,10 +566,12 @@ export class FaceSnapshotService implements OnModuleInit {
       const embeddingLiteral = `[${embedding.join(',')}]`;
       this.timescale
         .query(
-          `INSERT INTO face_embeddings (id, person_id, angle, embedding, created_at)
-           VALUES ($1, $2, $3, $4::vector, $5)
+          // P3.2 — stamp embedding_version = FACE_EMBEDDING_VERSION (2 = ArcFace).
+          `INSERT INTO face_embeddings (id, person_id, angle, embedding, created_at, embedding_version)
+           VALUES ($1, $2, $3, $4::vector, $5, $6)
            ON CONFLICT (id) DO UPDATE SET
              embedding = $4::vector,
+             embedding_version = $6,
              updated_at = NOW()`,
           [
             snapshotId,
@@ -528,6 +579,7 @@ export class FaceSnapshotService implements OnModuleInit {
             angle,
             embeddingLiteral,
             new Date(),
+            FACE_EMBEDDING_VERSION,
           ],
         )
         .catch((err) => {
@@ -545,8 +597,26 @@ export class FaceSnapshotService implements OnModuleInit {
   /**
    * Update the running centroid for a person by averaging in a new embedding.
    * Simple incremental mean: centroid = (centroid * n + new) / (n + 1)
+   *
+   * P3.2 — DIM GATE (atlas Part 4). The runtime fold sites (snapshot collection
+   * here, and VWM's match/unknown-person paths) had NO guard before; only the
+   * boot-time hydrate guard (the hydrate() loop) protected the centroid. This refuses to fold
+   * any embedding whose length != FACE_EMBEDDING_DIM (e.g. a stray 1280-D
+   * EfficientNet vector, or a degraded empty `[]` from a failed ArcFace extract),
+   * so a cross-dim vector can never corrupt the centroid or desync `snapshotCount`
+   * from the effective N. The mismatch is logged (not silently swallowed) — a
+   * persistent warning here is the loud signal of a half-deploy / contamination.
    */
   updateCentroid(personId: string, embedding: number[]): void {
+    if (embedding.length !== FACE_EMBEDDING_DIM) {
+      this.logger.warn(
+        `Refusing centroid fold for ${personId}: embedding dim ` +
+          `${embedding.length} !== FACE_EMBEDDING_DIM ${FACE_EMBEDDING_DIM} ` +
+          `(cross-dim / degraded vector — possible half-deploy or contamination).`,
+      );
+      return;
+    }
+
     const existing = this.centroids.get(personId);
 
     if (!existing || existing.embedding.length === 0) {
@@ -578,6 +648,13 @@ export class FaceSnapshotService implements OnModuleInit {
         'CREATE EXTENSION IF NOT EXISTS vector',
       );
 
+      // P3.2 — FRESH installs get vector(512) (ArcFace dim) automatically via
+      // FACE_EMBEDDING_DIM. NOTE: this CREATE is IF-NOT-EXISTS, so it does NOT
+      // alter an EXISTING table that still has vector(1280) — re-keying a live
+      // install is the standalone destructive migration's job
+      // (test/fixtures/vision/p3.2-arcface-migration.sql), deliberately NOT
+      // auto-run on restart (auto-destructive-on-restart is dangerous — atlas).
+      // ensureSchema stays purely ADDITIVE.
       await this.timescale.query(`
         CREATE TABLE IF NOT EXISTS face_embeddings (
           id          TEXT PRIMARY KEY,
@@ -588,6 +665,15 @@ export class FaceSnapshotService implements OnModuleInit {
           updated_at  TIMESTAMPTZ
         )
       `);
+
+      // P3.2 — additive, idempotent: existing installs gain the version column;
+      // fresh installs get it too. Parity with visual_object_embeddings. Defaults
+      // to 1 (the legacy EfficientNet rows); P3.2 writes version 2 on every new
+      // INSERT (see FACE_EMBEDDING_VERSION). After the destructive migration the
+      // table is empty, so the first new ArcFace row is version 2 from the start.
+      await this.timescale.query(
+        `ALTER TABLE face_embeddings ADD COLUMN IF NOT EXISTS embedding_version INTEGER DEFAULT 1`,
+      );
 
       await this.timescale.query(`
         CREATE INDEX IF NOT EXISTS face_embeddings_person_idx

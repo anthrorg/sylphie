@@ -21,8 +21,22 @@ export interface TrackedObjectDTO {
    * Per-object visual embedding (P3.1: 768-D DINOv2-base CLS token; was 1280-D
    * EfficientNet-B0). Only present for CONFIRMED tracks. Length ==
    * OBJECT_EMBEDDING_DIM (sensory-frame.ts).
+   *
+   * !!! NOT a face-identity signal !!! This is the BODY-TRACK / object-appearance
+   * vector. P3.2 (OPEN-12 decontamination) forbids it from reaching the face
+   * identity path — person identity uses `faceEmbedding` (ArcFace 512-D) instead.
    */
   embedding: number[] | null;
+  /**
+   * P3.2 — per-PERSON-track 512-D ArcFace (buffalo_l/w600k_r50) FACE embedding,
+   * sourced from the /perception/crop-face endpoint and attached by the gateway
+   * for confirmed `person` tracks that overlap a face detection. This — NOT
+   * `embedding` (the body track) — is the input to identifyFace()/matchFace()
+   * and the face centroid fold (OPEN-12 four-pronged decontamination, prong 4).
+   * Absent/null when no overlapping face was detected, /crop-face was
+   * unavailable, or ArcFace degraded to a null vector.
+   */
+  faceEmbedding?: number[] | null;
   /**
    * P3.A — top-K dominant colors of the (masked) bbox crop as `[r, g, b]`
    * triples, from the Python `DominantColorExtractor`. Present only for

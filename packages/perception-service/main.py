@@ -248,6 +248,71 @@ def _get_or_init_object_extractor() -> Any | None:  # noqa: ANN401
 
 
 # ---------------------------------------------------------------------------
+# P3.2 — ArcFace (buffalo_l / w600k_r50) face embedder for the /crop-face path
+#
+# The FACE identity path swaps EfficientNet (OnnxEmbeddingExtractor) → ArcFace
+# (insightface buffalo_l, 512-D normed embedding). It gets its OWN double-checked
+# lazy-init + failed-flag so its degrade behaviour is independent of both the
+# object-track DINOv2 path and the (now-unused-by-faces) EfficientNet path, and
+# identical in shape to the others (degrade-not-crash, no per-frame retry storm).
+# ---------------------------------------------------------------------------
+
+_face_embedding_init_lock = threading.Lock()
+_face_embedding_init_failed: bool = False
+# ArcFace face extractor; lazy-init on the first /crop-face request.
+_face_embedding_extractor: Any | None = None
+
+
+def _get_or_init_face_extractor() -> Any | None:  # noqa: ANN401
+    """Return the shared ArcFaceEmbedder for the /crop-face path.
+
+    Thread-safe double-checked locking — the same pattern as
+    ``_get_or_init_object_extractor`` (the call site runs inside
+    ``loop.run_in_executor`` on OS threads, so a ``threading.Lock`` is required).
+    On the first init failure ``_face_embedding_init_failed`` latches and every
+    subsequent call returns ``None`` immediately — a missing/broken baked
+    ``buffalo_l`` pack does not self-heal at request time, so retrying per
+    /crop-face call only wastes work and floods the logs.
+
+    Returns:
+        The initialised ``ArcFaceEmbedder``, or ``None`` if init has failed (now
+        or on a previous attempt). A ``None`` here degrades /crop-face to a null
+        face embedding (NestJS refuses the empty vector — no contamination).
+    """
+    global _face_embedding_init_failed  # noqa: PLW0603
+    global _face_embedding_extractor  # noqa: PLW0603
+
+    if _face_embedding_init_failed:
+        return None
+
+    # Fast path: already initialised, no lock acquisition.
+    if _face_embedding_extractor is not None:
+        return _face_embedding_extractor
+
+    with _face_embedding_init_lock:
+        # Re-check inside the lock (another thread may have won the race).
+        if _face_embedding_extractor is not None:
+            return _face_embedding_extractor
+        if _face_embedding_init_failed:
+            return None
+        try:
+            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                ArcFaceEmbedder,
+            )
+            _face_embedding_extractor = ArcFaceEmbedder()
+            logger.info("ArcFaceEmbedder initialized (face /crop-face path)")
+        except Exception as exc:  # noqa: BLE001 — insightface/onnxruntime/OSError all mean "unavailable"
+            logger.warning(
+                "ArcFaceEmbedder unavailable (face embeddings will be null): %s",
+                exc,
+            )
+            _face_embedding_init_failed = True
+            return None
+
+    return _face_embedding_extractor
+
+
+# ---------------------------------------------------------------------------
 # P3.1 — confirm-gate + throttle for object embeddings
 #
 # DINOv2-base is ~69ms/crop and stacks across confirmed tracks (> the ~66ms
@@ -816,8 +881,14 @@ async def crop_face(request: Request) -> JSONResponse:
     Returns:
         {
           "face_crop_b64": "<base64 JPEG>",
-          "embedding": [float x 1280]   -- EfficientNet-B0 visual embedding
+          "embedding": [float x 512]   -- ArcFace (buffalo_l/w600k_r50) face embedding
         }
+
+    P3.2 — the embedding is now a 512-D ArcFace vector (was 1280-D EfficientNet).
+    CRITICAL: ArcFace is fed the UNMASKED face crop (``resized``), not the
+    landmark-masked crop. The convex-hull mask zeroes the contextual pixels that
+    ArcFace's SCRFD alignment + recognizer rely on, which HURTS the embedding; the
+    mask is kept for the DISPLAY crop only.
     """
     import base64  # noqa: PLC0415
     import cv2  # noqa: PLC0415
@@ -875,9 +946,10 @@ async def crop_face(request: Request) -> JSONResponse:
     # Crop region
     crop = img[cy_min:cy_max, cx_min:cx_max]
 
-    # For the embedding: apply face landmark mask to isolate the face from
-    # background (hair, walls, clothing). This produces embeddings that
-    # represent the face itself, not the surroundings.
+    # P3.2 — the landmark convex-hull mask is kept ONLY for the optional DISPLAY
+    # crop (face-only pixels look cleaner in the UI gallery). It is DELIBERATELY
+    # NOT fed to the embedder: ArcFace's SCRFD alignment + recognizer rely on the
+    # raw contextual pixels, so masking HURTS the embedding (atlas P3.2 headline).
     masked_crop = crop.copy()
     if face_landmarks and len(face_landmarks) > 10:
         # Shift landmarks relative to the crop origin
@@ -891,32 +963,41 @@ async def crop_face(request: Request) -> JSONResponse:
         cv2.fillConvexPoly(mask, hull, 255)
         masked_crop[mask == 0] = 0
 
-    # Resize both: unmasked for the visual crop, masked for the embedding
+    # Resize: unmasked for the visual crop (also the ArcFace input), masked kept
+    # for the display gallery only (no longer the embedder input).
     resized = cv2.resize(crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
-    resized_masked = cv2.resize(masked_crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+    # `resized_masked` retained for display parity; NOT used for the embedding.
+    _resized_masked = cv2.resize(  # noqa: F841 — display-only, intentionally unused for embedding
+        masked_crop, (target_size, target_size), interpolation=cv2.INTER_LINEAR,
+    )
 
     # Encode to JPEG base64 (unmasked — the visual crop should look natural)
     _, jpeg_buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
     crop_b64 = base64.b64encode(jpeg_buf.tobytes()).decode("ascii")
 
-    # Generate visual embedding from the MASKED crop (face-only pixels)
+    # P3.2 — generate a 512-D ArcFace embedding from the UNMASKED aligned crop.
     embedding: list[float] = []
     loop = asyncio.get_event_loop()
 
     def _compute_embedding() -> list[float] | None:
-        # Shared thread-safe lazy init (runs on an executor thread).
-        extractor = _get_or_init_embedding_extractor()
+        # Shared thread-safe lazy init (runs on an executor thread). ArcFace, not
+        # EfficientNet — the face identity path is now a real margin-loss model.
+        extractor = _get_or_init_face_extractor()
         if extractor is None:
             return None
 
-        # Use the masked crop for embedding (face-only, no background)
-        crop_rgb = cv2.cvtColor(resized_masked, cv2.COLOR_BGR2RGB)
-        raw_bytes = crop_rgb.tobytes()
+        # Feed ArcFace the FULL frame + the requested face bbox. SCRFD needs the
+        # face at natural scale WITH surrounding context; a tight target_size crop
+        # fills the buffer and SCRFD detects nothing (empty embedding). extract()
+        # runs detection on the whole frame and IoU-matches this bbox. The masked/
+        # resized crop above is for the DISPLAY `face_crop_b64` only.
+        full_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        raw_bytes = full_rgb.tobytes()
         return extractor.extract(
             raw_bytes,
-            (0, 0, target_size, target_size),
-            target_size,
-            target_size,
+            (x_min, y_min, x_max, y_max),
+            w,
+            h,
         )
 
     try:

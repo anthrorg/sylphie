@@ -695,10 +695,205 @@ class DINOv2BaseEmbeddingExtractor:
 
 
 # ---------------------------------------------------------------------------
+# ArcFaceEmbedder (P3.2)
+# ---------------------------------------------------------------------------
+
+# insightface model pack baked into the image at P3.0 (Dockerfile:
+# `FaceAnalysis(name='buffalo_l').prepare(ctx_id=-1)`, INSIGHTFACE_HOME persisted
+# as ENV so the runtime resolves the baked cache instead of re-fetching). The
+# `buffalo_l` pack ships the `w600k_r50` ArcFace recognition model (ResNet-50
+# trained on WebFace600K with margin loss) which yields a 512-D, L2-normalized
+# face embedding — the discriminative metric-learning face space, NOT the
+# EfficientNet classifier-feature space the old OnnxEmbeddingExtractor produced.
+_ARCFACE_MODEL_PACK = "buffalo_l"
+
+# ArcFace (w600k_r50) embedding dimension. MUST stay in lockstep with
+# FACE_EMBEDDING_DIM in apps/sylphie/src/services/face-snapshot.service.ts (512)
+# and the migrated `face_embeddings.embedding vector(512)` column.
+_ARCFACE_EMBEDDING_DIM = 512
+
+# ctx_id = -1 forces CPU execution (the perception sidecar has no GPU budget for
+# the face path; DINOv2 already owns the object-track inference time). Detection
+# input size is the insightface default (640) — the buffalo_l SCRFD detector
+# re-detects + ALIGNS the face inside the crop we hand it, which is exactly what
+# ArcFace needs (a 5-point-aligned 112x112 face), so we feed it the UNMASKED crop.
+_ARCFACE_CTX_ID = -1
+_ARCFACE_DET_SIZE = (640, 640)
+
+
+class ArcFaceEmbedder:
+    """ArcFace (insightface ``buffalo_l`` / ``w600k_r50``) 512-D face embeddings.
+
+    P3.2 — the FACE identity backbone swap. Replaces the EfficientNet
+    ``OnnxEmbeddingExtractor`` on the ``/crop-face`` path with a real margin-loss
+    face-recognition model. insightface's ``FaceAnalysis`` app runs SCRFD
+    detection + 5-point alignment + the ``w600k_r50`` ArcFace recognizer over the
+    crop and returns a 512-D **L2-normalized** embedding (``normed_embedding``) —
+    the operating point identification thresholds are tuned against (cosine ==
+    dot product on unit vectors).
+
+    **CRITICAL — feed the UNMASKED crop.** ArcFace was trained on aligned natural
+    face crops; the old EfficientNet path applied a ``cv2.convexHull`` landmark
+    mask (zeroing background pixels) which DESTROYS the contextual pixels ArcFace's
+    alignment + recognition rely on. P3.2 keeps the mask for the *display* crop
+    only; the embedding is computed on the raw aligned crop (see ``main.py``
+    ``crop_face`` — it now passes ``resized`` (unmasked), not ``resized_masked``).
+
+    **Lazy imports + degrade-not-crash:** ``insightface`` (and its native deps,
+    ``onnxruntime`` + ``cv2`` + ``numpy``) are imported inside ``__init__``, not at
+    module level, so *importing this module* never raises when the ``[cv]`` extras
+    are absent — the failure is deferred to construction, exactly like
+    :class:`DINOv2BaseEmbeddingExtractor` and :class:`OnnxEmbeddingExtractor`.
+    ``prepare(ctx_id=-1)`` pins CPU. ``allowed_modules`` is left at the default
+    (detection + recognition) so the app self-aligns the crop before recognition.
+
+    Args:
+        model_pack: insightface model pack name. Defaults to ``buffalo_l``.
+
+    Raises:
+        ImportError: If ``insightface`` is not installed.
+        Exception: If model preparation fails (e.g. the baked pack is missing) —
+            surfaced to the lazy-init caller in ``main.py`` which latches a
+            failed-flag and degrades every subsequent ``/crop-face`` to a null
+            embedding (NestJS then refuses the empty face vector at its write/fold
+            guards — no zero-vector contamination).
+    """
+
+    def __init__(self, model_pack: str | None = None) -> None:
+        # Lazy import -- fail loudly with an actionable message (mirrors the other
+        # extractors so the import surface is identical).
+        try:
+            import insightface  # type: ignore[import-untyped]  # noqa: PLC0415
+            from insightface.app import FaceAnalysis  # type: ignore[import-untyped]  # noqa: PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "ArcFaceEmbedder requires insightface. "
+                "Install with: pip install 'insightface'"
+            ) from exc
+
+        self._insightface = insightface
+
+        resolved_pack = model_pack or _ARCFACE_MODEL_PACK
+
+        # Build + prepare the FaceAnalysis app. INSIGHTFACE_HOME (set in the
+        # Dockerfile) points at the baked model cache so this never reaches the
+        # network. ctx_id=-1 → CPU. The app does SCRFD detection + alignment +
+        # the w600k_r50 ArcFace recognizer.
+        self._app = FaceAnalysis(name=resolved_pack)
+        self._app.prepare(ctx_id=_ARCFACE_CTX_ID, det_size=_ARCFACE_DET_SIZE)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def extract(
+        self,
+        frame_data: bytes,
+        bbox: tuple[float, float, float, float],
+        frame_width: int,
+        frame_height: int,
+    ) -> list[float] | None:
+        """Extract a 512-D ArcFace face embedding from a raw-RGB face crop region.
+
+        Conforms to the :class:`EmbeddingExtractor` protocol so it is a drop-in
+        peer of the other extractors. The ``/crop-face`` caller in ``main.py``
+        passes the **FULL frame** as ``frame_data`` (raw RGB) and ``bbox`` as the
+        requested face region in full-frame pixel coords. SCRFD needs the face at
+        its natural scale WITH surrounding context — a tight pre-crop that fills
+        the buffer yields ZERO detections — so we run detection on the whole frame
+        and IoU-match ``bbox`` to insightface's own detections.
+
+        Steps:
+
+        1. Interpret ``frame_data`` as the full raw-RGB frame (3 bytes/pixel).
+        2. Convert RGB → BGR (insightface, like OpenCV, expects BGR input).
+        3. Run ``FaceAnalysis.get`` on the FULL frame (SCRFD detect + align +
+           ArcFace recognize) — detects every face at natural scale.
+        4. IoU-match ``bbox`` to the detected faces (handles multi-face frames);
+           fall back to highest det_score if nothing overlaps.
+        5. Return the matched face's 512-D ``normed_embedding`` (already
+           L2-normalized → cosine == dot product).
+
+        Returns ``None`` on ANY failure (degenerate bbox, no face detected, or a
+        forward-pass error) — degrade, never crash; a single bad crop must never
+        take down ``/crop-face``. A ``None`` here propagates as an empty
+        ``embedding: []`` in the response, which the NestJS side rejects at its
+        dim guards (no zero-vector contamination).
+        """
+        try:
+            import numpy as np  # type: ignore[import-untyped]  # noqa: PLC0415
+            import cv2  # type: ignore[import-untyped]  # noqa: PLC0415
+
+            arr = np.frombuffer(frame_data, dtype=np.uint8).reshape(
+                (frame_height, frame_width, 3)
+            )
+
+            x_min = max(0, int(bbox[0]))
+            y_min = max(0, int(bbox[1]))
+            x_max = min(frame_width, int(bbox[2]))
+            y_max = min(frame_height, int(bbox[3]))
+
+            if x_min >= x_max or y_min >= y_max:
+                return None
+
+            # Run SCRFD on the FULL frame (NOT a tight crop). A face resized to
+            # fill a small buffer defeats SCRFD's scale assumptions and it returns
+            # ZERO detections — so the caller passes the whole frame and `bbox` is
+            # the requested face region, which we IoU-match against insightface's
+            # own detections.
+            full_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+            faces = self._app.get(full_bgr)
+            if not faces:
+                return None
+
+            def _iou(fb: object) -> float:
+                try:
+                    fx0, fy0, fx1, fy1 = (
+                        float(fb[0]), float(fb[1]), float(fb[2]), float(fb[3]),
+                    )
+                except (TypeError, IndexError, ValueError):
+                    return 0.0
+                ix0, iy0 = max(float(x_min), fx0), max(float(y_min), fy0)
+                ix1, iy1 = min(float(x_max), fx1), min(float(y_max), fy1)
+                inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+                a_t = max(0.0, float(x_max - x_min)) * max(0.0, float(y_max - y_min))
+                a_f = max(0.0, fx1 - fx0) * max(0.0, fy1 - fy0)
+                union = a_t + a_f - inter
+                return inter / union if union > 0.0 else 0.0
+
+            # Pick the detection that best overlaps the requested face bbox; if
+            # none overlaps (MediaPipe-vs-SCRFD bbox disagreement), fall back to
+            # the highest-confidence detection.
+            best = max(faces, key=lambda f: _iou(getattr(f, "bbox", None)))
+            if _iou(getattr(best, "bbox", None)) <= 0.0:
+                best = max(faces, key=lambda f: getattr(f, "det_score", 0.0))
+            embedding = getattr(best, "normed_embedding", None)
+            if embedding is None:
+                # Fall back to the raw embedding, L2-normalizing it ourselves so
+                # the downstream cosine operating point is preserved.
+                raw = getattr(best, "embedding", None)
+                if raw is None:
+                    return None
+                vec = np.asarray(raw, dtype=np.float32)
+                norm = float(np.linalg.norm(vec))
+                if norm <= 0.0:
+                    return None
+                embedding = vec / norm
+
+            return [float(x) for x in embedding]
+        except Exception as exc:  # noqa: BLE001 — degrade-not-crash on the hot path
+            _log = __import__("logging").getLogger("perception_service")
+            _log.warning("ArcFace face embedding extraction failed: %s", exc)
+            return None
+
+
+# ---------------------------------------------------------------------------
 # Module exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "ArcFaceEmbedder",
     "DINOv2BaseEmbeddingExtractor",
     "DominantColorExtractor",
     "EmbeddingExtractor",

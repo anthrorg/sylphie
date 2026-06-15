@@ -18,6 +18,15 @@ import { VisualWorkingMemoryService } from '../services/visual-working-memory.se
 const MAX_FPS = 15;
 const MIN_FRAME_INTERVAL_MS = 1000 / MAX_FPS;
 
+/**
+ * P3.2 — expected ArcFace face-embedding dimension (buffalo_l/w600k_r50, 512-D).
+ * MUST stay in lockstep with FACE_EMBEDDING_DIM in face-snapshot.service.ts and
+ * the migrated `face_embeddings.embedding vector(512)` column. The gateway only
+ * attaches a `faceEmbedding` whose length matches this — a degraded/wrong-dim
+ * vector is dropped so it never reaches the identity path.
+ */
+const FACE_EMBEDDING_DIM = 512;
+
 /** Minimum time between VLM caption requests (prevents stacking). */
 const CAPTION_COOLDOWN_MS = 5_000;
 /** If no scene-change trigger fires, request a periodic caption after this. */
@@ -223,6 +232,16 @@ export class PerceptionGateway
           frameSequence: rawSummary.frame_sequence,
         };
 
+        // P3.2 PRONG 4 (OPEN-12 decontamination) — attach a 512-D ArcFace FACE
+        // embedding to each confirmed `person` track that overlaps a detected
+        // face, by calling /perception/crop-face. This is the SOLE source of the
+        // face-identity signal: SceneEventDetector + VWM identify on
+        // `faceEmbedding`, never the body-track `embedding`. Best-effort: if no
+        // face overlaps, /crop-face is unavailable, or ArcFace degrades to [],
+        // the track simply carries no `faceEmbedding` and stays unidentified
+        // (we NEVER fall back to the body track — that was the contamination).
+        await this.attachFaceEmbeddings(trackedObjects, mappedFaces, jpegData);
+
         const sceneSnapshot = this.sceneEventDetector.detectEvents(
           trackedObjects,
           mappedFaces,
@@ -329,6 +348,80 @@ export class PerceptionGateway
   }
 
   /**
+   * P3.2 PRONG 4 — attach a 512-D ArcFace FACE embedding to each confirmed
+   * `person` track that overlaps a detected face, via /perception/crop-face.
+   *
+   * For each confirmed person track we find the best-overlapping face detection
+   * (max IoU over a positive overlap) and POST its bbox + landmarks to
+   * /crop-face, which returns a 512-D ArcFace embedding (computed on the UNMASKED
+   * aligned crop). A returned embedding of the correct dim is attached as
+   * `track.faceEmbedding`; anything else (no face, /crop-face down, ArcFace
+   * degraded to [], wrong dim) leaves `faceEmbedding` unset → the track stays
+   * unidentified. We deliberately do NOT fall back to the body-track embedding
+   * (the OPEN-12 contamination this prong removes).
+   *
+   * Crops are requested in parallel (one HTTP call per overlapping person) and
+   * each call is individually fault-tolerant — a single failure never rejects
+   * the batch or blocks the frame pipeline. Awaited (not fire-and-forget) so the
+   * embeddings are present before detectEvents/updateScene run this frame.
+   */
+  private async attachFaceEmbeddings(
+    trackedObjects: TrackedObjectDTO[],
+    faces: FaceDetection[],
+    jpegData: Buffer,
+  ): Promise<void> {
+    if (faces.length === 0) return;
+
+    const personTracks = trackedObjects.filter(
+      (t) => t.state === 'confirmed' && t.label === 'person',
+    );
+    if (personTracks.length === 0) return;
+
+    await Promise.all(
+      personTracks.map(async (track) => {
+        // Best-overlapping face for this person bbox (max positive IoU).
+        let bestFace: FaceDetection | null = null;
+        let bestIoU = 0;
+        for (const face of faces) {
+          const iou = bboxIoU(track.bbox, face.bbox);
+          if (iou > bestIoU) {
+            bestIoU = iou;
+            bestFace = face;
+          }
+        }
+        if (!bestFace) return; // no overlapping face → no face embedding
+
+        const [x1, y1, x2, y2] = bestFace.bbox;
+        let url =
+          `${this.perceptionHost}/perception/crop-face` +
+          `?x_min=${x1}&y_min=${y1}&x_max=${x2}&y_max=${y2}`;
+        if (bestFace.landmarks && bestFace.landmarks.length > 10) {
+          url += `&landmarks=${encodeURIComponent(JSON.stringify(bestFace.landmarks))}`;
+        }
+
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: new Uint8Array(jpegData),
+          });
+          if (!response.ok) return;
+          const crop = (await response.json()) as { embedding?: number[] };
+          const emb = crop.embedding;
+          // Only attach a well-formed ArcFace vector. A degraded [] (ArcFace
+          // unavailable / no face) or a wrong-dim vector is dropped — the track
+          // stays unidentified rather than carrying a junk identity signal.
+          if (Array.isArray(emb) && emb.length === FACE_EMBEDDING_DIM) {
+            track.faceEmbedding = emb;
+          }
+        } catch {
+          // /crop-face unavailable — leave faceEmbedding unset (degrade).
+        }
+      }),
+    );
+  }
+
+  /**
    * Fire-and-forget VLM caption request. Sends the current JPEG frame to
    * the perception service's /caption endpoint and stores the result.
    * Never blocks the main detection pipeline.
@@ -356,4 +449,28 @@ export class PerceptionGateway
       this.captionInFlight = false;
     }
   }
+}
+
+/**
+ * P3.2 — intersection-over-union of two `[xMin, yMin, xMax, yMax]` boxes (pixel
+ * space). Used to pick the best-overlapping face detection for a person track
+ * before requesting its ArcFace crop. Returns 0 on no overlap or degenerate box.
+ */
+function bboxIoU(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): number {
+  const xLeft = Math.max(a[0], b[0]);
+  const yTop = Math.max(a[1], b[1]);
+  const xRight = Math.min(a[2], b[2]);
+  const yBottom = Math.min(a[3], b[3]);
+
+  if (xRight <= xLeft || yBottom <= yTop) return 0;
+
+  const intersection = (xRight - xLeft) * (yBottom - yTop);
+  const areaA = (a[2] - a[0]) * (a[3] - a[1]);
+  const areaB = (b[2] - b[0]) * (b[3] - b[1]);
+  const union = areaA + areaB - intersection;
+
+  return union > 0 ? intersection / union : 0;
 }

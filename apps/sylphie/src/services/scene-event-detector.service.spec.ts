@@ -53,6 +53,7 @@ describe('SceneEventDetectorService (pure diff)', () => {
       firstSeenAt: null,
       lastSeenAt: null,
       embedding: null,
+      faceEmbedding: null,
       ...overrides,
     };
   }
@@ -184,5 +185,96 @@ describe('SceneEventDetectorService (pure diff)', () => {
     expect(snap.summary).toBe(summary);
     expect(snap.objects).toEqual([]);
     expect(typeof snap.timestamp).toBe('number');
+  });
+
+  // --- P3.2 PRONG 4: identify on faceEmbedding, never the body track ---------
+
+  describe('P3.2 PRONG 4 — face identity uses faceEmbedding, not body embedding', () => {
+    const BODY = [9, 9, 9]; // body track — MUST NOT reach identifyFace
+    const FACE = [1, 2, 3, 4]; // ArcFace face — the ONLY identity signal
+
+    it('appearances: identifyFace receives faceEmbedding (not embedding)', () => {
+      const identifyFace = jest.fn().mockReturnValue('jim');
+      const det = new SceneEventDetectorService({
+        identifyFace,
+      } as unknown as FaceSnapshotService);
+
+      const person = makeObject({
+        trackId: 7,
+        label: 'person',
+        embedding: [...BODY],
+        faceEmbedding: [...FACE],
+      });
+      const snap = det.detectEvents([person], NO_FACES, makeSummary(1));
+
+      expect(identifyFace).toHaveBeenCalledWith(FACE);
+      expect(identifyFace).not.toHaveBeenCalledWith(BODY);
+      // A FACE_IDENTIFIED event fires with the matched id.
+      expect(
+        snap.events.some(
+          (e) =>
+            e.type === SceneEventType.FACE_IDENTIFIED && e.personId === 'jim',
+        ),
+      ).toBe(true);
+    });
+
+    it('a person with NO faceEmbedding still emits PERSON_ARRIVED but makes NO identity attempt', () => {
+      const identifyFace = jest.fn().mockReturnValue('jim');
+      const det = new SceneEventDetectorService({
+        identifyFace,
+      } as unknown as FaceSnapshotService);
+
+      const person = makeObject({
+        trackId: 7,
+        label: 'person',
+        embedding: [...BODY], // body track present, but no face crop
+        faceEmbedding: null,
+      });
+      const snap = det.detectEvents([person], NO_FACES, makeSummary(1));
+
+      // No body-track fallback — identity is never attempted.
+      expect(identifyFace).not.toHaveBeenCalled();
+      // But the person is still announced.
+      expect(
+        snap.events.some((e) => e.type === SceneEventType.PERSON_ARRIVED),
+      ).toBe(true);
+      expect(
+        snap.events.some((e) => e.type === SceneEventType.FACE_IDENTIFIED),
+      ).toBe(false);
+    });
+
+    it('re-identification pass: identifyFace receives faceEmbedding (not embedding)', () => {
+      const identifyFace = jest
+        .fn()
+        .mockReturnValueOnce(null) // appearance frame: not yet known
+        .mockReturnValueOnce('jim'); // re-id frame: now matches
+      const det = new SceneEventDetectorService({
+        identifyFace,
+      } as unknown as FaceSnapshotService);
+
+      const person = makeObject({
+        trackId: 7,
+        label: 'person',
+        embedding: [...BODY],
+        faceEmbedding: [...FACE],
+      });
+
+      // Frame N: appears (identity attempt #1 returns null).
+      det.detectEvents([person], NO_FACES, makeSummary(1));
+      // Frame N+1: same track, not yet identified → re-id pass (attempt #2).
+      const snap = det.detectEvents([person], NO_FACES, makeSummary(2));
+
+      // BOTH identity calls used the FACE vector; the body track never leaked.
+      for (const call of identifyFace.mock.calls) {
+        expect(call[0]).toEqual(FACE);
+        expect(call[0]).not.toEqual(BODY);
+      }
+      expect(
+        snap.events.some(
+          (e) =>
+            e.type === SceneEventType.FACE_IDENTIFIED && e.personId === 'jim',
+        ),
+      ).toBe(true);
+    });
   });
 });

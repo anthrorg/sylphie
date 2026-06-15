@@ -108,6 +108,15 @@ interface SceneEntity {
   /** Object embedding for cosine matching (from tracker); P3.1 = 768-D DINOv2-base. */
   embedding: number[] | null;
   /**
+   * P3.2 — 512-D ArcFace FACE embedding for this entity (person tracks only),
+   * carried from the track DTO (gateway → /crop-face). This is the OPEN-12
+   * decontamination fix: person identity (identifyFace/matchFace) and the face
+   * centroid fold use THIS, never `embedding` (the body-track object vector).
+   * Null for non-person entities or when no face crop was available this frame.
+   * Refreshed from the freshest sighting (kept, never clobbered to null).
+   */
+  faceEmbedding: number[] | null;
+  /**
    * P3.A — top-K dominant colors of the bbox crop (`[r,g,b]` triples), carried
    * from the TrackedObjectDTO. Session-invariant appearance signal fed to the
    * BindingService (color scorer) and persisted to `dominant_colors`. Null when
@@ -315,6 +324,12 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           entity.bbox = matchingTrack.bbox;
           entity.confidence = matchingTrack.confidence;
           if (matchingTrack.embedding) entity.embedding = matchingTrack.embedding;
+          // P3.2 — refresh the ArcFace FACE embedding from the freshest sighting
+          // (kept if this frame omitted it; never clobbered to null). This is the
+          // person-identity signal, distinct from the body-track `embedding`.
+          if (matchingTrack.faceEmbedding) {
+            entity.faceEmbedding = matchingTrack.faceEmbedding;
+          }
           // P3.A — refresh the appearance color/crop from the freshest sighting
           // (keep the prior value if this frame omitted it, never clobber to null).
           if (matchingTrack.dominantColors) {
@@ -381,9 +396,12 @@ export class VisualWorkingMemoryService implements OnModuleInit {
         }
       }
 
-      // Person identification (sticky — try on each frame while unidentified)
-      if (entity.state !== 'gone' && !entity.personId && entity.label === 'person' && entity.embedding) {
-        const personId = this.faceSnapshot.identifyFace(entity.embedding);
+      // Person identification (sticky — try on each frame while unidentified).
+      // P3.2 PRONG 4 — identify on the ArcFace FACE embedding, NOT the body-track
+      // `embedding`. No face crop this frame → no identification attempt (we do
+      // NOT fall back to the body track; that was the OPEN-12 contamination).
+      if (entity.state !== 'gone' && !entity.personId && entity.label === 'person' && entity.faceEmbedding) {
+        const personId = this.faceSnapshot.identifyFace(entity.faceEmbedding);
         if (personId) {
           entity.personId = personId;
           entity.discovered = true;
@@ -424,11 +442,12 @@ export class VisualWorkingMemoryService implements OnModuleInit {
   private createEntity(track: TrackedObjectDTO, now: number): void {
     const entityId = randomUUID();
 
-    // Check for person identification immediately
+    // Check for person identification immediately. P3.2 PRONG 4 — identify on the
+    // ArcFace FACE embedding, NOT the body-track `embedding` (OPEN-12 fix).
     let personId: string | null = null;
     let discovered = false;
-    if (track.label === 'person' && track.embedding) {
-      personId = this.faceSnapshot.identifyFace(track.embedding);
+    if (track.label === 'person' && track.faceEmbedding) {
+      personId = this.faceSnapshot.identifyFace(track.faceEmbedding);
       if (personId) discovered = true;
     }
 
@@ -449,6 +468,8 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       presenceRatio: 1.0,
       leavingAt: null,
       embedding: track.embedding,
+      // P3.2 — carry the ArcFace FACE embedding (person-identity signal).
+      faceEmbedding: track.faceEmbedding ?? null,
       // P3.A — carry the appearance color signature + crop from the DTO.
       dominantColors: track.dominantColors ?? null,
       cropB64: track.cropB64 ?? null,
@@ -486,6 +507,8 @@ export class VisualWorkingMemoryService implements OnModuleInit {
         entity.confidence = track.confidence;
         entity.state = 'present';
         if (track.embedding) entity.embedding = track.embedding;
+        // P3.2 — carry the fresh ArcFace FACE embedding on re-association too.
+        if (track.faceEmbedding) entity.faceEmbedding = track.faceEmbedding;
         // P3.A — carry the fresh appearance color/crop on re-association too.
         if (track.dominantColors) entity.dominantColors = track.dominantColors;
         if (track.cropB64) entity.cropB64 = track.cropB64;
@@ -522,15 +545,23 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       // Try to match this face against ALL known centroids (known + unknown)
       // before creating a new node. This prevents duplicate unknown person
       // nodes when the same face gets a new track ID from re-detection.
-      if (entity.embedding) {
-        const match = this.faceSnapshot.matchFace(entity.embedding);
+      //
+      // P3.2 PRONG 4 — match on the ArcFace FACE embedding, NOT the body-track
+      // `embedding`. No face crop → fall through to createUnknownPersonNode
+      // (which itself no longer writes the body track — see prongs 1+2). We do
+      // NOT match on the body track as a fallback; that was the contamination.
+      if (entity.faceEmbedding) {
+        const match = this.faceSnapshot.matchFace(entity.faceEmbedding);
         if (match) {
           entity.nodeId = match.personId;
           entity.discovered = !match.personId.startsWith('unknown-person-');
           entity.personId = match.personId;
           entity.displayName = entity.discovered ? match.personId : null;
-          // Update the centroid with this new embedding for better accuracy
-          this.faceSnapshot.updateCentroid(match.personId, entity.embedding);
+          // P3.2 PRONG 3 — fold the ArcFace FACE embedding into the centroid for
+          // better accuracy (NOT the body-track `embedding`). updateCentroid's
+          // dim guard refuses anything != FACE_EMBEDDING_DIM, so a stray vector
+          // can never corrupt the centroid.
+          this.faceSnapshot.updateCentroid(match.personId, entity.faceEmbedding);
           this.logger.log(
             `VWM: face matched existing ${entity.discovered ? 'known' : 'unknown'} person: ` +
             `${match.personId} (sim=${match.similarity.toFixed(3)})`,
@@ -863,17 +894,29 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       }
     }
 
-    // Store face embedding in face_embeddings table for future matching
-    if (entity.embedding && this.timescale) {
+    // P3.2 PRONGS 1 + 2 (OPEN-12 decontamination) — store the ArcFace FACE
+    // embedding for future matching, NEVER the body-track `entity.embedding`.
+    //
+    // BEFORE: this INSERTed `entity.embedding` (the 1280-D EfficientNet / 768-D
+    // DINOv2 OBJECT-TRACK vector) into face_embeddings (prong 1) AND folded it
+    // into the hot-layer centroid (prong 2) — contaminating the face identity
+    // space with object-appearance vectors. AFTER: we write/fold ONLY the
+    // ArcFace `entity.faceEmbedding`. No face crop this frame → we write NOTHING
+    // (the placeholder Person node still exists for snapshot collection to fill
+    // in via FaceSnapshotService.processFaceFrame, the proper face-crop path).
+    // embedding_version is stamped (2 = ArcFace) for parity with FaceSnapshotService.
+    if (entity.faceEmbedding && this.timescale) {
       try {
         await this.timescale.query(
-          `INSERT INTO face_embeddings (id, person_id, angle, embedding, created_at)
-           VALUES ($1, $2, 'frontal', $3::vector, NOW())
+          `INSERT INTO face_embeddings (id, person_id, angle, embedding, created_at, embedding_version)
+           VALUES ($1, $2, 'frontal', $3::vector, NOW(), 2)
            ON CONFLICT (id) DO NOTHING`,
-          [randomUUID(), placeholderId, `[${entity.embedding.join(',')}]`],
+          [randomUUID(), placeholderId, `[${entity.faceEmbedding.join(',')}]`],
         );
-        // Update FaceSnapshotService hot layer centroid
-        this.faceSnapshot.updateCentroid(placeholderId, entity.embedding);
+        // Update FaceSnapshotService hot layer centroid with the FACE embedding.
+        // updateCentroid's dim guard (== FACE_EMBEDDING_DIM) refuses any stray
+        // non-512-D vector, so contamination cannot re-enter even by accident.
+        this.faceSnapshot.updateCentroid(placeholderId, entity.faceEmbedding);
       } catch (err) {
         this.logger.warn(`VWM: face embedding storage for unknown person failed: ${err}`);
       }

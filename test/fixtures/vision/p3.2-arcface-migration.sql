@@ -1,0 +1,106 @@
+-- =============================================================================
+-- P3.2 — ArcFace destructive face-embedding migration (vector(1280) → 512)
+-- =============================================================================
+--
+-- WHAT THIS DOES
+--   Re-keys the `face_embeddings.embedding` column from the legacy 1280-D space
+--   to the new 512-D ArcFace (insightface buffalo_l / w600k_r50) space, AND
+--   purges every existing row first. The dims are incompatible (and pgvector
+--   rejects mixed-dim columns), so this is a FROZEN + VERSIONED + MIGRATION-GATED
+--   phase transition — never online drift.
+--
+-- WHY DELETE-ALL (not just DROP/ADD the column like P3.1)
+--   This is the FOUR-PRONGED OPEN-12 decontamination. Every current row in
+--   face_embeddings is CONTAMINATION: it was written by the body-track INSERT in
+--   visual-working-memory.service.ts (createUnknownPersonNode) using the
+--   OBJECT-TRACKER embedding (1280-D EfficientNet, later 768-D DINOv2), NOT a
+--   face-crop embedding. Those vectors are not just the wrong DIM — they are the
+--   wrong SEMANTIC SPACE (object appearance, not face identity). There is nothing
+--   to migrate forward: a body-track vector is meaningless as a face centroid.
+--   So we DELETE all rows, then re-key the column. The gallery rebuilds honestly
+--   from real ArcFace /crop-face embeddings as people are re-observed.
+--
+--   The companion code change (visual-working-memory.service.ts) removes the
+--   body-track INSERT + the two body-track centroid folds + switches the identity
+--   QUERY to the face-crop ArcFace embedding, so no new contamination is written
+--   after this migration. Running this SQL without that code change would simply
+--   re-contaminate the table on the next unknown person.
+--
+-- WHY DROP-THEN-ADD (not add-`_v2`-then-rename)
+--   atlas correction (same as P3.1): with no data to preserve (we DELETE first),
+--   a straight drop-then-add has fewer failure surfaces than adding a parallel
+--   `embedding_v2` column and renaming. There is nothing to copy across.
+--
+-- =============================================================================
+-- !!! ATOMICITY TRAP — MAKE-OR-BREAK (atlas) !!!
+--   The NestJS hydrate guard (`embedding.length === FACE_EMBEDDING_DIM`) and the
+--   write guard SILENTLY DROP a row on a dim mismatch — NO error is thrown. So a
+--   HALF-DEPLOY is a SILENT IDENTITY BLACKOUT:
+--     * table=512 but code still FACE_EMBEDDING_DIM=1280  → every new ArcFace row
+--       fails the write guard, every hydrate drops the row, centroids stay empty.
+--     * table=1280 but code FACE_EMBEDDING_DIM=512        → same, mirrored.
+--   In BOTH cases identifyFace()/matchFace() always return null and NOTHING logs
+--   an error.
+--
+--   THEREFORE: this table migration and the FACE_EMBEDDING_DIM=512 code MUST land
+--   ATOMICALLY in the SAME stack-down window, TABLE-FIRST then CODE:
+--     1. Stop the NestJS app (apps/sylphie) so no /detect or /crop-face write
+--        races this DDL. ensureSchema() does NOT and MUST NOT run this —
+--        auto-destructive-on-restart is dangerous (atlas). Deliberate manual op.
+--     2. Run this script (TimescaleDB instance sylphie_events).
+--     3. Deploy the FACE_EMBEDDING_DIM=512 code (already on this branch).
+--     4. Restart the app — ensureSchema() sees vector(512) already present (its
+--        CREATE is IF NOT EXISTS → no-op on the existing table) and adds the
+--        embedding_version column idempotently.
+--     5. ASSERT THE WINDOW IS SAFE BEFORE CLOSING IT: collect a few real faces
+--        (or confirm hydration from any pre-seeded rows) and check
+--        FaceSnapshotService.getCentroidCount() > 0. A zero count after faces
+--        have been seen == the silent blackout above == the deploy is BROKEN.
+--        Do NOT close the stack-down window until getCentroidCount() > 0.
+--
+-- =============================================================================
+-- OPERATIONAL PRECONDITION (HARD — coordinator-run, NOT auto-run)
+--   AUDIT PRECONDITION: before running, confirm the contamination count is what
+--   we expect (all body-track rows). On Jim's live DB this is 4:
+--       SELECT count(*) FROM face_embeddings;   -- expect 4 (OPEN-12 contamination)
+--   If the count is NOT 4, STOP and investigate — an unexpected count means the
+--   table state has drifted from the audited baseline and the DELETE-ALL premise
+--   (every row is body-track contamination) must be re-verified before proceeding.
+--
+--   Connection (matches centroid-db-smoke.cjs defaults; override via env):
+--     host=localhost port=5433 db=sylphie_events user=sylphie pw=sylphie_events_dev
+--   e.g.  psql "postgresql://sylphie:sylphie_events_dev@localhost:5433/sylphie_events" \
+--              -v ON_ERROR_STOP=1 -f test/fixtures/vision/p3.2-arcface-migration.sql
+--
+--   Run the scratch-DB migration test FIRST (coordinator) before touching live.
+-- =============================================================================
+
+BEGIN;
+
+-- Prong 1 (data): purge ALL existing rows — every one is body-track
+-- contamination (object-appearance vectors masquerading as face centroids),
+-- and all are dim/space-incomparable to a 512-D ArcFace embedding anyway.
+DELETE FROM face_embeddings;
+
+-- The re-key itself: drop the 1280-D column, add it back as 512-D (ArcFace).
+-- Drop-then-add (atlas). After the DELETE above the table is empty, so the new
+-- column simply starts with no rows; the gallery rebuilds from real ArcFace
+-- /crop-face embeddings as people are re-observed (each new row stamped
+-- embedding_version = 2 by FaceSnapshotService).
+ALTER TABLE face_embeddings DROP COLUMN embedding;
+ALTER TABLE face_embeddings ADD COLUMN embedding vector(512);
+
+COMMIT;
+
+-- POST-MIGRATION SANITY (run manually after COMMIT; not part of the txn):
+--   -- table is empty (decontaminated):
+--   SELECT count(*) AS rows_remaining FROM face_embeddings;          -- expect 0
+--   -- column is now 512-D (atttypmod encodes the dim for pgvector):
+--   SELECT atttypmod FROM pg_attribute
+--     WHERE attrelid = 'face_embeddings'::regclass AND attname = 'embedding';
+--
+-- POST-RESTART SANITY (the ATOMICITY-TRAP assertion — do NOT close the window
+-- until this holds once real faces have been seen):
+--   FaceSnapshotService.getCentroidCount() > 0
+--   A zero count after faces are in view means the dim guards are silently
+--   dropping rows == the half-deploy blackout == the deploy is broken.
