@@ -340,6 +340,8 @@ Precedent: `SelfModelWriterService` (`packages/learning`, commit `56af7a3`) — 
 
 Second live edge (2026-06-14): `knowledge_retrieval → CognitiveAwareness` — honest metric `GROUNDED / (GROUNDED|UNKNOWN)` over `RESPONSE_GENERATED` telemetry gated on `intent='QUESTION'` (LLM_ASSISTED / non-QUESTION / null excluded). Same guard chain, recovery-only. Got its fresh canon sign-off (CLEAN-WITH-NOTE) and mythos live-verification (PASS 7/7). The guard is provably capability-agnostic, so the allowance generalizes to all `CAPABILITY_TO_DRIVE_MAP` entries — though each new mapped edge still gets a confirming canon sign-off before going live.
 
+Third live edge (2026-06-15): `social_interaction → Social` — success = a genuinely-proactive `SOCIAL_COMMENT_INITIATED` (self-tick / no-originator bid, NOT a reactive reply) that earned a guardian reply (`GUARDIAN_INPUT_RECEIVED` | `GUARDIAN_CONFIRMATION`) within 30s in the same session; denominator gated to proactive bids only (the `socialCommentTimestamp`-on-every-turn signal is deliberately NOT the denominator — that would measure chat volume, Std-1). Purely additive telemetry: the drive social-comment contingency is byte-identical, and the newly-emitted `GUARDIAN_INPUT_RECEIVED` event is aggregation-only with NO behavioral consumer (no reinforcement/relief path — Std-2 safe). canon CLEAN, mythos live-verified PASS. **`error_correction` remains deliberately OMITTED** — no contradiction-resolution mechanism exists in the code and the detector cannot fire (0 DISLIKES edges); shipping it would assert a competence Sylphie does not measurably have (Std-1). Standing flag in `self-model-writer.service.ts`.
+
 ---
 
 ## 10. Health Metrics (Development Telemetry)

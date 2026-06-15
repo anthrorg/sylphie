@@ -155,6 +155,28 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    */
   private readonly pendingCorrelationId = new Map<string, string>();
 
+  /**
+   * Maps cycle actionId → the proactive-social context for a GENUINELY
+   * UNPROMPTED comment (self-model social_interaction capability, Std-1).
+   *
+   * Populated ONLY when a cycle (a) was a self-initiated tick — no
+   * currentTurnContext AND no frame turn_id, i.e. no inbound guardian turn —
+   * AND (b) produced a real (non-degraded) communicative response that was
+   * actually emitted. Consumed by reportOutcome() to emit a single
+   * SOCIAL_COMMENT_INITIATED event whose 24-hour guardian-reply success rate
+   * the SelfModelWriterService reads for the social_interaction :Capability.
+   *
+   * The denominator MUST be proactive bids only: socialCommentTimestamp (the
+   * drive-side contingency) fires on EVERY reply, so gating success on "any
+   * reply answered in 30s" would measure conversation continuity, not whether
+   * Sylphie's UNPROMPTED social bids land. Reactive replies (originator
+   * present) never enter this map. Shares the LRU cap with the other pending maps.
+   */
+  private readonly pendingProactiveSocial = new Map<
+    string,
+    { turnId: string; sessionId: string; initiatedAt: number }
+  >();
+
   constructor(
     @Inject(EXECUTOR_ENGINE)
     private readonly executorEngine: IExecutorEngine,
@@ -1997,6 +2019,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         // generate a fresh UUID; originator is absent.
         const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
         const emitOriginator = this.currentTurnContext?.originator;
+
+        // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
+        // social_interaction (Std-1) denominator = self-initiated comments only.
+        // Proactive ⟺ this cycle had NO inbound guardian turn: no
+        // currentTurnContext (so emitOriginator is undefined) AND no frame
+        // turn_id (perception/self-tick frames carry none). A degraded SHRUG
+        // (LLM unavailable) is not a real communicative bid, so it is excluded.
+        // We are inside the `responseText.trim().length > 0` real-emit block and
+        // past both epoch fences, so this fires at most once per emitted turn and
+        // never for a zombie. Consumed by reportOutcome() to emit
+        // SOCIAL_COMMENT_INITIATED. session_id MUST be non-null (the writer's
+        // self-join keys on it) — driveSnapshot.sessionId is always a real string.
+        const isProactiveSocialBid =
+          emitOriginator === undefined &&
+          (frame.raw['turn_id'] as string | undefined) == null &&
+          !responseDegradedNoLlm &&
+          emittedActionId !== 'SHRUG';
+        if (isProactiveSocialBid) {
+          this.pendingProactiveSocial.set(actionId, {
+            turnId: emitTurnId,
+            sessionId: driveSnapshot.sessionId,
+            initiatedAt: Date.now(),
+          });
+          if (this.pendingProactiveSocial.size > this.MAX_PENDING_LATENT) {
+            const oldest = this.pendingProactiveSocial.keys().next().value;
+            if (oldest !== undefined) this.pendingProactiveSocial.delete(oldest);
+          }
+        }
+
         this.responseSubject.next({
           turnId: emitTurnId,
           ...(emitOriginator !== undefined ? { originator: emitOriginator } : {}),
@@ -2393,6 +2444,42 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
+      }
+    }
+
+    // ── Self-model: emit SOCIAL_COMMENT_INITIATED for proactive bids ────────
+    // ADDITIVE telemetry only — does NOT touch socialCommentTimestamp or any
+    // drive-side behavior above. Fires at most once per actionId, ONLY for a
+    // cycle that processInput() recorded as a genuinely proactive (self-tick,
+    // no-originator) real communicative response. Reactive replies never have a
+    // pendingProactiveSocial entry, so they are excluded from the
+    // social_interaction success-rate denominator (Std-1). The writer's 24h
+    // self-join keys on session_id, so we emit the captured non-null sessionId.
+    const proactive = this.pendingProactiveSocial.get(actionId);
+    if (proactive) {
+      this.pendingProactiveSocial.delete(actionId);
+      if (this.eventLogger) {
+        try {
+          this.eventLogger.log(
+            'SOCIAL_COMMENT_INITIATED',
+            {
+              actionId,
+              turnId: proactive.turnId,
+              sessionId: proactive.sessionId,
+              initiatedAt: proactive.initiatedAt,
+            },
+            this.driveStateReader.getCurrentState(),
+            proactive.sessionId,
+            this.resolveOutcomeCorrelationId(actionId),
+          );
+          vlog('SOCIAL_COMMENT_INITIATED emitted (proactive social bid)', {
+            actionId,
+            turnId: proactive.turnId,
+            sessionId: proactive.sessionId,
+          });
+        } catch (err) {
+          this.logger.warn(`SOCIAL_COMMENT_INITIATED emit failed for ${actionId}: ${err}`);
+        }
       }
     }
 

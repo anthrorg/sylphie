@@ -575,6 +575,14 @@ export interface SelfModelCycleResult {
    * knowledge_retrieval block ran (wasNoop=true path).
    */
   readonly knowledgeRetrieval?: CapabilityWriteResult;
+  /**
+   * Outcome of the social_interaction capability write within this same cycle.
+   * Optional/back-compatible: absent when the whole cycle errored before the
+   * social_interaction block ran (wasNoop=true path). Metric = proactive
+   * (self-initiated, no-originator) SOCIAL_COMMENT_INITIATED bids that earned a
+   * guardian reply in the same session within 30 seconds, over all such bids.
+   */
+  readonly socialInteraction?: CapabilityWriteResult;
 }
 
 /**
@@ -599,9 +607,11 @@ export interface SelfModelCycleResult {
  *   - prediction_accuracy: from PREDICTION_EVALUATED telemetry.
  *   - knowledge_retrieval: from RESPONSE_GENERATED knowledgeGrounding + intent
  *     (GROUNDED / GROUNDED|UNKNOWN over intent='QUESTION' turns).
+ *   - social_interaction: from SOCIAL_COMMENT_INITIATED (proactive, no-originator
+ *     bids) self-joined to GUARDIAN_CONFIRMATION / GUARDIAN_INPUT_RECEIVED replies
+ *     in the same session within 30 seconds.
  *
  * Deliberately OMITTED capabilities (no honest telemetry today):
- *   - social_interaction: unblock by persisting a social-outcome resolution event.
  *   - error_correction: unblock by persisting a contradiction-resolution event.
  *   - :DrivePattern nodes: unblock by persisting observed drive-stimulus pairs.
  */

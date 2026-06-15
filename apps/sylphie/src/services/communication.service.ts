@@ -218,6 +218,24 @@ export class CommunicationService implements OnModuleInit {
       guardianFeedbackType,
     });
 
+    // Self-model `social_interaction` (additive telemetry, no behavioral
+    // consumer): a guardian inbound turn is a candidate "response" to a prior
+    // proactive SOCIAL_COMMENT_INITIATED. The writer self-joins initiations to
+    // guardian replies within 30s in the SAME session — so this MUST be keyed on
+    // the DRIVE-session id (driveStateReader.getCurrentState().sessionId), the
+    // same key SOCIAL_COMMENT_INITIATED uses. The `sessionId` param above is the
+    // per-message gateway id, which the join does NOT reference. Emitting this
+    // makes the social-interaction success numerator count genuine guardian
+    // engagement (not only explicit GUARDIAN_CONFIRMATION). Std-1: real signal,
+    // never fabricated.
+    if (isGuardian) {
+      this.logEvent(
+        'GUARDIAN_INPUT_RECEIVED',
+        this.driveStateReader.getCurrentState().sessionId,
+        { userId, inputLength: text.length },
+      );
+    }
+
     // Add to conversation history
     this.conversationHistory.addUserMessage(text);
 
@@ -735,7 +753,23 @@ export class CommunicationService implements OnModuleInit {
       return;
     }
 
-    const sessionId = pendingResponse.driveSnapshot.sessionId;
+    // LEG 1b — guarantee a non-null session_id on the guardian event. The
+    // self-model social_interaction self-join (SelfModelWriterService) keys
+    // GUARDIAN_CONFIRMATION rows on session_id; a NULL drops the bid from the
+    // success numerator. The stored CycleResponse snapshot is the authoritative
+    // session for THIS turn, but if it is ever empty (cold start / a snapshot
+    // that predated a real drive session) fall back to the live drive session so
+    // the row always carries a traceable, joinable session id. No drive behavior
+    // is touched — this only fixes the persisted session_id.
+    const sessionId =
+      pendingResponse.driveSnapshot.sessionId ||
+      this.driveStateReader.getCurrentState().sessionId;
+    if (!pendingResponse.driveSnapshot.sessionId) {
+      this.logger.warn(
+        `Guardian feedback for turn ${turnId} had empty stored sessionId; ` +
+          `falling back to live drive session "${sessionId}".`,
+      );
+    }
     const eventType = feedbackType === 'confirmation'
       ? 'GUARDIAN_CONFIRMATION'
       : 'GUARDIAN_CORRECTION';

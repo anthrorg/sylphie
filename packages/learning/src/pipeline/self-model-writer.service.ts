@@ -6,7 +6,7 @@
  *
  * What this service writes
  * ------------------------
- * TWO honest :Capability nodes in the SELF Neo4j graph, each from its own
+ * THREE honest :Capability nodes in the SELF Neo4j graph, each from its own
  * grounded TimescaleDB telemetry source:
  *
  *   1. :Capability {name='prediction_accuracy'} + paired :PredictionAccuracy
@@ -17,12 +17,17 @@
  *      metric counts GROUNDED responses over (GROUNDED|UNKNOWN) responses on
  *      turns where retrieval was actually DEMANDED (intent='QUESTION').
  *
- * Both capabilities refresh together in the same cycle, each over its own
+ *   3. :Capability {name='social_interaction'} (NO paired node) — from
+ *      SOCIAL_COMMENT_INITIATED events (emitted ONLY for genuinely proactive,
+ *      self-initiated, no-originator comments). The metric counts bids that
+ *      earned a guardian reply (GUARDIAN_CONFIRMATION|GUARDIAN_INPUT_RECEIVED)
+ *      in the SAME session within 30 seconds, over all such proactive bids.
+ *
+ * All three capabilities refresh together in the same cycle, each over its own
  * independent 24-hour sample window. A capability with zero qualifying rows in
  * its window writes NOTHING and DETACH DELETEs its stale node (see Zero-sample).
  *
  * Deliberately OMITTED capabilities (no honest telemetry source today):
- *   - social_interaction   — unblock: persist a social-outcome resolution event.
  *   - error_correction     — unblock: persist a contradiction-resolution event.
  *   - :DrivePattern nodes  — unblock: persist observed drive-stimulus pairs.
  *
@@ -107,6 +112,9 @@ const PREDICTION_ACCURACY_DOMAIN = 'drive_effects';
 /** SELF-graph node_id for the knowledge_retrieval Capability (no paired node). */
 const KNOWLEDGE_RETRIEVAL_NODE_ID = 'self-cap-knowledge_retrieval';
 
+/** SELF-graph node_id for the social_interaction Capability (no paired node). */
+const SOCIAL_INTERACTION_NODE_ID = 'self-cap-social_interaction';
+
 // ---------------------------------------------------------------------------
 // Row types from TimescaleDB queries
 // ---------------------------------------------------------------------------
@@ -120,6 +128,11 @@ interface PredictionStatsRow {
 interface KnowledgeStatsRow {
   sample_count: string;   // (GROUNDED|UNKNOWN) AND intent=QUESTION
   success_count: string;  // GROUNDED AND intent=QUESTION
+}
+
+interface SocialStatsRow {
+  sample_count: string;   // SOCIAL_COMMENT_INITIATED with non-null session_id
+  success_count: string;  // those with a guardian reply in the same session ≤30s later
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +159,7 @@ export class SelfModelWriterService implements ISelfModelWriterService {
       // is reported additively in the nested field.
       const prediction = await this.refreshPredictionAccuracy();
       const knowledgeRetrieval = await this.refreshKnowledgeRetrieval();
+      const socialInteraction = await this.refreshSocialInteraction();
 
       return {
         wrote: prediction.wrote,
@@ -154,6 +168,7 @@ export class SelfModelWriterService implements ISelfModelWriterService {
         confidence: prediction.confidence,
         wasNoop: false,
         knowledgeRetrieval,
+        socialInteraction,
       };
     } catch (err) {
       this.logger.error(
@@ -260,6 +275,59 @@ export class SelfModelWriterService implements ISelfModelWriterService {
   }
 
   // ---------------------------------------------------------------------------
+  // Private: social_interaction capability
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Refresh the social_interaction :Capability from SOCIAL_COMMENT_INITIATED
+   * telemetry. Structurally identical to knowledge_retrieval: 24-hour window,
+   * Std-1 honest denominator (PROACTIVE bids only), Std-3 confidence ceiling,
+   * Std-2 INFERENCE provenance, zero-sample DETACH DELETE. NO paired node.
+   *
+   * Std-1 honest metric: SOCIAL_COMMENT_INITIATED is emitted ONLY for genuinely
+   * proactive (self-initiated, no-originator) comments — see
+   * decision-making.service.ts reportOutcome(). The success self-join counts a
+   * bid as successful iff a guardian reply (GUARDIAN_CONFIRMATION or
+   * GUARDIAN_INPUT_RECEIVED) lands in the SAME session within 30 seconds. This
+   * measures whether Sylphie's UNPROMPTED bids land, NOT whether a conversation
+   * continued (the drive-side socialCommentTimestamp fires on every reply and is
+   * deliberately NOT used here).
+   */
+  private async refreshSocialInteraction(): Promise<CapabilityWriteResult> {
+    const stats = await this.querySocialStats();
+    const sampleCount = parseInt(stats.sample_count, 10);
+
+    if (sampleCount === 0) {
+      vlog('self-model cycle: social_interaction zero samples — DETACH DELETE stale node', {});
+      await this.deleteSocialNode();
+      return { wrote: false, sampleCount: 0, successRate: null, confidence: null };
+    }
+
+    const successCount = parseInt(stats.success_count, 10);
+    const successRate = successCount / sampleCount;
+
+    // Std-3 ceiling: clamp at source so the stored graph is honest.
+    const rawConfidence = sampleCount / (sampleCount + CONFIDENCE_K);
+    const confidence = Math.min(CONFIDENCE_CEILING, rawConfidence);
+
+    vlog('self-model cycle: writing social_interaction node', {
+      sampleCount,
+      successCount,
+      successRate,
+      confidence,
+    });
+
+    await this.writeSocialInteractionNode(sampleCount, successRate, confidence);
+
+    this.logger.log(
+      `Self-model cycle: wrote social_interaction capability ` +
+        `(n=${sampleCount}, success=${successRate.toFixed(3)}, conf=${confidence.toFixed(3)})`,
+    );
+
+    return { wrote: true, sampleCount, successRate, confidence };
+  }
+
+  // ---------------------------------------------------------------------------
   // Private: TimescaleDB query
   // ---------------------------------------------------------------------------
 
@@ -312,6 +380,47 @@ export class SelfModelWriterService implements ISelfModelWriterService {
          AND timestamp > now() - interval '24 hours'
          AND payload->>'knowledgeGrounding' IS NOT NULL
          AND payload->>'intent' = 'QUESTION'`,
+    );
+
+    // pg always returns exactly one row from an aggregate query.
+    const row = result.rows[0];
+    if (!row) {
+      return { sample_count: '0', success_count: '0' };
+    }
+    return row;
+  }
+
+  /**
+   * Query SOCIAL_COMMENT_INITIATED events in the last 24 hours for the
+   * social_interaction metric (CANON Std-1 — proactive bids only).
+   *
+   *   denominator (sample_count) = SOCIAL_COMMENT_INITIATED rows with a non-null
+   *                                session_id (the self-join requires it).
+   *   numerator   (success_count) = those followed by a guardian reply
+   *                                (GUARDIAN_CONFIRMATION or GUARDIAN_INPUT_RECEIVED)
+   *                                in the SAME session > t and ≤ t+30s.
+   *
+   * SOCIAL_COMMENT_INITIATED is emitted ONLY for genuinely proactive
+   * (self-initiated, no-originator) comments, so the denominator never includes
+   * reactive replies — that is the whole point of the metric.
+   */
+  private async querySocialStats(): Promise<SocialStatsRow> {
+    const result = await this.timescale.query<SocialStatsRow>(
+      `WITH initiations AS (
+         SELECT id, session_id, timestamp FROM events
+         WHERE type = 'SOCIAL_COMMENT_INITIATED'
+           AND timestamp > now() - interval '24 hours'
+           AND session_id IS NOT NULL
+       )
+       SELECT count(*) AS sample_count,
+         count(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM events g
+           WHERE g.session_id = i.session_id
+             AND g.type IN ('GUARDIAN_CONFIRMATION','GUARDIAN_INPUT_RECEIVED')
+             AND g.timestamp > i.timestamp
+             AND g.timestamp <= i.timestamp + interval '30 seconds'
+         )) AS success_count
+       FROM initiations i`,
     );
 
     // pg always returns exactly one row from an aggregate query.
@@ -455,6 +564,63 @@ export class SelfModelWriterService implements ISelfModelWriterService {
       await session.run(
         `MATCH (c:Capability {node_id: $nodeId}) DETACH DELETE c`,
         { nodeId: KNOWLEDGE_RETRIEVAL_NODE_ID },
+      );
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * MERGE the social_interaction :Capability node into the SELF graph.
+   *
+   * Uses the EXACT property names SelfAssessmentService.readCapabilities reads:
+   *   node_id, name, success_rate, confidence, sample_count, last_executed,
+   *   provenance_type. No paired node — social_interaction needs only this one.
+   *
+   * Provenance is INFERENCE (system-computed aggregate, not a guardian judgment).
+   * The drive maps social_interaction → Social and INFERENCE →
+   * recovery-toward-default only (no MAIN→drive read; MAIN pushes, drive judges).
+   */
+  private async writeSocialInteractionNode(
+    sampleCount: number,
+    successRate: number,
+    confidence: number,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const session = this.neo4j.getSession(Neo4jInstanceName.SELF, 'WRITE');
+    try {
+      await session.run(
+        `MERGE (c:Capability {node_id: $nodeId})
+         SET c.name           = 'social_interaction',
+             c.success_rate   = $successRate,
+             c.confidence     = $confidence,
+             c.sample_count   = $sampleCount,
+             c.last_executed  = $now,
+             c.provenance_type = 'INFERENCE'`,
+        {
+          nodeId: SOCIAL_INTERACTION_NODE_ID,
+          successRate,
+          confidence,
+          sampleCount,
+          now,
+        },
+      );
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * DETACH DELETE the stale social_interaction :Capability node when its
+   * 24-hour window returns zero qualifying samples. Same honesty guard as the
+   * other capabilities — the reader must never serve a fabricated rate.
+   */
+  private async deleteSocialNode(): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.SELF, 'WRITE');
+    try {
+      await session.run(
+        `MATCH (c:Capability {node_id: $nodeId}) DETACH DELETE c`,
+        { nodeId: SOCIAL_INTERACTION_NODE_ID },
       );
     } finally {
       await session.close();
