@@ -172,6 +172,27 @@ export const CANDIDATE_CONFIDENCE_CAP = 0.6 as const;
  */
 export const CANDIDATE_PERSON_ID_PROP = 'grounding_person_id' as const;
 
+/**
+ * The `provenance_type` stamped on a `:Candidate` node after a guardian promotes
+ * it to a live `:Entity` (Wave 3 / chunk C4). A guardian confirmation that "this
+ * proper noun is a real entity" elevates an inference to near-GUARDIAN trust, so
+ * the promoted node carries GUARDIAN_APPROVED_INFERENCE (CANON Std-2: the node was
+ * inferred from conversation, then guardian-approved — never claimed as SENSOR).
+ */
+export const CANDIDATE_PROMOTION_PROVENANCE_TYPE = 'GUARDIAN_APPROVED_INFERENCE' as const;
+
+/**
+ * The confidence a guardian promotion lifts a candidate to (Wave 3 / chunk C4).
+ *
+ * This is the SAME legitimate guardian exception to the 0.60 ceiling used by
+ * `deriveOkgFactTier` case (a) for a guardian's own self-report: 0.90. CANON
+ * Std-5 (guardian asymmetry) is what authorizes lifting above the Std-3 ceiling —
+ * and ONLY a verified guardian may trigger the promotion, so the cap-lift is
+ * reachable exclusively through guardian confirmation. A non-guardian can never
+ * lift a candidate above CANDIDATE_CONFIDENCE_CAP (0.60).
+ */
+export const GUARDIAN_CONFIRMED_CONFIDENCE = 0.9 as const;
+
 // ───────────────────────────────────────────────────────────────────────────
 // WS4 Ticket 5 (§1) — OKG self-fact tiering (guardian-aware, identity-blind)
 // ───────────────────────────────────────────────────────────────────────────

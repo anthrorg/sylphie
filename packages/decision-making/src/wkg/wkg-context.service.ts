@@ -46,6 +46,10 @@ import {
   wkgDiffAsBool,
   type WkgSnapshot,
   type WkgNodeState,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+  GUARDIAN_CONFIRMED_CONFIDENCE,
 } from '@sylphie/shared';
 import { TextEncoder } from '../inputs/encoders/text.encoder';
 import type { RecallSource } from '../deliberation/recall-retrieval';
@@ -116,6 +120,38 @@ export interface NewRelationship {
   readonly properties?: Record<string, unknown>;
   readonly confidence: number;
   readonly provenance: ProvenanceSource;
+}
+
+/**
+ * Outcome of a guardian candidate-promotion (Wave 3 / chunk C4).
+ *
+ * `promoted` is true only when a `:Candidate` node was actually found and
+ * relabeled to `:Entity`. A non-guardian attempt (rejected: false) and a
+ * not-found candidate (promoted: false) are BOTH honest no-ops, distinguished
+ * by `reason` so the caller can log/route them differently.
+ */
+export interface CandidatePromotionResult {
+  /** True iff a `:Candidate` was relabeled `:Entity` and re-provenanced. */
+  readonly promoted: boolean;
+  /**
+   * The node_id of the promoted node (or the candidate that matched), when one
+   * was resolved; null when nothing matched the selector.
+   */
+  readonly nodeId: string | null;
+  /** The label of the matched candidate, for audit logging. */
+  readonly label: string | null;
+  /** The confidence the node carries AFTER promotion (the lifted value). */
+  readonly newConfidence: number | null;
+  /** The provenance_type stamped on the promoted node. */
+  readonly provenanceType: string | null;
+  /**
+   * Why a promotion did NOT happen, when `promoted` is false:
+   *   'not_guardian'  — Std-5: caller lacked verified guardian status (rejected).
+   *   'not_found'     — no `:Candidate` matched the selector.
+   *   'unavailable'   — Neo4j not wired.
+   * Undefined on success.
+   */
+  readonly reason?: 'not_guardian' | 'not_found' | 'unavailable';
 }
 
 /** Parameters for writing a new action procedure. */
@@ -429,6 +465,165 @@ export class WkgContextService {
       this.logger.debug(`WKG relationship written: ${rel.sourceId} -[${rel.type}]-> ${rel.targetId}`);
     } catch (err) {
       this.logger.error(`WKG relationship write failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wave 3 / chunk C4 — Guardian promotion `:Candidate → :Entity`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Promote a staged `:Candidate` proper noun to a live, grounding-eligible
+   * `:Entity` (Wave 3 / C4 — closes ws5-t1 world-fact promotion).
+   *
+   * This is the ONLY operation that lifts a node out of candidate (non-groundable)
+   * status. It:
+   *   1. RELABELS the node `:Candidate → :Entity` (`REMOVE n:Candidate SET n:Entity`)
+   *      so every grounding read-path (matchEntities / getSubgraph / getEntityFacts
+   *      / getRelationships — each carries `NOT <var>:Candidate`) now RETURNS it.
+   *   2. Stamps `provenance_type = 'GUARDIAN_APPROVED_INFERENCE'` (CANON Std-2: the
+   *      node was inferred from conversation, then guardian-approved — honest
+   *      provenance, never upgraded to SENSOR/GUARDIAN).
+   *   3. Lifts the ≤0.60 candidate cap to GUARDIAN_CONFIRMED_CONFIDENCE (0.90) —
+   *      the same legitimate guardian exception to the Std-3 ceiling that
+   *      `deriveOkgFactTier` uses for a guardian's own self-report.
+   *
+   * CANON Std-5 (guardian asymmetry) — LOAD-BEARING: promotion is reachable ONLY
+   * with verified guardian status. A non-guardian call is REJECTED as a no-op
+   * (`promoted: false, reason: 'not_guardian'`) and NEVER touches the graph — the
+   * candidate stays a candidate, still non-groundable. This is the single CANON
+   * standard C4 exists to honor; the `isGuardian` gate is asserted FIRST, before
+   * any session is even opened.
+   *
+   * Selector: pass EITHER a `candidateId` (the candidate's `node_id`) OR a `label`.
+   * When both are given, `candidateId` wins. The MATCH is scoped to `:Candidate`
+   * so a node already promoted (now `:Entity`) is a `not_found` no-op (idempotent —
+   * re-confirming an already-promoted entity does nothing rather than re-lifting).
+   *
+   * @param selector  `{ candidateId }` or `{ label }` identifying the candidate.
+   * @param isGuardian  the caller's VERIFIED guardian status (from the JWT claim).
+   * @returns the promotion outcome (honest no-op on rejection / not-found).
+   */
+  async promoteCandidate(
+    selector: { candidateId?: string; label?: string },
+    isGuardian: boolean,
+  ): Promise<CandidatePromotionResult> {
+    // CANON Std-5: assert guardian status FIRST. A non-guardian promotion never
+    // reaches the graph — the candidate remains non-groundable.
+    if (!isGuardian) {
+      this.logger.warn(
+        `Candidate promotion REJECTED (CANON Std-5): non-guardian attempt for ` +
+          `${selector.candidateId ? `id="${selector.candidateId}"` : `label="${selector.label ?? ''}"`}.`,
+      );
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_guardian',
+      };
+    }
+
+    if (!this.neo4j) {
+      this.logger.warn('Candidate promotion skipped: Neo4jService unavailable.');
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'unavailable',
+      };
+    }
+
+    const byId = typeof selector.candidateId === 'string' && selector.candidateId.trim().length > 0;
+    const byLabel = !byId && typeof selector.label === 'string' && selector.label.trim().length > 0;
+    if (!byId && !byLabel) {
+      this.logger.warn('Candidate promotion no-op: neither candidateId nor label supplied.');
+      return {
+        promoted: false,
+        nodeId: null,
+        label: null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_found',
+      };
+    }
+
+    // MATCH is `:Candidate`-scoped so an already-promoted (`:Entity`) node is a
+    // not_found no-op — idempotent re-confirmation, never a second cap-lift.
+    const matchClause = byId
+      ? `MATCH (n:${CANDIDATE_NODE_LABEL} {node_id: $candidateId})`
+      : `MATCH (n:${CANDIDATE_NODE_LABEL} {label: $label})`;
+
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      const result = await session.run(
+        `${matchClause}
+         REMOVE n:${CANDIDATE_NODE_LABEL}
+         SET n:Entity,
+             n.provenance_type = $provenanceType,
+             n.confidence = $newConfidence,
+             n.promoted_at = datetime(),
+             n.promoted_by = 'guardian',
+             n.promoted_from = $candidateProvenance
+         RETURN n.node_id AS nodeId, n.label AS label,
+                n.confidence AS confidence, n.provenance_type AS provenanceType`,
+        {
+          candidateId: selector.candidateId ?? null,
+          label: selector.label ?? null,
+          provenanceType: CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+          newConfidence: GUARDIAN_CONFIRMED_CONFIDENCE,
+          candidateProvenance: CANDIDATE_PROVENANCE_TYPE,
+        },
+      );
+
+      const rec = result.records[0];
+      if (!rec) {
+        this.logger.warn(
+          `Candidate promotion no-op: no :Candidate matched ` +
+            `${byId ? `node_id="${selector.candidateId}"` : `label="${selector.label}"`} ` +
+            `(already promoted, or never staged).`,
+        );
+        return {
+          promoted: false,
+          nodeId: selector.candidateId ?? null,
+          label: selector.label ?? null,
+          newConfidence: null,
+          provenanceType: null,
+          reason: 'not_found',
+        };
+      }
+
+      const nodeId = (rec.get('nodeId') as string | null) ?? null;
+      const label = (rec.get('label') as string | null) ?? null;
+      const newConfidence = toFloat(rec.get('confidence'), GUARDIAN_CONFIRMED_CONFIDENCE);
+      const provenanceType =
+        (rec.get('provenanceType') as string | null) ?? CANDIDATE_PROMOTION_PROVENANCE_TYPE;
+
+      this.logger.log(
+        `Candidate PROMOTED (guardian, CANON Std-5): "${label}" (node_id=${nodeId}) ` +
+          `:Candidate → :Entity, provenance ${provenanceType}, confidence → ${newConfidence}. ` +
+          `Now grounding-eligible.`,
+      );
+      vlog('candidate promoted', { nodeId, label, newConfidence, provenanceType });
+
+      return { promoted: true, nodeId, label, newConfidence, provenanceType };
+    } catch (err) {
+      this.logger.error(
+        `Candidate promotion FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        promoted: false,
+        nodeId: selector.candidateId ?? null,
+        label: selector.label ?? null,
+        newConfidence: null,
+        provenanceType: null,
+        reason: 'not_found',
+      };
     } finally {
       await session.close();
     }

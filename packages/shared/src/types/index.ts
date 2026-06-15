@@ -60,6 +60,9 @@ export {
   CANDIDATE_NODE_LABEL,
   CANDIDATE_CONFIDENCE_CAP,
   CANDIDATE_PERSON_ID_PROP,
+  // Guardian promotion of a candidate (Wave 3 / C4 — CANON Std-5 asymmetry).
+  CANDIDATE_PROMOTION_PROVENANCE_TYPE,
+  GUARDIAN_CONFIRMED_CONFIDENCE,
 } from './provenance.types';
 
 // Event types

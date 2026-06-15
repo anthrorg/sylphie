@@ -55,9 +55,11 @@ import {
   DECISION_MAKING_SERVICE,
   TickSamplerService,
   CycleGuardService,
+  WkgContextService,
   type IDecisionMakingService,
   type InboundTurn,
   type QueuePositionSnapshot,
+  type CandidatePromotionResult,
 } from '@sylphie/decision-making';
 import {
   DRIVE_STATE_READER,
@@ -150,6 +152,11 @@ export class CommunicationService implements OnModuleInit {
     // WS4 Ticket 6: injected so we can proxy queuePositionUpdates$ to the gateway
     // without the gateway taking a hard dependency on the DM-internal concurrency guard.
     private readonly cycleGuard: CycleGuardService,
+
+    // Wave 3 / C4: the WKG writer that performs the guardian candidate promotion
+    // (`:Candidate → :Entity`). Provided by DecisionMakingModule + a module export,
+    // resolved by NestJS DI (same path as metrics.controller's injection).
+    private readonly wkgContext: WkgContextService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -814,6 +821,43 @@ export class CommunicationService implements OnModuleInit {
 
     // Remove from pending
     this.pendingTurns.delete(turnId);
+  }
+
+  /**
+   * Wave 3 / chunk C4 — promote a staged `:Candidate` proper noun to a live,
+   * grounding-eligible `:Entity` on guardian confirmation.
+   *
+   * Reaches the guardian-feedback channel via the ConversationGateway's
+   * `guardian_feedback` handler (the candidate-selector variant). This thin
+   * pass-through forwards to the WKG graph op (WkgContextService.promoteCandidate),
+   * which enforces CANON Std-5 (guardian-only): a non-guardian `isGuardian=false`
+   * is rejected inside the graph op BEFORE any write, so the candidate stays
+   * non-groundable. No promotion logic lives here — Communication is the voice,
+   * the WKG writer is the mind (CANON §Subsystem 2).
+   *
+   * @param selector  `{ candidateId }` or `{ label }` identifying the candidate.
+   * @param isGuardian  the requesting socket's VERIFIED guardian status (JWT).
+   * @returns the promotion outcome (promoted / rejected / not-found).
+   */
+  async promoteCandidate(
+    selector: { candidateId?: string; label?: string },
+    isGuardian: boolean,
+  ): Promise<CandidatePromotionResult> {
+    const result = await this.wkgContext.promoteCandidate(selector, isGuardian);
+    if (result.promoted) {
+      this.logEvent('GUARDIAN_CANDIDATE_PROMOTED', this.driveStateReader.getCurrentState().sessionId, {
+        nodeId: result.nodeId,
+        label: result.label,
+        newConfidence: result.newConfidence,
+        provenanceType: result.provenanceType,
+      });
+    } else if (result.reason === 'not_guardian') {
+      this.logger.warn(
+        `Candidate promotion rejected (CANON Std-5): non-guardian attempt ` +
+          `for ${selector.candidateId ? `id="${selector.candidateId}"` : `label="${selector.label ?? ''}"`}.`,
+      );
+    }
+    return result;
   }
 
   // ---------------------------------------------------------------------------
