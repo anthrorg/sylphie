@@ -15,6 +15,9 @@
 import {
   retrieveRecallGrounding,
   applyRecallGroundingFromRetrieval,
+  resolveRecallKey,
+  RECALL_SEMANTIC_THRESHOLD,
+  type RecallKeyEncoder,
 } from './recall-retrieval';
 import { recallKeyForQuestion } from './deliberation.service';
 import type { WkgContext } from '../wkg/wkg-context.service';
@@ -213,5 +216,184 @@ describe('knowledge_retrieval gate — procedure/latent pre-arbitration intent',
     // A self-initiated tick with no input has no classification → null, never
     // a fabricated QUESTION (matches the fix\'s `frame.raw.text ?? \'\'` default).
     expect(cycleRecallIntent('')).toBeUndefined();
+  });
+});
+
+/**
+ * WS3 C8 — semantic recall-key resolver (regex-FIRST → embed → intersect →
+ * threshold). Pure: the encoder is MOCKED (no Ollama). The mock embeds by
+ * concept token so cosine is deterministic — a paraphrase the regex misses still
+ * lands on the right canonical key, while an unknowable never does (it is not a
+ * taught key, so it is never even a candidate).
+ */
+describe('WS3-C8 — resolveRecallKey (semantic, regex-first)', () => {
+  // Concept → 3-dim one-hot. cosine(same concept)=1, cosine(diff concept)=0.
+  // The mock maps any text containing a concept's trigger words to that concept's
+  // axis, so the query and the matching canonical form land on the same axis.
+  const AXES: Record<string, number[]> = {
+    name: [1, 0, 0, 0, 0],
+    location: [0, 1, 0, 0, 0],
+    dog: [0, 0, 1, 0, 0],
+    color: [0, 0, 0, 1, 0],
+    occupation: [0, 0, 0, 0, 1],
+    other: [0.2, 0.2, 0.2, 0.2, 0.2], // off-axis: low cosine with every key (~0.45)
+  };
+  const conceptOf = (text: string): string => {
+    const t = text.toLowerCase();
+    if (/based|live|city|located/.test(t)) return 'location';
+    if (/\bname\b/.test(t)) return 'name';
+    if (/dog|pet/.test(t)) return 'dog';
+    if (/colou?r/.test(t)) return 'color';
+    if (/work|job|profession/.test(t)) return 'occupation';
+    return 'other';
+  };
+  const mockEncoder = (): RecallKeyEncoder & { calls: { q: number; d: number } } => {
+    const calls = { q: 0, d: 0 };
+    return {
+      calls,
+      encodeQuery: async (t: string) => {
+        calls.q++;
+        return AXES[conceptOf(t)];
+      },
+      encodeDocument: async (t: string) => {
+        calls.d++;
+        return AXES[conceptOf(t)];
+      },
+    };
+  };
+
+  it('regex HIT → returns the regex key WITHOUT embedding (C1 preserved exactly)', async () => {
+    const enc = mockEncoder();
+    const key = await resolveRecallKey('what is my name?', KNOWN_FACTS, enc);
+    expect(key).toBe('name');
+    // No embedding ran — the regex short-circuits before the semantic pass.
+    expect(enc.calls.q).toBe(0);
+    expect(enc.calls.d).toBe(0);
+  });
+
+  it('paraphrase generalization — regex MISS, embedding matches location', async () => {
+    const enc = mockEncoder();
+    // "Remind me where I'm based?" — recallKeyForQuestion contains 'where' so it
+    // actually HITS location via regex; use a phrasing with NO regex trigger word
+    // to exercise the embedding path: "Remind me which town I'm based in".
+    // 'town' is not in the regex; 'based' is not in the regex → regex MISS.
+    expect(recallKeyForQuestion("Remind me which town I'm based in")).toBeNull();
+    const key = await resolveRecallKey("Remind me which town I'm based in", KNOWN_FACTS, enc);
+    expect(key).toBe('location'); // embedding rescued it
+    expect(enc.calls.q).toBeGreaterThan(0); // the semantic pass actually ran
+  });
+
+  it('paraphrase resolves end-to-end → GROUNDED + attr-<p>-location provenance', async () => {
+    const enc = mockEncoder();
+    const resolvedKey = await resolveRecallKey("Remind me which town I'm based in", KNOWN_FACTS, enc);
+    const retrieval = retrieveRecallGrounding(PERSON, "Remind me which town I'm based in", KNOWN_FACTS, EMPTY_WKG, resolvedKey);
+    expect(retrieval).not.toBeNull();
+    expect(retrieval!.recallKey).toBe('location');
+    expect(retrieval!.factNodeId).toBe('attr-user-jim-location');
+    const out = applyRecallGroundingFromRetrieval(retrieval, 'You are based in Seattle.', 'LLM_ASSISTED');
+    expect(out.grounding).toBe('GROUNDED');
+    expect(out.provenance).toBe('attr-user-jim-location');
+    expect(out.groundedBy).toBe('OKG');
+  });
+
+  it('unknowable stays honest — "breakfast" is not a taught key → null', async () => {
+    const enc = mockEncoder();
+    // No regex key, and 'breakfast' is not a canonical taught key → no candidate
+    // even gets embedded → null → never GROUNDED (C2 preserved by construction).
+    expect(recallKeyForQuestion('What did I have for breakfast?')).toBeNull();
+    const key = await resolveRecallKey('What did I have for breakfast?', KNOWN_FACTS, enc);
+    expect(key).toBeNull();
+  });
+
+  it('semantic match only among TAUGHT keys — occupation untaught → null', async () => {
+    const enc = mockEncoder();
+    // Phrasing with NO occupation regex trigger word (work|job|occupation|
+    // profession) so the embedding path is the one under test. The mock maps
+    // 'work' in conceptOf, so use a phrasing the *resolver* regex misses but the
+    // *mock* still classifies occupation — "what's my line of work" hits the
+    // regex; instead drive the embedding via a phrase the regex misses entirely.
+    expect(recallKeyForQuestion('Remind me what I do day to day for a living')).toBeNull();
+    // mock conceptOf sees 'work'? no — 'living' isn't a trigger → 'other' axis,
+    // which is below threshold anyway; but the load-bearing assertion is the
+    // INTERSECTION gate: occupation is NOT a taught key in KNOWN_FACTS, so even
+    // if it scored high it could never be a candidate → null.
+    const key = await resolveRecallKey('Remind me what I do day to day for a living', KNOWN_FACTS, enc);
+    expect(key).toBeNull();
+  });
+
+  it('intersection gate is load-bearing — untaught key with PERFECT score still → null', async () => {
+    // Force a perfect occupation embedding match, but occupation is untaught.
+    // The intersection (candidates = canonical ∩ taught) drops it BEFORE scoring,
+    // so it returns null. This is the exact mechanism that keeps unknowables and
+    // untaught dimensions un-groundable (C2 by construction).
+    const occEnc: RecallKeyEncoder = {
+      encodeQuery: async () => AXES.occupation, // perfect match to occupation form
+      encodeDocument: async (t: string) => AXES[conceptOf(t)],
+    };
+    // Regex must miss for the embedding path to run.
+    const q = 'Remind me what I do day to day for a living';
+    expect(recallKeyForQuestion(q)).toBeNull();
+    // occupation NOT in KNOWN_FACTS → not a candidate → null despite a 1.0 score.
+    expect(await resolveRecallKey(q, KNOWN_FACTS, occEnc)).toBeNull();
+    // Same encoder, but NOW occupation IS taught → it resolves (proves the gate,
+    // not a coincidental miss, is what blocked it above).
+    expect(await resolveRecallKey(q, [...KNOWN_FACTS, 'occupation: software'], occEnc)).toBe('occupation');
+  });
+
+  it('candidate-safety — CANDIDATE-provenance WKG entity is never returned', () => {
+    const wkg: WkgContext = {
+      ...EMPTY_WKG,
+      entities: [
+        { nodeId: 'cand-1', label: 'Banoffee', nodeType: 'Entity', properties: {}, confidence: 0.55, provenance: 'CANDIDATE' },
+      ],
+    };
+    // A recall key with no OKG fact would fall to WKG — but the only entity is a
+    // :Candidate, which the resolver excludes (CANON Std-3). Result: null.
+    const r = retrieveRecallGrounding(PERSON, 'what is my job?', undefined, wkg, 'occupation');
+    expect(r).toBeNull();
+  });
+
+  it('candidate excluded even when a real entity is also present (candidate not chosen)', () => {
+    const wkg: WkgContext = {
+      ...EMPTY_WKG,
+      entities: [
+        { nodeId: 'cand-1', label: 'Banoffee', nodeType: 'Entity', properties: {}, confidence: 0.55, provenance: 'CANDIDATE' },
+        { nodeId: 'wkg-real-1', label: 'Seattle', nodeType: 'Entity', properties: {}, confidence: 0.8, provenance: 'GUARDIAN' },
+      ],
+    };
+    const r = retrieveRecallGrounding(PERSON, 'what is my job?', undefined, wkg, 'occupation');
+    expect(r).not.toBeNull();
+    expect(r!.factNodeId).toBe('wkg-real-1'); // the real entity, NEVER the candidate
+    expect(r!.factNodeId).not.toBe('cand-1');
+  });
+
+  it('degradation — no encoder → equals regex-only (regex miss → null)', async () => {
+    // Encoder absent → the semantic pass is skipped → regex-only behavior. The
+    // paraphrase the regex misses now returns null (never regresses C1; worst
+    // case C8 == current regex behavior).
+    expect(recallKeyForQuestion("Remind me which town I'm based in")).toBeNull();
+    const key = await resolveRecallKey("Remind me which town I'm based in", KNOWN_FACTS, null);
+    expect(key).toBeNull();
+    // ...but a regex HIT still resolves with no encoder (regex is first).
+    expect(await resolveRecallKey('what is my name?', KNOWN_FACTS, null)).toBe('name');
+  });
+
+  it('degradation — encoder returns the zero-vector sentinel → skip semantic pass', async () => {
+    const zeroEnc: RecallKeyEncoder = {
+      encodeQuery: async () => new Array(5).fill(0),
+      encodeDocument: async () => AXES.location,
+    };
+    // Ollama-down sentinel on the query → semantic pass aborts → regex-only → null.
+    const key = await resolveRecallKey("Remind me which town I'm based in", KNOWN_FACTS, zeroEnc);
+    expect(key).toBeNull();
+  });
+
+  it('threshold — an off-key paraphrase below threshold is rejected', async () => {
+    const enc = mockEncoder();
+    // 'other' axis sits at ~0.45 cosine with every key axis — below 0.62 → no
+    // key accepted, even though candidates exist. Guards against over-grounding.
+    expect(RECALL_SEMANTIC_THRESHOLD).toBeGreaterThan(0.45);
+    const key = await resolveRecallKey('tell me something interesting', KNOWN_FACTS, enc);
+    expect(key).toBeNull();
   });
 });

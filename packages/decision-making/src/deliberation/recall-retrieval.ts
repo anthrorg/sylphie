@@ -36,6 +36,175 @@
 
 import { recallKeyForQuestion, getRecalledFactForRecall } from './deliberation.service';
 import type { WkgContext } from '../wkg/wkg-context.service';
+import { cosineSimilarity } from '../latent-space/vector-math';
+
+// ---------------------------------------------------------------------------
+// WS3 C8 — semantic recall-key resolver (regex-FIRST, embedding fallback)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal encoder seam for the semantic recall-key resolver.
+ *
+ * Deliberately NOT the concrete TextEncoder: the pure retrieval module must not
+ * depend on the NestJS encoder class. The cycle boundary
+ * (DecisionMakingService.computeRecallRetrieval) discovers the registered text
+ * encoder and passes it in. The asymmetric nomic prefixing is MANDATORY and is
+ * honored by reusing the encoder's own methods:
+ *   - encodeQuery  → the per-turn QUESTION is a `search_query:` (TextEncoder.encode)
+ *   - encodeDocument → each canonical key form is a `search_document:`
+ * Prefixing both sides the same way collapses the retrieval asymmetry nomic was
+ * trained on (see text.encoder.ts), so the seam pins which side is which.
+ */
+export interface RecallKeyEncoder {
+  /** Embed the live QUESTION as a nomic `search_query:`. */
+  encodeQuery(text: string): Promise<number[]>;
+  /** Embed a canonical key form as a nomic `search_document:`. */
+  encodeDocument(text: string): Promise<number[]>;
+}
+
+/**
+ * Canonical question form for each taught recall key, embedded `search_document:`-
+ * side and cached. Multiple phrasings are joined so the document embedding sits
+ * near the centroid of how people actually ask. FIXED IN CODE (not learned) —
+ * the keys mirror the corpus teach dimensions recallKeyForQuestion already owns.
+ *
+ * The semantic pass only ever resolves to one of THESE keys, and only after
+ * intersecting with the keys the speaker actually taught — so an unknowable
+ * (e.g. "breakfast") that is not a taught key can never be produced here.
+ */
+const CANONICAL_KEY_FORMS: Readonly<Record<string, string>> = {
+  name: 'what is my name',
+  location: 'where do I live, where am I based, what city am I in',
+  dog: "what is my pet's name, what is my dog called",
+  favorite_color: 'what is my favorite color',
+  occupation: 'what do I do for work, what is my job, my profession',
+};
+
+/**
+ * Acceptance threshold for the semantic (embedding) recall-key pass. argmax
+ * cosine over the taught-key canonical forms must clear this for the resolver to
+ * accept a paraphrase the regex missed.
+ *
+ * 0.62 is the one empirically-tuned number in C8 — it is the floor that admits
+ * genuine paraphrases ("remind me where I'm based?") while rejecting near-misses
+ * and off-topic asks. mythos / the coordinator will tune this against the gate
+ * corpus at WAVE CLOSE (do not hand-fit it to a single example). Raising it
+ * trades recall for precision; lowering it risks grounding an off-key question.
+ */
+export const RECALL_SEMANTIC_THRESHOLD = 0.62;
+
+/** A vector is the Ollama-down zero sentinel iff every component is 0. */
+function isZeroVector(v: readonly number[]): boolean {
+  return v.length === 0 || v.every((x) => x === 0);
+}
+
+/**
+ * Parse the set of fact KEYS the speaker actually taught, from the frame's
+ * "key: value" knownFacts strings. This is the intersection gate that makes
+ * unknowables impossible to ground semantically: only taught keys are candidates.
+ */
+function taughtKeys(knownFacts: readonly string[] | undefined): Set<string> {
+  const keys = new Set<string>();
+  if (!knownFacts) return keys;
+  for (const kf of knownFacts) {
+    const idx = kf.indexOf(':');
+    if (idx <= 0) continue;
+    const k = kf.substring(0, idx).trim();
+    if (k) keys.add(k);
+  }
+  return keys;
+}
+
+/**
+ * Per-encoder document-embedding cache for the canonical key forms. Keyed by the
+ * encoder instance so a swapped/restarted encoder re-embeds. Lazily built on
+ * first semantic miss; never re-embeds a canonical form twice for one encoder.
+ */
+const CANONICAL_EMBED_CACHE = new WeakMap<RecallKeyEncoder, Map<string, number[]>>();
+
+async function canonicalEmbedding(
+  encoder: RecallKeyEncoder,
+  key: string,
+): Promise<number[] | null> {
+  let perEncoder = CANONICAL_EMBED_CACHE.get(encoder);
+  if (!perEncoder) {
+    perEncoder = new Map<string, number[]>();
+    CANONICAL_EMBED_CACHE.set(encoder, perEncoder);
+  }
+  const cached = perEncoder.get(key);
+  if (cached) return isZeroVector(cached) ? null : cached;
+  const form = CANONICAL_KEY_FORMS[key];
+  if (!form) return null;
+  const emb = await encoder.encodeDocument(form);
+  if (isZeroVector(emb)) return null; // Ollama down — do NOT cache the sentinel.
+  perEncoder.set(key, emb);
+  return emb;
+}
+
+/**
+ * WS3 C8 — resolve a recall question to a taught fact KEY, regex-FIRST with an
+ * embedding fallback. This is the ONLY async, encoder-touching step; the rest of
+ * the retrieval (retrieveRecallGrounding) stays a pure function over the resolved
+ * key.
+ *
+ * Order (each step a strict gate):
+ *   1. regex FIRST — recallKeyForQuestion(text). If it returns a key, USE IT.
+ *      This preserves C1's current behavior EXACTLY and keeps its hard-won
+ *      unknowable exclusions as the first gate. The embedding pass never runs on
+ *      a regex hit, so it can never DOWNGRADE a regex match.
+ *   2. On regex MISS, the embedding pass:
+ *      a. degrade-closed: no encoder → null (caller falls back to regex-only).
+ *      b. intersect: candidate keys = CANONICAL_KEY_FORMS ∩ taughtKeys(knownFacts).
+ *         An unknowable is not a taught key → no candidate → null → never grounds.
+ *      c. embed the QUESTION `search_query:`; if it's the zero sentinel
+ *         (Ollama down), degrade → null.
+ *      d. cosine-match the query against each candidate's cached
+ *         `search_document:` canonical form; accept argmax iff ≥ threshold.
+ *
+ * Returns the resolved key or null. Null on a recall-shaped-but-unresolvable turn
+ * is honest: the caller produces no node → NOT_GROUNDED by construction (C2).
+ */
+export async function resolveRecallKey(
+  text: string,
+  knownFacts: readonly string[] | undefined,
+  encoder?: RecallKeyEncoder | null,
+): Promise<string | null> {
+  // 1. Regex FIRST — preserves C1 exactly; embedding never downgrades a hit.
+  const regexKey = recallKeyForQuestion(text);
+  if (regexKey) return regexKey;
+
+  // 2. Embedding fallback. Degrade-closed when there is no usable encoder.
+  if (!encoder) return null;
+  if (!text.trim()) return null;
+
+  // 2b. Intersect canonical keys with the keys THIS person actually taught.
+  const taught = taughtKeys(knownFacts);
+  const candidates = Object.keys(CANONICAL_KEY_FORMS).filter((k) => taught.has(k));
+  if (candidates.length === 0) return null; // nothing taught to match → honest miss
+
+  // 2c. Embed the question as a query; degrade on the Ollama-down sentinel.
+  let queryEmb: number[];
+  try {
+    queryEmb = await encoder.encodeQuery(text);
+  } catch {
+    return null; // encoder threw → degrade to regex-only (already missed → null)
+  }
+  if (isZeroVector(queryEmb)) return null;
+
+  // 2d. Cosine argmax over the taught-key canonical forms; threshold-gated.
+  let bestKey: string | null = null;
+  let bestScore = -Infinity;
+  for (const key of candidates) {
+    const docEmb = await canonicalEmbedding(encoder, key);
+    if (!docEmb) continue; // sentinel/missing form → skip (degrade for that key)
+    const score = cosineSimilarity(queryEmb, docEmb);
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = key;
+    }
+  }
+  return bestScore >= RECALL_SEMANTIC_THRESHOLD ? bestKey : null;
+}
 
 /**
  * Which knowledge source produced the pre-arbitration recall grounding node.
@@ -105,12 +274,10 @@ export interface RecallRetrieval {
  */
 function retrieveOkgRecall(
   personId: string | null,
-  inputText: string,
+  key: string,
   knownFacts: readonly string[] | undefined,
 ): RecallRetrieval | null {
   if (!personId) return null;
-  const key = recallKeyForQuestion(inputText);
-  if (!key) return null;
   const fact = getRecalledFactForRecall(personId, key, knownFacts);
   if (!fact) return null;
   if (fact.value.trim().length < 2) return null;
@@ -137,15 +304,19 @@ function retrieveOkgRecall(
  */
 function retrieveWkgRecall(
   personId: string | null,
-  inputText: string,
+  key: string,
   wkg: WkgContext,
 ): RecallRetrieval | null {
-  const key = recallKeyForQuestion(inputText);
-  if (!key) return null;
   // Single-hop: best topical entity from the already-assembled 1-hop context.
-  // Base-context nodes (Drive/CoBeing) are never provenance for a recall answer.
+  // Base-context nodes (Drive/CoBeing/Word) are never provenance for a recall
+  // answer; :Candidate-provenance nodes (C0) are EXCLUDED here too — a recall
+  // must never ground off an unconfirmed conversation candidate (CANON Std-3).
   const topical = wkg.entities.find(
-    (e) => e.nodeType !== 'Drive' && e.nodeType !== 'CoBeing' && e.nodeType !== 'Word',
+    (e) =>
+      e.nodeType !== 'Drive' &&
+      e.nodeType !== 'CoBeing' &&
+      e.nodeType !== 'Word' &&
+      e.provenance !== 'CANDIDATE',
   );
   if (!topical) return null;
   return {
@@ -169,23 +340,36 @@ function retrieveWkgRecall(
  * un-grounded (the deliberate path may still answer; it just carries no recall
  * provenance — NOT_GROUNDED by construction).
  *
- * @param personId    current speaker id (from frame.raw.person_model.personId).
- * @param inputText   the raw recall question text.
- * @param knownFacts  the speaker's OKG facts as "key: value" strings (from frame).
- * @param wkg         the already-assembled single-hop WKG context for this frame.
+ * WS3 C8: this pure core now operates over a RESOLVED key. By default the key is
+ * derived from the regex (recallKeyForQuestion) so existing callers are
+ * unchanged. The cycle boundary may instead pass a key resolved by the async
+ * `resolveRecallKey` (regex-first → embedding) via `resolvedKey`, which lets a
+ * paraphrase the regex missed still resolve — WITHOUT making this function async
+ * or touching the encoder. A null/omitted resolvedKey falls back to the regex.
+ *
+ * @param personId     current speaker id (from frame.raw.person_model.personId).
+ * @param inputText    the raw recall question text (used for the regex default).
+ * @param knownFacts   the speaker's OKG facts as "key: value" strings (from frame).
+ * @param wkg          the already-assembled single-hop WKG context for this frame.
+ * @param resolvedKey  (C8) a key pre-resolved by resolveRecallKey; overrides the
+ *                     regex when provided. Pass null/undefined to use the regex.
  */
 export function retrieveRecallGrounding(
   personId: string | null,
   inputText: string,
   knownFacts: readonly string[] | undefined,
   wkg: WkgContext,
+  resolvedKey?: string | null,
 ): RecallRetrieval | null {
-  // Not a recall question → no provenance to resolve. Cheap exit.
-  if (!recallKeyForQuestion(inputText)) return null;
+  // C8: prefer the pre-resolved key (regex-first → embedding) when supplied;
+  // otherwise derive it from the regex so legacy callers are byte-for-byte the
+  // same. Either way, a null key → not a recall → no provenance (cheap exit).
+  const key = resolvedKey ?? recallKeyForQuestion(inputText);
+  if (!key) return null;
   // OKG self-fact wins over topical WKG (more specific provenance).
   return (
-    retrieveOkgRecall(personId, inputText, knownFacts) ??
-    retrieveWkgRecall(personId, inputText, wkg)
+    retrieveOkgRecall(personId, key, knownFacts) ??
+    retrieveWkgRecall(personId, key, wkg)
   );
 }
 

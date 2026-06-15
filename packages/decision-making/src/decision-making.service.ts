@@ -69,7 +69,7 @@ import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.serv
 import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding, discriminateGroundedBy } from './deliberation/deliberation.service';
-import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, type RecallRetrieval } from './deliberation/recall-retrieval';
+import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, resolveRecallKey, type RecallRetrieval, type RecallKeyEncoder } from './deliberation/recall-retrieval';
 import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { isDocumentEncoder } from './inputs/encoders/text.encoder';
@@ -2788,28 +2788,57 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   private async computeRecallRetrieval(frame: SensoryFrame): Promise<RecallRetrieval | null> {
     const inputText = (frame.raw['text'] as string | undefined) ?? '';
     if (!inputText.trim()) return null;
-    // Cheap guard: not a recall question → no provenance to resolve, no DB hit.
-    if (!recallKeyForQuestion(inputText)) return null;
 
     const personModel = frame.raw['person_model'] as
       { personId?: string; knownFacts?: string[] } | null | undefined;
     const personId = personModel?.personId ?? null;
     const knownFacts = personModel?.knownFacts;
 
+    // ── WS3 C8 — semantic recall-key resolution (regex FIRST, embed fallback) ──
+    // resolveRecallKey tries recallKeyForQuestion first (preserving C1 exactly,
+    // and short-circuiting before any embed on a regex hit), and only on a regex
+    // MISS embeds the question and cosine-matches it against the canonical forms
+    // of the keys THIS person taught. Fail-closed: a null/zero-vector encoder
+    // skips the semantic pass entirely → behavior == regex-only (never regresses
+    // C1). A non-recall, non-paraphrase turn resolves to null → cheap exit below.
+    const encoder = this.recallKeyEncoder();
+    const resolvedKey = await resolveRecallKey(inputText, knownFacts, encoder);
+    // Not a recall question (regex miss + no semantic match) → no provenance, no DB.
+    if (!resolvedKey) return null;
+
     // Try OKG first (pure, no DB). If it grounds, we never touch Neo4j.
     const okgFirst = retrieveRecallGrounding(personId, inputText, knownFacts, {
       entities: [], facts: [], relationships: [], procedures: [], summary: '',
-    });
+    }, resolvedKey);
     if (okgFirst) return okgFirst;
 
     // OKG missed on a recall question — consult the single-hop WKG context.
     try {
       const wkg = await this.wkgContext.getContextForFrame(frame);
-      return retrieveRecallGrounding(personId, inputText, knownFacts, wkg);
+      return retrieveRecallGrounding(personId, inputText, knownFacts, wkg, resolvedKey);
     } catch (err) {
       this.logger.warn(`computeRecallRetrieval WKG lookup failed: ${err}`);
       return null;
     }
+  }
+
+  /**
+   * WS3 C8 — adapt the registered text encoder to the pure resolver's seam.
+   *
+   * Returns a RecallKeyEncoder bound to the registered 'text' modality encoder,
+   * honoring nomic's MANDATORY query/document asymmetry: the live QUESTION is a
+   * `search_query:` (encoder.encode) and each canonical key form is a
+   * `search_document:` (encoder.encodeDocument). Returns null when no text
+   * encoder is registered or it cannot produce documents — the resolver then
+   * fail-closes to regex-only (no semantic pass, C1 preserved).
+   */
+  private recallKeyEncoder(): RecallKeyEncoder | null {
+    const enc = this.modalityRegistry.get('text');
+    if (!enc || !isDocumentEncoder(enc)) return null;
+    return {
+      encodeQuery: (t: string) => enc.encode(t),
+      encodeDocument: (t: string) => enc.encodeDocument(t),
+    };
   }
 
   private async pickResearchTarget(): Promise<string | null> {
