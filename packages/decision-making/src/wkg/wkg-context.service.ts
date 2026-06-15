@@ -38,6 +38,14 @@ import {
   CONFIDENCE_THRESHOLDS,
   type ACTRParams,
   verboseFor,
+  WKG_SNAPSHOT_CYPHER,
+  emptyFailedWkgSnapshot,
+  wkgDiffAsString,
+  wkgDiffAsNullableString,
+  wkgDiffAsNumber,
+  wkgDiffAsBool,
+  type WkgSnapshot,
+  type WkgNodeState,
 } from '@sylphie/shared';
 import { TextEncoder } from '../inputs/encoders/text.encoder';
 import type { RecallSource } from '../deliberation/recall-retrieval';
@@ -121,6 +129,14 @@ export interface NewProcedure {
   readonly confidence: number;
   readonly entityIds: readonly string[];
   readonly motivatingDrive: DriveName;
+  /**
+   * Optional WKG-diff attribution marker (Phase 4 Wave 2 cluster 3a — Ticket 2,
+   * §A.14). When set, the newly created ActionProcedure node is stamped with
+   * `last_action_id = <lastActionId>` so a before/after captureWkgSnapshot diff
+   * can attribute the new node to THIS action and emit WKG_DIFF (honest
+   * curiosity relief). Omitted on the dedup path (no new node is created there).
+   */
+  readonly lastActionId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +641,11 @@ export class WkgContextService {
       // ── No duplicate — create new procedure ──────────────────────────────
       const nodeId = `proc-${randomUUID().substring(0, 8)}`;
 
+      // §A.14 (Ticket 2): stamp last_action_id ONLY when the caller supplies it
+      // (the WKG write-back path). This marks the new node as attributable to
+      // THIS action so a before/after diff can emit WKG_DIFF. When absent
+      // (other callers), the property is simply not written — null marker →
+      // honest-red, never a fabricated attribution.
       await session.run(
         `CREATE (p:ActionProcedure {
            node_id: $nodeId,
@@ -640,6 +661,8 @@ export class WkgContextService {
            schema_level: 'instance',
            created_at: datetime()
          })
+         FOREACH (_ IN CASE WHEN $lastActionId IS NULL THEN [] ELSE [1] END |
+           SET p.last_action_id = $lastActionId)
          RETURN p.node_id AS nodeId`,
         {
           nodeId,
@@ -652,6 +675,7 @@ export class WkgContextService {
           actionSequence: JSON.stringify(proc.actionSequence),
           provenance: proc.provenance,
           confidence: proc.confidence,
+          lastActionId: proc.lastActionId ?? null,
         },
       );
 
@@ -689,6 +713,55 @@ export class WkgContextService {
     } catch (err) {
       this.logger.error(`WKG procedure write failed: ${err instanceof Error ? err.message : String(err)}`);
       return '';
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Capture a before/after snapshot of the WORLD graph node-set + confidences +
+   * per-node action-attribution markers (Phase 4 Wave 2 cluster 3a — Ticket 2,
+   * §A.14). Call once immediately BEFORE a WKG-touching write (writeActionProcedure
+   * with a lastActionId) and once AFTER it lands, then pass both to the shared
+   * computeInformationGain() with the same actionId.
+   *
+   * Reuses the SAME shared snapshot Cypher + coercion + attribution math as the
+   * apps WkgDiffService (one honesty gate). On any failure (Neo4j unavailable or
+   * not wired) the returned snapshot has `captured: false`, which forces a
+   * downstream UNVERIFIED result (honest-red) rather than a guessed diff.
+   */
+  async captureWkgSnapshot(): Promise<WkgSnapshot> {
+    if (!this.neo4j) {
+      // No WORLD access wired → cannot capture → honest UNVERIFIED downstream.
+      return emptyFailedWkgSnapshot();
+    }
+    const t0 = Date.now();
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      const result = await session.run(WKG_SNAPSHOT_CYPHER);
+      const nodes = new Map<string, WkgNodeState>();
+      for (const rec of result.records) {
+        const nodeId = wkgDiffAsString(rec.get('node_id'));
+        if (!nodeId) continue;
+        nodes.set(nodeId, {
+          confidence: wkgDiffAsNumber(rec.get('confidence'), 0),
+          lastActionId: wkgDiffAsNullableString(rec.get('last_action_id')),
+          unresolvedPredictionError:
+            wkgDiffAsBool(rec.get('prediction_error')) && !wkgDiffAsBool(rec.get('error_resolved')),
+        });
+      }
+      vlog('WKG-diff: snapshot captured (decision-making)', {
+        nodes: nodes.size,
+        latencyMs: Date.now() - t0,
+      });
+      return { captured: true, nodes, capturedAt: new Date() };
+    } catch (err) {
+      this.logger.warn(
+        `WKG snapshot capture failed → diff will be UNVERIFIED: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return emptyFailedWkgSnapshot();
     } finally {
       await session.close();
     }

@@ -107,6 +107,21 @@ export {
 // Metrics types
 export * from './metrics.types';
 
+// WKG information-gain diff primitives (shared honesty gate — Phase 4 Wave 2 3a)
+export {
+  WKG_SNAPSHOT_CYPHER,
+  UNVERIFIED_INFORMATION_GAIN,
+  emptyFailedWkgSnapshot,
+  computeInformationGain,
+  wkgDiffAsString,
+  wkgDiffAsNullableString,
+  wkgDiffAsNumber,
+  wkgDiffAsBool,
+  type WkgNodeState,
+  type WkgSnapshot,
+  type InformationGainResult,
+} from './wkg-diff.types';
+
 // Scene types (per-object tracking + scene events)
 export {
   SceneEventType,

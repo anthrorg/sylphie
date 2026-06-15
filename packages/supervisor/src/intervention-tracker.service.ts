@@ -95,6 +95,15 @@ export class InterventionTrackerService {
     this.transition(interventionId, 'outcome_observed', detail ?? outcome);
   }
 
+  /**
+   * Records that have been `applied` but whose outcome is not yet observed.
+   * The supervisor uses this to close the loop: a later verdict attributes a
+   * proxy outcome to each. Live references (caller does not mutate).
+   */
+  awaitingOutcome(): InterventionRecord[] {
+    return this.records.filter((r) => r.currentPhase === 'applied');
+  }
+
   /** Snapshot of recent intervention records (most recent last). */
   getRecent(limit = 20): InterventionRecord[] {
     return this.records.slice(-limit).map((r) => ({

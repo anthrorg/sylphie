@@ -1011,19 +1011,27 @@ export class CommunicationService implements OnModuleInit {
 
       // Audit trail (CANON Standard 1). Fire-and-forget — never block delivery
       // on the DB write. logEvent already routes to TimescaleDB.
-      this.logEvent('THEATER_PROHIBITED', response.driveSnapshot.sessionId, {
-        turnId: response.turnId,
-        actionId: response.actionId,
-        violationClass: verdict.violationClass,
-        offendingDrive: verdict.offendingDrive,
-        offendingDriveValue: verdict.offendingDriveValue,
-        affectValence: affectScore.valence,
-        affectMagnitude: affectScore.magnitude,
-        markerCount: affectScore.markerCount,
-        verdictReason: verdict.reason,
-        responseTextSnippet: response.text.substring(0, 100),
-        auditOnly: true,
-      });
+      this.logEvent(
+        'THEATER_PROHIBITED',
+        response.driveSnapshot.sessionId,
+        {
+          turnId: response.turnId,
+          actionId: response.actionId,
+          violationClass: verdict.violationClass,
+          offendingDrive: verdict.offendingDrive,
+          offendingDriveValue: verdict.offendingDriveValue,
+          affectValence: affectScore.valence,
+          affectMagnitude: affectScore.magnitude,
+          markerCount: affectScore.markerCount,
+          verdictReason: verdict.reason,
+          responseTextSnippet: response.text.substring(0, 100),
+          auditOnly: true,
+        },
+        // CANON Std-2: correlate this violation row with the action that
+        // produced the theatrical response, using the same `action:<id>`
+        // convention the drive engine uses for its DRIVE_EVENT rows.
+        response.actionId ? `action:${response.actionId}` : null,
+      );
     } else {
       this.logger.debug(
         `[Theater Prohibition] OK — turn=${response.turnId}, ` +
@@ -1182,13 +1190,14 @@ export class CommunicationService implements OnModuleInit {
     eventType: string,
     sessionId: string,
     payload: Record<string, unknown>,
+    correlationId?: string | null,
   ): void {
     const id = randomUUID();
     const driveSnapshot = this.driveStateReader.getCurrentState();
 
     this.timescale.query(
-      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, correlation_id, schema_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         id,
         eventType,
@@ -1197,6 +1206,7 @@ export class CommunicationService implements OnModuleInit {
         sessionId,
         JSON.stringify(driveSnapshot),
         JSON.stringify(payload),
+        correlationId ?? null,
         1,
       ],
     ).catch((err) => {

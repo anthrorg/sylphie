@@ -95,6 +95,12 @@ export interface SupervisorVerdict {
   confidence: number; // 0.0-1.0
   reasoning: string;
   reasoningTrace?: string; // DeepSeek reasoning_content (chain of thought)
+  /**
+   * Model that actually produced this verdict (API-reported). Carried ON the
+   * verdict so the audit record reads it from the local result, not a shared
+   * mutable instance field — removes the cross-eval race under concurrent evals.
+   */
+  modelUsed?: string;
   flagForGuardian: boolean;
   flagReason?: string;
   suggestedCorrection?: SupervisorCorrection | null;

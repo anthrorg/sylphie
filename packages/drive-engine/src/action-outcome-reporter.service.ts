@@ -106,6 +106,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
    */
   reportOutcome(outcome: {
     readonly actionId: string;
+    readonly correlationId?: string;
     readonly actionType: string;
     readonly success: boolean;
     readonly metadata?: ActionOutcomePayload['metadata'];
@@ -146,6 +147,10 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
     // Construct the ActionOutcomePayload
     const payload: ActionOutcomePayload = {
       actionId: outcome.actionId,
+      // CANON Std-2: propagate the ORIGIN correlation id verbatim when the
+      // caller minted one at the action origin. Omitted → the Drive Engine
+      // derives a deterministic `action:<actionId>` at ingestion (no loss).
+      correlationId: outcome.correlationId,
       actionType: outcome.actionType,
       outcome: outcomeValue,
       metadata: outcome.metadata,

@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, computeInformationGain, type InformationGainResult, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -130,6 +130,30 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
   /** Maximum entries in pendingLatentPatterns before LRU eviction. */
   private readonly MAX_PENDING_LATENT = 100;
+
+  /**
+   * Maps cycle actionId → the WKG-diff information-gain metric computed during
+   * that cycle's WKG write-back (Phase 4 Wave 2 cluster 3a — Ticket 2, §A.14).
+   *
+   * Populated when the "Latent space + WKG write-back" block creates an
+   * ActionProcedure node stamped with last_action_id and a before/after diff is
+   * computed for it (via the SHARED computeInformationGain honesty gate).
+   * Consumed by reportOutcome() to forward informationGainMetrics to the Drive
+   * Engine so a real knowledge gain earns honest curiosity relief. UNVERIFIED
+   * results are stored too (drive grants zero relief) — never fabricated.
+   * Shares the same LRU cap as pendingLatentPatterns.
+   */
+  private readonly pendingInfoGain = new Map<string, InformationGainResult>();
+
+  /**
+   * Maps cycle actionId → the ORIGIN correlation id minted at the action origin
+   * (CANON Standard 2 — provenance). Captured at cycle end (anchored to the
+   * inbound turnId when present, else deterministic `action:<actionId>`) and
+   * consumed by reportOutcome() so the SAME id ties the inbound action event to
+   * the drive event(s) it causes — instead of the Drive Engine deriving it after
+   * the fact. Shares the LRU cap with the other pending maps.
+   */
+  private readonly pendingCorrelationId = new Map<string, string>();
 
   constructor(
     @Inject(EXECUTOR_ENGINE)
@@ -1776,6 +1800,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           );
           const primaryPatternId = latentPatternIds[0] ?? randomUUID();
 
+          // §A.14 (Ticket 2): this write-back CREATES a new ActionProcedure node
+          // in the WORLD graph — a real knowledge gain that should earn honest
+          // curiosity relief. Stamp the new node with a stable attribution marker
+          // (newProcMarker) and diff a before/after WKG snapshot against THAT
+          // marker via the SHARED computeInformationGain honesty gate. The diff
+          // is keyed by the cycle actionId so reportOutcome() (called later by
+          // Communication with the same actionId) forwards informationGainMetrics
+          // to the Drive Engine. If the snapshot can't be captured or the change
+          // can't be cleanly attributed, the shared gate returns UNVERIFIED →
+          // zero relief (honest-red), never a fabricated number.
+          const newProcMarker = `wkg-proc-write:${actionId}:${primaryPatternId.substring(0, 8)}`;
+          const beforeSnapshot = await this.wkgContext.captureWkgSnapshot();
+
           // Write ActionProcedure to WKG (also at low initial confidence)
           const procedureId = await this.wkgContext.writeActionProcedure({
             name: `learned-${primaryPatternId.substring(0, 8)}`,
@@ -1791,7 +1828,34 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             confidence: 0.3,
             entityIds,
             motivatingDrive: dominantDrive,
+            // Attribution marker for the WKG-diff honesty gate.
+            lastActionId: newProcMarker,
           });
+
+          // Diff the snapshot pair and attribute to THIS write's marker. A dedup
+          // hit (procedureId is an existing node, no new marker landed) → no
+          // node carries newProcMarker → the gate returns UNVERIFIED (honest:
+          // no NEW knowledge was created this cycle).
+          try {
+            const afterSnapshot = await this.wkgContext.captureWkgSnapshot();
+            const gain = computeInformationGain(beforeSnapshot, afterSnapshot, newProcMarker);
+            if (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch)) {
+              this.pendingInfoGain.set(actionId, gain);
+              if (this.pendingInfoGain.size > this.MAX_PENDING_LATENT) {
+                const oldest = this.pendingInfoGain.keys().next().value;
+                if (oldest !== undefined) this.pendingInfoGain.delete(oldest);
+              }
+            }
+            vlog('write-back info-gain', {
+              actionId,
+              source: gain.source,
+              newNodes: gain.newNodes,
+              confidenceDeltas: +gain.confidenceDeltas.toFixed(4),
+              resolvedErrors: gain.resolvedErrors,
+            });
+          } catch (diffErr) {
+            this.logger.warn(`Write-back info-gain diff failed: ${diffErr}`);
+          }
 
           this.logger.debug(
             `Write-back: ${latentPatternIds.length} modality patterns (confidence=0.3), ` +
@@ -1818,6 +1882,26 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           if (oldest !== undefined) {
             this.pendingLatentPatterns.delete(oldest);
           }
+        }
+      }
+
+      // CANON Std-2 (Ticket: correlationId origin) — capture the ORIGIN
+      // correlation id for this action so reportOutcome() can propagate it to
+      // the Drive Engine. The inbound turnId (minted at the gateway boundary) is
+      // the natural anchor that ties the inbound action event to the drive
+      // event(s) it later causes; when there is no turn (self-tick / perception
+      // frame) we fall back to a deterministic `action:<actionId>`. Epoch-fenced
+      // like the pending maps above. The drive-side resolveCorrelationId() keeps
+      // the derive path as the fallback when origin supplies none.
+      if (actionId !== 'SHRUG' && (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch))) {
+        const originTurnId =
+          this.currentTurnContext?.turnId ??
+          (frame.raw['turn_id'] as string | undefined);
+        const correlationId = originTurnId ? `turn:${originTurnId}` : `action:${actionId}`;
+        this.pendingCorrelationId.set(actionId, correlationId);
+        if (this.pendingCorrelationId.size > this.MAX_PENDING_LATENT) {
+          const oldest = this.pendingCorrelationId.keys().next().value;
+          if (oldest !== undefined) this.pendingCorrelationId.delete(oldest);
         }
       }
 
@@ -2001,12 +2085,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.routeScenePredictionErrors(sceneComparison, driveSnapshot);
       }
 
+      // CANON Std-2 (correlationId origin): anchor these tick-scoped pressure
+      // emits to the inbound frame's turn when present, so the drive event they
+      // raise traces to the same origin. No turn (perception-only frame) → the
+      // deterministic `action:<id>` form (identical to the drive-side derive).
+      const frameTurnId = frame.raw['turn_id'] as string | undefined;
+
       // ── Sustained curiosity for undiscovered visual objects ──────────────
       const undiscoveredCount = frame.raw['undiscovered_count'] as number | undefined;
       if (undiscoveredCount && undiscoveredCount > 0 && this.actionOutcomeReporter) {
         try {
           this.actionOutcomeReporter.reportOutcome({
             actionId: 'undiscovered-objects',
+            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:undiscovered-objects',
             actionType: 'UndiscoveredObjectPressure',
             success: false,
             metadata: {
@@ -2031,6 +2122,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         try {
           this.actionOutcomeReporter.reportOutcome({
             actionId: 'unknown-persons',
+            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:unknown-persons',
             actionType: 'UnknownPersonPressure',
             success: false,
             metadata: {
@@ -2203,9 +2295,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         actionType = procedureData.category;
       }
 
+      // §A.14 (Ticket 2): forward the WKG-diff information-gain computed during
+      // this action's write-back, if any. Consumed once (delete) so a stale
+      // metric never re-attaches to a later outcome. Absent → omitted → the
+      // drive grants zero curiosity relief (honest-red).
+      const infoGain = this.pendingInfoGain.get(actionId);
+      if (infoGain) this.pendingInfoGain.delete(actionId);
+
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId,
+          // CANON Std-2 (Ticket: correlationId origin) — mint a correlationId at
+          // the ACTION ORIGIN (this producer) and propagate it so the SAME id
+          // ties this inbound action event to the drive event(s) it causes,
+          // instead of the drive deriving `action:<id>` after the fact. The
+          // drive-side derive remains the fallback when origin supplies none.
+          correlationId: this.resolveOutcomeCorrelationId(actionId),
           actionType,
           success: isAccurate,
           feedbackSource: 'INFERENCE',
@@ -2222,6 +2327,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 actualValue: predictionEvaluation.mae, // real MAE
               }
             : undefined,
+          informationGainMetrics: infoGain,
           // Set socialCommentTimestamp so the social comment quality
           // contingency fires, recording this as a Sylphie-initiated
           // comment and providing Social relief + Satisfaction bonus
@@ -2254,6 +2360,27 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       }
     }
+  }
+
+  /**
+   * Resolve the ORIGIN correlation id to propagate with an action outcome
+   * (CANON Standard 2 — provenance origin one-hop).
+   *
+   * Returns the id captured at the action origin (cycle end) for this actionId,
+   * consuming it once. When none was captured (e.g. a SHRUG, or an outcome
+   * reported for an action this instance never produced), returns the
+   * deterministic `action:<actionId>` — the SAME value the Drive Engine's
+   * resolveCorrelationId() would otherwise derive, so the trace is identical and
+   * never lost. The origin is authoritative; the drive-side derive is the
+   * fallback.
+   */
+  private resolveOutcomeCorrelationId(actionId: string): string {
+    const origin = this.pendingCorrelationId.get(actionId);
+    if (origin) {
+      this.pendingCorrelationId.delete(actionId);
+      return origin;
+    }
+    return `action:${actionId}`;
   }
 
   // ---------------------------------------------------------------------------

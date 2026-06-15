@@ -297,6 +297,19 @@ export interface IActionOutcomeReporter {
      */
     readonly actionId: string;
 
+    /**
+     * OPTIONAL origin correlation id (CANON Standard 2 — provenance).
+     *
+     * When the main process mints a correlation id at the ACTION ORIGIN (the
+     * cycle / inbound event that produced this action), it propagates it here so
+     * the Drive Engine stamps the SAME id onto every drive event it emits in
+     * response — tying the inbound action event to its drive effects end-to-end.
+     * When absent, the Drive Engine derives a DETERMINISTIC `action:<actionId>`
+     * at its ingestion boundary (resolveCorrelationId), so provenance is never
+     * lost — only less precise.
+     */
+    readonly correlationId?: string;
+
     /** Category string of the action (for diversity tracking). */
     readonly actionType: string;
 

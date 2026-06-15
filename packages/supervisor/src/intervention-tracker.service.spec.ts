@@ -104,4 +104,31 @@ check('no TimescaleService → in-memory lifecycle still tracked', () => {
   assert.equal(recent[0].currentPhase, 'applied');
 });
 
+// 6: awaitingOutcome returns only applied-but-unobserved records, and an
+// observed record leaves the set (backs the supervisor's auto-attribution).
+check('awaitingOutcome tracks applied records until outcome is observed', () => {
+  const svc = new InterventionTrackerService(null as any);
+
+  const idProposed = svc.proposed(makeIntervention({ cycleId: 'c-proposed' }));
+  const idApplied = svc.proposed(makeIntervention({ cycleId: 'c-applied' }));
+  const idRejected = svc.proposed(makeIntervention({ cycleId: 'c-rejected' }));
+
+  svc.applied(idApplied);
+  svc.rejected(idRejected);
+
+  // Only the applied-and-unobserved record is awaiting an outcome.
+  let waiting = svc.awaitingOutcome();
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].interventionId, idApplied);
+  assert.equal(waiting[0].intervention.cycleId, 'c-applied');
+  // The still-proposed record is not in the set.
+  assert.ok(!waiting.some((r) => r.interventionId === idProposed));
+
+  // Observing the outcome removes it from the awaiting set (attributed once).
+  svc.outcomeObserved(idApplied, 'positive', 'next-eval c-later rating=good');
+  waiting = svc.awaitingOutcome();
+  assert.equal(waiting.length, 0);
+  assert.equal(svc.get(idApplied)!.outcome, 'positive');
+});
+
 console.log(`\nInterventionTrackerService: ${passed} checks passed\n`);

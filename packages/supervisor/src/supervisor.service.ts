@@ -58,6 +58,12 @@ const vlog = verboseFor('Supervisor');
 /** Maximum number of recent verdicts to keep in memory. */
 const VERDICT_BUFFER_SIZE = 100;
 
+/**
+ * Fallback model name for audit provenance when the API response does not
+ * report one. The true model is read from each verdict's `modelUsed`.
+ */
+const SUPERVISOR_DEFAULT_MODEL = 'deepseek-reasoner';
+
 /** System prompt for the DeepSeek reasoning supervisor. */
 const SUPERVISOR_SYSTEM_PROMPT = `You are the cognitive supervisor for Sylphie, an AI companion with drive-based cognition and a learned tensor pipeline.
 
@@ -114,9 +120,6 @@ export class SupervisorService
   private subscription: Subscription | null = null;
   private readonly recentVerdicts: SupervisorVerdict[] = [];
   private readonly pendingInterventions: SupervisorIntervention[] = [];
-
-  /** Model identifier of the most recent verdict (for audit provenance). */
-  private model = 'deepseek-reasoner';
 
   /**
    * Output token ceiling for a single supervisor evaluation call.
@@ -264,7 +267,9 @@ export class SupervisorService
     this.verdictAudit.record({
       verdict,
       provenance: 'LLM_GENERATED',
-      model: this.model,
+      // Read from the local verdict (set in evaluate()), not a shared field —
+      // no race when evaluations overlap.
+      model: verdict.modelUsed ?? SUPERVISOR_DEFAULT_MODEL,
       evaluationReason: reason,
     });
 
@@ -279,6 +284,10 @@ export class SupervisorService
     // threaded through so its assembled global input vector can be attached —
     // reinforce/correct REQUIRE it and otherwise skip honestly.
     this.maybeRaiseIntervention(verdict, cycle);
+
+    // Close the intervention loop: attribute a proxy outcome to any applied,
+    // not-yet-observed intervention now that a fresh verdict is in.
+    this.attributeInterventionOutcomes(verdict);
 
     // Emit for downstream consumers (broadcast service, etc.)
     this.verdictSubject.next(verdict);
@@ -391,11 +400,6 @@ export class SupervisorService
       const outputTokens = response.tokensUsed.completion;
       this.costTracker.recordCost(inputTokens, outputTokens);
 
-      // Capture the model that produced this verdict for audit provenance.
-      if (response.model) {
-        this.model = response.model;
-      }
-
       // Parse response — LlmResponse uses 'content' not 'text'
       const parsed = this.parseVerdict(response.content, narration.cycleId);
       if (!parsed) return null;
@@ -406,6 +410,10 @@ export class SupervisorService
         // verdict; OllamaLlmService now surfaces it as response.reasoningContent.
         // Captured here for the supervisor audit trail.
         reasoningTrace: response.reasoningContent,
+        // Model that produced THIS verdict (API-reported), carried on the result
+        // so record() reads it locally — no shared-field race across concurrent
+        // evaluations. Falls back to the configured reasoner name if absent.
+        modelUsed: response.model || SUPERVISOR_DEFAULT_MODEL,
         inputTokens,
         outputTokens,
         costUsd: response.cost,
@@ -466,6 +474,40 @@ export class SupervisorService
         : {}),
     };
     this.interventionTracker.proposed(intervention);
+  }
+
+  /**
+   * Close the proposed→applied→outcome_observed loop for applied interventions.
+   *
+   * When a fresh verdict lands on a LATER cycle than an applied-but-unobserved
+   * intervention, attribute a COARSE proxy outcome: the next evaluated cycle
+   * being unflagged → 'positive' (no recurring problem after the correction);
+   * still flagged → 'negative'. This is a deliberately coarse proxy — documented
+   * as such, never a fabricated metric (CANON Std-1) — that simply completes the
+   * audit lifecycle so an operator can ask "did the correction help?".
+   *
+   * Interventions reach 'applied' only via the guarded submitIntervention path
+   * (the sidecar accepted + executed it); propose-only interventions from
+   * maybeRaiseIntervention never enter this set. Observing transitions each
+   * record to 'outcome_observed', so it is attributed exactly once.
+   */
+  private attributeInterventionOutcomes(verdict: SupervisorVerdict): void {
+    const pending = this.interventionTracker.awaitingOutcome();
+    if (pending.length === 0) return;
+
+    const outcome: 'positive' | 'negative' = verdict.flagForGuardian
+      ? 'negative'
+      : 'positive';
+
+    for (const record of pending) {
+      // Don't attribute an intervention's outcome to its own originating cycle.
+      if (record.intervention.cycleId === verdict.cycleId) continue;
+      this.interventionTracker.outcomeObserved(
+        record.interventionId,
+        outcome,
+        `next-eval ${verdict.cycleId} rating=${verdict.rating}`,
+      );
+    }
   }
 
   /**
