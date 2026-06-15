@@ -2,14 +2,13 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EMBEDDING_DIM, OBJECT_EMBEDDING_DIM, ModalityEncoder } from '@sylphie/shared';
 import type { SceneSnapshot } from '@sylphie/shared';
 import { ModalityRegistryService } from '../registry/modality-registry.service';
-import { xavierMatrix, linearProject } from '../linear-algebra';
 
 /**
- * VisualEmbeddingEncoder — P1 #0 (mythos-corrected topology).
+ * VisualEmbeddingEncoder — P1 #0 (mythos-corrected topology), P3.1 backbone swap.
  *
  * The richest visual signal in the pipeline is the per-CONFIRMED-track
- * embedding (today the 1280-D EfficientNet vector; OBJECT_EMBEDDING_DIM →
- * DINOv2 1024-D at P3). It rides on `TrackedObjectDTO.embedding`, a SEPARATE
+ * embedding (P3.1 — the 768-D DINOv2-base CLS vector; was the 1280-D
+ * EfficientNet vector). It rides on `TrackedObjectDTO.embedding`, a SEPARATE
  * array from the `VideoDetection[]` ({class,confidence,bbox}) the VideoEncoder
  * consumes — so it reached NestJS, flowed to VWM/SceneEventDetector, but was
  * NEVER handed to the fusion encoders. Two visually-distinct same-COCO scenes
@@ -23,50 +22,61 @@ import { xavierMatrix, linearProject } from '../linear-algebra';
  * service, applied generically). VideoEncoder/SceneEncoder are kept for COUNTS
  * and GEOMETRY; this modality adds the appearance signal additively.
  *
- * Pipeline (HARD REQUIREMENT 2 — L2-normalize before projection):
+ * Pipeline (P3.1 — the JL projection is DELETED):
  *   pool (mean across CONFIRMED tracks)  ← poolVisualEmbeddings()
  *     → L2-normalize the pooled OBJECT_EMBEDDING_DIM vector to UNIT norm
- *     → JL-project OBJECT_EMBEDDING_DIM → EMBEDDING_DIM via a fixed-seed Xavier
- *       matrix (Johnson–Lindenstrauss preserves cosine neighborhoods, so a
- *       random projection is a legitimate no-training stopgap).
+ *     → return that unit vector DIRECTLY as the modality embedding.
+ *
+ * Why no projection any more: at P3.1 OBJECT_EMBEDDING_DIM (768, DINOv2-base) ==
+ * EMBEDDING_DIM (768). A 768→768 random Johnson–Lindenstrauss projection is an
+ * identity-sized matrix that is NOT identity — it is a random rotation that
+ * DISTORTS the cosine geometry it was only ever a stopgap for. Strictly worse
+ * than identity. So we drop the projection entirely and feed the unit-normalized
+ * pooled vector straight into fusion (an honest identity passthrough: a 768-D
+ * unit input emerges unchanged → cosine with itself is exactly 1.0).
  *
  * The L2-normalize is the DOMINANCE GUARD (ashby's bounded-both-directions): a
- * high-magnitude raw pooled embedding is renormalized to unit norm BEFORE
- * projection, so its fused contribution is bounded and cannot swamp the other
- * modalities — and two inputs that differ ONLY in magnitude project to the
- * IDENTICAL output (direction is all that survives).
+ * high-magnitude raw pooled embedding is renormalized to unit norm, so its fused
+ * contribution is bounded and cannot swamp the other modalities — and two inputs
+ * that differ ONLY in magnitude collapse to the IDENTICAL output (direction is
+ * all that survives).
  *
  * Returns a zero vector when no CONFIRMED track carries a usable embedding
- * (empty scene, all-tentative tracks, all-null embeddings, pre-M0 prod where
- * onnxruntime is absent → every embedding is null).
+ * (empty scene, all-tentative tracks, all-null embeddings, pre-M0 prod where the
+ * sidecar embedder is absent → every embedding is null).
  */
-
-/** Deterministic seed for the 1280→768 JL projection (stable across restarts). */
-const VISUAL_EMBEDDING_PROJECTION_SEED = 0x71e0e;
-
 @Injectable()
 export class VisualEmbeddingEncoder
   implements ModalityEncoder<SceneSnapshot>, OnModuleInit
 {
   private readonly logger = new Logger(VisualEmbeddingEncoder.name);
-  private W!: number[][];
-  private b!: number[];
 
   readonly modalityName = 'visual_embedding';
   readonly eventDriven = false;
 
-  constructor(private readonly registry: ModalityRegistryService) {}
+  constructor(private readonly registry: ModalityRegistryService) {
+    // FAIL-LOUD (P3.1): the projection was deleted precisely because the object
+    // dim now equals the fused dim. If a future backbone makes them diverge
+    // again, the unit pooled vector would be the WRONG length for fusion and
+    // there is no longer a projection to reconcile it — so refuse to construct
+    // rather than silently feed a mis-length vector into the fused latent.
+    if (OBJECT_EMBEDDING_DIM !== EMBEDDING_DIM) {
+      throw new Error(
+        `VisualEmbeddingEncoder requires OBJECT_EMBEDDING_DIM === EMBEDDING_DIM ` +
+          `(the JL projection was deleted at P3.1 when both became 768), but got ` +
+          `OBJECT_EMBEDDING_DIM=${OBJECT_EMBEDDING_DIM}, EMBEDDING_DIM=${EMBEDDING_DIM}. ` +
+          `A non-${EMBEDDING_DIM} object backbone must re-introduce a projection ` +
+          `(or pad/truncate deliberately) before feeding fusion.`,
+      );
+    }
+  }
 
   onModuleInit() {
-    // JL projection OBJECT_EMBEDDING_DIM (1280, → 1024 at P3) → EMBEDDING_DIM (768).
-    this.W = xavierMatrix(
-      EMBEDDING_DIM,
-      OBJECT_EMBEDDING_DIM,
-      VISUAL_EMBEDDING_PROJECTION_SEED,
-    );
-    this.b = new Array(EMBEDDING_DIM).fill(0);
+    // No projection matrix to build any more (P3.1): the unit-normalized pooled
+    // OBJECT_EMBEDDING_DIM vector IS the EMBEDDING_DIM modality vector.
     this.logger.log(
-      `Visual-embedding projection initialized: [${EMBEDDING_DIM}×${OBJECT_EMBEDDING_DIM}]`,
+      `Visual-embedding modality initialized: identity passthrough at ${EMBEDDING_DIM}-D ` +
+        `(JL projection deleted at P3.1, OBJECT_EMBEDDING_DIM === EMBEDDING_DIM).`,
     );
     this.registry.register(this);
   }
@@ -77,14 +87,15 @@ export class VisualEmbeddingEncoder
       return new Array(EMBEDDING_DIM).fill(0);
     }
 
-    // HR2: L2-normalize the pooled vector to unit norm BEFORE projection.
+    // L2-normalize the pooled vector to unit norm (the dominance guard), then
+    // return it DIRECTLY — no projection (deleted at P3.1; see class doc).
     const unit = l2Normalize(pooled);
     if (unit === null) {
       // Degenerate (all-zero) pooled vector — no semantic content.
       return new Array(EMBEDDING_DIM).fill(0);
     }
 
-    return linearProject(this.W, unit, this.b);
+    return unit;
   }
 }
 

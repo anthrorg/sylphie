@@ -14,7 +14,9 @@
  */
 const { Client } = require('pg');
 
-const DIM = 1280;
+// P3.1 — the embedding column is now vector(768) (DINOv2-base CLS); inherits the
+// migrated column dim. Seed vectors must be 768-D or the ::vector cast rejects.
+const DIM = 768;
 // Mirror of foldObjectCentroid (apps/sylphie/.../visual-working-memory.service.ts)
 function foldObjectCentroid(centroid, next, n) {
   if (centroid.length === 0) return next.slice();
@@ -36,7 +38,7 @@ const lit = (v) => `[${v.join(',')}]`;
   let ok = true;
   const fail = (m) => { ok = false; console.error('FAIL:', m); };
 
-  // Deterministic 1280-D vectors. Query == stored so the SELECT nearest hits it.
+  // Deterministic DIM-D vectors (768 post-P3.1). Query == stored so the SELECT nearest hits it.
   const stored = Array.from({ length: DIM }, (_, i) => (i % 10) / 10);
   const sighting = Array.from({ length: DIM }, (_, i) => ((i + 3) % 10) / 10);
   const n0 = 1; // sighting_count BEFORE the fold
@@ -98,7 +100,7 @@ const lit = (v) => `[${v.join(',')}]`;
     const got = JSON.parse(after.rows[0].embedding);
     const cnt = Number(after.rows[0].sighting_count);
     if (cnt !== n0 + 1) fail(`sighting_count ${cnt} != ${n0 + 1}`);
-    const probes = [0, 1, 2, 3, 100, 639, 1279];
+    const probes = [0, 1, 2, 3, 100, 383, 767]; // last index is DIM-1 = 767 (768-D)
     let maxErr = 0;
     for (const i of probes) maxErr = Math.max(maxErr, Math.abs(got[i] - expected[i]));
     if (maxErr > 1e-5) fail(`centroid did not match incremental mean (maxErr=${maxErr} over probes)`);

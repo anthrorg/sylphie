@@ -39,6 +39,15 @@
 
 import * as http from 'http';
 
+/**
+ * P3.1 — per-object embedding dim. MUST stay in lockstep with
+ * `OBJECT_EMBEDDING_DIM` in packages/shared/src/types/sensory-frame.ts (768,
+ * DINOv2-base) and the migrated `embedding vector(768)` column. Defined locally
+ * (not imported) so the gate harness stays free of workspace-package resolution
+ * under tsx — mirroring centroid-db-smoke.cjs / m06-substrate-smoke.cjs.
+ */
+const OBJECT_EMBEDDING_DIM = 768;
+
 // ---------------------------------------------------------------------------
 // Config — no hardcoded ports (env with defaults), distinct from the LLM cassette
 // ---------------------------------------------------------------------------
@@ -113,14 +122,19 @@ export interface DetectFixture {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a synthetic 1280-D embedding so VWM's cosine-match / WORLD-node write path
- * runs for real (a null embedding would skip the embedding store). Deterministic:
- * a fixed pattern keyed off the track id so two frames of the SAME object match
- * (>0.75 cosine) and a different object does not.
+ * Build a synthetic OBJECT_EMBEDDING_DIM embedding so VWM's cosine-match /
+ * WORLD-node write path runs for real (a null embedding would skip the embedding
+ * store). Deterministic: a fixed pattern keyed off the track id so two frames of
+ * the SAME object match (>0.75 cosine) and a different object does not.
+ *
+ * P3.1 — sized from OBJECT_EMBEDDING_DIM (now 768, DINOv2-base) rather than a
+ * hardcoded 1280, so it always matches both the encoder's length guard AND the
+ * migrated `embedding vector(768)` column dim. Import the shared const so a
+ * future backbone swap keeps this in lockstep automatically.
  */
 export function syntheticEmbedding(seed: number): number[] {
-  const v = new Array<number>(1280);
-  for (let i = 0; i < 1280; i++) {
+  const v = new Array<number>(OBJECT_EMBEDDING_DIM);
+  for (let i = 0; i < OBJECT_EMBEDDING_DIM; i++) {
     // Smooth deterministic signal; seed shifts the phase so distinct seeds diverge.
     v[i] = Math.sin((i + 1) * 0.01 + seed * 1.7);
   }

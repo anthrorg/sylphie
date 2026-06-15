@@ -515,10 +515,191 @@ def _path_exists(path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# DINOv2BaseEmbeddingExtractor (P3.1)
+# ---------------------------------------------------------------------------
+
+# HuggingFace model id for the DINOv2-base ViT-S/14 distilled backbone. The
+# weights are BAKED into the image at P3.0 (Dockerfile pre-downloads the HF
+# snapshot into /app/.cache/huggingface), so we MUST load with
+# ``local_files_only=True`` — this avoids both the ~60s HF retry storm when the
+# container has no network AND silent revision drift if HF later re-tags `main`.
+_DINOV2_MODEL_ID = "facebook/dinov2-base"
+
+# CLS-token feature dimension for dinov2-base (ViT-B/14): 768. This is the
+# OBJECT_EMBEDDING_DIM the TypeScript side now imports (== EMBEDDING_DIM, so the
+# JL projection is deleted — the unit vector feeds fusion directly).
+_DINOV2_EMBEDDING_DIM = 768
+
+# Revision PINNED (2026-06-15) to the baked HF snapshot commit, read from the
+# image cache at /app/.cache/huggingface/hub/models--facebook--dinov2-base/snapshots/<sha>.
+# Belt-and-suspenders with ``local_files_only=True`` (which already fixes the load
+# to the single baked snapshot): the pin guarantees a future ``main`` re-tag can
+# never silently swap weights, and is threaded into both ``from_pretrained`` calls.
+_DINOV2_REVISION: str | None = "f9e44c814b77203eaa57a6bdbbd535f21ede1415"
+
+
+class DINOv2BaseEmbeddingExtractor:
+    """DINOv2-base (ViT-B/14) visual embeddings via HuggingFace transformers.
+
+    Drop-in replacement for :class:`OnnxEmbeddingExtractor` on the object-track
+    path (P3.1 backbone swap). Crops the bounding-box region from the raw-RGB
+    frame, runs it through the ``facebook/dinov2-base`` ``AutoImageProcessor`` +
+    ``AutoModel``, and returns the **CLS token** of the last hidden state — a
+    768-dimensional self-supervised appearance vector. Unlike the EfficientNet
+    classifier-feature path, DINOv2's self-supervised features give much tighter
+    same-instance cosine bands (the #0 acceptance residual this swap closes).
+
+    **Lazy imports + ``local_files_only``:** ``torch``, ``transformers``, ``cv2``,
+    and ``numpy`` are imported inside ``__init__`` (not at module level), so
+    *importing this module* never raises ``ImportError`` when the ``[cv]`` extras
+    are absent — the failure is deferred to construction, exactly like
+    :class:`OnnxEmbeddingExtractor`. The model + processor are loaded with
+    ``local_files_only=True`` because the weights are BAKED into the image at
+    P3.0; this avoids the ~60s HF network-retry storm and any revision drift.
+
+    Args:
+        model_id: HF model id. Defaults to ``facebook/dinov2-base``.
+        revision: Optional HF revision (commit SHA) to pin. Defaults to the
+            module-level ``_DINOV2_REVISION`` (currently ``None`` — see the
+            ``# TODO pin revision`` note; ``local_files_only`` already fixes the
+            load to the single baked snapshot).
+
+    Raises:
+        ImportError: If ``torch``/``transformers``/``cv2`` are not installed.
+        OSError: If the weights are not present in the local HF cache (the bake
+            failed) — ``local_files_only=True`` refuses to reach the network.
+    """
+
+    def __init__(
+        self,
+        model_id: str | None = None,
+        revision: str | None = None,
+    ) -> None:
+        # Lazy import -- fail loudly with an actionable message (mirrors
+        # OnnxEmbeddingExtractor so the import surface is identical).
+        try:
+            import cv2 as _cv2  # type: ignore[import-untyped]  # noqa: F401, PLC0415
+        except ImportError as exc:
+            raise ImportError(
+                "DINOv2BaseEmbeddingExtractor requires OpenCV. "
+                "Install with: pip install 'cobeing[cv]'"
+            ) from exc
+
+        try:
+            import torch as _torch  # type: ignore[import-untyped]  # noqa: PLC0415
+            from transformers import (  # type: ignore[import-untyped]  # noqa: PLC0415
+                AutoImageProcessor,
+                AutoModel,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "DINOv2BaseEmbeddingExtractor requires torch + transformers. "
+                "Install with: pip install 'cobeing[cv]'"
+            ) from exc
+
+        self._cv2 = _cv2
+        self._torch = _torch
+
+        resolved_id = model_id or _DINOV2_MODEL_ID
+        resolved_rev = revision if revision is not None else _DINOV2_REVISION
+
+        # local_files_only=True is MANDATORY: the snapshot is baked into the
+        # image (P3.0); never reach the network at request time.
+        self._processor = AutoImageProcessor.from_pretrained(
+            resolved_id,
+            local_files_only=True,
+            revision=resolved_rev,
+        )
+        self._model = AutoModel.from_pretrained(
+            resolved_id,
+            local_files_only=True,
+            revision=resolved_rev,
+        )
+        # Eval mode + no grad: this is inference only, never training.
+        self._model.eval()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def extract(
+        self,
+        frame_data: bytes,
+        bbox: tuple[float, float, float, float],
+        frame_width: int,
+        frame_height: int,
+    ) -> list[float] | None:
+        """Extract a 768-D DINOv2 CLS embedding from a bounding-box crop.
+
+        Steps:
+
+        1. Interpret ``frame_data`` as raw RGB (row-major, 3 bytes/pixel).
+        2. Crop the region defined by ``bbox`` (clamped to frame bounds).
+        3. Run the crop through the DINOv2 ``AutoImageProcessor`` (resize +
+           ImageNet normalisation handled by the processor).
+        4. Forward through the model under ``torch.no_grad()``.
+        5. Take the CLS token (``last_hidden_state[:, 0, :]``) → 768-D vector.
+
+        Args:
+            frame_data: Raw RGB bytes of the full frame.
+                ``len(frame_data)`` must equal ``frame_width * frame_height * 3``.
+            bbox: ``(x_min, y_min, x_max, y_max)`` in pixel coordinates.
+            frame_width: Full frame width in pixels.
+            frame_height: Full frame height in pixels.
+
+        Returns:
+            A list of 768 floats (the CLS token), or ``None`` on ANY failure
+            (degenerate bbox, decode error, forward-pass error) — degrade,
+            never crash, matching the OnnxEmbeddingExtractor discipline (the
+            ``except`` is deliberately broad: a single bad crop must never take
+            down ``/detect``).
+        """
+        try:
+            import numpy as np  # type: ignore[import-untyped]  # noqa: PLC0415
+
+            cv2 = self._cv2
+            torch = self._torch
+
+            # Build a numpy array from raw bytes (read-only view is fine here).
+            arr = np.frombuffer(frame_data, dtype=np.uint8).reshape(
+                (frame_height, frame_width, 3)
+            )
+
+            # Clamp bbox and check for degenerate region.
+            x_min = max(0, int(bbox[0]))
+            y_min = max(0, int(bbox[1]))
+            x_max = min(frame_width, int(bbox[2]))
+            y_max = min(frame_height, int(bbox[3]))
+
+            if x_min >= x_max or y_min >= y_max:
+                return None
+
+            crop = arr[y_min:y_max, x_min:x_max]
+
+            # The AutoImageProcessor handles resize + normalisation. It accepts a
+            # HWC RGB uint8 array directly (no manual ImageNet mean/std here).
+            inputs = self._processor(images=crop, return_tensors="pt")
+
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+
+            # CLS token = first token of the last hidden state. Shape
+            # (1, seq_len, 768) -> (768,). This is DINOv2's global image
+            # representation (the recommended pooled feature for retrieval).
+            cls = outputs.last_hidden_state[:, 0, :].squeeze(0)
+            return cls.tolist()
+        except Exception as exc:  # noqa: BLE001 — degrade-not-crash on the hot path
+            _log = __import__("logging").getLogger("perception_service")
+            _log.warning("DINOv2 track embedding extraction failed: %s", exc)
+            return None
+
+
+# ---------------------------------------------------------------------------
 # Module exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "DINOv2BaseEmbeddingExtractor",
     "DominantColorExtractor",
     "EmbeddingExtractor",
     "MockEmbeddingExtractor",

@@ -3,7 +3,7 @@
  *
  * Verifies the LIVE perception container actually produces the substrate the
  * P3 backbone-swap plan depends on:
- *   1. tracked_objects[].embedding non-null, length 1280 (EfficientNet baseline)
+ *   1. tracked_objects[].embedding non-null, length 768 (P3.1 DINOv2-base CLS)
  *   2. faces[] non-empty on a face frame
  *
  * Object embeddings are only extracted for CONFIRMED tracks, so we POST the
@@ -25,7 +25,9 @@ const path = require('path');
 const BASE = process.env.PERCEPTION_BASE || 'http://127.0.0.1:8430';
 const FRAME = path.join(__dirname, 'face_closeup.jpg');
 const FACE = path.join(__dirname, 'face_closeup.jpg');
-const OBJECT_EMBEDDING_DIM = 1280;
+// P3.1 — DINOv2-base CLS dim (was 1280 EfficientNet). The live container now
+// runs the DINOv2 object-track extractor, so confirmed tracks carry 768-D vecs.
+const OBJECT_EMBEDDING_DIM = 768;
 
 async function postJpeg(buf) {
   const res = await fetch(`${BASE}/perception/detect`, {

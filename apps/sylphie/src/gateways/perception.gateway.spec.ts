@@ -1,7 +1,8 @@
 /**
  * PerceptionGateway — embedding-flow contract (P1 #0, the BL.2 discard contract).
  *
- * BEFORE P1 #0 the per-CONFIRMED-track 1280-D embedding rode on
+ * BEFORE P1 #0 the per-CONFIRMED-track embedding (now 768-D DINOv2-base after
+ * P3.1; was 1280-D EfficientNet) rode on
  * `tracked_objects[].embedding`, reached NestJS, flowed to VWM/SceneEventDetector
  * — but was STRUCTURALLY ABSENT from fusion: no `visual_embedding` modality
  * consumed it, so the richest visual signal was discarded at the cross-array
@@ -67,7 +68,7 @@ function makePersonModel(): any {
   return { getActivePersonId: () => null };
 }
 
-/** A sidecar /detect payload with a CONFIRMED track carrying a 1280-D embedding. */
+/** A sidecar /detect payload with a CONFIRMED track carrying a 768-D embedding (P3.1 DINOv2-base). */
 function detectPayloadWithEmbedding(embedding: number[]) {
   return {
     detections: [],
@@ -125,7 +126,7 @@ describe('PerceptionGateway — visual_embedding flow (P1 #0, BL.2 discard contr
   });
 
   it('NEW reality: the per-track embedding now FLOWS into the visual_embedding modality slot', async () => {
-    const embedding = new Array(1280).fill(0).map((_, i) => Math.sin(i * 0.01));
+    const embedding = new Array(768).fill(0).map((_, i) => Math.sin(i * 0.01));
     global.fetch = jest.fn(async () => ({
       ok: true,
       json: async () => detectPayloadWithEmbedding(embedding),
@@ -150,12 +151,12 @@ describe('PerceptionGateway — visual_embedding flow (P1 #0, BL.2 discard contr
     );
     expect(confirmed).toBeDefined();
     expect(Array.isArray(confirmed.embedding)).toBe(true);
-    expect(confirmed.embedding).toHaveLength(1280);
+    expect(confirmed.embedding).toHaveLength(768);
     expect(confirmed.embedding).toEqual(embedding);
   });
 
   it('feeds the SAME snapshot to both the scene and visual_embedding slots (single source)', async () => {
-    const embedding = new Array(1280).fill(0.05);
+    const embedding = new Array(768).fill(0.05);
     global.fetch = jest.fn(async () => ({
       ok: true,
       json: async () => detectPayloadWithEmbedding(embedding),
@@ -171,7 +172,7 @@ describe('PerceptionGateway — visual_embedding flow (P1 #0, BL.2 discard contr
   });
 
   it('object_appeared event is produced for the confirmed track (sanity that the snapshot is real)', async () => {
-    const embedding = new Array(1280).fill(0.1);
+    const embedding = new Array(768).fill(0.1);
     global.fetch = jest.fn(async () => ({
       ok: true,
       json: async () => detectPayloadWithEmbedding(embedding),

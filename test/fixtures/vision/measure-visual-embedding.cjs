@@ -1,10 +1,21 @@
 /**
  * Throwaway measurement harness for P1 #0 visual_embedding calibration.
- * Replicates the REAL transform from visual-embedding.encoder.ts + sensory-fusion.ts:
+ *
+ * ⚠️ STALE AT P3.1 — DO NOT trust the numbers this prints. ⚠️
+ * It replicates the OLD pre-P3.1 pipeline: the 1280-D EfficientNet fixture +
+ * the 1280→768 JL projection (seed 0x71e0e), BOTH of which P3.1 removed (DINOv2
+ * is 768-D and the projection was DELETED — the encoder is now an identity
+ * passthrough). It is NOT collected by jest and is not run by any gate, so it is
+ * left in place (not rewritten against a 768-D fixture that does not exist yet):
+ * to re-use it post-P3.1, re-capture a 768-D DINOv2 fixture and delete the
+ * projection section (the transform is now just pool → L2-normalize → emit).
+ *
+ * Original transform it replicated (visual-embedding.encoder.ts pre-P3.1 +
+ * sensory-fusion.ts):
  *   - mulberry32 PRNG (linear-algebra.ts)
  *   - xavierMatrix (same seed 0x71e0e for the 1280->768 JL projection)
  *   - L2-normalize before projection (HR2)
- * Measures cosine distributions on the real EfficientNet fixture.
+ * Measured cosine distributions on the real EfficientNet fixture.
  *
  * Run: node test/fixtures/vision/measure-visual-embedding.cjs
  */

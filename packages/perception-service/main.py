@@ -182,6 +182,140 @@ def _get_or_init_embedding_extractor() -> Any | None:  # noqa: ANN401
     return _state.embedding_extractor
 
 
+# ---------------------------------------------------------------------------
+# P3.1 — DINOv2-base object-track embedder (separate from the face path above)
+#
+# The /crop-face FACE path keeps OnnxEmbeddingExtractor (ArcFace is its own
+# ticket, P3.2, M0-blocked). Only the OBJECT-TRACK embedder swaps to DINOv2-base
+# (768-D CLS token). It gets its OWN double-checked lazy-init + failed-flag so
+# its degrade behaviour is independent of the face path and identical in shape
+# to _get_or_init_embedding_extractor (degrade-not-crash, no retry storm).
+# ---------------------------------------------------------------------------
+
+_object_embedding_init_lock = threading.Lock()
+_object_embedding_init_failed: bool = False
+# DINOv2-base object-track extractor; lazy-init on first CONFIRMED track.
+_object_embedding_extractor: Any | None = None
+
+
+def _get_or_init_object_extractor() -> Any | None:  # noqa: ANN401
+    """Return the shared DINOv2BaseEmbeddingExtractor for object tracks.
+
+    Thread-safe double-checked locking — the same pattern as
+    ``_get_or_init_embedding_extractor`` (the call site runs inside
+    ``loop.run_in_executor`` on OS threads, so a ``threading.Lock`` is required).
+    On the first init failure ``_object_embedding_init_failed`` latches and every
+    subsequent call returns ``None`` immediately — a missing/broken DINOv2 baked
+    snapshot does not self-heal at request time, so retrying per frame only
+    wastes work and floods the logs.
+
+    Returns:
+        The initialised ``DINOv2BaseEmbeddingExtractor``, or ``None`` if init has
+        failed (now or on a previous attempt).
+    """
+    global _object_embedding_init_failed  # noqa: PLW0603
+    global _object_embedding_extractor  # noqa: PLW0603
+
+    if _object_embedding_init_failed:
+        return None
+
+    # Fast path: already initialised, no lock acquisition.
+    if _object_embedding_extractor is not None:
+        return _object_embedding_extractor
+
+    with _object_embedding_init_lock:
+        # Re-check inside the lock (another thread may have won the race).
+        if _object_embedding_extractor is not None:
+            return _object_embedding_extractor
+        if _object_embedding_init_failed:
+            return None
+        try:
+            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
+                DINOv2BaseEmbeddingExtractor,
+            )
+            _object_embedding_extractor = DINOv2BaseEmbeddingExtractor()
+            logger.info("DINOv2BaseEmbeddingExtractor initialized (object tracks)")
+        except Exception as exc:  # noqa: BLE001 — torch/transformers/cv2/OSError all mean "unavailable"
+            logger.warning(
+                "DINOv2BaseEmbeddingExtractor unavailable "
+                "(object embeddings will be null): %s",
+                exc,
+            )
+            _object_embedding_init_failed = True
+            return None
+
+    return _object_embedding_extractor
+
+
+# ---------------------------------------------------------------------------
+# P3.1 — confirm-gate + throttle for object embeddings
+#
+# DINOv2-base is ~69ms/crop and stacks across confirmed tracks (> the ~66ms
+# frame budget). To keep /detect mostly YOLO-only we (1) only embed CONFIRMED
+# tracks (already the case) and (2) THROTTLE: re-embed a given confirmed track
+# only every Nth sighting, carrying the last embedding forward on the
+# in-between frames so the response shape is identical (embedding present on
+# every confirmed track). This is the simple confirm-gate + throttle — NOT a
+# background queue (deliberately not over-engineered).
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+
+# Re-embed a confirmed track every Nth sighting (configurable). N=1 means
+# "every frame" (the pre-throttle behaviour). Default 8: at 15fps that re-embeds
+# a stable object ~roughly twice/sec, which is plenty for a slow-moving
+# appearance signal while keeping the steady-state /detect cost YOLO-dominated.
+_EMBED_EVERY_N: int = max(1, int(os.environ.get("COBEING_PERCEPTION_EMBED_EVERY_N", "8")))
+
+# Per-track throttle state, guarded by _embed_throttle_lock:
+#   _track_last_embed_frames_seen[track_id] = frames_seen value at last embed
+#   _track_embedding_cache[track_id]        = last computed embedding (carry-fwd)
+_embed_throttle_lock = threading.Lock()
+_track_last_embed_frames_seen: dict[int, int] = {}
+_track_embedding_cache: dict[int, list[float]] = {}
+
+
+def _should_embed_track(track_id: int, frames_seen: int) -> bool:
+    """Return True if this confirmed track should be RE-embedded this sighting.
+
+    Embeds on the FIRST confirmed sighting of a track (no prior entry) and then
+    only every ``_EMBED_EVERY_N`` increments of ``frames_seen`` thereafter. Pure
+    decision (records nothing) — the caller records the embed via
+    ``_record_track_embedding`` so a failed extraction does not advance the clock.
+    """
+    with _embed_throttle_lock:
+        last = _track_last_embed_frames_seen.get(track_id)
+    if last is None:
+        return True  # first confirmed sighting → always embed
+    return (frames_seen - last) >= _EMBED_EVERY_N
+
+
+def _record_track_embedding(track_id: int, frames_seen: int, embedding: list[float]) -> None:
+    """Record a freshly-computed embedding for carry-forward + throttle reset."""
+    with _embed_throttle_lock:
+        _track_last_embed_frames_seen[track_id] = frames_seen
+        _track_embedding_cache[track_id] = embedding
+
+
+def _cached_track_embedding(track_id: int) -> list[float] | None:
+    """Return the last computed embedding for a throttled-out confirmed track."""
+    with _embed_throttle_lock:
+        return _track_embedding_cache.get(track_id)
+
+
+def _prune_embed_throttle_state(live_track_ids: set[int]) -> None:
+    """Drop throttle/cache entries for tracks no longer present (bound memory).
+
+    Called once per /detect after the tracker update so the per-track dicts never
+    grow without bound across a long session.
+    """
+    with _embed_throttle_lock:
+        stale = [tid for tid in _track_last_embed_frames_seen if tid not in live_track_ids]
+        for tid in stale:
+            _track_last_embed_frames_seen.pop(tid, None)
+            _track_embedding_cache.pop(tid, None)
+
+
 # threading.Lock protecting lazy-init of the VLM model. Same pattern as
 # _embedding_init_lock -- caption generation runs in run_in_executor.
 _vlm_init_lock = threading.Lock()
@@ -496,12 +630,32 @@ async def detect(request: Request) -> JSONResponse:
             dominant_colors: list[list[int]] | None = None
             crop_b64: str | None = None
             if is_confirmed:
-                embedding = await loop.run_in_executor(
-                    None,
-                    _extract_track_embedding,
-                    frame,
-                    t.detection,
-                )
+                # P3.1 — confirm-gate + THROTTLE. DINOv2-base is ~69ms/crop and
+                # stacks across tracks, so we re-embed a confirmed track only
+                # every Nth sighting and carry the last embedding forward on the
+                # in-between frames. The response shape is unchanged: every
+                # confirmed track still carries an `embedding` (fresh OR cached).
+                track_id = int(t.track_id)
+                if _should_embed_track(track_id, t.frames_seen):
+                    fresh = await loop.run_in_executor(
+                        None,
+                        _extract_track_embedding,
+                        frame,
+                        t.detection,
+                    )
+                    if fresh is not None:
+                        # Only advance the throttle clock on a SUCCESSFUL embed,
+                        # so a transient extraction failure retries next frame.
+                        _record_track_embedding(track_id, t.frames_seen, fresh)
+                        embedding = fresh
+                    else:
+                        # Extraction failed this frame — fall back to the last
+                        # good embedding for this track (if any) rather than
+                        # emitting null and losing the appearance signal.
+                        embedding = _cached_track_embedding(track_id)
+                else:
+                    # Throttled out — reuse the last computed embedding.
+                    embedding = _cached_track_embedding(track_id)
                 # Color + crop are best-effort: `_extract_track_color_and_crop`
                 # catches every error and returns (None, None) — it NEVER raises
                 # out of /detect (hot-path failure-mode discipline). Run off the
@@ -539,6 +693,10 @@ async def detect(request: Request) -> JSONResponse:
                 "dominant_colors": dominant_colors,
                 "crop_b64": crop_b64,
             })
+
+        # P3.1 — bound the per-track throttle/cache dicts: drop entries for any
+        # track the tracker no longer reports (it has been DELETED / pruned).
+        _prune_embed_throttle_state({int(t.track_id) for t in tracked_objects})
 
         scene_summary = {
             "total_tracks": len(tracked_objects),
@@ -934,17 +1092,21 @@ def _generate_vlm_caption(jpeg_bytes: bytes, prompt: str) -> str:
 
 
 def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None:  # noqa: ANN401
-    """Extract a 1280D EfficientNet-B0 embedding for a tracked object's bbox.
+    """Extract a 768-D DINOv2-base CLS embedding for a tracked object's bbox.
 
-    If the detection carries a segmentation mask (from YOLO-seg), background
-    pixels within the bounding box are zeroed out before embedding extraction.
-    This produces embeddings that represent the object itself, not the object
-    plus whatever table/wall/floor surrounds it.
+    P3.1 — the object-track backbone swapped EfficientNet-1280 → DINOv2-base-768.
+    ONLY the extractor class changed: everything below this line is byte-for-byte
+    the prior behaviour — the YOLO-seg segmentation mask-zeroing (``cv2.fillPoly``
+    over background pixels within the bbox), the lazy-init failed-gate (now the
+    DINOv2-specific ``_object_embedding_init_failed`` latch), and the
+    degrade-not-crash ``except -> None`` discipline.
 
-    Uses the same shared lazy-init OnnxEmbeddingExtractor as /crop-face.
+    The /crop-face FACE path still uses ``OnnxEmbeddingExtractor`` (ArcFace is its
+    own ticket); only this object-track path is DINOv2.
+
     Returns None if extraction fails or the extractor cannot be initialised.
     """
-    extractor = _get_or_init_embedding_extractor()
+    extractor = _get_or_init_object_extractor()
     if extractor is None:
         return None
 

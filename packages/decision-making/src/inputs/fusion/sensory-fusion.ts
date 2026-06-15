@@ -11,12 +11,14 @@ const FUSION_PROJECTION_SEED = 0xf05e;
  * P1 #0 — `visual_embedding` fusion scale (PROVISIONAL — cortex sets the final
  * value from the live cosine-histogram measurement; see the P1 MEASUREMENT-SPEC).
  *
- * The visual_embedding encoder L2-normalizes its pooled vector to unit norm
- * before projection (the primary dominance guard), so its projected block is
- * already magnitude-bounded. This scale is the SECOND, parameterized knob: it
- * multiplies the visual_embedding 768-block AFTER projection and BEFORE it joins
- * the concat, letting cortex tune the modality's fused influence from one place
- * without touching encoder or fusion-dispatch logic. 1.0 = parity with the other
+ * The visual_embedding encoder L2-normalizes its pooled vector to unit norm and
+ * (P3.1) returns it DIRECTLY — the JL projection was deleted now that the object
+ * dim (768, DINOv2-base) equals the fused dim — so the 768-block reaching fusion
+ * is already a magnitude-bounded unit vector (the primary dominance guard). This
+ * scale is the SECOND, parameterized knob: it multiplies the visual_embedding
+ * 768-block as it joins the concat (after the fusion's own per-modality matrix),
+ * letting cortex tune the modality's fused influence from one place without
+ * touching encoder or fusion-dispatch logic. 1.0 = parity with the other
  * modalities pending measurement.
  */
 // cortex-set (2026-06-14, live measurement): 0.5 keeps the L2-normed block

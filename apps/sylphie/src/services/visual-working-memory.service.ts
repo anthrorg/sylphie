@@ -51,13 +51,15 @@ const REASSOCIATION_IOU_THRESHOLD = 0.3;
 const MAX_SCENE_ENTITIES = 100;
 
 /**
- * P3.A — current object-embedding version. The stored embeddings are 1280-D
- * EfficientNet-B0 = version 1. Persisted on INSERT and stamped on every
- * centroid fold; the fold GUARD refuses to mix versions (a post-P3.1 768/1024-D
- * DINOv2 obs must never fold into a 1280-D centroid). P3.1's backbone swap
- * bumps this to 2 — a frozen+versioned transition, not a learned drift.
+ * Current object-embedding version. P3.1 — the live embeddings are now 768-D
+ * DINOv2-base = version 2 (was 1280-D EfficientNet-B0 = version 1). Persisted on
+ * INSERT and stamped on every centroid fold; the fold GUARD refuses to mix
+ * versions, so a 768-D DINOv2 observation can never fold into a legacy 1280-D
+ * EfficientNet centroid — and the two legacy v1 rows (whose `embedding` is
+ * NULLed by the P3.1 destructive migration) keep `embedding_version=1` and are
+ * simply excluded from the candidate SELECT (`WHERE embedding IS NOT NULL`).
  */
-const CURRENT_OBJECT_EMBEDDING_VERSION = 1;
+const CURRENT_OBJECT_EMBEDDING_VERSION = 2;
 
 /**
  * P3.A — default frame dims for bbox normalization when the sidecar omits
@@ -103,7 +105,7 @@ interface SceneEntity {
   presenceRatio: number;
   /** When the entity entered 'leaving' state (for gone timeout). */
   leavingAt: number | null;
-  /** 1280D embedding for cosine matching (from tracker). */
+  /** Object embedding for cosine matching (from tracker); P3.1 = 768-D DINOv2-base. */
   embedding: number[] | null;
   /**
    * P3.A — top-K dominant colors of the bbox crop (`[r,g,b]` triples), carried
@@ -191,13 +193,19 @@ export class VisualWorkingMemoryService implements OnModuleInit {
   private async ensureSchema(): Promise<void> {
     if (!this.timescale) return;
     try {
+      // P3.1 — FRESH installs get vector(768) (DINOv2-base CLS dim). NOTE: this
+      // CREATE is IF-NOT-EXISTS, so it does NOT alter an EXISTING table that
+      // still has vector(1280) — re-keying a live install is the standalone
+      // destructive migration's job (test/fixtures/vision/p3.1-dinov2-migration.sql),
+      // deliberately NOT auto-run on restart (atlas: auto-destructive-on-restart
+      // is dangerous). ensureSchema stays purely additive.
       await this.timescale.query(`
         CREATE TABLE IF NOT EXISTS visual_object_embeddings (
           id              TEXT PRIMARY KEY,
           node_id         TEXT NOT NULL,
           label           TEXT NOT NULL,
           display_name    TEXT,
-          embedding       vector(1280),
+          embedding       vector(768),
           confidence      FLOAT NOT NULL DEFAULT 0.40,
           discovered      BOOLEAN NOT NULL DEFAULT false,
           created_at      TIMESTAMPTZ NOT NULL,
@@ -211,8 +219,9 @@ export class VisualWorkingMemoryService implements OnModuleInit {
       // string is reused byte-for-byte in the WORLD :VisualObject MERGE so the
       // Timescale TEXT and the Neo4j property stay identical). object_crop_b64 is
       // the forward crop-retention blob (NOT a scorer input — never selected on
-      // the hot re-ID path). embedding_version defaults to 1: the current rows are
-      // 1280-D EfficientNet (version 1); P3.1's DINOv2 swap writes version 2.
+      // the hot re-ID path). embedding_version defaults to 1 (the legacy
+      // EfficientNet rows); P3.1's DINOv2 swap now writes version 2 on every new
+      // INSERT (see CURRENT_OBJECT_EMBEDDING_VERSION).
       await this.timescale.query(
         `ALTER TABLE visual_object_embeddings ADD COLUMN IF NOT EXISTS bounding_box      TEXT`,
       );
@@ -624,7 +633,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
               // #2 — Mutable instance centroid. Fold this sighting's embedding
               // into the matched row's stored running mean (incremental mean,
               // mirroring FaceSnapshotService.updateCentroid). Bounded
-              // assimilation within the FIXED EfficientNet space — NOT a
+              // assimilation within the FIXED DINOv2-base space (P3.1) — NOT a
               // learned-backbone drift (stability invariant #2); same fixed dim,
               // so the fused-latent fingerprint is untouched. Mutated in place
               // (no new node) → accommodation without a duplicate :VisualObject.
@@ -639,9 +648,10 @@ export class VisualWorkingMemoryService implements OnModuleInit {
               // P3.A — VERSION GUARD (atlas item 4). Only fold when the stored
               // row's embedding_version matches the CURRENT version (or is
               // NULL/legacy → treated as current and upgraded in the same write).
-              // This closes the pre-acknowledged P3 TODO and prevents a post-P3.1
-              // 768/1024-D DINOv2 observation from folding into a 1280-D
-              // EfficientNet centroid (mixing dims would corrupt the centroid).
+              // This closes the pre-acknowledged P3 TODO and prevents a 768-D
+              // DINOv2 observation (P3.1, version 2) from folding into a legacy
+              // 1280-D EfficientNet centroid (version 1) — mixing dims would
+              // corrupt the centroid (and pgvector would reject the dim mismatch).
               // On a genuine version mismatch we DON'T fold the embedding — only
               // bump the count + last_seen — and we DON'T overwrite the stored
               // version (the row keeps its own version until a same-version
@@ -794,7 +804,7 @@ export class VisualWorkingMemoryService implements OnModuleInit {
           // P3.A — persist the four new A.5 columns. bounding_box/dominant_colors
           // are the SAME serialized strings written to the WORLD node above (one
           // serialize, reused). object_crop_b64 is the retention blob.
-          // embedding_version = 1 (EfficientNet-B0); P3.1 DINOv2 writes version 2.
+          // embedding_version = CURRENT_OBJECT_EMBEDDING_VERSION (P3.1: 2 = DINOv2-base-768).
           `INSERT INTO visual_object_embeddings
              (id, node_id, label, embedding, confidence, discovered, created_at,
               bounding_box, dominant_colors, object_crop_b64, embedding_version)

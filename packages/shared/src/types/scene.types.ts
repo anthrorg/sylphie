@@ -17,7 +17,11 @@ export interface TrackedObjectDTO {
   framesLost: number;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
-  /** 1280D EfficientNet-B0 embedding, only present for CONFIRMED tracks. */
+  /**
+   * Per-object visual embedding (P3.1: 768-D DINOv2-base CLS token; was 1280-D
+   * EfficientNet-B0). Only present for CONFIRMED tracks. Length ==
+   * OBJECT_EMBEDDING_DIM (sensory-frame.ts).
+   */
   embedding: number[] | null;
   /**
    * P3.A — top-K dominant colors of the (masked) bbox crop as `[r, g, b]`

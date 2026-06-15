@@ -7,10 +7,16 @@
  *     so cross-resolution IoU is valid.
  *   • parseJsonOrNull drops a corrupt JSON column rather than throwing.
  *   • createUndiscoveredNode persists all four new columns (bounding_box NORMALIZED,
- *     dominant_colors, object_crop_b64, embedding_version=1) and the WORLD
- *     :VisualObject MERGE SETs the SAME JSON STRINGS (byte-identical, not a list).
+ *     dominant_colors, object_crop_b64, embedding_version = current = 2 at P3.1)
+ *     and the WORLD :VisualObject MERGE SETs the SAME JSON STRINGS (byte-identical,
+ *     not a list).
  *   • the centroid fold VERSION GUARD refuses a cross-version fold and upgrades a
  *     NULL/legacy version row (folds it as current).
+ *
+ * P3.1 — CURRENT_OBJECT_EMBEDDING_VERSION flipped 1 → 2 (EfficientNet-1280 →
+ * DINOv2-base-768). These specs are version-sensitive: "current" is now 2, a
+ * stored v1 row is the CROSS-version (legacy EfficientNet) case, and new
+ * INSERT/MERGE writes stamp version 2.
  */
 
 import {
@@ -172,7 +178,7 @@ async function sight(vwm: VisualWorkingMemoryService, track: TrackedObjectDTO) {
 }
 
 describe('VWM P3.A — INSERT persists all 4 new columns (bbox NORMALIZED)', () => {
-  it('createUndiscoveredNode writes bounding_box[0,1] / dominant_colors / object_crop_b64 / embedding_version=1', async () => {
+  it('createUndiscoveredNode writes bounding_box[0,1] / dominant_colors / object_crop_b64 / embedding_version=2 (P3.1)', async () => {
     const timescale = new FakeTimescale(); // SELECT → no rows → NEW node
     const vwm = makeVwm(timescale, null);
     await vwm.onModuleInit();
@@ -199,7 +205,7 @@ describe('VWM P3.A — INSERT persists all 4 new columns (bbox NORMALIZED)', () 
     expect(bbox).toEqual([0.25, 0.25, 0.75, 0.75]);
     expect(JSON.parse(colorsJson)).toEqual([[200, 50, 50]]);
     expect(cropB64).toBe('ZmFrZS1qcGVn');
-    expect(embVersion).toBe(1);
+    expect(embVersion).toBe(2); // P3.1: CURRENT_OBJECT_EMBEDDING_VERSION = 2 (DINOv2-base)
   });
 
   it('stored normalized bbox round-trips: re-sighting compares in the SAME [0,1] space', async () => {
@@ -229,7 +235,7 @@ describe('VWM P3.A — INSERT persists all 4 new columns (bbox NORMALIZED)', () 
     // bbox still present (track has a box), but colors + crop are null.
     expect(p[6]).toBeNull(); // dominant_colors
     expect(p[7]).toBeNull(); // object_crop_b64
-    expect(p[8]).toBe(1); // embedding_version still stamped
+    expect(p[8]).toBe(2); // embedding_version still stamped (P3.1 current = 2)
   });
 });
 
@@ -253,7 +259,7 @@ describe('VWM P3.A — WORLD :VisualObject MERGE SETs the SAME JSON STRINGS', ()
     // equal the strings written to Timescale (byte-identity across both stores).
     expect(typeof merge!.params.bboxJson).toBe('string');
     expect(typeof merge!.params.colorsJson).toBe('string');
-    expect(merge!.params.embVersion).toBe(1);
+    expect(merge!.params.embVersion).toBe(2); // P3.1 current = 2 (DINOv2-base)
 
     const insert = timescale.find(/INSERT INTO visual_object_embeddings/i)[0];
     expect(merge!.params.bboxJson).toBe(insert.params![5]); // same bbox string
@@ -288,7 +294,7 @@ function knownRow(embeddingVersion: number | null) {
 describe('VWM P3.A — centroid fold version guard', () => {
   it('SAME-version row folds the embedding AND stamps embedding_version', async () => {
     const timescale = new FakeTimescale();
-    timescale.selectRow = knownRow(1); // current version
+    timescale.selectRow = knownRow(2); // current version (P3.1: 2 = DINOv2-base)
     const vwm = makeVwm(timescale, null);
     await vwm.onModuleInit();
 
@@ -302,7 +308,7 @@ describe('VWM P3.A — centroid fold version guard', () => {
       .find((q) => /embedding = \$2::vector/.test(q.sql));
     expect(embUpdate).toBeDefined();
     expect(embUpdate!.sql).toMatch(/embedding_version = \$3/);
-    expect(embUpdate!.params?.[2]).toBe(1); // stamped current version
+    expect(embUpdate!.params?.[2]).toBe(2); // stamped current version (P3.1)
     // folded centroid = mean([1,0,0,0],[0.9,0.1,0,0]) at n=1 → [0.95,0.05,0,0]
     const written = parseVectorLiteral(embUpdate!.params?.[1] as string);
     [0.95, 0.05, 0, 0].forEach((v, i) => expect(written![i]).toBeCloseTo(v, 10));
@@ -319,22 +325,26 @@ describe('VWM P3.A — centroid fold version guard', () => {
     const embUpdate = timescale
       .find(/UPDATE visual_object_embeddings/i)
       .find((q) => /embedding = \$2::vector/.test(q.sql));
-    // NULL/legacy is adopted as current → fold proceeds and stamps version 1.
+    // NULL/legacy is adopted as current → fold proceeds and stamps version 2 (P3.1).
     expect(embUpdate).toBeDefined();
-    expect(embUpdate!.params?.[2]).toBe(1);
+    expect(embUpdate!.params?.[2]).toBe(2);
   });
 
   it('CROSS-version row REFUSES the fold: count-only UPDATE, embedding untouched', async () => {
     const timescale = new FakeTimescale();
-    timescale.selectRow = knownRow(2); // a DIFFERENT (future P3.1) version
+    // P3.1 — a stored v1 row is the LEGACY EfficientNet-1280 case; current is v2
+    // (DINOv2-768). The dims/space differ, so the fold must be refused. (After the
+    // destructive migration these legacy rows have a NULL embedding anyway and are
+    // excluded by `WHERE embedding IS NOT NULL`; this guards the in-memory path.)
+    timescale.selectRow = knownRow(1); // legacy EfficientNet version (!= current v2)
     const vwm = makeVwm(timescale, null);
     await vwm.onModuleInit();
 
     await sight(vwm, makeTrack({ embedding: [0.9, 0.1, 0, 0] }));
 
     // It still re-IDed (no INSERT), but the UPDATE must be count-only — NO
-    // embedding rewrite and NO version stamp (never mix a v2 obs into a v? row…
-    // here the stored row is v2 and current is v1, so the dims/space differ).
+    // embedding rewrite and NO version stamp (never mix a legacy v1 EfficientNet
+    // centroid with a v2 DINOv2 observation — different dims and spaces).
     expect(timescale.find(/INSERT INTO visual_object_embeddings/i)).toHaveLength(0);
     const updates = timescale.find(/UPDATE visual_object_embeddings/i);
     expect(updates.length).toBeGreaterThanOrEqual(1);
