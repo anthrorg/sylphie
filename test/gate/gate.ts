@@ -655,16 +655,23 @@ async function runMultiPersonPhase(
   // gate-invisible. PRIV.3 uses a CAPITALIZED MULTI-NOUN nonce ("Maxford") to
   // exercise exactly that extractor:
   //
-  //   1. Speaker A (Arlo, NON-guardian) says a capitalized proper-noun fact:
-  //        "My dog is named Maxford the Brave."
-  //   2. We force ONE learning maintenance cycle (POST /metrics/learn-now) so A's
-  //      INPUT events drain into the WORLD graph. C3 stages "Maxford" as a
-  //      `:Candidate` (provenance CANDIDATE, conf ≤0.60, grounding_person_id=A),
-  //      NOT a live `:Entity` (the old leak path).
-  //   3. Speaker B (guardian) asks a question groundable ONLY off A's entity:
-  //        "What kind of animal is Maxford?"
+  //   1. Speaker A (Arlo, NON-guardian, personC) says a capitalized proper-noun
+  //        fact: "My dog is named Maxford the Brave."
+  //   2. We DRAIN the learning queue (POST /metrics/learn-now in a bounded loop
+  //      until A's candidate is staged) so A's INPUT events reach the WORLD graph.
+  //      learn-now consumes only INPUT_RECEIVED/INPUT_PARSED, so the drain
+  //      terminates; a single call is non-deterministic on a non-empty queue
+  //      (FIFO oldest-first, LIMIT 5 — the corpus turns ahead of A starve it).
+  //      C3 stages "Maxford" as a `:Candidate` (provenance CANDIDATE, conf ≤0.60,
+  //      grounding_person_id=personC), NOT a live `:Entity` (the old leak path).
+  //   3. Speaker B (Bea, a DIFFERENT non-guardian, personB) asks a question
+  //        groundable ONLY off A's entity: "What kind of animal is Maxford?"
   //      B's reply MUST NOT be GROUNDED — a `:Candidate` is excluded from every
   //      WKG grounding read-path (C0), so A's proper noun cannot cross to B.
+  //      NB: B must NOT be the guardian — the guardian legitimately owns a taught
+  //      `dog=Max` fact (corpus turn "what kind of animal is Max?"), and "Maxford"
+  //      semantically collides with it, so a guardian-B grounds off its OWN OKG
+  //      (correct, not a leak) and the assertion would test nothing about §2.8.
   //
   // HARD-FAIL (both modes): a GROUNDED reply for B is the §2.8 leak.
   // CONTROL assertion (Std-1 honesty): the `:Candidate {label:'Maxford'}` node WAS
@@ -674,17 +681,27 @@ async function runMultiPersonPhase(
   let priv3SockB: PersistentSocket | null = null;
   const PRIV3_NONCE = 'Maxford'; // capitalized proper noun absent from the corpus
   try {
-    priv3SockA = await openPersistentSocket(ARLO_TOKEN(), 'personC');     // speaker A (non-guardian)
-    priv3SockB = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian'); // speaker B
+    priv3SockA = await openPersistentSocket(ARLO_TOKEN(), 'personC');   // speaker A (non-guardian)
+    priv3SockB = await openPersistentSocket(BEA_TOKEN(), 'personB');    // speaker B (different non-guardian, owns no colliding fact)
 
     // 1. Speaker A introduces the capitalized proper-noun fact.
     priv3SockA.send(`My dog is named ${PRIV3_NONCE} the Brave.`);
     await waitForReplies(priv3SockA.received, 1, 20_000);
     await sleep(1500); // let INPUT_RECEIVED / INPUT_PARSED land in TimescaleDB
 
-    // 2. Force a real learning cycle so A's events stage as :Candidate.
-    const learn = await fetchJson('/api/metrics/learn-now', { method: 'POST' });
-    console.log(`  PRIV.3: learn-now → status=${learn.status} result=${JSON.stringify(learn.body?.result ?? null)}`);
+    // 2. Drain INPUT events until A's candidate is staged (bounded; learn-now
+    //    consumes only INPUT_RECEIVED/INPUT_PARSED, so this terminates — drive
+    //    ticks never enter the queue). A single call is non-deterministic on a
+    //    non-empty queue (FIFO oldest-first, LIMIT 5). 20 iters × 5 = 100 INPUT cap.
+    let priv3Staged = false;
+    for (let i = 0; i < 20 && !priv3Staged; i++) {
+      const learn = await fetchJson('/api/metrics/learn-now', { method: 'POST' });
+      if (learn.body?.result?.wasNoop === true) break; // queue drained
+      const probe = await fetchJson(`/api/metrics/candidate-exists?label=${encodeURIComponent(PRIV3_NONCE)}`);
+      priv3Staged = probe.status === 200 && probe.body?.exists === true;
+      await sleep(200);
+    }
+    console.log(`  PRIV.3: drained learning queue → '${PRIV3_NONCE}' staged as :Candidate = ${priv3Staged}`);
     await sleep(1000); // settle the WORLD write
 
     // 3. Speaker B probes for A's entity — MUST NOT be GROUNDED (cross-person leak).
