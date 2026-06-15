@@ -2,6 +2,15 @@
 export { neo4jConfig, timescaleConfig, postgresConfig } from './config/database.config';
 export { ollamaConfig } from './config/ollama.config';
 export { voiceConfig } from './config/voice.config';
+export {
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
+  DEEPSEEK_DEFAULT_INPUT_PRICE_PER_M,
+  DEEPSEEK_DEFAULT_OUTPUT_PRICE_PER_M,
+  LLM_INPUT_PRICE_ENV,
+  LLM_OUTPUT_PRICE_ENV,
+  type LlmPricingRates,
+} from './config/llm-pricing';
 
 // Storage - Prisma (PostgreSQL)
 export { PrismaService } from './storage/prisma.service';

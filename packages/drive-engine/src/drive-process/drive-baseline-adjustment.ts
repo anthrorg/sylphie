@@ -80,7 +80,15 @@ export class DriveBaselineAdjustment {
 
       const successRate = capability.successRate;
 
-      if (successRate < LOW_CAPABILITY_THRESHOLD) {
+      // CANON Standard 3 + Depressive Attractor guard: only reduce a baseline
+      // when the assessment is permitted to. The reader sets allowReduction
+      // false for non-GUARDIAN (inferred/bootstrap) provenance so that an
+      // unverified "I'm bad at X" cannot drag the baseline down. Recovery
+      // (the else branch below) is always permitted. undefined === allowed,
+      // for legacy/test callers that predate the flag.
+      const reductionAllowed = capability.allowReduction !== false;
+
+      if (successRate < LOW_CAPABILITY_THRESHOLD && reductionAllowed) {
         // Low capability: reduce baseline
         const current = this.getBaseline(driveName);
         const adjusted = Math.max(-10.0, current - BASELINE_REDUCTION_RATE);

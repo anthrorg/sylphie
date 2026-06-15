@@ -35,6 +35,7 @@ import {
   ActionOutcomePayload,
   SoftwareMetricsPayload,
   SessionStartPayload,
+  SelfAssessmentPayload,
   DriveSnapshotPayload,
   DriveEventPayload,
   TheaterProhibitedPayload,
@@ -62,6 +63,8 @@ import {
   MAX_QUEUE_SIZE,
   DRIVE_TICK_SAMPLE_INTERVAL,
   HEALTH_STATUS_INTERVAL_TICKS,
+  TICK_RATE_SAMPLE_WINDOW_TICKS,
+  TICK_RATE_DRIFT_WARN_RATIO,
 } from '../constants/events';
 import { EventEmitter, type IEventEmitter } from './event-emitter';
 import { TimescaleWriter } from './timescale-writer';
@@ -89,6 +92,7 @@ import {
   DECAY_CHECK_INTERVAL_TICKS,
 } from '../constants/opportunity-detection';
 import type { IMessageTransport } from './message-transport';
+import { getOrCreateSelfKgReader, CachedSelfKgReader } from './database-clients';
 
 /**
  * Outcome queue entry: holds IPC messages pending processing.
@@ -96,6 +100,40 @@ import type { IMessageTransport } from './message-transport';
 interface QueuedOutcome {
   payload: ActionOutcomePayload | SoftwareMetricsPayload;
   timestamp: Date;
+  /**
+   * Correlation id resolved at the ingestion boundary (CANON Standard 2 —
+   * end-to-end provenance). Carried alongside the payload so every drive event
+   * emitted in response to this outcome can be traced back to the originating
+   * action / inbound event. Null for non-action payloads (SOFTWARE_METRICS).
+   */
+  correlationId: string | null;
+}
+
+/**
+ * Resolve a correlation id for an inbound payload at the ingestion boundary
+ * (CANON Standard 2 — Contingency Requirement: every reinforcement event must
+ * be auditable to a specific originating behavior).
+ *
+ * Resolution order:
+ *   1. If the main process propagated `correlationId`, use it verbatim. This
+ *      ties the drive event to the upstream inbound event end-to-end.
+ *   2. Else, derive a DETERMINISTIC id from `actionId` (`action:<actionId>`).
+ *      Deterministic (not random) so the same action always maps to the same
+ *      correlation id — the trace stays reconstructable from event logs alone.
+ *   3. SOFTWARE_METRICS and other non-action payloads have no specific
+ *      originating action → null (honest: no fabricated contingency trace).
+ */
+export function resolveCorrelationId(
+  payload: ActionOutcomePayload | SoftwareMetricsPayload,
+): string | null {
+  if ('actionType' in payload) {
+    const actionPayload = payload as ActionOutcomePayload;
+    if (actionPayload.correlationId && actionPayload.correlationId.length > 0) {
+      return actionPayload.correlationId;
+    }
+    return `action:${actionPayload.actionId}`;
+  }
+  return null;
 }
 
 /**
@@ -134,6 +172,12 @@ export class DriveEngine {
   private nextHealthCheckAt: number = HEALTH_STATUS_INTERVAL_TICKS;
   private nextEmissionAt: number = EMISSION_INTERVAL_TICKS;
   private nextDecayCheckAt: number = DECAY_CHECK_INTERVAL_TICKS;
+
+  // Tick-rate drift observability: wall-clock and tick anchors for the current
+  // measurement window. Compared every TICK_RATE_SAMPLE_WINDOW_TICKS to surface
+  // silent drift (e.g. target 1Hz but the loop is actually firing at 0.5Hz).
+  private tickRateWindowStartMs: number = Date.now();
+  private tickRateWindowStartTick: number = 0;
 
   /** Auto-save checkpoint interval in ticks (60s at 1Hz). */
   private static readonly AUTO_SAVE_INTERVAL = 60;
@@ -227,6 +271,10 @@ export class DriveEngine {
       this.sessionId = '';
     }
     this.nextTickScheduledAt = Date.now();
+    // Anchor the tick-rate drift window to loop start so the first sample
+    // measures real running time, not time-since-construction.
+    this.tickRateWindowStartMs = Date.now();
+    this.tickRateWindowStartTick = this.tickNumber;
     vlog('tick loop started', { tickNumber: this.tickNumber, restored: this.tickNumber > 0 });
     this.scheduleTick();
   }
@@ -290,9 +338,39 @@ export class DriveEngine {
         this.handleSessionEnd();
         break;
 
+      case DriveIPCMessageType.SELF_ASSESSMENT:
+        this.handleSelfAssessment(msg.payload as SelfAssessmentPayload);
+        break;
+
       default:
         // Ignore unknown message types
         break;
+    }
+  }
+
+  /**
+   * Handle SELF_ASSESSMENT: cache the pushed KG(Self) snapshot.
+   *
+   * Event-judge model (CANON §Drive Isolation): MAIN computes the assessment
+   * and pushes it; the drive caches it on receipt and consumes it on its own
+   * 10-tick self-evaluation cadence (decoupled, non-blocking). There is NO
+   * drive→main read path. The Std-3 confidence ceiling and provenance-based
+   * reduction suppression are applied inside the reader's mapping.
+   *
+   * Only the CachedSelfKgReader supports ingest(); tests may inject a
+   * FallbackSelfKgReader, in which case the push is a no-op (the reader has no
+   * cache to fill) — that degrades to today's safe neutral, not a crash.
+   */
+  private handleSelfAssessment(payload: SelfAssessmentPayload): void {
+    const reader = getOrCreateSelfKgReader();
+    if (reader instanceof CachedSelfKgReader) {
+      reader.ingest(payload);
+      vlog('self-assessment cached', {
+        provenance: payload.provenance,
+        capabilities: payload.capabilities.length,
+        drivePatterns: payload.drivePatterns.length,
+        predictionAccuracy: payload.predictionAccuracy.length,
+      });
     }
   }
 
@@ -305,6 +383,7 @@ export class DriveEngine {
     this.outcomeQueue.push({
       payload,
       timestamp: new Date(),
+      correlationId: resolveCorrelationId(payload),
     });
 
     // Warn if queue gets too long (performance issue)
@@ -394,7 +473,7 @@ export class DriveEngine {
 
       // 4. Apply outcomes (action effects, metrics)
       for (const queued of outcomesToProcess) {
-        this.applyOutcome(queued.payload);
+        this.applyOutcome(queued.payload, queued.correlationId);
       }
 
       // 5. Apply cross-modulation (drive-to-drive effects)
@@ -486,9 +565,63 @@ export class DriveEngine {
       this.stateManager.advanceTick();
       this.tickNumber++;
       this.lastTickCompletedAt = Date.now();
+
+      // 13. Tick-rate drift observability (sampled, not per-tick).
+      // Compare the ACTUAL tick rate over the last window against the TARGET.
+      // Surfaces silent drift without spamming the log. Read-only: this does
+      // NOT alter scheduling — it only makes drift visible.
+      this.sampleTickRate();
     } catch (err) {
       console.error(`[DriveEngine] Tick error: ${err}`);
     }
+  }
+
+  /**
+   * Measure the actual vs target tick rate over the current sample window and
+   * log it (CANON §observability — silent tick drift must be visible).
+   *
+   * Every TICK_RATE_SAMPLE_WINDOW_TICKS the engine computes how many ticks
+   * actually elapsed per second of wall-clock time and compares it to the
+   * target (1000 / DRIVE_ENGINE_TICK_INTERVAL_MS Hz). A drift ratio outside
+   * ±TICK_RATE_DRIFT_WARN_RATIO is logged as a WARN; otherwise it is a routine
+   * debug sample. This NEVER changes tick behavior — scheduleTick() already
+   * self-corrects; this method only observes.
+   */
+  private sampleTickRate(): void {
+    const ticksThisWindow = this.tickNumber - this.tickRateWindowStartTick;
+    if (ticksThisWindow < TICK_RATE_SAMPLE_WINDOW_TICKS) {
+      return;
+    }
+
+    const now = Date.now();
+    const elapsedMs = now - this.tickRateWindowStartMs;
+    const targetHz = 1000 / DRIVE_ENGINE_TICK_INTERVAL_MS;
+    // Guard against a zero/negative window (clock skew) before dividing.
+    const measuredHz = elapsedMs > 0 ? (ticksThisWindow * 1000) / elapsedMs : targetHz;
+    const driftRatio = targetHz > 0 ? measuredHz / targetHz : 1;
+
+    const sample = {
+      measuredHz: +measuredHz.toFixed(3),
+      targetHz: +targetHz.toFixed(3),
+      driftRatio: +driftRatio.toFixed(3),
+      ticks: ticksThisWindow,
+      elapsedMs,
+      tick: this.tickNumber,
+    };
+
+    if (Math.abs(driftRatio - 1) > TICK_RATE_DRIFT_WARN_RATIO) {
+      console.warn(
+        `[DriveEngine] TICK RATE DRIFT: measured ${sample.measuredHz}Hz vs ` +
+          `target ${sample.targetHz}Hz (ratio ${sample.driftRatio}) over ` +
+          `${sample.ticks} ticks / ${sample.elapsedMs}ms`,
+      );
+    } else {
+      vlog('tick rate sample', sample);
+    }
+
+    // Anchor the next window at the current tick / wall-clock.
+    this.tickRateWindowStartTick = this.tickNumber;
+    this.tickRateWindowStartMs = now;
   }
 
   /**
@@ -499,7 +632,10 @@ export class DriveEngine {
    * reinforcement is blocked. Also records prediction data for MAE
    * computation and opportunity detection (E4-T009).
    */
-  private applyOutcome(payload: ActionOutcomePayload | SoftwareMetricsPayload): void {
+  private applyOutcome(
+    payload: ActionOutcomePayload | SoftwareMetricsPayload,
+    correlationId: string | null = null,
+  ): void {
     if ('actionType' in payload) {
       // ACTION_OUTCOME — signal-based processing
       // The main process sends WHAT HAPPENED (actionType, outcome, metadata).
@@ -546,7 +682,7 @@ export class DriveEngine {
         // Expression is theatrical: zero reinforcement
         const logMsg = logTheaterProhibition(actionPayload, verdict, {});
         console.error(`[DriveEngine] ${logMsg}`);
-        this.emitTheaterProhibitedEvent(actionPayload, verdict);
+        this.emitTheaterProhibitedEvent(actionPayload, verdict, correlationId);
         return;
       }
 
@@ -598,12 +734,47 @@ export class DriveEngine {
       );
       this.stateManager.applyOutcomeEffects(weighted);
 
+      // Emit DRIVE_EVENT audit records for each affected drive (CANON §Drive
+      // Isolation: emit over IPC; the PARENT persists to TimescaleDB). Each
+      // event carries the correlation id so the relief/rule application is
+      // auditable end-to-end back to the originating action (Standard 2).
+      // A matched Postgres rule id (if any) is attached for provenance; a
+      // default-affect application has no rule id.
+      const appliedRuleId =
+        !usedDefault && ruleResult.matchedRuleIds.length > 0
+          ? ruleResult.matchedRuleIds[0]
+          : null;
+      for (const [drive, delta] of Object.entries(weighted)) {
+        if (delta === 0) continue;
+        this.publishDriveEvent(
+          delta < 0 ? 'DRIVE_RELIEF' : 'DRIVE_RULE_APPLIED',
+          drive as DriveName,
+          delta,
+          appliedRuleId,
+          correlationId,
+        );
+      }
+
       // Apply behavioral contingencies (CANON §A.14)
       const contingencyDeltas = this.contingencyCoordinator.applyContingencies(
         actionPayload,
         currentState,
       );
       this.stateManager.applyOutcomeEffects(contingencyDeltas);
+
+      // Emit DRIVE_EVENT audit records for contingency-driven deltas too, so
+      // CANON §A.14 contingencies (guilt repair, curiosity gain, etc.) are
+      // equally auditable with the same correlation id.
+      for (const [drive, delta] of Object.entries(contingencyDeltas)) {
+        if (delta === 0) continue;
+        this.publishDriveEvent(
+          delta < 0 ? 'DRIVE_RELIEF' : 'DRIVE_RULE_APPLIED',
+          drive as DriveName,
+          delta,
+          null,
+          correlationId,
+        );
+      }
     } else if ('cognitiveEffortPressure' in payload) {
       // SOFTWARE_METRICS
       const metricsPayload = payload as SoftwareMetricsPayload;
@@ -666,6 +837,7 @@ export class DriveEngine {
     drive: DriveName,
     delta: number,
     ruleId: string | null = null,
+    correlationId: string | null = null,
   ): void {
     if (!this.lastPublishedSnapshot) {
       return;
@@ -678,6 +850,7 @@ export class DriveEngine {
         drive,
         delta,
         ruleId,
+        correlationId,
         snapshot: this.lastPublishedSnapshot,
       },
       timestamp: new Date(),
@@ -695,6 +868,7 @@ export class DriveEngine {
   private emitTheaterProhibitedEvent(
     outcome: ActionOutcomePayload,
     verdict: TheaterVerdict,
+    correlationId: string | null = null,
   ): void {
     // A theatrical verdict is, by construction, a 'pressure' or 'relief'
     // expression that failed its directional drive check — 'none' can never be
@@ -724,6 +898,7 @@ export class DriveEngine {
       type: DriveIPCMessageType.THEATER_PROHIBITED,
       payload: {
         actionId: outcome.actionId,
+        correlationId,
         actionType: outcome.actionType,
         offendingExpressionType: verdict.expressionType,
         drive: verdict.drive,

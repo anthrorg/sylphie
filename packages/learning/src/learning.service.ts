@@ -46,6 +46,7 @@ import type {
   ReflectionResult,
   SynthesisCycleResult,
   DecayCycleResult,
+  SelfModelCycleResult,
   IUpdateWkgService,
   IUpsertEntitiesService,
   IExtractTypedEdgesService,
@@ -57,6 +58,7 @@ import type {
   IConfidenceDecayService,
   IConversationReflectionService,
   ICrossSessionSynthesisService,
+  ISelfModelWriterService,
   ILearningEventLogger,
   UnlearnedEvent,
 } from './interfaces/learning.interfaces';
@@ -72,6 +74,7 @@ import {
   CONFIDENCE_DECAY_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
   CROSS_SESSION_SYNTHESIS_SERVICE,
+  SELF_MODEL_WRITER_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 import { verboseFor } from '@sylphie/shared';
@@ -97,6 +100,9 @@ const SYNTHESIS_INTERVAL_MS = 1_800_000; // 30 minutes
 /** Interval between confidence decay + pruning cycles in milliseconds. */
 const DECAY_INTERVAL_MS = 600_000; // 10 minutes
 
+/** Interval between self-model write cycles in milliseconds. */
+const SELF_MODEL_INTERVAL_MS = 600_000; // 10 minutes
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -117,6 +123,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   /** Guard against overlapping decay cycles. */
   private decayInFlight = false;
 
+  /** Guard against overlapping self-model write cycles. */
+  private selfModelInFlight = false;
+
   /** Timer handle for the automatic maintenance cycle. */
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -128,6 +137,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
   /** Timer handle for the automatic confidence decay cycle. */
   private decayTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Timer handle for the automatic self-model write cycle. */
+  private selfModelTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     @Inject(UPDATE_WKG_SERVICE)
@@ -162,6 +174,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
     @Inject(CROSS_SESSION_SYNTHESIS_SERVICE)
     private readonly crossSessionSynthesis: ICrossSessionSynthesisService,
+
+    @Inject(SELF_MODEL_WRITER_SERVICE)
+    private readonly selfModelWriter: ISelfModelWriterService,
 
     @Inject(LEARNING_EVENT_LOGGER)
     private readonly eventLogger: ILearningEventLogger,
@@ -216,11 +231,22 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       });
     }, DECAY_INTERVAL_MS);
 
+    this.selfModelTimer = setInterval(() => {
+      this.runSelfModelCycle().catch((err: unknown) => {
+        this.logger.error(
+          `Self-model cycle threw an unhandled error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }, SELF_MODEL_INTERVAL_MS);
+
     this.logger.log(
       `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s, ` +
         `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s, ` +
         `synthesis cycle every ${SYNTHESIS_INTERVAL_MS / 1000}s, ` +
-        `decay cycle every ${DECAY_INTERVAL_MS / 1000}s`,
+        `decay cycle every ${DECAY_INTERVAL_MS / 1000}s, ` +
+        `self-model cycle every ${SELF_MODEL_INTERVAL_MS / 1000}s`,
     );
   }
 
@@ -240,6 +266,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     if (this.decayTimer !== null) {
       clearInterval(this.decayTimer);
       this.decayTimer = null;
+    }
+    if (this.selfModelTimer !== null) {
+      clearInterval(this.selfModelTimer);
+      this.selfModelTimer = null;
     }
     this.logger.log('Learning subsystem stopped');
   }
@@ -323,6 +353,27 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       return await this.confidenceDecay.runDecayCycle();
     } finally {
       this.decayInFlight = false;
+    }
+  }
+
+  /**
+   * Run one self-model write cycle.
+   *
+   * Exposed publicly so the live smoke test can fire it on demand via
+   * LearningService directly, without waiting for the 10-minute timer.
+   * The selfModelInFlight guard still applies.
+   */
+  async runSelfModelCycle(): Promise<SelfModelCycleResult> {
+    if (this.selfModelInFlight) {
+      this.logger.debug('Self-model cycle already in flight — skipping');
+      return { wrote: false, sampleCount: 0, successRate: null, confidence: null, wasNoop: true };
+    }
+
+    this.selfModelInFlight = true;
+    try {
+      return await this.selfModelWriter.runSelfModelCycle();
+    } finally {
+      this.selfModelInFlight = false;
     }
   }
 

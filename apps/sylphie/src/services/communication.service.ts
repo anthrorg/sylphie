@@ -14,7 +14,7 @@
  * 1. Parse input (classify, extract entities, detect guardian feedback)
  * 2. Subscribe to Decision Making's response$ stream
  * 3. Assemble full response context (drive state, person model, history)
- * 4. Validate Theater Prohibition (flag-only initially)
+ * 4. Validate Theater Prohibition (audit + zero-reinforce on violation)
  * 5. Synthesize TTS audio if available
  * 6. Emit DeliveryPayload on delivery$ for the gateway
  * 7. Log Communication events to TimescaleDB
@@ -43,6 +43,12 @@ import {
   type ActionOutcome,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
+import {
+  scoreAffect,
+  classifyMismatch,
+  type TextTheaterVerdict,
+} from './theater-affect-scorer';
+import { buildResponseGeneratedPayload } from './response-generated-payload';
 
 const vlog = verboseFor('Communication');
 import {
@@ -64,6 +70,7 @@ import { TtsService } from './tts.service';
 import { ConversationHistoryService } from './conversation-history.service';
 import { PersonModelService, extractFactsFromText } from './person-model.service';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
+import { WkgDiffService } from './wkg-diff.service';
 
 // ---------------------------------------------------------------------------
 // CommunicationService
@@ -127,6 +134,12 @@ export class CommunicationService implements OnModuleInit {
     private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
     private readonly voiceCache: VoiceLatentSpaceService,
+
+    // Ticket 2 (§A.14): before/after WKG diff for curiosity information-gain.
+    // Wraps the WKG-touching fast-fact write so the diff is attributed to that
+    // action; the write stamps last_action_id, so a real fact write emits
+    // WKG_DIFF and earns curiosity relief (foreign-marker concurrency → UNVERIFIED).
+    private readonly wkgDiff: WkgDiffService,
 
     // WS4 Ticket 2: needed to update conversation-context slots (history, speaker)
     // and to call recordInputArrival() for the self-tick 30s suppression guard.
@@ -204,6 +217,24 @@ export class CommunicationService implements OnModuleInit {
       entities,
       guardianFeedbackType,
     });
+
+    // Self-model `social_interaction` (additive telemetry, no behavioral
+    // consumer): a guardian inbound turn is a candidate "response" to a prior
+    // proactive SOCIAL_COMMENT_INITIATED. The writer self-joins initiations to
+    // guardian replies within 30s in the SAME session — so this MUST be keyed on
+    // the DRIVE-session id (driveStateReader.getCurrentState().sessionId), the
+    // same key SOCIAL_COMMENT_INITIATED uses. The `sessionId` param above is the
+    // per-message gateway id, which the join does NOT reference. Emitting this
+    // makes the social-interaction success numerator count genuine guardian
+    // engagement (not only explicit GUARDIAN_CONFIRMATION). Std-1: real signal,
+    // never fabricated.
+    if (isGuardian) {
+      this.logEvent(
+        'GUARDIAN_INPUT_RECEIVED',
+        this.driveStateReader.getCurrentState().sessionId,
+        { userId, inputLength: text.length },
+      );
+    }
 
     // Add to conversation history
     this.conversationHistory.addUserMessage(text);
@@ -545,7 +576,7 @@ export class CommunicationService implements OnModuleInit {
    *
    * This is the core response pipeline:
    * 1. Log RESPONSE_GENERATED event
-   * 2. Validate Theater Prohibition (flag-only for now)
+   * 2. Validate Theater Prohibition (audit + zero-reinforce on violation)
    * 3. Synthesize TTS audio if available
    * 4. Emit DeliveryPayload on delivery$ for the gateway
    * 5. Log RESPONSE_DELIVERED event
@@ -561,19 +592,20 @@ export class CommunicationService implements OnModuleInit {
     // should never reach the user or TTS.
     response = { ...response, text: sanitizeResponseText(response.text) };
 
-    // Log RESPONSE_GENERATED
-    this.logEvent('RESPONSE_GENERATED', sessionId, {
-      turnId: response.turnId,
-      arbitrationType: response.arbitrationType,
-      actionId: response.actionId,
-      text: response.text,
-      textLength: response.text.length,
-      model: response.model,
-      latencyMs: response.latencyMs,
-    });
+    // Log RESPONSE_GENERATED.
+    // The payload (built by buildResponseGeneratedPayload) now carries
+    // knowledgeGrounding + intent (reused from the response, never recomputed)
+    // so the learning subsystem's knowledge_retrieval self-model metric has an
+    // honest telemetry source: numerator = GROUNDED, denominator =
+    // (GROUNDED|UNKNOWN) AND intent=QUESTION. intent is null on non-deliberation
+    // paths (procedure/latent reflex) — correctly excluded from the QUESTION-
+    // gated metric (CANON Std-1).
+    this.logEvent('RESPONSE_GENERATED', sessionId, buildResponseGeneratedPayload(response));
 
-    // Theater Prohibition check (flag-only — log warning but don't block)
-    const isGrounded = this.checkTheaterProhibition(response);
+    // Theater Prohibition check (CANON Standard 1). Audit + zero-reinforce on a
+    // violation; delivery is NOT blocked — the response still reaches the guardian.
+    const theaterVerdict = this.checkTheaterProhibition(response);
+    const isGrounded = !theaterVerdict.isTheatrical;
 
     // Voice output: check voice latent space FIRST, fall back to TTS on miss.
     // Every TTS-generated utterance is captured and stored so the same text
@@ -695,8 +727,9 @@ export class CommunicationService implements OnModuleInit {
       }
     }
 
-    // Report basic outcome to close the reinforcement loop
-    await this.reportBasicOutcome(response);
+    // Report basic outcome to close the reinforcement loop. The theater verdict
+    // threads through so reinforcement is zeroed on a Standard-1 violation.
+    await this.reportBasicOutcome(response, theaterVerdict);
   }
 
   // ---------------------------------------------------------------------------
@@ -720,7 +753,23 @@ export class CommunicationService implements OnModuleInit {
       return;
     }
 
-    const sessionId = pendingResponse.driveSnapshot.sessionId;
+    // LEG 1b — guarantee a non-null session_id on the guardian event. The
+    // self-model social_interaction self-join (SelfModelWriterService) keys
+    // GUARDIAN_CONFIRMATION rows on session_id; a NULL drops the bid from the
+    // success numerator. The stored CycleResponse snapshot is the authoritative
+    // session for THIS turn, but if it is ever empty (cold start / a snapshot
+    // that predated a real drive session) fall back to the live drive session so
+    // the row always carries a traceable, joinable session id. No drive behavior
+    // is touched — this only fixes the persisted session_id.
+    const sessionId =
+      pendingResponse.driveSnapshot.sessionId ||
+      this.driveStateReader.getCurrentState().sessionId;
+    if (!pendingResponse.driveSnapshot.sessionId) {
+      this.logger.warn(
+        `Guardian feedback for turn ${turnId} had empty stored sessionId; ` +
+          `falling back to live drive session "${sessionId}".`,
+      );
+    }
     const eventType = feedbackType === 'confirmation'
       ? 'GUARDIAN_CONFIRMATION'
       : 'GUARDIAN_CORRECTION';
@@ -874,6 +923,18 @@ export class CommunicationService implements OnModuleInit {
   private async writeFactToWkgCoBeing(
     fact: import('./person-model.service').ExtractedFact,
   ): Promise<void> {
+    // Ticket 2 (§A.14): this is a WKG-touching action — it can create a new
+    // Entity node in the WORLD graph. Capture a before snapshot, run the write,
+    // capture an after snapshot, and attribute the diff to THIS write so the
+    // Drive Engine can grant honest curiosity relief.
+    //
+    // The attribution key. The MERGE below stamps `last_action_id = $actionId`
+    // on the value Entity it creates, so computeInformationGain attributes the
+    // new node to THIS write and emits WKG_DIFF (real curiosity relief). A
+    // concurrent writer's foreign marker still forces UNVERIFIED (honesty gate).
+    const actionId = `wkg-fact-write:${fact.key}:${fact.value}`;
+    const before = await this.wkgDiff.captureWkgSnapshot();
+
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
       const relType = factKeyToRelType(fact.key);
@@ -886,6 +947,7 @@ export class CommunicationService implements OnModuleInit {
            value.schema_level = 'instance',
            value.provenance_type = 'GUARDIAN',
            value.confidence = 0.95,
+           value.last_action_id = $actionId,
            value.created_at = datetime()
          MERGE (self)-[r:${relType}]->(value)
          ON CREATE SET
@@ -900,6 +962,7 @@ export class CommunicationService implements OnModuleInit {
         {
           value: fact.value,
           valueNodeId: `self-${fact.key}-${fact.value.toLowerCase().replace(/\s+/g, '-').substring(0, 20)}`,
+          actionId,
           source: fact.source,
           rawText: fact.rawText,
         },
@@ -908,6 +971,33 @@ export class CommunicationService implements OnModuleInit {
     } finally {
       await session.close();
     }
+
+    // After the write lands, diff and report. computeInformationGain returns
+    // UNVERIFIED (→ zero relief) when the change carries no action attribution,
+    // when a snapshot failed, or when a concurrent writer touched the graph —
+    // never a guessed number. We thread the result verbatim; the Drive Engine
+    // honesty-gates on source === 'WKG_DIFF'.
+    try {
+      const after = await this.wkgDiff.captureWkgSnapshot();
+      const metrics = this.wkgDiff.computeInformationGain(before, after, actionId);
+      this.outcomeReporter.reportOutcome({
+        actionId,
+        actionType: 'WkgFactWrite',
+        // The write itself succeeded if we reached here; curiosity relief is
+        // gated separately by informationGainMetrics.source.
+        success: true,
+        feedbackSource: 'GUARDIAN',
+        theaterCheck: {
+          expressionType: 'none',
+          correspondingDrive: null,
+          driveValue: null,
+          isTheatrical: false,
+        },
+        informationGainMetrics: metrics,
+      });
+    } catch (err) {
+      this.logger.warn(`WKG-diff information-gain report failed: ${err}`);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -915,29 +1005,75 @@ export class CommunicationService implements OnModuleInit {
   // ---------------------------------------------------------------------------
 
   /**
-   * Check whether the response correlates with the drive state.
+   * Validate that the response text's tonal affect correlates with actual
+   * drive state (CANON Standard 1 — Theater Prohibition).
    *
-   * Currently flag-only: logs a warning if the response might not match the
-   * drive state, but does not block delivery. Returns true (grounded) by
-   * default. Full implementation requires sentiment analysis of the response
-   * text vs drive state vector.
+   * Uses a deterministic lexical scorer (theater-affect-scorer.ts) — no LLM
+   * calls, no external dependencies. Catches gross tonal mismatches: effusive
+   * cheerfulness while Anxiety/Guilt/Sadness are elevated, or performed distress
+   * while Satisfaction is high and Anxiety is low.
+   *
+   * On violation: writes a THEATER_PROHIBITED audit event to TimescaleDB and
+   * returns isTheatrical=true so the caller zeros reinforcement. Delivery is NOT
+   * blocked — the response still reaches the guardian (this is an honesty audit,
+   * not a content filter). The returned verdict threads to reportBasicOutcome,
+   * which sets theaterValidated=false → drive-engine zero-reinforcement.
    */
-  private checkTheaterProhibition(response: CycleResponse): boolean {
-    if (!response.text) return true; // SHRUG — no response to validate
+  private checkTheaterProhibition(response: CycleResponse): TextTheaterVerdict {
+    const affectScore = scoreAffect(response.text ?? '');
 
-    // TODO: Implement real theater validation — compare response sentiment
-    // against drive state. For now, flag if anxiety is very high but we have
-    // a response (which might be inappropriately cheerful).
-    const anxiety = response.driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0;
-    if (anxiety > 0.7 && response.text.length > 0) {
-      this.logger.debug(
-        `Theater check: anxiety=${anxiety.toFixed(2)} — response may not reflect internal state. ` +
-          `Turn: ${response.turnId}`,
-      );
-      // Don't block — just flag. Return true for now.
+    if (!response.text) {
+      // SHRUG — no text, no tone, not theatrical.
+      return {
+        isTheatrical: false,
+        violationClass: null,
+        offendingDrive: null,
+        offendingDriveValue: null,
+        reason: 'No response text (SHRUG) — not theatrical',
+        affectScore,
+      };
     }
 
-    return true;
+    const verdict = classifyMismatch(affectScore, response.driveSnapshot.pressureVector);
+
+    if (verdict.isTheatrical) {
+      this.logger.warn(
+        `[Theater Prohibition] VIOLATION — turn=${response.turnId}, ` +
+          `class=${verdict.violationClass}, drive=${verdict.offendingDrive}, ` +
+          `driveValue=${verdict.offendingDriveValue?.toFixed(2)}, reason="${verdict.reason}"`,
+      );
+
+      // Audit trail (CANON Standard 1). Fire-and-forget — never block delivery
+      // on the DB write. logEvent already routes to TimescaleDB.
+      this.logEvent(
+        'THEATER_PROHIBITED',
+        response.driveSnapshot.sessionId,
+        {
+          turnId: response.turnId,
+          actionId: response.actionId,
+          violationClass: verdict.violationClass,
+          offendingDrive: verdict.offendingDrive,
+          offendingDriveValue: verdict.offendingDriveValue,
+          affectValence: affectScore.valence,
+          affectMagnitude: affectScore.magnitude,
+          markerCount: affectScore.markerCount,
+          verdictReason: verdict.reason,
+          responseTextSnippet: response.text.substring(0, 100),
+          auditOnly: true,
+        },
+        // CANON Std-2: correlate this violation row with the action that
+        // produced the theatrical response, using the same `action:<id>`
+        // convention the drive engine uses for its DRIVE_EVENT rows.
+        response.actionId ? `action:${response.actionId}` : null,
+      );
+    } else {
+      this.logger.debug(
+        `[Theater Prohibition] OK — turn=${response.turnId}, ` +
+          `valence=${affectScore.valence.toFixed(2)}, magnitude=${affectScore.magnitude.toFixed(2)}`,
+      );
+    }
+
+    return verdict;
   }
 
   // ---------------------------------------------------------------------------
@@ -951,7 +1087,10 @@ export class CommunicationService implements OnModuleInit {
    * waiting for explicit guardian feedback. If guardian feedback arrives
    * later via reportGuardianFeedback(), it will update the confidence again.
    */
-  private async reportBasicOutcome(response: CycleResponse): Promise<void> {
+  private async reportBasicOutcome(
+    response: CycleResponse,
+    theaterVerdict: TextTheaterVerdict,
+  ): Promise<void> {
     // All responses that produced text should report outcomes to the drive
     // engine so that communicating relieves drives (Social, Boredom, etc.).
     // SHRUG and novel TYPE_2 responses lack a procedure node, so the
@@ -981,7 +1120,10 @@ export class CommunicationService implements OnModuleInit {
           actionId: response.actionId,
           arbitrationResult: response.arbitrationResult,
           selectedAt: new Date(),
-          theaterValidated: true,
+          // CANON Standard 1: honest verdict from checkTheaterProhibition. A
+          // theatrical response sets this false → drive-engine zero-reinforcement
+          // (Sylphie is not rewarded for expressing affect she does not feel).
+          theaterValidated: !theaterVerdict.isTheatrical,
         },
         predictionAccurate: false, // Unknown until guardian feedback
         predictionError: 0.5,      // Neutral — will be updated by feedback
@@ -1082,13 +1224,14 @@ export class CommunicationService implements OnModuleInit {
     eventType: string,
     sessionId: string,
     payload: Record<string, unknown>,
+    correlationId?: string | null,
   ): void {
     const id = randomUUID();
     const driveSnapshot = this.driveStateReader.getCurrentState();
 
     this.timescale.query(
-      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, schema_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO events (id, type, timestamp, subsystem, session_id, drive_snapshot, payload, correlation_id, schema_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         id,
         eventType,
@@ -1097,6 +1240,7 @@ export class CommunicationService implements OnModuleInit {
         sessionId,
         JSON.stringify(driveSnapshot),
         JSON.stringify(payload),
+        correlationId ?? null,
         1,
       ],
     ).catch((err) => {

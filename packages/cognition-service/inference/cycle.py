@@ -163,6 +163,11 @@ class CognitiveCycle:
             ),
             inference_ms=elapsed_ms,
             tensor_top_category=tensor_top_category,
+            # Surface the exact assembled 1561-dim vector so the supervisor can
+            # thread it back into reinforce/correct control signals. This is the
+            # SAME tensor fed to the models above (state_tensor), guaranteeing it
+            # is byte-identical to what the sidecar's _split_input_vector() expects.
+            global_input_vector=state_tensor.astype(float).tolist(),
             deliberation_bias=delib_result.action_bias if delib_result else None,
             deliberation_confidence=delib_result.confidence if delib_result else None,
             deliberation_pipeline_weights=delib_result.pipeline_weights if delib_result else None,

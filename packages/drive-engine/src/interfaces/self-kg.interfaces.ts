@@ -43,6 +43,21 @@ export interface SelfCapability {
 
   /** Sample count used to compute successRate */
   sampleCount: number;
+
+  /**
+   * Whether this capability is permitted to REDUCE a drive baseline.
+   *
+   * CANON Standard 3 + Depressive Attractor guard: an inferred or bootstrap
+   * self-assessment ("I'm bad at X") must not be allowed to push a drive
+   * baseline downward — that would let unverified self-judgement drive the
+   * Depressive Attractor. The reader sets this to false for non-GUARDIAN
+   * provenance; DriveBaselineAdjustment only reduces when this is true (or
+   * undefined, for legacy/test callers that predate the flag — recovery is
+   * always permitted regardless).
+   *
+   * undefined is treated as "allowed" for backward compatibility.
+   */
+  allowReduction?: boolean;
 }
 
 /**

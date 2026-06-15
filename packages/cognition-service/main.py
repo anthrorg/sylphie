@@ -643,6 +643,26 @@ class CorrectRequest(BaseModel):
     correctCategory: str
 
 
+class BoostSalienceRequest(BaseModel):
+    """Supervisor boost_salience intervention.
+
+    Raises the replay salience of every buffered sample of ``category`` so the
+    training loop pays more attention to that pattern when it recurs. Optionally
+    also injects a fresh high-salience sample (when an inputVector is supplied)
+    so the boost has something to act on even if no matching sample is buffered.
+    """
+    category: str
+    multiplier: float = 2.0
+    inputVector: list[float] | None = None
+
+
+# Salience tuning for supervisor interventions. Capped well below the buffer's
+# own ceiling so no single intervention can monopolise the replay mix.
+_REINFORCE_MAX_SALIENCE = 5.0
+_CORRECTION_SALIENCE = 4.0
+_BOOST_MAX_SALIENCE = 8.0
+
+
 def _split_input_vector(vec: list[float]) -> dict[str, list[float] | float]:
     """Split a full assembled global input vector into its components.
 
@@ -712,22 +732,30 @@ async def reinforce(req: ReinforceRequest):
         )
 
     repeats = max(1, min(10, round(req.strengthFactor * 3)))
+    # Salience makes the signal *land*: the injected samples are replay-weighted
+    # so the training loop preferentially trains on them instead of letting the
+    # extra copies be diluted into a uniform draw and evicted FIFO. The boost
+    # scales with strengthFactor (clamped) so a stronger reinforcement biases the
+    # replay mix harder.
+    salience = max(1.0, min(_REINFORCE_MAX_SALIENCE, 1.0 + 2.0 * req.strengthFactor))
     for _ in range(repeats):
         _state.buffer.add_sample(
             action_category=req.actionId,
             arbitration_type="TYPE_1",
+            salience=salience,
             **components,  # type: ignore[arg-type]
         )
 
     logger.info(
-        "Reinforce: action='%s' injected %d× (strength=%.2f, buffer=%d)",
-        req.actionId, repeats, req.strengthFactor, _state.samples_in_buffer,
+        "Reinforce: action='%s' injected %d× @salience=%.2f (strength=%.2f, buffer=%d)",
+        req.actionId, repeats, salience, req.strengthFactor, _state.samples_in_buffer,
     )
     return {
         "accepted": True,
         "type": "reinforce",
         "action": req.actionId,
         "injected": repeats,
+        "salience": salience,
         "buffer_size": _state.samples_in_buffer,
     }
 
@@ -761,10 +789,14 @@ async def correct(req: CorrectRequest):
         )
 
     _CORRECTION_STRENGTH = 3
+    # A correction is a stronger signal than a plain reinforce — the model got
+    # this wrong, so the corrective label must outweigh the (still-buffered)
+    # wrong-label samples in the replay mix until it has visibly relearned.
     for _ in range(_CORRECTION_STRENGTH):
         _state.buffer.add_sample(
             action_category=req.correctCategory,
             arbitration_type="TYPE_1",
+            salience=_CORRECTION_SALIENCE,
             **components,  # type: ignore[arg-type]
         )
 
@@ -783,6 +815,78 @@ async def correct(req: CorrectRequest):
         "type": "correct",
         "correct_category": req.correctCategory,
         "injected": _CORRECTION_STRENGTH,
+        "buffer_size": _state.samples_in_buffer,
+    }
+
+
+@app.post("/cognition/control/boost_salience")
+async def boost_salience(req: BoostSalienceRequest):
+    """Boost the replay salience of a pattern (supervisor attention lever).
+
+    Concretely: multiply the salience weight of every buffered sample whose
+    action_category matches ``req.category``, capped at _BOOST_MAX_SALIENCE.
+    Salience-weighted replay (DataBuffer.sample_batch) then draws those samples
+    more often, so the model is trained on the boosted pattern proportionally
+    more — the neural meaning of "pay more attention to this".
+
+    If ``inputVector`` is supplied, a fresh high-salience sample for that
+    pattern is also injected, so the boost still has an effect even when no
+    matching sample is currently buffered (e.g. a rare pattern the supervisor
+    wants pre-emptively emphasised).
+    """
+    if _state.buffer is None:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "Buffer not initialized"},
+        )
+
+    if not req.category or not req.category.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "category is required"},
+        )
+
+    if req.multiplier <= 0:
+        return JSONResponse(
+            status_code=400,
+            content={"accepted": False, "error": "multiplier must be > 0"},
+        )
+
+    injected = 0
+    if req.inputVector is not None:
+        try:
+            components = _split_input_vector(req.inputVector)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"accepted": False, "error": str(exc)},
+            )
+        seed_salience = min(_BOOST_MAX_SALIENCE, req.multiplier)
+        _state.buffer.add_sample(
+            action_category=req.category,
+            arbitration_type="TYPE_1",
+            salience=seed_salience,
+            **components,  # type: ignore[arg-type]
+        )
+        injected = 1
+
+    boosted = _state.buffer.boost_category_salience(
+        category=req.category,
+        multiplier=req.multiplier,
+        max_salience=_BOOST_MAX_SALIENCE,
+    )
+
+    logger.info(
+        "Boost salience: category='%s' ×%.2f boosted=%d injected=%d (buffer=%d)",
+        req.category, req.multiplier, boosted, injected, _state.samples_in_buffer,
+    )
+    return {
+        "accepted": True,
+        "type": "boost_salience",
+        "category": req.category,
+        "multiplier": req.multiplier,
+        "boosted": boosted,
+        "injected": injected,
         "buffer_size": _state.samples_in_buffer,
     }
 

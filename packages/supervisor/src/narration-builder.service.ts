@@ -11,11 +11,36 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { CycleResponse, DriveName, PressureVector } from '@sylphie/shared';
 import { DRIVE_INDEX_ORDER } from '@sylphie/shared';
-import type { DecisionNarration } from './interfaces/supervisor.types';
+import type {
+  BehavioralBaseline,
+  DecisionNarration,
+} from './interfaces/supervisor.types';
+
+/** One entry in the behavioral-baseline rolling window. */
+interface BaselineSample {
+  arbitrationType: 'TYPE_1' | 'TYPE_2' | 'SHRUG';
+  totalPressure: number;
+  pressureVector: PressureVector;
+  actionTaken: string;
+  latencyMs: number;
+}
+
+/** Rolling-window size for the behavioral baseline. */
+const BASELINE_WINDOW = 50;
+
+/** Max distinct action names reported in the baseline. */
+const MAX_FREQUENT_ACTIONS = 5;
 
 @Injectable()
 export class NarrationBuilderService {
   private readonly logger = new Logger(NarrationBuilderService.name);
+
+  /**
+   * Rolling window of prior cycles, used to compute the behavioral baseline the
+   * supervisor needs for deviation detection (evaluation criterion 4).
+   * Bounded — never grows past BASELINE_WINDOW.
+   */
+  private readonly baselineWindow: BaselineSample[] = [];
 
   /**
    * Build a compact narration from a CycleResponse.
@@ -34,6 +59,18 @@ export class NarrationBuilderService {
     // Action taken
     const actionTaken = this.extractActionName(cycle);
 
+    // Compute the behavioral baseline from PRIOR cycles, then fold this cycle
+    // in. Computing before the fold means the baseline is the reference frame
+    // the current cycle is judged against (it does not include itself).
+    const behavioralBaseline = this.computeBaseline();
+    this.recordSample({
+      arbitrationType: cycle.arbitrationType,
+      totalPressure: cycle.driveSnapshot.totalPressure ?? 0,
+      pressureVector: driveSnapshot,
+      actionTaken,
+      latencyMs: cycle.latencyMs,
+    });
+
     return {
       cycleId: cycle.turnId,
       timestamp: new Date(),
@@ -43,6 +80,7 @@ export class NarrationBuilderService {
       responsePreview: cycle.text.slice(0, 200),
       dominantDrive,
       driveSnapshot,
+      behavioralBaseline,
       // Sidecar fields — populated when cognition-service is running
       convergenceScore: undefined,
       globalModelConfidence: undefined,
@@ -51,6 +89,75 @@ export class NarrationBuilderService {
       predictionMAE: undefined,
       guardianFeedback: undefined,
       driveEffectsObserved: {},
+    };
+  }
+
+  /**
+   * Append a cycle to the bounded rolling baseline window.
+   */
+  private recordSample(sample: BaselineSample): void {
+    this.baselineWindow.push(sample);
+    if (this.baselineWindow.length > BASELINE_WINDOW) {
+      this.baselineWindow.shift();
+    }
+  }
+
+  /**
+   * Compute the behavioral baseline over the current rolling window.
+   *
+   * Returns a thin-but-honest baseline when the window is small (sampleCount
+   * lets the supervisor discount it). Empty window → sampleCount 0 baseline.
+   */
+  private computeBaseline(): BehavioralBaseline {
+    const n = this.baselineWindow.length;
+    if (n === 0) {
+      return {
+        sampleCount: 0,
+        arbitrationMix: { TYPE_1: 0, TYPE_2: 0, SHRUG: 0 },
+        meanTotalPressure: 0,
+        meanDrivePressure: {},
+        frequentActions: [],
+        meanLatencyMs: 0,
+      };
+    }
+
+    const mix = { TYPE_1: 0, TYPE_2: 0, SHRUG: 0 };
+    let pressureSum = 0;
+    let latencySum = 0;
+    const driveSums: Record<string, number> = {};
+    const actionCounts = new Map<string, number>();
+
+    for (const s of this.baselineWindow) {
+      mix[s.arbitrationType] += 1;
+      pressureSum += s.totalPressure;
+      latencySum += s.latencyMs;
+      for (const drive of DRIVE_INDEX_ORDER) {
+        driveSums[drive] = (driveSums[drive] ?? 0) + (s.pressureVector[drive] ?? 0);
+      }
+      actionCounts.set(s.actionTaken, (actionCounts.get(s.actionTaken) ?? 0) + 1);
+    }
+
+    const meanDrivePressure: Record<string, number> = {};
+    for (const drive of DRIVE_INDEX_ORDER) {
+      meanDrivePressure[drive] = (driveSums[drive] ?? 0) / n;
+    }
+
+    const frequentActions = [...actionCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_FREQUENT_ACTIONS)
+      .map(([action, count]) => ({ action, count }));
+
+    return {
+      sampleCount: n,
+      arbitrationMix: {
+        TYPE_1: mix.TYPE_1 / n,
+        TYPE_2: mix.TYPE_2 / n,
+        SHRUG: mix.SHRUG / n,
+      },
+      meanTotalPressure: pressureSum / n,
+      meanDrivePressure,
+      frequentActions,
+      meanLatencyMs: latencySum / n,
     };
   }
 

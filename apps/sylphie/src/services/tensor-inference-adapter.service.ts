@@ -117,6 +117,13 @@ export class TensorInferenceAdapter implements ITensorInferenceService, OnModule
         return false;
       },
       inferenceMs: result.inference_ms,
+      // Copy the sidecar's exact assembled vector straight through (never
+      // reconstruct it) so it stays byte-identical to what the sidecar's
+      // _split_input_vector() expects when the supervisor feeds it back into
+      // reinforce/correct. Omitted when the sidecar didn't surface one.
+      ...(result.global_input_vector
+        ? { globalInputVector: result.global_input_vector }
+        : {}),
     };
   }
 

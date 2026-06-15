@@ -22,6 +22,7 @@
 import { Observable } from 'rxjs';
 import { DriveSnapshot, DriveName } from '@sylphie/shared';
 import { ProvenanceSource } from '@sylphie/shared';
+import type { SelfAssessmentPayload } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Opportunity types (local to this module)
@@ -167,6 +168,37 @@ export interface SoftwareMetrics {
    * makes Type 1 graduation behaviorally desirable (CANON Gap 4).
    */
   readonly cognitiveEffortPressure: number;
+
+  /**
+   * Prompt (input) tokens consumed in this reporting window, when the caller
+   * can split them out. Input and output tokens are priced differently, so
+   * supplying the split yields an accurate USD cost estimate. When omitted,
+   * the reporter prices the whole tokenCount at the input rate (a documented
+   * approximation — see ActionOutcomeReporterService.reportMetrics).
+   */
+  readonly promptTokens?: number;
+
+  /**
+   * Completion (output) tokens consumed in this reporting window, when the
+   * caller can split them out. See promptTokens.
+   */
+  readonly completionTokens?: number;
+
+  /**
+   * Wall-clock start of the measurement window these metrics cover. This is
+   * the time the decision cycle (or other caller) began accumulating LLM
+   * usage — NOT the time the metrics were flushed. Required for temporal
+   * analysis of LLM-usage patterns; when omitted the reporter falls back to
+   * the flush time and logs that the real window was unavailable.
+   */
+  readonly windowStartAt?: Date;
+
+  /**
+   * Wall-clock end of the measurement window. Defaults to the flush time
+   * (now) when omitted, which is correct for "report what accumulated up to
+   * this instant" callers.
+   */
+  readonly windowEndAt?: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +297,19 @@ export interface IActionOutcomeReporter {
      */
     readonly actionId: string;
 
+    /**
+     * OPTIONAL origin correlation id (CANON Standard 2 — provenance).
+     *
+     * When the main process mints a correlation id at the ACTION ORIGIN (the
+     * cycle / inbound event that produced this action), it propagates it here so
+     * the Drive Engine stamps the SAME id onto every drive event it emits in
+     * response — tying the inbound action event to its drive effects end-to-end.
+     * When absent, the Drive Engine derives a DETERMINISTIC `action:<actionId>`
+     * at its ingestion boundary (resolveCorrelationId), so provenance is never
+     * lost — only less precise.
+     */
+    readonly correlationId?: string;
+
     /** Category string of the action (for diversity tracking). */
     readonly actionType: string;
 
@@ -327,6 +372,28 @@ export interface IActionOutcomeReporter {
     };
 
     /**
+     * Optional information-gain metrics for the Curiosity contingency
+     * (CANON §A.14, Phase 4 Wave 2 cluster 3a — Ticket 2).
+     *
+     * For a WKG-touching action the caller captures a before/after snapshot of
+     * the World graph (WkgDiffService.captureWkgSnapshot) around the action and
+     * computes the diff attributed to THIS action
+     * (WkgDiffService.computeInformationGain). The result is threaded here.
+     *
+     * CANON Standard 2 honesty gate: the Drive Engine grants curiosity relief
+     * ONLY when source === 'WKG_DIFF' (a real, action-attributed diff). When
+     * this field is omitted, or carries source 'UNVERIFIED', curiosity relief
+     * is zero (honest-red). NEVER fabricate the numbers — pass the
+     * WkgDiffService result verbatim or omit the field.
+     */
+    readonly informationGainMetrics?: {
+      readonly newNodes: number;
+      readonly confidenceDeltas: number;
+      readonly resolvedErrors: number;
+      readonly source: 'WKG_DIFF' | 'UNVERIFIED';
+    };
+
+    /**
      * Wall-clock timestamp (ms) of a Sylphie-initiated comment.
      * When set, the Drive Engine's social comment quality contingency
      * records the comment and evaluates whether the guardian responded
@@ -357,6 +424,25 @@ export interface IActionOutcomeReporter {
    * Called by the system reset flow (WkgBootstrapService.resetAndBootstrap).
    */
   resetDriveState(): void;
+
+  /**
+   * Push a KG(Self) self-assessment snapshot to the Drive Engine
+   * (Phase 4 Wave 2 cluster 3a — Ticket 1, event-judge model).
+   *
+   * This is NOT an action outcome: it has no actionId, no theaterCheck, no
+   * feedbackSource, and produces NO reinforcement. It rides the same WebSocket
+   * channel as outcomes but bypasses the OutcomeQueue (which is ACTION_OUTCOME
+   * only). The Drive Engine caches the latest snapshot on receipt and consumes
+   * it on its own self-evaluation cadence — routing it through the contingency
+   * path would violate CANON Standard 2.
+   *
+   * An EMPTY payload (empty capability/pattern arrays from an empty SELF graph)
+   * is valid and MUST still be sent: the drive's CachedSelfKgReader flips ready
+   * on first push and self-heals neutrally. NEVER fabricate a payload.
+   *
+   * @param payload - The self-assessment snapshot computed by MAIN.
+   */
+  pushSelfAssessment(payload: SelfAssessmentPayload): void;
 }
 
 // ---------------------------------------------------------------------------

@@ -332,6 +332,16 @@ Hypertable: chunked 1 hour, indexed by `(session_id, type, timestamp DESC)` and 
 5. **Guardian Asymmetry** — confirmation ×2, correction ×3, algorithmic ×1.
 6. **No Self-Modification of Evaluation** — drive isolation as process boundary, RLS-enforced, no introspection RPC.
 
+### Std-6 clarification — INFERENCE-grade self-capability writes (ratified by Jim, 2026-06-14)
+
+> Learning may write INFERENCE-grade self-capability nodes to KG(Self) that feed drive baseline-adjustment, provided: (a) provenance is stamped `INFERENCE` (never `GUARDIAN`) at the source, (b) confidence is clamped ≤0.60 (Std-3), and (c) the data is honest telemetry, never fabricated (Std-1). **Reduction authority over drive baselines remains GUARDIAN-only** — an INFERENCE assessment may only *recover* a baseline toward its CANON default (`INITIAL_DRIVE_STATE`), never depress it and never exceed default. This is bounded self-recovery, not self-modification of evaluation; Std-6 is preserved.
+
+Precedent: `SelfModelWriterService` (`packages/learning`, commit `56af7a3`) — the first automated recurring SELF-writer feeding baseline-adjustment. The guard chain (`CachedSelfKgReader.allowReduction=false` for non-GUARDIAN → `DriveBaselineAdjustment` reduction gated on `allowReduction`, recovery bounded by `INITIAL_DRIVE_STATE`) was verified in code (canon) and live (mythos, PASS 7/7). Any *new mapped* capability name reopens the Std-6 question and needs a fresh canon sign-off.
+
+Second live edge (2026-06-14): `knowledge_retrieval → CognitiveAwareness` — honest metric `GROUNDED / (GROUNDED|UNKNOWN)` over `RESPONSE_GENERATED` telemetry gated on `intent='QUESTION'` (LLM_ASSISTED / non-QUESTION / null excluded). Same guard chain, recovery-only. Got its fresh canon sign-off (CLEAN-WITH-NOTE) and mythos live-verification (PASS 7/7). The guard is provably capability-agnostic, so the allowance generalizes to all `CAPABILITY_TO_DRIVE_MAP` entries — though each new mapped edge still gets a confirming canon sign-off before going live.
+
+Third live edge (2026-06-15): `social_interaction → Social` — success = a genuinely-proactive `SOCIAL_COMMENT_INITIATED` (self-tick / no-originator bid, NOT a reactive reply) that earned a guardian reply (`GUARDIAN_INPUT_RECEIVED` | `GUARDIAN_CONFIRMATION`) within 30s in the same session; denominator gated to proactive bids only (the `socialCommentTimestamp`-on-every-turn signal is deliberately NOT the denominator — that would measure chat volume, Std-1). Purely additive telemetry: the drive social-comment contingency is byte-identical, and the newly-emitted `GUARDIAN_INPUT_RECEIVED` event is aggregation-only with NO behavioral consumer (no reinforcement/relief path — Std-2 safe). canon CLEAN, mythos live-verified PASS. **`error_correction` remains deliberately OMITTED** — no contradiction-resolution mechanism exists in the code and the detector cannot fire (0 DISLIKES edges); shipping it would assert a competence Sylphie does not measurably have (Std-1). Standing flag in `self-model-writer.service.ts`.
+
 ---
 
 ## 10. Health Metrics (Development Telemetry)

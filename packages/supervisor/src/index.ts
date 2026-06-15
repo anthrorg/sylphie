@@ -17,9 +17,15 @@ export { SidecarControlService } from './sidecar-control.service';
 export type { SidecarModelState } from './sidecar-control.service';
 export type {
   DecisionNarration,
+  BehavioralBaseline,
   SupervisorVerdict,
   SupervisorIntervention,
   SamplingPolicy,
   SupervisorStatus,
   VerdictRating,
+  VerdictAuditRecord,
+  EvaluationReason,
+  InterventionRecord,
+  InterventionTransition,
+  InterventionPhase,
 } from './interfaces/supervisor.types';

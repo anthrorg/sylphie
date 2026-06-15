@@ -34,6 +34,9 @@ const DriveNameSchema = z.nativeEnum(DriveName);
  */
 const ActionOutcomePayloadSchema = z.object({
   actionId: z.string().min(1, 'actionId is required'),
+  // OPTIONAL correlation id for end-to-end provenance (CANON Standard 2).
+  // If absent, the Drive Engine derives a deterministic id from actionId.
+  correlationId: z.string().optional(),
   actionType: z.string(),
   outcome: z.enum(['positive', 'negative']),
   // Signal metadata — the drive engine computes effects from these signals.
@@ -64,8 +67,67 @@ const ActionOutcomePayloadSchema = z.object({
     predictedValue: z.number(),
     actualValue: z.number(),
   }).optional(),
+  // Constrained informationGainMetrics — closes the "arbitrary numbers" hole
+  // (Ticket 2 / §A.14). Counts must be non-negative; confidenceDeltas is a
+  // non-negative sum; `source` carries the provenance the honesty gate checks.
+  // Only source === 'WKG_DIFF' earns curiosity relief downstream.
+  informationGainMetrics: z.object({
+    newNodes: z.number().int().min(0),
+    confidenceDeltas: z.number().min(0),
+    resolvedErrors: z.number().int().min(0),
+    source: z.enum(['WKG_DIFF', 'UNVERIFIED']),
+  }).optional(),
   socialCommentTimestamp: z.number().optional(),
 }).passthrough();
+
+/**
+ * SELF_ASSESSMENT payload validation (Ticket 1 — KG(Self) self-evaluation).
+ *
+ * A KG(Self) snapshot pushed by MAIN. Cached by the Drive Engine and judged on
+ * its own self-eval cadence. This is NOT an outcome — no actionId, no theater
+ * check, no reinforcement. Ranges per CANON; dates coerced.
+ *
+ * Std-3 ceiling clamp and provenance-based reduction suppression are applied in
+ * the reader (CachedSelfKgReader), not here — the validator only shape-checks.
+ */
+const SelfAssessmentPayloadSchema = z.object({
+  assessedAt: z.coerce.date(),
+  capabilities: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      successRate: z.number().min(0).max(1),
+      confidence: z.number().min(0).max(1),
+      sampleCount: z.number().int().min(0),
+      lastExecuted: z.coerce.date(),
+    }),
+  ),
+  drivePatterns: z.array(
+    z.object({
+      drive: DriveNameSchema,
+      stimulus: z.string(),
+      responseStrength: z.number().min(0).max(1),
+      examples: z.array(z.string()),
+      lastObserved: z.coerce.date(),
+      confidence: z.number().min(0).max(1),
+    }),
+  ),
+  predictionAccuracy: z.array(
+    z.object({
+      domain: z.string(),
+      mae: z.number(),
+      sampleCount: z.number().int().min(0),
+      confidence: z.number().min(0).max(1),
+      lastUpdated: z.coerce.date(),
+    }),
+  ),
+  provenance: z.enum([
+    'GUARDIAN',
+    'GUARDIAN_APPROVED_INFERENCE',
+    'INFERENCE',
+    'SYSTEM_BOOTSTRAP',
+  ]),
+});
 
 /**
  * SOFTWARE_METRICS payload validation.
@@ -197,6 +259,7 @@ const DriveEventPayloadSchema = z.object({
   drive: DriveNameSchema,
   delta: z.number(),
   ruleId: z.string().nullable(),
+  correlationId: z.string().nullable(),
   snapshot: z.object({
     pressureVector: z.record(
       DriveNameSchema,
@@ -223,6 +286,7 @@ const DriveEventPayloadSchema = z.object({
  */
 const TheaterProhibitedPayloadSchema = z.object({
   actionId: z.string().min(1),
+  correlationId: z.string().nullable(),
   actionType: z.string(),
   offendingExpressionType: z.enum(['pressure', 'relief']),
   drive: DriveNameSchema,
@@ -295,6 +359,10 @@ const InboundMessageSchema = z.union([
   DriveIPCMessageEnvelopeSchema.extend({
     type: z.literal(DriveIPCMessageType.SESSION_END),
     payload: SessionEndPayloadSchema,
+  }),
+  DriveIPCMessageEnvelopeSchema.extend({
+    type: z.literal(DriveIPCMessageType.SELF_ASSESSMENT),
+    payload: SelfAssessmentPayloadSchema,
   }),
 ]);
 

@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, computeInformationGain, type InformationGainResult, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -130,6 +130,52 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
   /** Maximum entries in pendingLatentPatterns before LRU eviction. */
   private readonly MAX_PENDING_LATENT = 100;
+
+  /**
+   * Maps cycle actionId → the WKG-diff information-gain metric computed during
+   * that cycle's WKG write-back (Phase 4 Wave 2 cluster 3a — Ticket 2, §A.14).
+   *
+   * Populated when the "Latent space + WKG write-back" block creates an
+   * ActionProcedure node stamped with last_action_id and a before/after diff is
+   * computed for it (via the SHARED computeInformationGain honesty gate).
+   * Consumed by reportOutcome() to forward informationGainMetrics to the Drive
+   * Engine so a real knowledge gain earns honest curiosity relief. UNVERIFIED
+   * results are stored too (drive grants zero relief) — never fabricated.
+   * Shares the same LRU cap as pendingLatentPatterns.
+   */
+  private readonly pendingInfoGain = new Map<string, InformationGainResult>();
+
+  /**
+   * Maps cycle actionId → the ORIGIN correlation id minted at the action origin
+   * (CANON Standard 2 — provenance). Captured at cycle end (anchored to the
+   * inbound turnId when present, else deterministic `action:<actionId>`) and
+   * consumed by reportOutcome() so the SAME id ties the inbound action event to
+   * the drive event(s) it causes — instead of the Drive Engine deriving it after
+   * the fact. Shares the LRU cap with the other pending maps.
+   */
+  private readonly pendingCorrelationId = new Map<string, string>();
+
+  /**
+   * Maps cycle actionId → the proactive-social context for a GENUINELY
+   * UNPROMPTED comment (self-model social_interaction capability, Std-1).
+   *
+   * Populated ONLY when a cycle (a) was a self-initiated tick — no
+   * currentTurnContext AND no frame turn_id, i.e. no inbound guardian turn —
+   * AND (b) produced a real (non-degraded) communicative response that was
+   * actually emitted. Consumed by reportOutcome() to emit a single
+   * SOCIAL_COMMENT_INITIATED event whose 24-hour guardian-reply success rate
+   * the SelfModelWriterService reads for the social_interaction :Capability.
+   *
+   * The denominator MUST be proactive bids only: socialCommentTimestamp (the
+   * drive-side contingency) fires on EVERY reply, so gating success on "any
+   * reply answered in 30s" would measure conversation continuity, not whether
+   * Sylphie's UNPROMPTED social bids land. Reactive replies (originator
+   * present) never enter this map. Shares the LRU cap with the other pending maps.
+   */
+  private readonly pendingProactiveSocial = new Map<
+    string,
+    { turnId: string; sessionId: string; initiatedAt: number }
+  >();
 
   constructor(
     @Inject(EXECUTOR_ENGINE)
@@ -848,6 +894,33 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       }
 
+      // ── knowledge_retrieval metric gate — pre-arbitration intent ───────────
+      // The self-model knowledge_retrieval :Capability gates its denominator on
+      // RESPONSE_GENERATED rows where payload.intent='QUESTION' (turns where
+      // retrieval was actually DEMANDED). The deliberate() path threads
+      // monologueParsed.intent, but the procedure-handler and latent-reflex
+      // branches deliberately skip the LLM monologue, so they had NO intent in
+      // scope and persisted intent=NULL — making the QUESTION gate match 0 rows
+      // and leaving the capability inert in production (~100% of turns resolve via
+      // those two branches).
+      //
+      // recallKeyForQuestion() is the SAME deterministic, pre-arbitration recall
+      // classifier the cycle already runs for grounding (it backs computeRecall-
+      // Retrieval above and runs for EVERY cycle, no LLM). A non-null key means the
+      // input is a recall QUESTION ("what is my name / where do I live / ...") —
+      // exactly the "retrieval demanded" turns the metric counts, INCLUDING the
+      // tried-and-failed (UNKNOWN) ones where no node grounded (so we key off the
+      // question classifier, NOT recallRetrieval!==null, which would drop those).
+      //
+      // CANON Std-1: we REUSE this already-computed classification; we never call
+      // the LLM, never recompute the monologue, and never default to 'QUESTION'.
+      // When the input is not a recall question, cycleRecallIntent stays undefined
+      // → the branch leaves result.intent unset → it persists as null → correctly
+      // EXCLUDED from the QUESTION-gated denominator (honest, not fabricated).
+      const cycleInputText = (frame.raw['text'] as string | undefined) ?? '';
+      const cycleRecallIntent: 'QUESTION' | undefined =
+        recallKeyForQuestion(cycleInputText) ? 'QUESTION' : undefined;
+
       // Check per-modality latent spaces FIRST — if we find a high-similarity
       // match on any modality, inject it as a Type 1 candidate. Each modality's
       // embedding is searched independently so text changes aren't drowned out
@@ -1244,6 +1317,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             // UNKNOWN by groundingForCachedPattern (reflex replay has no LLM).
             knowledgeGrounding: latentGrounding,
             groundingProvenance: latentProvenance ?? undefined,
+            // knowledge_retrieval metric gate: stamp the pre-arbitration recall
+            // QUESTION classification (CANON Std-1 — reused, never recomputed; the
+            // latent reflex runs no LLM monologue). Undefined for non-recall input
+            // → persists as null → excluded from the QUESTION-gated denominator.
+            intent: cycleRecallIntent,
           });
         } else if (arbitrationChoseLatent && latentMatch) {
           // Latent match found but responseText is empty — fall through to deliberation.
@@ -1259,6 +1337,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             deliberationTrace: deliberationResult.trace,
             confidence: deliberationResult.confidence,
             knowledgeGrounding: deliberationResult.knowledgeGrounding,
+            intent: deliberationResult.intent,
             groundingProvenance: deliberationResult.groundingProvenance ?? null,
             groundedBy: deliberationResult.groundedBy ?? null,
             degradedNoLlm: deliberationResult.degradedNoLlm,
@@ -1331,6 +1410,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               result['knowledgeGrounding'] = procedureGrounding;
               if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
               result['groundedBy'] = procedureGroundedBy;
+              // knowledge_retrieval metric gate: stamp the pre-arbitration recall
+              // QUESTION classification (CANON Std-1 — reused, never recomputed;
+              // the procedure handler runs no LLM monologue). Only set when the
+              // input is a recall question; otherwise left unset → persists as null
+              // → correctly excluded from the QUESTION-gated denominator.
+              if (cycleRecallIntent) result['intent'] = cycleRecallIntent;
             }
             executionResults.push(result);
           }
@@ -1370,6 +1455,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               actionResult,
@@ -1383,6 +1469,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               deliberationTrace: deliberationResult.trace,
               confidence: deliberationResult.confidence,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               degradedNoLlm: deliberationResult.degradedNoLlm,
@@ -1448,6 +1535,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline+action',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
@@ -1461,6 +1549,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               model: 'deliberation-pipeline',
               deliberationTrace: deliberationResult.trace,
               knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
               groundingProvenance: deliberationResult.groundingProvenance ?? null,
               groundedBy: deliberationResult.groundedBy ?? null,
               confidence: deliberationResult.confidence,
@@ -1610,6 +1699,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Authoritative input to the write-time person-scoper below.
       let responseGroundedBy: 'OKG' | 'WKG' | null = null;
       let responseDegradedNoLlm = false;
+      // Deliberation intent for this turn (knowledge_retrieval metric gate).
+      // Undefined for procedure/latent reflex paths that never classify intent —
+      // those turns are correctly excluded from the QUESTION-gated metric rather
+      // than fabricating an intent (CANON Std-1).
+      let responseIntent: string | undefined;
 
       for (const result of executionResults) {
         if (result && typeof result['content'] === 'string') {
@@ -1619,6 +1713,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // Extract knowledge grounding from deliberation results
           if (result['knowledgeGrounding']) {
             responseGrounding = result['knowledgeGrounding'] as KnowledgeGrounding;
+          }
+          // Thread deliberation intent (copied, never recomputed) for the
+          // knowledge_retrieval self-model metric. Only the deliberation paths
+          // set this key; procedure/latent results leave it undefined.
+          if (typeof result['intent'] === 'string') {
+            responseIntent = result['intent'];
           }
           // Thread OKG provenance reference (Standard 1: GROUNDED must carry the node id).
           if (typeof result['groundingProvenance'] === 'string') {
@@ -1780,6 +1880,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           );
           const primaryPatternId = latentPatternIds[0] ?? randomUUID();
 
+          // §A.14 (Ticket 2): this write-back CREATES a new ActionProcedure node
+          // in the WORLD graph — a real knowledge gain that should earn honest
+          // curiosity relief. Stamp the new node with a stable attribution marker
+          // (newProcMarker) and diff a before/after WKG snapshot against THAT
+          // marker via the SHARED computeInformationGain honesty gate. The diff
+          // is keyed by the cycle actionId so reportOutcome() (called later by
+          // Communication with the same actionId) forwards informationGainMetrics
+          // to the Drive Engine. If the snapshot can't be captured or the change
+          // can't be cleanly attributed, the shared gate returns UNVERIFIED →
+          // zero relief (honest-red), never a fabricated number.
+          const newProcMarker = `wkg-proc-write:${actionId}:${primaryPatternId.substring(0, 8)}`;
+          const beforeSnapshot = await this.wkgContext.captureWkgSnapshot();
+
           // Write ActionProcedure to WKG (also at low initial confidence)
           const procedureId = await this.wkgContext.writeActionProcedure({
             name: `learned-${primaryPatternId.substring(0, 8)}`,
@@ -1795,7 +1908,34 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             confidence: 0.3,
             entityIds,
             motivatingDrive: dominantDrive,
+            // Attribution marker for the WKG-diff honesty gate.
+            lastActionId: newProcMarker,
           });
+
+          // Diff the snapshot pair and attribute to THIS write's marker. A dedup
+          // hit (procedureId is an existing node, no new marker landed) → no
+          // node carries newProcMarker → the gate returns UNVERIFIED (honest:
+          // no NEW knowledge was created this cycle).
+          try {
+            const afterSnapshot = await this.wkgContext.captureWkgSnapshot();
+            const gain = computeInformationGain(beforeSnapshot, afterSnapshot, newProcMarker);
+            if (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch)) {
+              this.pendingInfoGain.set(actionId, gain);
+              if (this.pendingInfoGain.size > this.MAX_PENDING_LATENT) {
+                const oldest = this.pendingInfoGain.keys().next().value;
+                if (oldest !== undefined) this.pendingInfoGain.delete(oldest);
+              }
+            }
+            vlog('write-back info-gain', {
+              actionId,
+              source: gain.source,
+              newNodes: gain.newNodes,
+              confidenceDeltas: +gain.confidenceDeltas.toFixed(4),
+              resolvedErrors: gain.resolvedErrors,
+            });
+          } catch (diffErr) {
+            this.logger.warn(`Write-back info-gain diff failed: ${diffErr}`);
+          }
 
           this.logger.debug(
             `Write-back: ${latentPatternIds.length} modality patterns (confidence=0.3), ` +
@@ -1822,6 +1962,26 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           if (oldest !== undefined) {
             this.pendingLatentPatterns.delete(oldest);
           }
+        }
+      }
+
+      // CANON Std-2 (Ticket: correlationId origin) — capture the ORIGIN
+      // correlation id for this action so reportOutcome() can propagate it to
+      // the Drive Engine. The inbound turnId (minted at the gateway boundary) is
+      // the natural anchor that ties the inbound action event to the drive
+      // event(s) it later causes; when there is no turn (self-tick / perception
+      // frame) we fall back to a deterministic `action:<actionId>`. Epoch-fenced
+      // like the pending maps above. The drive-side resolveCorrelationId() keeps
+      // the derive path as the fallback when origin supplies none.
+      if (actionId !== 'SHRUG' && (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch))) {
+        const originTurnId =
+          this.currentTurnContext?.turnId ??
+          (frame.raw['turn_id'] as string | undefined);
+        const correlationId = originTurnId ? `turn:${originTurnId}` : `action:${actionId}`;
+        this.pendingCorrelationId.set(actionId, correlationId);
+        if (this.pendingCorrelationId.size > this.MAX_PENDING_LATENT) {
+          const oldest = this.pendingCorrelationId.keys().next().value;
+          if (oldest !== undefined) this.pendingCorrelationId.delete(oldest);
         }
       }
 
@@ -1863,6 +2023,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         // generate a fresh UUID; originator is absent.
         const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
         const emitOriginator = this.currentTurnContext?.originator;
+
+        // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
+        // social_interaction (Std-1) denominator = self-initiated comments only.
+        // Proactive ⟺ this cycle had NO inbound guardian turn: no
+        // currentTurnContext (so emitOriginator is undefined) AND no frame
+        // turn_id (perception/self-tick frames carry none). A degraded SHRUG
+        // (LLM unavailable) is not a real communicative bid, so it is excluded.
+        // We are inside the `responseText.trim().length > 0` real-emit block and
+        // past both epoch fences, so this fires at most once per emitted turn and
+        // never for a zombie. Consumed by reportOutcome() to emit
+        // SOCIAL_COMMENT_INITIATED. session_id MUST be non-null (the writer's
+        // self-join keys on it) — driveSnapshot.sessionId is always a real string.
+        const isProactiveSocialBid =
+          emitOriginator === undefined &&
+          (frame.raw['turn_id'] as string | undefined) == null &&
+          !responseDegradedNoLlm &&
+          emittedActionId !== 'SHRUG';
+        if (isProactiveSocialBid) {
+          this.pendingProactiveSocial.set(actionId, {
+            turnId: emitTurnId,
+            sessionId: driveSnapshot.sessionId,
+            initiatedAt: Date.now(),
+          });
+          if (this.pendingProactiveSocial.size > this.MAX_PENDING_LATENT) {
+            const oldest = this.pendingProactiveSocial.keys().next().value;
+            if (oldest !== undefined) this.pendingProactiveSocial.delete(oldest);
+          }
+        }
+
         this.responseSubject.next({
           turnId: emitTurnId,
           ...(emitOriginator !== undefined ? { originator: emitOriginator } : {}),
@@ -1880,6 +2069,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // WS3 T5: thread the GROUNDED source ('OKG'|'WKG') so a consumer can
           // verify groundingProvenance against the correct live Neo4j instance.
           groundedBy: responseGroundedBy ?? undefined,
+          // Deliberation intent — persisted on RESPONSE_GENERATED so the
+          // knowledge_retrieval metric can gate its denominator on QUESTION turns.
+          ...(responseIntent !== undefined ? { intent: responseIntent } : {}),
           preExecutionDriveSnapshot: driveSnapshot.pressureVector,
           latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
           // Tensor metadata — populated when sidecar was available this cycle
@@ -1888,6 +2080,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             tensorUrgency: tensorResult.urgency,
             tensorConsensus: tensorResult.consensus,
             bootstrapMode: tensorResult.bootstrapMode,
+            // The exact 1561-dim assembled vector for this cycle — copied (never
+            // reconstructed) from the sidecar so it stays byte-identical to what
+            // the sidecar's _split_input_vector() expects. Lets the supervisor
+            // thread it into reinforce/correct. Omitted when the sidecar did not
+            // surface one (older build / non-tensor path) so reinforce/correct
+            // skip honestly rather than firing on a fabricated vector.
+            ...(tensorResult.globalInputVector
+              ? { globalInputVector: tensorResult.globalInputVector }
+              : {}),
           } : {}),
           inputCategory: processInputResult.inputCategory,
         });
@@ -1996,12 +2197,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         this.routeScenePredictionErrors(sceneComparison, driveSnapshot);
       }
 
+      // CANON Std-2 (correlationId origin): anchor these tick-scoped pressure
+      // emits to the inbound frame's turn when present, so the drive event they
+      // raise traces to the same origin. No turn (perception-only frame) → the
+      // deterministic `action:<id>` form (identical to the drive-side derive).
+      const frameTurnId = frame.raw['turn_id'] as string | undefined;
+
       // ── Sustained curiosity for undiscovered visual objects ──────────────
       const undiscoveredCount = frame.raw['undiscovered_count'] as number | undefined;
       if (undiscoveredCount && undiscoveredCount > 0 && this.actionOutcomeReporter) {
         try {
           this.actionOutcomeReporter.reportOutcome({
             actionId: 'undiscovered-objects',
+            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:undiscovered-objects',
             actionType: 'UndiscoveredObjectPressure',
             success: false,
             metadata: {
@@ -2026,6 +2234,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         try {
           this.actionOutcomeReporter.reportOutcome({
             actionId: 'unknown-persons',
+            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:unknown-persons',
             actionType: 'UnknownPersonPressure',
             success: false,
             metadata: {
@@ -2198,9 +2407,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         actionType = procedureData.category;
       }
 
+      // §A.14 (Ticket 2): forward the WKG-diff information-gain computed during
+      // this action's write-back, if any. Consumed once (delete) so a stale
+      // metric never re-attaches to a later outcome. Absent → omitted → the
+      // drive grants zero curiosity relief (honest-red).
+      const infoGain = this.pendingInfoGain.get(actionId);
+      if (infoGain) this.pendingInfoGain.delete(actionId);
+
       try {
         this.actionOutcomeReporter.reportOutcome({
           actionId,
+          // CANON Std-2 (Ticket: correlationId origin) — mint a correlationId at
+          // the ACTION ORIGIN (this producer) and propagate it so the SAME id
+          // ties this inbound action event to the drive event(s) it causes,
+          // instead of the drive deriving `action:<id>` after the fact. The
+          // drive-side derive remains the fallback when origin supplies none.
+          correlationId: this.resolveOutcomeCorrelationId(actionId),
           actionType,
           success: isAccurate,
           feedbackSource: 'INFERENCE',
@@ -2217,6 +2439,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 actualValue: predictionEvaluation.mae, // real MAE
               }
             : undefined,
+          informationGainMetrics: infoGain,
           // Set socialCommentTimestamp so the social comment quality
           // contingency fires, recording this as a Sylphie-initiated
           // comment and providing Social relief + Satisfaction bonus
@@ -2225,6 +2448,42 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       } catch (err) {
         this.logger.warn(`reportOutcome drive engine forwarding failed: ${err}`);
+      }
+    }
+
+    // ── Self-model: emit SOCIAL_COMMENT_INITIATED for proactive bids ────────
+    // ADDITIVE telemetry only — does NOT touch socialCommentTimestamp or any
+    // drive-side behavior above. Fires at most once per actionId, ONLY for a
+    // cycle that processInput() recorded as a genuinely proactive (self-tick,
+    // no-originator) real communicative response. Reactive replies never have a
+    // pendingProactiveSocial entry, so they are excluded from the
+    // social_interaction success-rate denominator (Std-1). The writer's 24h
+    // self-join keys on session_id, so we emit the captured non-null sessionId.
+    const proactive = this.pendingProactiveSocial.get(actionId);
+    if (proactive) {
+      this.pendingProactiveSocial.delete(actionId);
+      if (this.eventLogger) {
+        try {
+          this.eventLogger.log(
+            'SOCIAL_COMMENT_INITIATED',
+            {
+              actionId,
+              turnId: proactive.turnId,
+              sessionId: proactive.sessionId,
+              initiatedAt: proactive.initiatedAt,
+            },
+            this.driveStateReader.getCurrentState(),
+            proactive.sessionId,
+            this.resolveOutcomeCorrelationId(actionId),
+          );
+          vlog('SOCIAL_COMMENT_INITIATED emitted (proactive social bid)', {
+            actionId,
+            turnId: proactive.turnId,
+            sessionId: proactive.sessionId,
+          });
+        } catch (err) {
+          this.logger.warn(`SOCIAL_COMMENT_INITIATED emit failed for ${actionId}: ${err}`);
+        }
       }
     }
 
@@ -2249,6 +2508,27 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         });
       }
     }
+  }
+
+  /**
+   * Resolve the ORIGIN correlation id to propagate with an action outcome
+   * (CANON Standard 2 — provenance origin one-hop).
+   *
+   * Returns the id captured at the action origin (cycle end) for this actionId,
+   * consuming it once. When none was captured (e.g. a SHRUG, or an outcome
+   * reported for an action this instance never produced), returns the
+   * deterministic `action:<actionId>` — the SAME value the Drive Engine's
+   * resolveCorrelationId() would otherwise derive, so the trace is identical and
+   * never lost. The origin is authoritative; the drive-side derive is the
+   * fallback.
+   */
+  private resolveOutcomeCorrelationId(actionId: string): string {
+    const origin = this.pendingCorrelationId.get(actionId);
+    if (origin) {
+      this.pendingCorrelationId.delete(actionId);
+      return origin;
+    }
+    return `action:${actionId}`;
   }
 
   // ---------------------------------------------------------------------------

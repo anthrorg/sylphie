@@ -41,6 +41,7 @@ import {
   CONFIDENCE_DECAY_SERVICE,
   CONVERSATION_REFLECTION_SERVICE,
   CROSS_SESSION_SYNTHESIS_SERVICE,
+  SELF_MODEL_WRITER_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
 
@@ -56,6 +57,7 @@ import { DetectContradictionsService } from './pipeline/detect-contradictions.se
 import { ConfidenceDecayService } from './pipeline/confidence-decay.service';
 import { ConversationReflectionService } from './pipeline/conversation-reflection.service';
 import { CrossSessionSynthesisService } from './pipeline/cross-session-synthesis.service';
+import { SelfModelWriterService } from './pipeline/self-model-writer.service';
 import { LearningEventLoggerService } from './logging/learning-event-logger.service';
 
 @Module({
@@ -138,6 +140,12 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
     {
       provide: CROSS_SESSION_SYNTHESIS_SERVICE,
       useClass: CrossSessionSynthesisService,
+    },
+
+    // ── Self-model writer: aggregates PREDICTION_EVALUATED → SELF graph ──────
+    {
+      provide: SELF_MODEL_WRITER_SERVICE,
+      useClass: SelfModelWriterService,
     },
 
     // ── Event logger ─────────────────────────────────────────────────────────
