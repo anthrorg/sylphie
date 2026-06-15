@@ -101,6 +101,19 @@ function BEA_TOKEN(): string {
   return _beaToken;
 }
 
+/**
+ * Lazy Arlo token — a SECOND distinct non-guardian speaker, minted once per run.
+ * Used by PRIV.3 (Wave 3 / C3) as "speaker A": a non-guardian who introduces a
+ * capitalized proper-noun fact whose extracted entity must stage as a `:Candidate`
+ * and must NOT ground for a different speaker. Distinct sub ('personC') so the
+ * candidate's grounding_person_id is provably A's, not Bea's or the guardian's.
+ */
+let _arloToken: string | null = null;
+function ARLO_TOKEN(): string {
+  if (!_arloToken) _arloToken = mintToken('personC', 'Arlo', false);
+  return _arloToken;
+}
+
 // ---------------------------------------------------------------------------
 // Baseline shape
 // ---------------------------------------------------------------------------
@@ -571,6 +584,13 @@ async function runMultiPersonPhase(
       'HARD-FAIL: P0prime reset failed — privacy probe results are unsound; marking PRIV.1 FAIL');
     recordSkip('PRIV.2', "Bea can retrieve her own secret word (SOFT recall-gap)",
       'P0prime reset failed — PRIV.2 skipped');
+    // Wave 3 / C3: PRIV.3 shares the same soundness prerequisite (clean person
+    // state). Without it a "not GROUNDED" could be a stale-state artefact, not the
+    // isolation we claim — so HARD-FAIL it too rather than risk a false green.
+    recordBool('PRIV.3', "speaker B's probe of A's proper noun NOT GROUNDED (§2.8)", false,
+      'HARD-FAIL: P0prime reset failed — PRIV.3 isolation probe is unsound; marking PRIV.3 FAIL');
+    recordSkip('PRIV.3-CTRL', "'Maxford' WAS staged as a :Candidate",
+      'P0prime reset failed — PRIV.3 control assertion skipped (unsound)');
     return;
   }
 
@@ -626,6 +646,91 @@ async function runMultiPersonPhase(
   } finally {
     privSockA?.close();
     privSockB?.close();
+  }
+
+  // ── PRIV.3 — §2.8 person-fact WKG leak via the title-case proper-noun path ──
+  //
+  // Wave 3 / C3. PRIV.1 uses a LOWERCASE nonce ("fathom"), which the title-cased
+  // proper-noun extractor in the learning cycle never mints — that is WHY §2.8 was
+  // gate-invisible. PRIV.3 uses a CAPITALIZED MULTI-NOUN nonce ("Maxford") to
+  // exercise exactly that extractor:
+  //
+  //   1. Speaker A (Arlo, NON-guardian) says a capitalized proper-noun fact:
+  //        "My dog is named Maxford the Brave."
+  //   2. We force ONE learning maintenance cycle (POST /metrics/learn-now) so A's
+  //      INPUT events drain into the WORLD graph. C3 stages "Maxford" as a
+  //      `:Candidate` (provenance CANDIDATE, conf ≤0.60, grounding_person_id=A),
+  //      NOT a live `:Entity` (the old leak path).
+  //   3. Speaker B (guardian) asks a question groundable ONLY off A's entity:
+  //        "What kind of animal is Maxford?"
+  //      B's reply MUST NOT be GROUNDED — a `:Candidate` is excluded from every
+  //      WKG grounding read-path (C0), so A's proper noun cannot cross to B.
+  //
+  // HARD-FAIL (both modes): a GROUNDED reply for B is the §2.8 leak.
+  // CONTROL assertion (Std-1 honesty): the `:Candidate {label:'Maxford'}` node WAS
+  //   created — the leaked noun is STAGED visibly, never silently dropped. Queried
+  //   by label via GET /metrics/candidate-exists (matches :Candidate, not :Entity).
+  let priv3SockA: PersistentSocket | null = null;
+  let priv3SockB: PersistentSocket | null = null;
+  const PRIV3_NONCE = 'Maxford'; // capitalized proper noun absent from the corpus
+  try {
+    priv3SockA = await openPersistentSocket(ARLO_TOKEN(), 'personC');     // speaker A (non-guardian)
+    priv3SockB = await openPersistentSocket(GUARDIAN_TOKEN(), 'guardian'); // speaker B
+
+    // 1. Speaker A introduces the capitalized proper-noun fact.
+    priv3SockA.send(`My dog is named ${PRIV3_NONCE} the Brave.`);
+    await waitForReplies(priv3SockA.received, 1, 20_000);
+    await sleep(1500); // let INPUT_RECEIVED / INPUT_PARSED land in TimescaleDB
+
+    // 2. Force a real learning cycle so A's events stage as :Candidate.
+    const learn = await fetchJson('/api/metrics/learn-now', { method: 'POST' });
+    console.log(`  PRIV.3: learn-now → status=${learn.status} result=${JSON.stringify(learn.body?.result ?? null)}`);
+    await sleep(1000); // settle the WORLD write
+
+    // 3. Speaker B probes for A's entity — MUST NOT be GROUNDED (cross-person leak).
+    const preB = priv3SockB.received.length;
+    priv3SockB.send(`What kind of animal is ${PRIV3_NONCE}?`);
+    await waitForReplies(priv3SockB.received, preB + 1, 20_000);
+    const bReply = priv3SockB.received[priv3SockB.received.length - 1];
+    const bGrounding = bReply?.knowledgeGrounding ?? null;
+    const priv3Pass = bGrounding !== 'GROUNDED';
+    recordBool('PRIV.3',
+      "speaker B's probe of A's proper noun NOT GROUNDED (§2.8 cross-person leak = FAIL)",
+      priv3Pass,
+      priv3Pass
+        ? `B received knowledgeGrounding='${bGrounding}' — A's '${PRIV3_NONCE}' did NOT cross the person boundary (`
+          + `:Candidate excluded from grounding read-paths)`
+        : `LEAK: B received knowledgeGrounding='GROUNDED' — A's conversation-derived proper noun '${PRIV3_NONCE}' `
+          + `was groundable for another speaker (§2.8 person-fact WKG leak reopened)`);
+
+    // CONTROL: the candidate WAS staged (Std-1 honesty — not silently dropped).
+    const cand = await fetchJson(`/api/metrics/candidate-exists?label=${encodeURIComponent(PRIV3_NONCE)}`);
+    const c = cand.body ?? {};
+    const stagedAsCandidate =
+      cand.status === 200 &&
+      c.exists === true &&
+      c.provenanceType === 'CANDIDATE' &&
+      typeof c.confidence === 'number' &&
+      c.confidence <= 0.6;
+    recordBool('PRIV.3-CTRL',
+      `'${PRIV3_NONCE}' WAS staged as a :Candidate (CANDIDATE prov, conf ≤0.60) — leak staged, not dropped`,
+      stagedAsCandidate,
+      stagedAsCandidate
+        ? `:Candidate {label:'${PRIV3_NONCE}'} exists — provenance='${c.provenanceType}' confidence=${c.confidence} `
+          + `grounding_person_id='${c.groundingPersonId}' (Std-1: leaked noun visibly staged, Std-3 ceiling held)`
+        : `:Candidate {label:'${PRIV3_NONCE}'} NOT found / wrong shape (status=${cand.status} exists=${c.exists} `
+          + `prov='${c.provenanceType}' conf=${c.confidence}) — either the noun was silently dropped (Std-1 violation) `
+          + `or it was minted as a live :Entity (the §2.8 leak). Both are FAIL.`);
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordBool('PRIV.3', "speaker B's probe of A's proper noun NOT GROUNDED", false,
+      `PRIV.3 socket/setup failed: ${msg}`);
+    recordBool('PRIV.3-CTRL', `'${PRIV3_NONCE}' WAS staged as a :Candidate`, false,
+      `PRIV.3 socket/setup failed: ${msg}`);
+  } finally {
+    priv3SockA?.close();
+    priv3SockB?.close();
   }
 }
 

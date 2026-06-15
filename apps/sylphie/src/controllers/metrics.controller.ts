@@ -908,6 +908,92 @@ export class MetricsController {
   }
 
   /**
+   * POST /metrics/learn-now
+   *
+   * Wave 3 / C3 — run a single REAL learning maintenance cycle
+   * (LEARNING_SERVICE.runMaintenanceCycle → the production consolidation pipeline:
+   * upsertEntities → extractTypedEdges → extractEdges → … ). The gate uses this to
+   * deterministically drain the just-spoken INPUT_RECEIVED / INPUT_PARSED events
+   * into the WORLD graph (as `:Candidate` nodes, C3) instead of waiting on the 60s
+   * self-driven timer. This is the production path, not a simulation.
+   *
+   * @returns the maintenance cycle result for audit.
+   */
+  @Post('learn-now')
+  @HttpCode(200)
+  async learnNow(): Promise<{ ok: boolean; ranAt: string; result: unknown }> {
+    try {
+      const result = await this.learning.runMaintenanceCycle();
+      this.logger.warn(`Wave3 C3 learn-now: ran a real maintenance cycle — ${JSON.stringify(result)}`);
+      return { ok: true, ranAt: new Date().toISOString(), result };
+    } catch (err) {
+      this.logger.error('learnNow failed', err);
+      return { ok: false, ranAt: new Date().toISOString(), result: String(err) };
+    }
+  }
+
+  /**
+   * GET /metrics/candidate-exists?label=<label>
+   *
+   * Wave 3 / C3 — control assertion for gate PRIV.3. After a non-guardian speaker
+   * introduces a proper noun and a learning cycle runs, a `:Candidate {label}` node
+   * MUST exist in the WORLD graph (CANON Std-1: the leaked noun is STAGED visibly,
+   * not silently dropped). This read-only endpoint matches that node by label and
+   * returns its provenance_type, confidence, and grounding_person_id so the gate can
+   * assert the full C0 contract (provenance 'CANDIDATE', confidence ≤0.60, scoped to
+   * the speaker). It deliberately matches `:Candidate`, NOT `:Entity` — a live
+   * `:Entity` of the same label would be the §2.8 leak the probe exists to catch.
+   *
+   * Read-only; never writes.
+   */
+  @Get('candidate-exists')
+  async candidateExists(
+    @Query('label') label?: string,
+  ): Promise<{
+    ok: boolean;
+    label: string | null;
+    exists: boolean;
+    provenanceType: string | null;
+    confidence: number | null;
+    groundingPersonId: string | null;
+  }> {
+    const wanted = (label ?? '').trim();
+    if (!wanted) {
+      return { ok: false, label: null, exists: false, provenanceType: null, confidence: null, groundingPersonId: null };
+    }
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      const res = await session.run(
+        `MATCH (c:Candidate {label: $label})
+         RETURN c.provenance_type AS provenanceType,
+                c.confidence AS confidence,
+                c.grounding_person_id AS groundingPersonId
+         LIMIT 1`,
+        { label: wanted },
+      );
+      const rec = res.records[0];
+      const exists = !!rec;
+      const toNum = (v: unknown): number | null =>
+        typeof v === 'number' ? v
+          : v && typeof v === 'object' && 'toNumber' in v ? (v as { toNumber(): number }).toNumber()
+          : null;
+      return {
+        ok: true,
+        label: wanted,
+        exists,
+        provenanceType: exists ? ((rec!.get('provenanceType') as string | null) ?? null) : null,
+        confidence: exists ? toNum(rec!.get('confidence')) : null,
+        groundingPersonId: exists ? ((rec!.get('groundingPersonId') as string | null) ?? null) : null,
+      };
+    } catch (err) {
+      this.logger.error('candidateExists failed', err);
+      return { ok: false, label: wanted, exists: false, provenanceType: null, confidence: null, groundingPersonId: null };
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
    * GET /metrics/c3-inspect
    *
    * Read the post-decay state of the control + treatment WORLD nodes the C3 gate

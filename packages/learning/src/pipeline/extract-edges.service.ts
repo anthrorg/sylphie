@@ -133,9 +133,14 @@ export class ExtractEdgesService implements IExtractEdgesService {
         targetId: target.nodeId,
       }));
 
+      // Wave 3 / C3: MATCH by node_id alone (label-agnostic), NOT `(:Entity ...)`.
+      // Conversation-derived nodes are now `:Candidate`, not `:Entity` — an
+      // `:Entity`-scoped MATCH would silently fail to bind them and drop the edge.
+      // RELATED_TO between two `:Candidate` nodes is fine: candidates are excluded
+      // from grounding read-paths, so a candidate↔candidate edge can't leak.
       const result = await session.run(
         `UNWIND $pairs AS pair
-         MATCH (a:Entity {node_id: pair.sourceId}), (b:Entity {node_id: pair.targetId})
+         MATCH (a {node_id: pair.sourceId}), (b {node_id: pair.targetId})
          MERGE (a)-[r:RELATED_TO]->(b)
          ON CREATE SET
            r.confidence      = $confidence,

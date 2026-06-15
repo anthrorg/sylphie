@@ -36,6 +36,10 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   verboseFor,
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_CONFIDENCE_CAP,
+  CANDIDATE_PERSON_ID_PROP,
   type ProvenanceSource,
 } from '@sylphie/shared';
 import type {
@@ -401,18 +405,24 @@ export class ExtractTypedEdgesService implements IExtractTypedEdgesService {
     const edges: ExtractedEdge[] = [];
     const typedPairs = new Set<string>();
     const speakerEntity = findSpeakerEntity(entities);
+    // Wave 3 / C3: the speaker who introduced these triples. Used to person-scope
+    // any `:Candidate` value nodes minted for SENSOR (non-guardian) facts.
+    const speakerId = extractSpeakerId(event);
 
     for (const triple of triples) {
-      // C3: world-fact triples (subjectHint === 'world') must be routed to
-      //     `:Candidate` staging in the WORLD Neo4j graph instead of being
-      //     written as live `:Entity` nodes here.  Skip them entirely until C3
-      //     lands the Candidate minting path (C0+C1+C2 prereqs required).
+      // Wave 3 / C3: world-fact triples (subjectHint === 'world') are routed to
+      // `:Candidate` staging in the WORLD Neo4j graph instead of being dropped or
+      // written as live `:Entity`. A world candidate is UNSCOPED (no
+      // grounding_person_id) — it is a candidate world-fact awaiting guardian
+      // promotion (C4), not attributable to one speaker. CANON Std-1: staged
+      // visibly, not silently dropped.
       if (triple.subjectHint === 'world') {
-        vlog('extractTypedEdges: deferring world-fact triple to C3 Candidate path', {
-          subjectLabel: (triple as any)._subjectLabel,
-          key: triple.key,
-          objectLabel: triple.objectLabel,
-        });
+        const worldEdge = await this.stageWorldFactCandidate(triple, event);
+        if (worldEdge) {
+          edges.push(worldEdge);
+          typedPairs.add(`${worldEdge.sourceId}:${worldEdge.targetId}`);
+          typedPairs.add(`${worldEdge.targetId}:${worldEdge.sourceId}`);
+        }
         continue;
       }
 
@@ -433,14 +443,39 @@ export class ExtractTypedEdgesService implements IExtractTypedEdgesService {
       if (!objectEntity) {
         // The object value may not have been extracted as an entity (e.g. "coffee"
         // is lowercase). Upsert it now.
-        const nodeId = await this.upsertValueEntity(objectLabel, triple.source === 'self_reported' ? 'GUARDIAN' : 'SENSOR');
+        //
+        // Wave 3 / C3: a SELF_REPORTED value from a NON-guardian speaker is a
+        // conversation-derived value — stage it as a `:Candidate` (person-scoped),
+        // never a live `:Entity`, so a leaked value proper noun ("Maxford") cannot
+        // ground for another speaker. Guardian-sourced (self_reported here maps to
+        // GUARDIAN provenance only when the subject is already a live entity) and
+        // observed third-person values stay `:Entity` — the subject of a
+        // third-person fact is itself an extracted entity already on the live graph.
+        const valueAsCandidate =
+          subjectEntity.isCandidate === true || triple.subjectHint === 'speaker';
+        const nodeId = await this.upsertValueEntity(
+          objectLabel,
+          triple.source === 'self_reported' ? 'GUARDIAN' : 'SENSOR',
+          valueAsCandidate,
+          valueAsCandidate ? speakerId : undefined,
+        );
         if (!nodeId) continue;
 
         objectEntity = {
           nodeId,
           label: objectLabel,
-          provenance: triple.source === 'self_reported' ? 'GUARDIAN' : 'SENSOR',
-          confidence: triple.source === 'self_reported' ? 0.60 : 0.40,
+          provenance: valueAsCandidate
+            ? CANDIDATE_PROVENANCE_TYPE
+            : triple.source === 'self_reported'
+              ? 'GUARDIAN'
+              : 'SENSOR',
+          confidence: valueAsCandidate
+            ? Math.min(CANDIDATE_CONFIDENCE_CAP, 0.4)
+            : triple.source === 'self_reported'
+              ? 0.6
+              : 0.4,
+          isCandidate: valueAsCandidate,
+          groundingPersonId: valueAsCandidate ? speakerId : undefined,
         };
         entityByLabel.set(objectLabel.toLowerCase(), objectEntity);
       }
@@ -494,15 +529,54 @@ export class ExtractTypedEdgesService implements IExtractTypedEdgesService {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  /** Upsert a value entity node (for objects like "Coffee", "Three", etc.). */
+  /**
+   * Upsert a value node for a fact object (e.g. "Coffee", "Three", "Maxford").
+   *
+   * Wave 3 / C3: when `asCandidate` is true the value is staged as a `:Candidate`
+   * (provenance 'CANDIDATE', confidence ≤0.60, optional grounding_person_id),
+   * never a live `:Entity`. This closes the value-side of the §2.8 leak — a
+   * conversation-introduced value proper noun must not become groundable for
+   * another speaker. Otherwise the original live `:Entity` behaviour is preserved.
+   */
   private async upsertValueEntity(
     label: string,
     provenance: ProvenanceSource,
+    asCandidate = false,
+    speakerId?: string,
   ): Promise<string> {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
-    const nodeId = `entity-${randomId()}`;
 
     try {
+      if (asCandidate) {
+        const candidateId = `candidate-${randomId()}`;
+        const result = await session.run(
+          `MERGE (n:${CANDIDATE_NODE_LABEL} {label: $label})
+           ON CREATE SET
+             n.node_id         = $nodeId,
+             n.node_type       = $nodeLabel,
+             n.schema_level    = 'instance',
+             n.provenance_type = $provenance,
+             n.confidence      = $confidence,
+             n.${CANDIDATE_PERSON_ID_PROP} = $speakerId,
+             n.created_at      = datetime()
+           ON MATCH SET
+             n.${CANDIDATE_PERSON_ID_PROP} =
+               coalesce(n.${CANDIDATE_PERSON_ID_PROP}, $speakerId),
+             n.updated_at      = datetime()
+           RETURN n.node_id AS nodeId`,
+          {
+            label,
+            nodeId: candidateId,
+            nodeLabel: CANDIDATE_NODE_LABEL,
+            provenance: CANDIDATE_PROVENANCE_TYPE,
+            confidence: Math.min(CANDIDATE_CONFIDENCE_CAP, 0.5),
+            speakerId: speakerId ?? null,
+          },
+        );
+        return (result.records[0]?.get('nodeId') as string) ?? candidateId;
+      }
+
+      const nodeId = `entity-${randomId()}`;
       const result = await session.run(
         `MERGE (n:Entity {label: $label})
          ON CREATE SET
@@ -525,6 +599,72 @@ export class ExtractTypedEdgesService implements IExtractTypedEdgesService {
     } finally {
       await session.close();
     }
+  }
+
+  /**
+   * Wave 3 / C3 — stage a world-fact triple as `:Candidate` subject + object with
+   * a typed edge between them, all in the WORLD graph.
+   *
+   * A "world fact" (e.g. "The Eiffel Tower is in Paris") is NOT attributable to
+   * the speaker the way a person fact is, so its `:Candidate` nodes are UNSCOPED
+   * (grounding_person_id = null). It still carries provenance 'CANDIDATE',
+   * confidence ≤0.60, and is non-groundable until a guardian promotes it (C4).
+   * Both nodes are minted as `:Candidate`, never `:Entity`.
+   *
+   * Returns the staged edge (so the cycle counts it and the co-occurrence step
+   * skips the pair), or null on failure / missing subject label.
+   */
+  private async stageWorldFactCandidate(
+    triple: ParsedTriple,
+    event: UnlearnedEvent,
+  ): Promise<ExtractedEdge | null> {
+    const rawSubject = (triple as any)._subjectLabel as string | undefined;
+    if (!rawSubject) {
+      vlog('stageWorldFactCandidate: world triple missing _subjectLabel', {
+        eventId: event.id,
+        key: triple.key,
+      });
+      return null;
+    }
+
+    // Strip a leading article the WORLD_FACT_PATTERN may have captured.
+    const subjectLabel = rawSubject.replace(/^(?:the|a|an)\s+/i, '').trim().substring(0, 50);
+    const objectLabel = triple.objectLabel.trim().substring(0, 50);
+    if (!subjectLabel || !objectLabel) return null;
+
+    // World candidates are unscoped: a world fact is not one person's claim.
+    const subjectId = await this.upsertValueEntity(subjectLabel, 'INFERENCE', true, undefined);
+    const objectId = await this.upsertValueEntity(objectLabel, 'INFERENCE', true, undefined);
+    if (!subjectId || !objectId) return null;
+
+    const edgeType = resolveEdgeType(triple.key);
+    const ok = await this.writeTypedEdge(
+      subjectId,
+      objectId,
+      edgeType,
+      CANDIDATE_PROVENANCE_TYPE,
+      Math.min(CANDIDATE_CONFIDENCE_CAP, 0.4),
+    );
+    if (!ok) return null;
+
+    vlog('world-fact candidate staged', {
+      eventId: event.id,
+      subject: subjectLabel,
+      predicate: edgeType,
+      object: objectLabel,
+      provenance: CANDIDATE_PROVENANCE_TYPE,
+    });
+
+    return {
+      sourceId: subjectId,
+      sourceLabel: subjectLabel,
+      targetId: objectId,
+      targetLabel: objectLabel,
+      relType: edgeType,
+      provenance: CANDIDATE_PROVENANCE_TYPE,
+      confidence: Math.min(CANDIDATE_CONFIDENCE_CAP, 0.4),
+      sessionId: event.session_id,
+    };
   }
 
   /** Write a typed edge between two entity nodes. */
@@ -573,6 +713,16 @@ function extractContent(event: UnlearnedEvent): string | null {
   return null;
 }
 
+/**
+ * Wave 3 / C3 — read the speaker id (PostgreSQL User.id) off the event payload
+ * (threaded by C2). Used to person-scope `:Candidate` value nodes. Returns
+ * undefined when absent / not a non-empty string.
+ */
+function extractSpeakerId(event: UnlearnedEvent): string | undefined {
+  const raw = event.payload['speakerId'];
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
 function resolveEdgeType(factKey: string): string {
   const mapped = FACT_KEY_TO_EDGE_TYPE.get(factKey);
   if (mapped) return mapped;
@@ -587,8 +737,12 @@ function resolveEdgeType(factKey: string): string {
 /** Find the entity most likely representing the speaker (guardian). */
 function findSpeakerEntity(entities: ExtractedEntity[]): ExtractedEntity | undefined {
   // Prefer GUARDIAN provenance entities (from guardian input events).
+  // Wave 3 / C3: conversation-derived nouns now carry 'CANDIDATE' provenance
+  // (no longer 'SENSOR'), so include candidates as the speaker fallback —
+  // otherwise speaker facts ("I like X") would silently fail to attach an edge.
   return entities.find((e) => e.provenance === 'GUARDIAN')
-    ?? entities.find((e) => e.provenance === 'SENSOR');
+    ?? entities.find((e) => e.provenance === 'SENSOR')
+    ?? entities.find((e) => e.isCandidate === true);
 }
 
 function capitalize(s: string): string {

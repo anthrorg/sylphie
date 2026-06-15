@@ -16,6 +16,25 @@
  *   INPUT_PARSED    → SENSOR   (derived from sensor input, no guardian involvement)
  *   GUARDIAN_*      → GUARDIAN (explicit guardian teaching / correction)
  *
+ * Wave 3 / C3 — three-graph isolation (CANON Std-3 §2.8 person-fact WKG leak):
+ *   Conversation-derived proper nouns (SENSOR provenance — INPUT_RECEIVED /
+ *   INPUT_PARSED) are NO LONGER minted as live `:Entity`. They are minted as
+ *   `:Candidate` nodes in the WORLD graph instead:
+ *     - provenance_type = 'CANDIDATE'           (CANDIDATE_PROVENANCE_TYPE)
+ *     - confidence      = min(base, 0.60)        (CANDIDATE_CONFIDENCE_CAP)
+ *     - grounding_person_id = <speakerId>        (CANDIDATE_PERSON_ID_PROP)
+ *   `:Candidate` is excluded from every WKG grounding read-path (C0), so a
+ *   conversation-introduced proper noun can never produce a GROUNDED label for
+ *   a DIFFERENT speaker. A guardian promotion (`:Candidate → :Entity`, C4) is the
+ *   only path to groundable status.
+ *
+ *   Guardian-taught entities (GUARDIAN_CORRECTION / GUARDIAN_CONFIRMATION) keep
+ *   minting as live `:Entity` — they are guardian-confirmed, not a leak.
+ *
+ *   `speakerId` is read off `event.payload['speakerId']` (= PostgreSQL User.id;
+ *   threaded onto INPUT events by C2). When absent (no known speaker) the
+ *   candidate is still minted but with a null `grounding_person_id`.
+ *
  * MERGE pattern matches wkg-context.service.ts:writeEntity():
  *   ON CREATE: full property set
  *   ON MATCH:  confidence only increases, updated_at refreshed
@@ -29,6 +48,10 @@ import {
   Neo4jInstanceName,
   resolveBaseConfidence,
   verboseFor,
+  CANDIDATE_PROVENANCE_TYPE,
+  CANDIDATE_NODE_LABEL,
+  CANDIDATE_CONFIDENCE_CAP,
+  CANDIDATE_PERSON_ID_PROP,
   type ProvenanceSource,
 } from '@sylphie/shared';
 import type {
@@ -70,14 +93,29 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     }
 
     const provenance = resolveProvenance(event);
-    const confidence = resolveBaseConfidence(provenance);
+
+    // Wave 3 / C3: a SENSOR-provenance entity (conversation-derived proper noun)
+    // is staged as a `:Candidate`, not a live `:Entity`. Guardian-taught entities
+    // remain live `:Entity`. The candidate is person-scoped to the speaker so a
+    // later guardian promotion / OKG cross-check can attribute it (and so it can
+    // never ground a label for a DIFFERENT speaker — §2.8 isolation).
+    const asCandidate = provenance === 'SENSOR';
+    const effectiveProvenance: ProvenanceSource = asCandidate
+      ? CANDIDATE_PROVENANCE_TYPE
+      : provenance;
+    const confidence = asCandidate
+      ? Math.min(CANDIDATE_CONFIDENCE_CAP, resolveBaseConfidence(CANDIDATE_PROVENANCE_TYPE))
+      : resolveBaseConfidence(provenance);
+    const speakerId = asCandidate ? extractSpeakerId(event) : undefined;
 
     vlog('upsertEntities: extracting entities', {
       eventId: event.id,
       eventType: event.type,
       labels,
-      provenance,
+      provenance: effectiveProvenance,
       confidence,
+      asCandidate,
+      speakerId: speakerId ?? null,
     });
 
     const results: ExtractedEntity[] = [];
@@ -93,16 +131,37 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
       for (const label of labels) {
-        const nodeId = await this.mergeEntityNode(session, label, provenance, confidence);
+        const nodeId = await this.mergeEntityNode(
+          session,
+          label,
+          effectiveProvenance,
+          confidence,
+          asCandidate,
+          speakerId,
+        );
         if (nodeId) {
-          // Distinguish created vs updated by checking if nodeId matches the generated UUID prefix.
-          if (nodeId.startsWith('entity-')) {
+          // Distinguish created vs updated by checking if nodeId matches the generated prefix.
+          if (nodeId.startsWith('entity-') || nodeId.startsWith('candidate-')) {
             created++;
           } else {
             updated++;
           }
-          results.push({ nodeId, label, provenance, confidence });
-          vlog('entity upserted', { eventId: event.id, label, nodeId, provenance, confidence });
+          results.push({
+            nodeId,
+            label,
+            provenance: effectiveProvenance,
+            confidence,
+            isCandidate: asCandidate,
+            groundingPersonId: speakerId,
+          });
+          vlog('entity upserted', {
+            eventId: event.id,
+            label,
+            nodeId,
+            provenance: effectiveProvenance,
+            confidence,
+            asCandidate,
+          });
         }
       }
     } finally {
@@ -133,6 +192,14 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
    * labels from one event share a single session. Each call is still isolated
    * by its own try/catch: a failed label returns '' and the loop continues.
    *
+   * Wave 3 / C3: when `asCandidate` is true the node is minted with the
+   * `:Candidate` label (NOT `:Entity`), provenance 'CANDIDATE', a confidence
+   * already clamped to ≤0.60 by the caller, and `grounding_person_id` set to the
+   * speaker. Crucially the MERGE key is `(:Candidate {label})` so a candidate and
+   * a live `:Entity` of the same name never collapse into one node — that would
+   * silently re-promote a candidate to groundable. The two labels are disjoint by
+   * construction; promotion (C4) is the only bridge between them.
+   *
    * Returns the node_id of the created or matched node. Returns an empty string
    * if Neo4j is unavailable or the query fails.
    */
@@ -141,7 +208,13 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     label: string,
     provenance: ProvenanceSource,
     confidence: number,
+    asCandidate: boolean,
+    speakerId: string | undefined,
   ): Promise<string> {
+    if (asCandidate) {
+      return this.mergeCandidateNode(session, label, confidence, speakerId);
+    }
+
     const nodeId = `entity-${randomUUID().substring(0, 8)}`;
 
     try {
@@ -169,6 +242,74 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     } catch (err) {
       this.logger.error(
         `mergeEntityNode failed for label "${label}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return '';
+    }
+  }
+
+  /**
+   * MERGE a `:Candidate` node — the Wave 3 / C3 staging form for a
+   * conversation-derived proper noun (CANON Std-3 §2.8 isolation fix).
+   *
+   * INVARIANTS enforced here (the C0 contract):
+   *   - label              = CANDIDATE_NODE_LABEL (`:Candidate`), NOT `:Entity`.
+   *   - provenance_type    = CANDIDATE_PROVENANCE_TYPE ('CANDIDATE').
+   *   - confidence         ≤ CANDIDATE_CONFIDENCE_CAP (clamped here defensively
+   *                          even though the caller already clamps).
+   *   - grounding_person_id = speakerId (CANDIDATE_PERSON_ID_PROP), or null when
+   *                          no speaker is known.
+   *
+   * ON MATCH never lifts confidence above the cap. The node is excluded from all
+   * WKG grounding read-paths (C0) so it can never produce a GROUNDED label.
+   */
+  private async mergeCandidateNode(
+    session: Session,
+    label: string,
+    confidence: number,
+    speakerId: string | undefined,
+  ): Promise<string> {
+    const nodeId = `candidate-${randomUUID().substring(0, 8)}`;
+    const cappedConfidence = Math.min(CANDIDATE_CONFIDENCE_CAP, confidence);
+
+    try {
+      const result = await session.run(
+        `MERGE (n:${CANDIDATE_NODE_LABEL} {label: $label})
+         ON CREATE SET
+           n.node_id          = $nodeId,
+           n.node_type        = $nodeLabel,
+           n.schema_level     = 'instance',
+           n.provenance_type  = $provenance,
+           n.confidence       = $confidence,
+           n.${CANDIDATE_PERSON_ID_PROP} = $speakerId,
+           n.created_at       = datetime()
+         ON MATCH SET
+           n.confidence = CASE
+                            WHEN $confidence > n.confidence AND $confidence <= $cap
+                            THEN $confidence
+                            ELSE n.confidence
+                          END,
+           n.${CANDIDATE_PERSON_ID_PROP} =
+             coalesce(n.${CANDIDATE_PERSON_ID_PROP}, $speakerId),
+           n.updated_at = datetime()
+         RETURN n.node_id AS nodeId`,
+        {
+          label,
+          nodeId,
+          nodeLabel: CANDIDATE_NODE_LABEL,
+          provenance: CANDIDATE_PROVENANCE_TYPE,
+          confidence: cappedConfidence,
+          cap: CANDIDATE_CONFIDENCE_CAP,
+          speakerId: speakerId ?? null,
+        },
+      );
+
+      const record = result.records[0];
+      return record ? (record.get('nodeId') as string) : nodeId;
+    } catch (err) {
+      this.logger.error(
+        `mergeCandidateNode failed for label "${label}": ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -224,6 +365,19 @@ function extractEntityLabels(event: UnlearnedEvent): string[] {
   if (!content) return [];
 
   return extractTitleCasedTokens(content).slice(0, MAX_ENTITIES_PER_EVENT);
+}
+
+/**
+ * Wave 3 / C3 — read the speaker id (PostgreSQL User.id) off the event payload.
+ *
+ * C2 threads `payload.speakerId` onto INPUT_RECEIVED / INPUT_PARSED events. It is
+ * the `grounding_person_id` a conversation-derived `:Candidate` is scoped to.
+ * Returns undefined when absent or not a non-empty string (e.g. an internal event
+ * with no known speaker) — the candidate is still minted, just unscoped.
+ */
+function extractSpeakerId(event: UnlearnedEvent): string | undefined {
+  const raw = event.payload['speakerId'];
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
 /**
