@@ -582,6 +582,15 @@ export interface SemanticConversion {
 
   /** Overall confidence in this semantic conversion [0.0, 1.0]. */
   readonly confidence: number;
+
+  /**
+   * Visual grounding context carried through from a `source === 'perception'`
+   * episode (Wave 3 / chunk C5; §2.12). Present only when the source episode
+   * was vision-dominant, so the per-sub-field visual provenance (SENSOR scene
+   * labels, LLM_GENERATED caption, INFERENCE personIds) survives consolidation
+   * instead of being discarded. Absent for conversation/legacy episodes.
+   */
+  readonly visualContext?: VisualContext;
 }
 
 /**
