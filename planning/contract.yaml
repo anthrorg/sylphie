@@ -1,0 +1,1403 @@
+# =============================================================================
+# planning-worx — MASTER CONTRACT
+# Single source of truth for this project's plan. Wins over chat history.
+# decisions + changelog are append-only (supersede, never edit).
+# Seeded 2026-06-15 by /plan-reconcile from wiki/sylphie-vision-abc-build-plan.md,
+# reconciled against the working tree (git @ 1f557e8).
+# =============================================================================
+
+schema_version: "1.0"
+kind: contract
+
+meta:
+  project_id: "sylphie-vision-abc"
+  title: "Sylphie Vision — Improve, Integrate, Test (A/B/C)"
+  status: building
+  stage: analyze
+  created_at: "2026-06-15"
+  updated_at: "2026-06-16"
+
+constitution:
+  - { id: CON-1, kind: must,  rule: "Do the simplest thing that meets a ticket's acceptance_criteria; respect complexity_budget." }
+  - { id: CON-2, kind: never, rule: "Pay curiosity/social relief for anything but durable knowledge/identity change (Invariant 1 / CANON Std 6)." }
+  - { id: CON-3, kind: never, rule: "Use an online/drifting embedding backbone. Embedding changes are frozen + versioned + migration-gated phase transitions (Invariant 2)." }
+  - { id: CON-4, kind: never, rule: "Let the world unconditionally command the decision loop. Vision triggers are settled-semantic-change only, rate-limited, habituating (Invariant 3)." }
+  - { id: CON-5, kind: must,  rule: "Ship each improvement with its test; no phase closes without mythos live-smoke sign-off." }
+
+vision:
+  problem: >
+    The CV path is built but dormant and untested. The richest visual signal (the EfficientNet/DINOv2
+    track embedding) is computed then discarded at the cognitive boundary, so visually-distinct same-COCO
+    scenes collapse to near-identical latents; vision-only scenes are unrecallable; and there is no
+    integrated vision test suite.
+  outcome: >
+    Vision is promoted into cognition end-to-end — distinguishable in the fused latent, recallable by
+    cosine, and able to trigger habituating, rate-limited cycles — behind versioned destructive migrations,
+    with a 7-layer test suite, all verified on a live run.
+  measurable_goals:
+    - "Two same-COCO scenes (mug-vs-book) produce a fused-latent cosine gap > margin (bounded both directions)."
+    - "Embedding-null rate on visual_object_embeddings ≈ 0 over a 10-min live window."
+    - "Same object across a NestJS power-cycle re-binds to the SAME :VisualObject node (sighting_count>=2)."
+    - "A vision-only frame fires a SYSTEM_TRIGGER cycle; a static busy scene habituates (no fixation)."
+    - "Zero relief deltas on action_type='ScenePrediction' drive events (CANON Std 6)."
+
+non_goals:
+  - { id: NG-1, statement: "SAM 3.1 stateful perception-core swap.", rationale: "Impossible on the substrate (no checkpoint/push API); parked, separately scoped." }
+  - { id: NG-2, statement: "Booting the dead PerceptionPipeline camera-loop.", rationale: "Promote the stateless A.5 scorer into a NestJS BindingService instead; Python file stays reference spec." }
+  - { id: NG-3, statement: "Live-wiring Neo4jGraphPersistence into the /detect path.", rationale: "Jim decision: class-correct + round-trip only; the live re-bind path runs NestJS-side via Neo4jService." }
+
+constraints:
+  - { id: CST-1, statement: "torch is CPU-only; DINOv2-base ~69ms/crop. Keep /detect YOLO-dominated via confirm-gate + every-Nth re-embed throttle (COBEING_PERCEPTION_EMBED_EVERY_N)." }
+  - { id: CST-2, statement: "Per-modality embedding dims: object 768 (DINOv2) / face 512 (ArcFace). NOT uniform. Two independent dim constants + migration versions." }
+  - { id: CST-3, statement: "Drive isolation: zero vision symbols importable from packages/drive-engine; raw-signal-in only; axis+delta computed in-child." }
+
+tech_stack:
+  - { id: TECH-1, name: "DINOv2-base", version: "768-D", rationale: "Object embedding backbone; 768==fused EMBEDDING_DIM so JL projection is deleted.", decision_ref: DEC-5 }
+  - { id: TECH-2, name: "ArcFace/InsightFace", version: "512-D (buffalo_l)", rationale: "Face embedding backbone; unmasked crop.", decision_ref: DEC-5 }
+
+nodes:
+  # ---------------- FEATURE ----------------
+  - { id: FEAT-1, kind: feature, parent: null, status: in_progress, priority: P1,
+      title: "Sylphie Vision — Improve, Integrate, Test (A/B/C)",
+      intent: "Promote dormant CV into cognition (recallable + triggering) behind versioned migrations, fully tested and live-verified." }
+
+  # ---------------- EP-1  P1 embedding+retrieval cluster (LANDED) ----------------
+  - { id: EP-1, kind: epic, parent: FEAT-1, status: done, priority: P1,
+      title: "P1 — Embedding+retrieval cluster on existing vectors", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.1"] }
+  - id: TK-1
+    kind: ticket
+    parent: EP-1
+    title: "P1.0 #0 — visual_embedding modality from tracked_objects[].embedding"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: mvp
+    acceptance_criteria:
+      - { given: "confirmed-track embeddings on a separate array", when: "fusion runs", then: "a registered visual_embedding modality is fused (generic input-dim const), discard contract flips GREEN" }
+    files_in_scope: ["packages/decision-making/src/inputs/encoders/visual-embedding.encoder.ts", "packages/decision-making/src/inputs/fusion/sensory-fusion.ts"]
+    test_refs: ["packages/decision-making/src/inputs/encoders/visual-embedding.acceptance.spec.ts"]
+  - id: TK-2
+    kind: ticket
+    parent: EP-1
+    title: "P1.1 #3 — full-latent versioned fingerprint (batched with #0)"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: mvp
+    acceptance_criteria:
+      - { given: "two visually-distinct same-COCO scenes", when: "generateFingerprint runs over the full fused vector", then: "different fingerprints; embeddingVersion stamped; old keys are a clean one-time miss" }
+    files_in_scope: ["packages/decision-making/src/process-input/process-input.service.ts"]
+    test_refs: ["packages/decision-making/src/process-input/fingerprint.spec.ts", "packages/decision-making/src/process-input/fingerprint-migration.spec.ts"]
+  - id: TK-3
+    kind: ticket
+    parent: EP-1
+    title: "P1.2 #1 — A.5 multi-signal scorer → NestJS BindingService"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: mvp
+    acceptance_criteria:
+      - { given: "a seeded object store", when: "BindingService scores a candidate", then: "weighted multi-signal match (not raw cosine); ambiguous 0.45-0.75 band fires; OPEN-9 cross-session renorm" }
+    files_in_scope: ["apps/sylphie/src/services/binding.service.ts"]
+    test_refs: ["apps/sylphie/src/services/binding.service.spec.ts"]
+  - id: TK-4
+    kind: ticket
+    parent: EP-1
+    title: "P1.3 #2 — mutable instance centroids (running mean per :VisualObject)"
+    status: done
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    acceptance_criteria:
+      - { given: "N sightings of one object", when: "each confirmed sighting updates the centroid", then: "stored centroid drifts toward the running mean; no duplicate node" }
+    files_in_scope: ["apps/sylphie/src/services/visual-working-memory.service.ts"]
+    test_refs: ["apps/sylphie/src/services/visual-working-memory.centroid.spec.ts"]
+  - id: TK-5
+    kind: ticket
+    parent: EP-1
+    title: "P1.5 — vision-recall routing (per-modality / relax text-gate for SYSTEM_TRIGGER)"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: mvp
+    acceptance_criteria:
+      - { given: "a vision-only frame for a previously-seen scene", when: "recall runs", then: "non-null per-modality recall hit; unseen scene returns null (no confabulation)" }
+    files_in_scope: ["packages/decision-making/src/latent-space/latent-space.service.ts"]
+    test_refs: ["packages/decision-making/src/latent-space/latent-space.recall-gate.spec.ts"]
+
+  # ---------------- EP-2  P2 coordinate correctness + canon guard ----------------
+  - { id: EP-2, kind: epic, parent: FEAT-1, status: in_progress, priority: P1,
+      title: "P2 — Coordinate correctness + canon guard (arm the gate before Fork C)", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.3"] }
+  - id: TK-6
+    kind: ticket
+    parent: EP-2
+    title: "P2.1 — frame-dim plumbing (all 5 normalizers, optional DTO fields default 640/480)"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: production
+    acceptance_criteria:
+      - { given: "a 1280x720 JPEG", when: "POST /perception/detect", then: "frame_width:1280/frame_height:720; frame-center detection normalizes ~0.5 at 720p; existing gate byte-identical" }
+    files_in_scope: ["packages/perception-service/main.py", "packages/decision-making/src/inputs/encoders/video.encoder.ts"]
+  - id: TK-7
+    kind: ticket
+    parent: EP-2
+    title: "P2.2 — enforce-canon repoint + restore/harden the canon gate (meta-guard for Fork C)"
+    intent: "Arm a machine-checkable Standard-6 gate so Fork C cannot land a perception-side pre-computed drive delta."
+    status: canceled
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; stop and ask if restoring the hook conflicts with the current Stop-hook design"
+    acceptance_criteria:
+      - { given: "the enforce-canon skill/agent", when: "it runs", then: "it reads sylphie-tech-spec.md §9 (not the non-existent wiki/CANON.md) — ALREADY DONE" }
+      - { given: "a deliberate Standard-6 violation (a perception-side pre-computed drive delta)", when: "the canon gate runs", then: "exit(2)" }
+      - { given: "the canon spec file renamed/missing", when: "the gate runs", then: "exit(2) (fs.existsSync fail-loud); exit(0) is unreachable on a missing/unparseable response" }
+    non_goals: ["Re-introducing the exact deleted canon-check.cjs verbatim if the current Stop-hook design supersedes it — restore the GUARANTEE, not necessarily the file."]
+    files_in_scope: [".claude/skills/enforce-canon/SKILL.md", ".claude/agents/canon.md"]
+    depends_on: []
+  - id: TK-8
+    kind: ticket
+    parent: EP-2
+    title: "P2.3 — harden IPC schema .passthrough() → .strict()"
+    intent: "An injected top-level driveEffects must hard-fail at the drive-isolation boundary (CANON Std-6, made executable)."
+    status: done
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=80 LOC; audit ALL ActionOutcomePayload producers first, then flip + add the rejection test"
+    acceptance_criteria:
+      - { given: "the current ActionOutcomePayload producers", when: "audited", then: "no legitimate field starts failing under .strict()" }
+      - { given: "a payload with an injected top-level driveEffects field", when: "validated", then: "REJECTED (.strict)" }
+      - { given: "every existing valid payload", when: "validated", then: "still accepted; sceneSurprise/sensoryPredictionError [0,1] clamps intact" }
+    files_in_scope: ["packages/drive-engine/src/ipc-channel/ipc-message-validator.ts"]
+    test_refs: ["packages/drive-engine/src/ipc-channel/ipc-message-validator.spec.ts"]
+    depends_on: []
+
+  # ---------------- EP-3  P3 backbone swaps (LANDED) ----------------
+  - { id: EP-3, kind: epic, parent: FEAT-1, status: done, priority: P1,
+      title: "P3 — Backbone swaps as versioned migrations", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.4"] }
+  - id: TK-9
+    kind: ticket
+    parent: EP-3
+    title: "P3.1 — DINOv2-base 768-D object embeddings + vector(1280)->768 migration"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: production
+    acceptance_criteria:
+      - { given: "the object path", when: "DINOv2 swap + destructive migration land", then: "embeddings flow end-to-end at 768-D; JL projection deleted (768==fused dim); mask-zeroing intact" }
+    files_in_scope: ["packages/perception-service/cobeing/layer2_perception/feature_extraction.py"]
+    test_refs: ["test/fixtures/vision/p3.1-dinov2-migration.sql"]
+  - id: TK-10
+    kind: ticket
+    parent: EP-3
+    title: "P3.2 — ArcFace 512-D face path (unmasked crop, vector->512, OPEN-12)"
+    status: done
+    priority: P1
+    estimate: M
+    engineering_level: production
+    acceptance_criteria:
+      - { given: "the face path", when: "ArcFace swap lands", then: "512-D; same face two angles match; WS4 multi-person gate green; no body-crop contamination (OPEN-12)" }
+    files_in_scope: ["packages/perception-service/main.py"]
+    test_refs: ["packages/perception-service/tests/test_arcface_embedder.py", "test/fixtures/vision/p3.2-arcface-migration.sql"]
+  - id: TK-11
+    kind: ticket
+    parent: EP-3
+    title: "P3.3 — Neo4jGraphPersistence (class-correct + round-trip only, not live-wired)"
+    status: done
+    priority: P2
+    engineering_level: production
+    acceptance_criteria:
+      - { given: "the dangling GraphPersistence import", when: "the class+package are built", then: "seeded round-trip passes; bounding_box JSON-encoded (spatial score >0); KG-isolation holds" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/infrastructure/neo4j_persistence.py"]
+
+  # ---------------- EP-4  P4 Fork C surprise gate (REMAINING) ----------------
+  - { id: EP-4, kind: epic, parent: FEAT-1, status: todo, priority: P1,
+      title: "P4 — Fork C surprise gate (event-driven triggering, net-new, LAST)",
+      intent: "Make scene/presence change a rate-limited, habituating cycle trigger feeding the isolated drive engine.",
+      design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.5"], depends_on: ["TK-8", "TK-5"] }
+  # ---------------- EP-5  P5 EfficientNet retirement (REMAINING) ----------------
+  - { id: EP-5, kind: epic, parent: FEAT-1, status: todo, priority: P2,
+      title: "P5 — EfficientNet retirement (grep-gated, LAST)", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.6"], depends_on: ["EP-3"] }
+  # ---------------- EP-6  Live acceptance (A/B/C) ----------------
+  - { id: EP-6, kind: epic, parent: FEAT-1, status: todo, priority: P1,
+      title: "ACC — live acceptance smokes (A/B/C) + mythos live-smoke", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#7.2"] }
+  # ================= FEAT-2  Phase-4 hardening backlog (REMAINDER) =================
+  # Source: wiki/phase4-backlog.md. Waves 1/2/3 are DONE (Tier-1 CANON, Tier-2 quick
+  # wins, Tier-3 clusters, Tier-4a/WS5.5 three-graph). What remains = Wave 4 (Tier-4
+  # c/d/e/f), Tier 5 deferred, and Tier 6 (needs Jim's decision). Epics here are the
+  # design layer; /plan-tickets decomposes each into atomic tickets (3-pass + poc-router).
+  - { id: FEAT-2, kind: feature, parent: null, status: todo, priority: P2,
+      title: "Phase-4 hardening backlog (remainder)",
+      intent: "Close out the Phase-4 residuals after Waves 1-3: god-object refactors, cognition training stubs, deploy + cost hardening, and the Tier-5 deferred set.",
+      design_refs: ["wiki/phase4-backlog.md"] }
+  - { id: EP-7, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+      title: "Wave 4c — God-object refactors",
+      intent: "Break up decision-making.service.ts (~2000+ lines), communication.service.ts, deliberation.service.ts without behavior change.",
+      design_refs: ["wiki/phase4-backlog.md#4c"] }
+  - { id: EP-8, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+      title: "Wave 4d — Cognition-sidecar training stubs",
+      intent: "Close the reinforce/correct stubs, per-model freeze, EWC real-Fisher (verify vs WS2), bootstrap-mode/category-demotion, the §2.5 use_learned graduation criterion.",
+      design_refs: ["wiki/phase4-backlog.md#4d"] }
+  - { id: EP-9, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+      title: "Wave 4e — Deploy hardening",
+      intent: "App-level healthcheck + the Dockerfile subpath `exports` fix (open since WS1).",
+      design_refs: ["wiki/phase4-backlog.md#4e"] }
+  - { id: EP-10, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+      title: "Wave 4f — Cost observability on every LLM path",
+      intent: "The dollar figure for 'graduating off the LLM' (a done-state metric) — cost tracked on every LLM call path.",
+      design_refs: ["wiki/phase4-backlog.md#4f"] }
+  - { id: EP-11, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier 5 — OTHER decay + research/web",
+      intent: "§2.11 OTHER-instance decay (guardian/identity-exclusion gated) and §3.2 SearXNG: wire the web client or remove the container.",
+      design_refs: ["wiki/phase4-backlog.md#tier-5"] }
+  - { id: EP-12, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier 5 — Learning / consolidation depth residuals",
+      intent: "consolidation-semantic-extraction-depth, reflection-long-session-sampling, ungrounded-insight-regrounding-sweep, dead-letter tracking, learning-cycle-pressure-trigger.",
+      design_refs: ["wiki/phase4-backlog.md#tier-5"] }
+  - { id: EP-13, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier 5 — Perception-cognition composition (Python)",
+      intent: "morphology/procedure-executor NotImplementedError (procedures can't compose), semantic-teaching default sense-tag, inference depth-4 advancement, configurable persistence-check weights.",
+      design_refs: ["wiki/phase4-backlog.md#tier-5"] }
+  - { id: EP-14, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier 5 — Planning + decision-making residuals",
+      intent: "planning requeue-backoff / sim cross-drive aggregation / sim sample-size / constraint-trigger wiring; decision-cycle concurrency-guard + structured error recovery, deferred event emission, unified MAE store, mood-congruent retrieval (verify), adaptive candidate-scoring weights (canon-check).",
+      design_refs: ["wiki/phase4-backlog.md#tier-5"] }
+  - { id: EP-15, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier 5 — Tooling / PKG + misc residuals",
+      intent: "scope-aware CALLS-edge resolution, pkg-tools name-resolution suggestions, skill-installer cycle-detection, narration sidecar model-state enrichment; verify-before-listing items (A2.1 latent hardening, mood-congruent, research-report mining).",
+      design_refs: ["wiki/phase4-backlog.md#tier-5", "wiki/phase4-backlog.md#verify-before-listing"] }
+
+  # ============ assembled by /plan-tickets decomposition (TK-19..76) ============
+  # ================= FEAT-1 vision tail — re-decomposed (TK-19..30) =================
+  - { id: TK-19, kind: ticket, parent: EP-4, status: todo, priority: P1, estimate: S, engineering_level: prototype,
+      title: "P4-POC — sceneNudge turn -> SYSTEM_TRIGGER end-to-end feasibility",
+      intent: "De-risk Fork C: confirm the existing sceneNudge InboundTurn can be promoted to SYSTEM_TRIGGER in categorizeFrame without breaking scene sampling.",
+      poc: { question: "What carries the sceneNudge bit to categorizeFrame? Confirm a frame-level flag (frame.raw['system_trigger']=true) stamped in runCycleForTurn survives sample() and is readable in categorizeFrame, yielding SYSTEM_TRIGGER without dropping scene data — NOT a processInput signature change and NOT a new 'scene' modality.", hypothesis: "frame.raw survives sample() (turn_id precedent at decision-making.service.ts:367); a system_trigger flag stamped pre-processInput is readable in categorizeFrame.", status: open },
+      complexity_budget: "<=2h read-only spike (runCycleForTurn -> sample -> processInput); no code changes",
+      acceptance_criteria: [ { given: "a harness enqueuing a sceneNudge:true turn through processInput", when: "it runs against the live decision path", then: "the sampled frame can carry a readable system_trigger marker in frame.raw AND categorizeFrame can branch on it to return SYSTEM_TRIGGER without dropping scene data; the carrier (frame.raw['system_trigger']) and conversion contract are documented" } ],
+      files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/inputs/sampling/tick-sampler.ts", "packages/decision-making/src/process-input/process-input.service.ts"],
+      depends_on: [] }
+
+  - id: TK-20
+    kind: ticket
+    parent: EP-4
+    title: "P4.1 — VERIFY the live sceneSurprise drive path (clamp + no-relief mapping); reuse, do not add presenceSurprise"
+    intent: "The sceneSurprise ScenePrediction path is already live: validator clamps [0,1], rules.ts maps Curiosity+Anxiety PRESSURE scaled by magnitude, no relief. Assert it with characterization tests; do NOT introduce a presenceSurprise axis (AD-0004)."
+    status: todo
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=60 LOC tests only; NO rules.ts or validator field change unless a gap is found"
+    acceptance_criteria:
+      - { given: "an ActionOutcomePayload metadata.sceneSurprise=1.5 or -0.1", when: "validated", then: "REJECTED by the existing .min(0).max(1) at ipc-message-validator.ts:49" }
+      - { given: "metadata.sceneSurprise=s in {0,0.5,1.0} with actionType ScenePrediction", when: "computeDefaultAffect runs (rules.ts:239)", then: "Curiosity +0.02*s and Anxiety +0.01*s PRESSURE; NO relief (negative) delta on any axis" }
+      - { given: "the live path", when: "inspected", then: "no presenceSurprise field is added; ScenePrediction stays in METADATA_SCALED_ACTION_TYPES" }
+    files_in_scope: ["packages/drive-engine/src/ipc-channel/ipc-message-validator.spec.ts", "packages/drive-engine/src/constants/rules.spec.ts"]
+    depends_on: ["TK-8"]
+
+  - id: TK-21
+    kind: ticket
+    parent: EP-4
+    title: "P4.2 — reclassify sceneNudge turns as SYSTEM_TRIGGER in categorizeFrame"
+    intent: "Distinguish vision-triggered cycles (no human text/audio) as SYSTEM_TRIGGER so deliberation + P1.5 recall route them correctly, separate from VISUAL_INPUT frames carrying co-present text/audio."
+    status: todo
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; stamp frame.raw['system_trigger'] in runCycleForTurn when turn.sceneNudge, branch categorizeFrame on it; do NOT touch lastInputAt"
+    acceptance_criteria:
+      - { given: "a sceneNudge:true InboundTurn whose sampled frame is stamped frame.raw['system_trigger']=true in runCycleForTurn", when: "processInput runs on the sampled frame", then: "categorizeFrame returns SYSTEM_TRIGGER (not VISUAL_INPUT/UNKNOWN)" }
+      - { given: "a normal VISUAL_INPUT frame (video, no text, NOT a sceneNudge)", when: "processInput runs", then: "categorizeFrame still returns VISUAL_INPUT (no regression)" }
+      - { given: "a salient-but-calm frame on a drive-cold backend", when: "the sceneNudge fires", then: "a SYSTEM_TRIGGER cycle is still enqueued and runs (trigger independent of drive pressure)" }
+    files_in_scope: ["packages/decision-making/src/process-input/process-input.service.ts", "packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/process-input/process-input.service.spec.ts"]
+    depends_on: ["TK-19", "TK-20"]
+
+  - id: TK-22
+    kind: ticket
+    parent: EP-4
+    title: "P4.3 — verify the ScenePrediction drive signal fires on the sceneNudge path; exercise trigger-vs-signal at the cooldown seam"
+    intent: "routeScenePredictionErrors (decision-making.service.ts:2725) already emits the ScenePrediction ActionOutcome each cycle. Verify it fires on a sceneNudge-triggered cycle, and that a cooldown-suppressed TRIGGER still leaves the SIGNAL emitted (trigger-vs-signal). No new IPC, no new field (AD-0004)."
+    status: todo
+    priority: P1
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=120 LOC; assert against the live gateway nudge + routeScenePredictionErrors emit; do NOT open a new IPC channel or add a field"
+    acceptance_criteria:
+      - { given: "a sceneNudge frame with totalSurprise>=0.05 from ScenePredictionService", when: "the cycle runs", then: "routeScenePredictionErrors emits an ActionOutcome (actionType ScenePrediction, metadata.sceneSurprise clamped [0,1]) to the drive engine" }
+      - { given: "a second scene change within SCENE_CYCLE_COOLDOWN_MS (5000)", when: "processed", then: "the cycle TRIGGER (nudgeSceneChange) is suppressed at perception.gateway.ts:323 but the ScenePrediction SIGNAL still emits when a cycle does run (trigger-vs-signal)" }
+      - { given: "drive_events filtered to action_type=ScenePrediction after the run", when: "queried", then: "count>0 with non-null sceneSurprise passing .strict() validation; zero relief>0 rows" }
+    files_in_scope: ["apps/sylphie/src/gateways/perception.gateway.ts", "apps/sylphie/src/gateways/perception.gateway.spec.ts", "packages/decision-making/src/prediction/scene-prediction.service.ts", "packages/decision-making/src/decision-making.service.ts"]
+    depends_on: ["TK-21"]
+
+  - id: TK-23
+    kind: ticket
+    parent: EP-4
+    title: "P4.4 — encode-side guard + surprise-cascade property tests"
+    intent: "Assert both edges of the perception->drive->perception loop stay cut: surprise feeds ATTENTION only (not the episodic encode gate), and N distinct changes cannot unboundedly ratchet arousal — bounded by the cooldown gate AND per-identity habituation (Curiosity/Anxiety have NO passive decay)."
+    status: todo
+    priority: P1
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=150 LOC across two property tests; assertion-only on existing code after TK-20..22"
+    acceptance_criteria:
+      - { given: "a salient frame that produces a SYSTEM_TRIGGER cycle", when: "episodic encode is evaluated", then: "the encode gate is NOT opened via a Curiosity/Anxiety drive path (no-theater.spec)" }
+      - { given: "N=10 distinct salient changes within SCENE_CYCLE_COOLDOWN_MS*10 ms (cooldown=5000)", when: "processed", then: "at most ceil(elapsed/SCENE_CYCLE_COOLDOWN_MS) SYSTEM_TRIGGER cycles enqueue; AND for a REPEATED scene/identity, ScenePredictionService surprise_{k+1} < surprise_k (per-identity habituation, scene-prediction.service.ts:161) so the Curiosity/Anxiety pressure increments form a decreasing series — no constant ratchet" }
+    test_refs: ["test/property/no-theater.spec.ts", "test/property/surprise-cascade.spec.ts"]
+    depends_on: ["TK-22"]
+
+  - id: TK-24
+    kind: ticket
+    parent: EP-5
+    title: "P5.1a — confirm OnnxEmbeddingExtractor is dead code (no live call site)"
+    intent: "Verify before deletion that _get_or_init_embedding_extractor is unreachable so removing it cannot regress the live path."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=30min; grep + static read only; no code changes"
+    acceptance_criteria:
+      - { given: "main.py + cobeing/", when: "grepped for _get_or_init_embedding_extractor", then: "the ONLY matches are its own definition/docstring — zero external call sites" }
+      - { given: "the /crop-face and object-track paths", when: "read", then: "they call _get_or_init_face_extractor (ArcFace) and _get_or_init_object_extractor (DINOv2) respectively; the main.py:188 'face keeps Onnx' comment is confirmed stale" }
+    files_in_scope: ["packages/perception-service/main.py", "packages/perception-service/cobeing/layer2_perception/feature_extraction.py"]
+    depends_on: ["TK-9", "TK-10"]
+
+  - id: TK-25
+    kind: ticket
+    parent: EP-5
+    title: "P5.1b — delete OnnxEmbeddingExtractor + orphaned init state (keep DominantColorExtractor)"
+    intent: "Remove the dead EfficientNet backbone + its orphaned state so grep efficientnet/OnnxEmbeddingExtractor returns zero, preserving DominantColorExtractor, the EmbeddingExtractor protocol, and MockEmbeddingExtractor."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=200 LOC deleted; no new logic; stop and ask if any deletion breaks an import elsewhere"
+    acceptance_criteria:
+      - { given: "packages/perception-service (excluding .venv/site-packages)", when: "grepped for the symbols 'class OnnxEmbeddingExtractor', the _DEFAULT_MODEL_FILENAME const, and the 'efficientnet_b0.onnx' literal", then: "ZERO matches; bare prose/docstring mentions of EfficientNet may remain and do NOT fail the gate" }
+      - { given: "feature_extraction.py", when: "read", then: "OnnxEmbeddingExtractor + its model-filename constants are absent; DominantColorExtractor, EmbeddingExtractor protocol, MockEmbeddingExtractor, DINOv2BaseEmbeddingExtractor, ArcFaceEmbedder all present and importable; the stale main.py:188 'face keeps OnnxEmbeddingExtractor' comment is removed/corrected" }
+      - { given: "a fresh sidecar boot", when: "POST /perception/detect (confirmed track) and /crop-face (face) are called", then: "768-D object + 512-D face embeddings return; no import error" }
+    files_in_scope: ["packages/perception-service/main.py", "packages/perception-service/cobeing/layer2_perception/feature_extraction.py"]
+    depends_on: ["TK-24"]
+
+  - id: TK-26
+    kind: ticket
+    parent: EP-6
+    title: "ACC.0 — vision-preflight e2e harness + test/e2e/vision/ scaffold"
+    intent: "A fast-failing preflight that validates the live M0 substrate before any acceptance test, so ACC.A/B/C failures are diagnostic not masked."
+    status: todo
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; HTTP probes + process assertions; no browser"
+    acceptance_criteria:
+      - { given: "the sidecar UP and M0-satisfied", when: "vision-preflight.e2e.ts runs", then: "exits 0; logs model_loaded/face_model_loaded true, embedding_init_failed false from GET /perception/status" }
+      - { given: "the sidecar DOWN or model_loaded=false", when: "it runs", then: "exits non-zero with a loud message naming WHICH M0 condition failed (no silent pass)" }
+      - { given: "test/e2e/vision/", when: "listed", then: "preflight + accept-A/B/C stubs exist; stubs exit 1 NOT IMPLEMENTED (no false greens)" }
+      - { given: "GET /perception/status", when: "probed by the preflight", then: "it exposes model_loaded, face_model_loaded, embedding_init_failed (the preflight reads these three, not a generic 200)" }
+    files_in_scope: ["test/e2e/vision/vision-preflight.e2e.ts", "test/e2e/vision/accept-A.e2e.ts", "test/e2e/vision/accept-B.e2e.ts", "test/e2e/vision/accept-C.e2e.ts"]
+    depends_on: []
+
+  - id: TK-27
+    kind: ticket
+    parent: EP-6
+    title: "ACC.A — embeddings flow end-to-end (live)"
+    intent: "Prove tracked_objects[].embedding is non-null, 768-D, and distinguishes mug-vs-book in the fused latent by a measurable cosine gap."
+    status: todo
+    priority: P1
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC; synthetic-fixture POST injection over live camera"
+    acceptance_criteria:
+      - { given: "mug then book posted 4x each to /perception/detect", when: "accept-A.e2e.ts runs", then: "all confirmed tracks have embedding length 768 (not null, not 1280)" }
+      - { given: "the mug/book confirmed embeddings", when: "cosine is computed", then: "intra-class > inter-class by >= MARGIN 0.05; masked vs unmasked crops differ (mask-zeroing active)" }
+    test_refs: ["test/e2e/vision/accept-A.e2e.ts", "test/fixtures/vision/mug_640x480.jpg", "test/fixtures/vision/book_640x480.jpg"]
+    depends_on: ["TK-26", "TK-30", "TK-1", "TK-9"]
+
+  - id: TK-28
+    kind: ticket
+    parent: EP-6
+    title: "ACC.B — durable cross-session re-bind (live)"
+    intent: "Prove a power-cycled NestJS app re-binds a previously-seen object to the SAME :VisualObject node with sighting_count incrementing, centroid drift, and bbox round-tripping."
+    status: todo
+    priority: P1
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=250 LOC; NestJS restart = subprocess kill+restart; DBs stay up"
+    acceptance_criteria:
+      - { given: "session 1 records a :VisualObject (node_id, sighting_count=1); NestJS power-cycled (DBs up); session 2 shows same object", when: "accept-B.e2e.ts runs", then: "same node_id; sighting_count>=2; no duplicate node" }
+      - { given: "the node after session 2", when: "pgvector queried", then: "centroid drift>0; bounding_box non-null parseable JSON; ZERO cross-instance edges (KG-isolation holds)" }
+    test_refs: ["test/e2e/vision/accept-B.e2e.ts", "test/fixtures/vision/mug_640x480.jpg"]
+    depends_on: ["TK-26", "TK-30", "TK-3", "TK-4", "TK-11"]
+
+  - id: TK-29
+    kind: ticket
+    parent: EP-6
+    title: "ACC.C — surprise -> SYSTEM_TRIGGER cycle + recall + drive signal (live)"
+    intent: "Prove end-to-end that a scene/presence change with no text/audio fires a SYSTEM_TRIGGER cycle, the cycle retrieves a prior scene (P1.5), and the drive engine receives a presenceSurprise signal with no perception-side pre-computed delta (Std-6)."
+    status: todo
+    priority: P1
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=300 LOC; log-line probing + drive_events query; no browser"
+    acceptance_criteria:
+      - { given: "a scene/presence frame with no text/audio posted until confirmed+sceneNudge", when: "accept-C.e2e.ts runs", then: "logs show SYSTEM_TRIGGER (not VISUAL_INPUT/MULTIMODAL); the cycle does NOT enter with empty retrieval (P1.5 returns >=1 prior candidate)" }
+      - { given: "drive_events after the cycle (action_type ScenePrediction)", when: "queried", then: ">=1 row with presenceSurprise in [0,1]; ZERO rows with relief>0" }
+      - { given: "a second change within cooldown; and the same static scene posted 20x", when: "processed", then: "trigger suppressed but signal row appears; after the first cycle no further SYSTEM_TRIGGER for the static scene (habituation)" }
+    test_refs: ["test/e2e/vision/accept-C.e2e.ts"]
+    depends_on: ["TK-26", "TK-30", "TK-21", "TK-22", "TK-23", "TK-5"]
+
+  - id: TK-30
+    kind: ticket
+    parent: EP-6
+    title: "ACC.FIXTURES — synthetic JPEG fixtures + seeded DB fixtures"
+    intent: "Deterministic inputs (synthetic JPEGs, seeded DB rows) so acceptance tests are repeatable without a live camera."
+    status: todo
+    priority: P1
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=150 LOC synth_frames.py (pure Pillow); DB seeds are SQL/Cypher; no model inference"
+    acceptance_criteria:
+      - { given: "test/fixtures/vision/", when: "listed", then: "mug/book/person_640x480.jpg + mug_1280x720.jpg exist as synthetic labeled-rectangle JPEGs" }
+      - { given: "seed_timescale.sql and seed_neo4j.cypher", when: "applied", then: "a visual_object_embeddings row (768-D + JSON bbox) and a :VisualObject node (provenance SENSOR, confidence 0.40) exist; no error" }
+    files_in_scope: ["test/fixtures/vision/synth_frames.py", "test/fixtures/vision/mug_640x480.jpg", "test/fixtures/vision/book_640x480.jpg", "test/fixtures/vision/mug_1280x720.jpg", "test/fixtures/vision/person_640x480.jpg", "test/fixtures/vision/seed_timescale.sql", "test/fixtures/vision/seed_neo4j.cypher"]
+    depends_on: []
+
+  # ================= FEAT-2 Wave 4c god-objects (TK-31..36) =================
+  - id: TK-31
+    kind: ticket
+    parent: EP-7
+    title: "EP7-A — Extract DecisionTickEngine service"
+    intent: "Extract the self-initiated tick loop (start/stop/onTick + lifecycle + tick constants, ~lines 486-791) into DecisionTickEngine injected back via constructor; behavior byte-identical."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=200 LOC net; stop if it requires altering CycleGuard's API"
+    non_goals: ["Changing tick timing/thresholds or any other section"]
+    acceptance_criteria:
+      - { given: "the tick-engine code moved to DecisionTickEngine", when: "yarn workspace @sylphie/decision-making build + test", then: "compiles green; all tests pass (same count)" }
+      - { given: "a live boot", when: "the tick loop fires", then: "behavior identical (same log lines, same CycleGuard wiring)" }
+      - { given: "a captured golden of the tick-loop log lines + CycleGuard wiring pre-extraction", when: "re-run post-extraction", then: "the golden is byte-identical (not merely same test count)" }
+    files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/tick-engine/decision-tick-engine.service.ts", "packages/decision-making/src/decision-making.module.ts"]
+    depends_on: []
+
+  - id: TK-32
+    kind: ticket
+    parent: EP-7
+    title: "EP7-B — Extract SensoryPredictionRouter service"
+    intent: "Extract routeSensoryPredictionErrors + routeScenePredictionErrors into a SensoryPredictionRouter (stateless modulo the injected reporter)."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=100 LOC net"
+    non_goals: ["Changing thresholds or routing logic"]
+    acceptance_criteria:
+      - { given: "both route* methods moved + injected", when: "build + test", then: "compiles green; all tests pass" }
+      - { given: "a sensory prediction error above threshold", when: "processInput runs", then: "the drive engine receives the same IPC payload (behavior identical)" }
+      - { given: "a captured golden of the IPC payload emitted on a sensory/scene prediction error pre-extraction", when: "re-run post-extraction", then: "byte-identical payload" }
+    files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/sensory/sensory-prediction-router.service.ts", "packages/decision-making/src/decision-making.module.ts"]
+    depends_on: ["TK-31"]
+
+  - id: TK-33
+    kind: ticket
+    parent: EP-7
+    title: "EP7-C — Extract TensorCandidateBuilder + RecallRetrievalHelper"
+    intent: "Extract buildTensorCandidate into TensorCandidateBuilder and computeRecallRetrieval+recallKeyEncoder into RecallRetrievalHelper (both stateless pure transforms)."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=120 LOC net; two independent small extractions"
+    non_goals: ["Changing any logic/thresholds/bootstrap gating; pickResearchTarget stays put"]
+    acceptance_criteria:
+      - { given: "both helpers extracted", when: "build + test", then: "compiles green; all tests pass" }
+      - { given: "tensor partial-mode boot", when: "a tensor-eligible category arrives", then: "TensorCandidateBuilder returns the same ActionCandidate as before" }
+    files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/tensor/tensor-candidate-builder.ts", "packages/decision-making/src/latent-space/recall-retrieval-helper.ts", "packages/decision-making/src/decision-making.module.ts"]
+    depends_on: ["TK-32"]
+
+  - id: TK-34
+    kind: ticket
+    parent: EP-7
+    title: "EP7-D — Extract FastFactWriter from CommunicationService"
+    intent: "Extract writeFastFacts + writeFactToSelfKg + writeFactToWkgCoBeing into a standalone FastFactWriter service (carries the 4 KG-write deps off the hot path)."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=200 LOC net; stop if extraction requires changing guardian-tier attribution"
+    non_goals: ["Changing OKG/WKG routing, provenance tiers, or guardian logic; the parseInput/handleCycleResponse sections"]
+    acceptance_criteria:
+      - { given: "the fast-fact writers extracted", when: "yarn workspace @sylphie/app build", then: "compiles green; all tests pass" }
+      - { given: "a guardian utterance 'My name is Jim'", when: "parseInput fires", then: "FastFactWriter writes the self-fact with the same provenance tier as before" }
+    files_in_scope: ["apps/sylphie/src/services/communication.service.ts", "apps/sylphie/src/services/fast-fact-writer.service.ts", "apps/sylphie/src/app.module.ts"]
+    depends_on: []
+
+  - id: TK-35
+    kind: ticket
+    parent: EP-7
+    title: "EP7-E — Extract CycleOutcomeReporter from CommunicationService"
+    intent: "Extract checkTheaterProhibition + reportBasicOutcome into a CycleOutcomeReporter (theater check gates the outcome report; shared deps)."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=180 LOC net"
+    non_goals: ["Changing theater verdict logic or the affect scorer; the handleCycleResponse delivery path"]
+    acceptance_criteria:
+      - { given: "both methods extracted", when: "build", then: "compiles green" }
+      - { given: "a theatrical response (anxiety>0.7)", when: "cycle completes", then: "theater verdict fires identically; drive-engine gets zero-reinforcement outcome; non-theatrical payloads reach the engine unchanged" }
+      - { given: "a captured golden of the theater-verdict + outcome-report payload pre-extraction", when: "re-run post-extraction", then: "byte-identical for both theatrical and non-theatrical inputs" }
+    files_in_scope: ["apps/sylphie/src/services/communication.service.ts", "apps/sylphie/src/services/cycle-outcome-reporter.service.ts", "apps/sylphie/src/app.module.ts"]
+    depends_on: ["TK-34"]
+
+  - id: TK-36
+    kind: ticket
+    parent: EP-7
+    title: "EP7-F — Extract deliberation pure helpers into deliberation-helpers.ts"
+    intent: "Move the ~550 lines of module-level pure functions out of deliberation.service.ts; re-export isIgnoranceResponse + recallKeyForQuestion from the package barrel so callers don't break."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=50 LOC net (move + re-export)"
+    non_goals: ["Changing any helper logic or the public export surface"]
+    acceptance_criteria:
+      - { given: "helpers moved + re-exported", when: "build + deliberation/recall specs", then: "compiles green; isIgnoranceResponse + recallKeyForQuestion still importable; tests pass" }
+      - { given: "deliberation.service.ts post-extraction", when: "measured", then: "<=970 lines (down from 1520)" }
+    files_in_scope: ["packages/decision-making/src/deliberation/deliberation.service.ts", "packages/decision-making/src/deliberation/deliberation-helpers.ts", "packages/decision-making/src/index.ts"]
+    depends_on: []
+
+  # ================= FEAT-2 Wave 4d cognition stubs (TK-37..41) =================
+  - { id: TK-37, kind: ticket, parent: EP-8, status: todo, priority: P2, estimate: S, engineering_level: prototype,
+      title: "EP8-POC — Verify EWC real-Fisher is live vs uniform fallback",
+      intent: "Resolve whether the live cognition sidecar computes empirical Fisher at phase-transition (WS2 claim) or falls back to uniform Fisher, before writing a code ticket.",
+      poc: { question: "Does POST /cognition/phase-transition on the live container compute empirical Fisher (fisher_computed=true), or is _compute_uniform_fisher still the active path?", hypothesis: "WS2 landed real Fisher; the backlog item is stale.", status: open },
+      complexity_budget: "<=4h; read replay.py/data_buffer.py + run one live phase-transition call; no fixes",
+      acceptance_criteria: [ { given: "the live Docker cognition container", when: "POST /cognition/phase-transition with a loaded buffer", then: "response.fisher_computed is true (or explicitly false with reason); replay.py uniform path documented as legacy-only or confirmed active" } ],
+      files_in_scope: ["packages/cognition-service/training/replay.py", "packages/cognition-service/training/data_buffer.py", "packages/cognition-service/main.py"],
+      depends_on: [] }
+
+  - id: TK-38
+    kind: ticket
+    parent: EP-8
+    title: "EP8-1 — Implement per-model freeze in /cognition/control/freeze"
+    intent: "freeze_model('panel_0') freezes only that panel; 'all' keeps existing behavior. Trainer.freeze/unfreeze accept an optional model_name."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=150 LOC; stop if the panel list isn't cleanly exposed on the Trainer"
+    non_goals: ["Freezing the convergence model separately; persisting freeze across restart"]
+    acceptance_criteria:
+      - { given: "the live sidecar", when: "POST freeze model_name=panel_0 then training steps run", then: "accepted=true; panel[0] weights do NOT change (snapshot before/after); unfreeze resumes training" }
+      - { given: "freeze model_name=all / model_name=unknown", when: "called", then: "all-path preserved; unknown returns accepted=false with an error (not a silent no-op)" }
+    files_in_scope: ["packages/cognition-service/main.py", "packages/cognition-service/training/trainer.py"]
+    depends_on: ["TK-37"]
+
+  - id: TK-39
+    kind: ticket
+    parent: EP-8
+    title: "EP8-2 — EWC real-Fisher: close or wire based on the POC"
+    intent: "If real Fisher is live: document the trigger + close (no code). If uniform fallback is active: wire compute_fisher() into phase-transition before set_reference()."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=80 LOC if wiring needed; 0 LOC + comment if already live"
+    non_goals: ["Changing the Online EWC blending formula"]
+    acceptance_criteria:
+      - { given: "the POC result fisher_computed=true", when: "acted on", then: "a confirming comment is added to main.py; no code change" }
+      - { given: "the POC result fisher_computed=false", when: "acted on", then: "compute_fisher() is called in the phase-transition handler; next phase-transition returns fisher_computed=true; tests pass" }
+    files_in_scope: ["packages/cognition-service/main.py", "packages/cognition-service/training/replay.py"]
+    depends_on: ["TK-37"]
+
+  - id: TK-40
+    kind: ticket
+    parent: EP-8
+    title: "EP8-3 — Bootstrap category demotion in BootstrapTracker"
+    intent: "A graduated category whose rolling agreement drops below demotion_threshold (0.70) reverts to LLM-decided with a warning; graduation stays at 0.85."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=80 LOC; demotion checked from the same record_comparison call site as graduation"
+    non_goals: ["Changing partial->full transition; persisting demotion across restart; re-graduation logic"]
+    acceptance_criteria:
+      - { given: "a graduated category whose agreement drops below 0.70", when: "checked", then: "removed from graduated set; warning logged; should_use_tensor returns False" }
+      - { given: "a category between 0.70 and 0.85", when: "checked", then: "NOT demoted" }
+    files_in_scope: ["packages/cognition-service/inference/bootstrap.py"]
+    depends_on: []
+
+  - id: TK-41
+    kind: ticket
+    parent: EP-8
+    title: "EP8-4 — use_learned graduation criterion in ConvergenceModel"
+    intent: "Flip use_learned=True when convergence_sample_count>=1000 AND accuracy>=0.80; persist across restart; expose in /cognition/bootstrap."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=120 LOC; graduation check in the existing training-step callback"
+    non_goals: ["Separate convergence-data collection path; changing _predict_learned; auto-demoting use_learned"]
+    acceptance_criteria:
+      - { given: ">=1000 samples and accuracy>=0.80", when: "a training step runs", then: "use_learned flips True; INFO logged; /cognition/bootstrap reports use_learned=true" }
+      - { given: "<1000 samples", when: "training runs", then: "use_learned stays False regardless of accuracy; persisted True survives restart" }
+    files_in_scope: ["packages/cognition-service/models/convergence.py", "packages/cognition-service/main.py"]
+    depends_on: ["TK-37"]
+
+  # ================= FEAT-2 Wave 4e deploy (TK-42..44) =================
+  - { id: TK-42, kind: ticket, parent: EP-9, status: todo, priority: P2, estimate: S, engineering_level: prototype,
+      title: "EP9-POC — Verify whether the Dockerfile cp-dist hack is still needed",
+      intent: "Determine if the cp-to-package-root workaround can be replaced by proper exports fields + deleted, given drive-engine already has exports.",
+      poc: { question: "Are any live subpath imports from @sylphie/* packages that LACK an exports field? Does a build with the cp lines removed boot cleanly?", hypothesis: "The only live subpath consumer is apps/drive-server importing @sylphie/drive-engine, which already has exports; the cp hack is redundant.", status: open },
+      complexity_budget: "<=S; grep all @sylphie/* subpath imports + one test build with cp lines commented out",
+      acceptance_criteria: [ { given: "all @sylphie/* subpath imports", when: "grepped", then: "the full consumer list is documented and whether any import from a package lacking exports" }, { given: "the Dockerfile with cp lines commented out", when: "built+booted", then: "either boots cleanly (cp deletable) or fails with a specific module-not-found (cp still needed)" } ],
+      files_in_scope: ["Dockerfile", "packages/drive-engine/package.json"],
+      depends_on: [] }
+
+  - id: TK-43
+    kind: ticket
+    parent: EP-9
+    title: "EP9-1 — Add Docker HEALTHCHECK to the production image"
+    intent: "Add a HEALTHCHECK to the production stage hitting the existing GET /metrics/health so Railway can detect app-level readiness."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=8 LOC (HEALTHCHECK with --interval/--timeout/--start-period/--retries + PORT env)"
+    non_goals: ["Adding a new health endpoint; changing its response; touching docker-compose.yml"]
+    acceptance_criteria:
+      - { given: "the production Dockerfile", when: "read", then: "contains a HEALTHCHECK calling /metrics/health on the correct PORT" }
+      - { given: "docker build+run then docker inspect after the start-period", when: "the app is responsive", then: "Health.Status=healthy; when the app is made unresponsive (endpoint hangs past --timeout), Health.Status flips to unhealthy after --retries (a crash exits the container, which is a separate signal)" }
+    files_in_scope: ["Dockerfile"]
+    depends_on: []
+
+  - id: TK-44
+    kind: ticket
+    parent: EP-9
+    title: "EP9-2 — Resolve subpath exports or confirm the cp-hack is correct"
+    intent: "Act on the POC: delete the redundant cp workaround + add exports fields where live subpath consumers exist, or document the cp hack as intentional. No silent workaround."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=30 LOC Dockerfile + <=10 LOC per package.json; stop if it needs reworking workspace resolution"
+    non_goals: ["Adding exports for paths not imported anywhere; touching apps/sylphie build scripts"]
+    acceptance_criteria:
+      - { given: "the cp workaround removed or documented", when: "docker build+boot", then: "succeeds (no module-not-found)" }
+      - { given: "any package whose cp workaround was removed and has live subpath consumers", when: "checked", then: "its package.json now has an exports field covering those subpaths; apps/drive-server resolves @sylphie/drive-engine subpaths" }
+    files_in_scope: ["Dockerfile", "packages/drive-engine/package.json", "packages/shared/package.json", "packages/decision-making/package.json", "packages/learning/package.json", "packages/planning/package.json", "packages/supervisor/package.json"]
+    depends_on: ["TK-42"]
+
+  # ================= FEAT-2 Wave 4f cost observability (TK-45..48) =================
+  - id: TK-45
+    kind: ticket
+    parent: EP-10
+    title: "EP10-1 — Wire LLM cost to CycleResponse + DeliveryPayload"
+    intent: "Replace the hardcoded costUsd:0 on DeliveryPayload with the real estimated cost (from DeliberationResult / estimateLlmCostUsd) so every response has an honest dollar figure."
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: mvp
+    complexity_budget: "<=120 LOC; use the shared estimateLlmCostUsd, not new constants"
+    non_goals: ["Persisting cost to TimescaleDB; budget ceiling on deliberation; learning/planning paths"]
+    acceptance_criteria:
+      - { given: "a TYPE_2 cycle that called DeepSeek", when: "DeliveryPayload is emitted", then: "costUsd === estimateLlmCostUsd(promptTokens, completionTokens) (not merely >0) and logged" }
+      - { given: "a TYPE_1 reflex or an Ollama-local cycle", when: "emitted", then: "costUsd===0; same estimateLlmCostUsd used as CostTrackerService (no new rates)" }
+    files_in_scope: ["apps/sylphie/src/services/communication.service.ts", "packages/decision-making/src/deliberation/deliberation.service.ts", "packages/shared/src/types/communication.types.ts", "packages/shared/src/config/llm-pricing.ts"]
+    depends_on: []
+
+  - id: TK-46
+    kind: ticket
+    parent: EP-10
+    title: "EP10-2 — Cost logging on learning LLM call sites"
+    intent: "Log token counts + USD estimate after each LLM call in conversation-reflection, cross-session-synthesis, refine-edges (observability only)."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=60 LOC across three files (one logger.log per call site)"
+    non_goals: ["Persisting cost; budget enforcement; adding cost to the LearningService API"]
+    acceptance_criteria:
+      - { given: "a 60s learning cycle invoking the LLM", when: "it completes", then: "a 'LLM cost [<step>]: $X (Np+Nc tokens)' line appears (and $0.000000 for local Ollama calls — always logged when LLM was called)" }
+      - { given: "yarn workspace @sylphie/learning build", when: "run", then: "compiles green" }
+    files_in_scope: ["packages/learning/src/pipeline/conversation-reflection.service.ts", "packages/learning/src/pipeline/cross-session-synthesis.service.ts", "packages/learning/src/pipeline/refine-edges.service.ts", "packages/shared/src/config/llm-pricing.ts"]
+    depends_on: []
+
+  - id: TK-47
+    kind: ticket
+    parent: EP-10
+    title: "EP10-3 — Cost logging on the planning LLM call site"
+    intent: "Log token counts + USD estimate after the proposal.service LLM call (observability only)."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=20 LOC (one call site)"
+    non_goals: ["Budget enforcement; adding cost to the PlanningService API"]
+    acceptance_criteria:
+      - { given: "a planning cycle that calls the LLM for a proposal", when: "it completes", then: "a 'LLM cost [proposal]: $X (Np+Nc tokens)' line appears" }
+      - { given: "yarn workspace @sylphie/planning build", when: "run", then: "compiles green" }
+    files_in_scope: ["packages/planning/src/pipeline/proposal.service.ts", "packages/shared/src/config/llm-pricing.ts"]
+    depends_on: []
+
+  - id: TK-48
+    kind: ticket
+    parent: EP-10
+    title: "EP10-4 — Consolidate OllamaLlmService cost to the shared utility"
+    intent: "Replace the local hardcoded DeepSeek rate constants with estimateLlmCostUsd + resolveLlmPricingFromEnv so rate changes are one env-var, not two code edits."
+    status: todo
+    priority: P2
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=20 LOC net; no behavior change at default rates"
+    non_goals: ["Changing downstream cost usage; cost-tracking Ollama-local calls"]
+    acceptance_criteria:
+      - { given: "a DeepSeek call with known tokens", when: "completed", then: "LlmResponse.cost equals estimateLlmCostUsd(...) (same as before at default rates)" }
+      - { given: "custom DEEPSEEK_*_PRICE_PER_M env vars", when: "a call completes", then: "cost reflects them; no DEEPSEEK_*_COST_PER_M constant remains; build green" }
+    files_in_scope: ["packages/decision-making/src/llm/ollama-llm.service.ts", "packages/shared/src/config/llm-pricing.ts"]
+    depends_on: []
+
+  # ================= FEAT-2 Tier 5 (TK-49..76) =================
+  - id: TK-49
+    kind: ticket
+    parent: EP-11
+    title: "EP11.1 — OTHER-instance (OKG) decay with guardian/identity exclusion"
+    intent: "Decay confidence on non-identity OKG facts via the same ACT-R formula as WORLD, while guardian-confirmed identity facts never decay."
+    status: todo
+    priority: P3
+    estimate: L
+    engineering_level: production
+    complexity_budget: "<=300 LOC; one Cypher decay query + exclusion predicate in ConfidenceDecayService; no WKG-path or WORLD-schema change"
+    non_goals: ["Changing WORLD decay path/rates; new OKG node types; a decay-config UI"]
+    acceptance_criteria:
+      - { given: "OKG :Attribute nodes provenance!=GUARDIAN past MIN_HOURS_BEFORE_DECAY", when: "the decay cycle runs", then: "confidence decreases per the ACT-R formula at WORLD-matching per-provenance rates" }
+      - { given: "an OKG node provenance=GUARDIAN (identity)", when: "decay runs", then: "confidence is NOT reduced (skipped by the exclusion predicate)" }
+      - { given: "an OKG node below PRUNE_THRESHOLD with no edges", when: "prune runs", then: "node deleted (same as WORLD)" }
+    files_in_scope: ["packages/learning/src/pipeline/confidence-decay.service.ts", "packages/learning/src/pipeline/confidence-decay.service.spec.ts"]
+    depends_on: []
+
+  - id: TK-50
+    kind: ticket
+    parent: EP-11
+    title: "EP11.2 — SearXNG: verify wire status, then validate or remove"
+    intent: "Confirm whether SearXNG is genuinely reachable in the live web_search/RESEARCH_ENTITY paths; validate with a live smoke or remove the container + dead code."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=1h investigation + <=50 LOC change"
+    non_goals: ["Improving search quality; new tool types"]
+    acceptance_criteria:
+      - { given: "the SearXNG container running", when: "a deliberation web_search OR a RESEARCH_ENTITY step fires", then: "a successful /search response is logged at DEBUG, OR (unreachable) the service warns and falls back gracefully (no uncaught exception)" }
+      - { given: "the verification", when: "wiring is confirmed live OR both paths are dead", then: "close stub §3.2 with a note, OR remove the container + web_search path and update docker-compose; the wire-vs-remove outcome is RECORDED as a new governance decision, and any docker-compose.yml change is flagged sentinel-owned" }
+    files_in_scope: ["packages/decision-making/src/deliberation/tools/tool-registry.ts", "packages/decision-making/src/action-handlers/action-handler-registry.service.ts", "docker-compose.yml"]
+    depends_on: []
+
+  - id: TK-51
+    kind: ticket
+    parent: EP-12
+    title: "EP12.1 — Consolidation semantic extraction depth (LLM-assisted)"
+    intent: "Replace the whitespace-split entity heuristic and the two-hardcoded-triple relationship extractor in consolidation with LLM-assisted extraction; lesion-fallback to the heuristic when LLM is unavailable."
+    status: todo
+    priority: P3
+    estimate: L
+    engineering_level: production
+    complexity_budget: "<=400 LOC; reuse the existing ILlmService; fallback on null LLM"
+    non_goals: ["Replacing the whole consolidation pipeline; new WKG node types; changing learning cycle orchestration"]
+    acceptance_criteria:
+      - { given: "an episode with multi-word proper nouns + lowercase concepts and a known outcome", when: "extractors run with LLM available", then: "multi-word entities extracted whole; lowercase concepts included; no sentence-initial false positives; >=1 relationship triple whose object is NOT the literal 'observed_outcome'" }
+      - { given: "LLM unavailable (null ILlmService)", when: "extractors run", then: "fall back to the heuristic silently; no exception; build + existing tests green" }
+    files_in_scope: ["packages/decision-making/src/episodic-memory/consolidation.service.ts"]
+    depends_on: []
+
+  - id: TK-52
+    kind: ticket
+    parent: EP-12
+    title: "EP12.2 — Reflection windowed sampling for long sessions"
+    intent: "Replace head-only truncation in buildReflectionPrompt with head+tail+sampled-middle within the existing MAX_CONVERSATION_CHARS budget."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC, entirely inside buildReflectionPrompt; no new LLM calls"
+    non_goals: ["Summarisation pre-pass; dynamic budget scaling; changing insight types"]
+    acceptance_criteria:
+      - { given: "a session exceeding MAX_CONVERSATION_CHARS", when: "the prompt is assembled", then: "~33% earliest + ~33% latest + ~33% evenly-sampled middle; total <= budget" }
+      - { given: "a session within budget, and the two-event trivial case", when: "assembled", then: "unchanged (all events); no index-out-of-bounds" }
+    files_in_scope: ["packages/learning/src/pipeline/conversation-reflection.service.ts", "packages/learning/src/pipeline/conversation-reflection.service.spec.ts"]
+    depends_on: []
+
+  - id: TK-53
+    kind: ticket
+    parent: EP-12
+    title: "EP12.3 — Ungrounded insight re-grounding sweep"
+    intent: "Periodically re-ground Insight nodes (grounded:false) against entities added since creation, so insight quality is order-independent; runs on the 30-min synthesis cadence."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=250 LOC; one Cypher read + REVEALS edge creation; on the synthesis timer, not every maintenance cycle"
+    non_goals: ["TTL GC of permanently-ungrounded insights; re-emitting INSIGHT_CREATED; changing computeGroundedConfidence"]
+    acceptance_criteria:
+      - { given: "an Insight grounded:false whose REVEALS target now exists", when: "the sweep runs", then: "a REVEALS edge is created; confidence recomputed; grounded set true when ratio reaches 1.0" }
+      - { given: "an Insight whose targets still don't exist", when: "the sweep runs", then: "unchanged; no error; runs after the synthesis pass" }
+    files_in_scope: ["packages/learning/src/pipeline/conversation-reflection.service.ts", "packages/learning/src/learning.service.ts"]
+    depends_on: []
+
+  - id: TK-54
+    kind: ticket
+    parent: EP-12
+    title: "EP12.4 — Learning pipeline dead-letter tracking"
+    intent: "Record every event that fails in processEvent() to a failed_learning_events table so silent data loss is auditable; still mark-learned to unblock the queue."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC; one new TimescaleDB hypertable; no automatic retry in this ticket"
+    non_goals: ["Automatic retry (deferred open_question); failure-rate metrics into the drive; a UI"]
+    acceptance_criteria:
+      - { given: "a processEvent() that throws at any step", when: "the catch runs", then: "a row {event_id, pipeline_step, error_message, retry_count=0, failed_at} is inserted; event still marked learned" }
+      - { given: "the table DDL on a fresh DB", when: "applied", then: "created as a hypertable on failed_at; a simulated UpsertEntities throw yields one dead-letter row with the right step/error" }
+    files_in_scope: ["packages/learning/src/learning.service.ts", "packages/shared/src/timescale/timescale.service.ts"]
+    depends_on: []
+
+  - id: TK-55
+    kind: ticket
+    parent: EP-12
+    title: "EP12.5 — Learning cycle pressure trigger (Cognitive Awareness drive)"
+    intent: "LearningService calls forceCycle() when Cognitive Awareness pressure exceeds a threshold (push DRIVE_TICK), with the timer demoted to a safety floor."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=150 LOC; subscribe to an existing DRIVE_TICK/drive-state event; overlap guard reused; timer retained"
+    non_goals: ["Removing the timer; learned/adaptive threshold; wiring the drive-state IPC read path (Tier-3a)"]
+    acceptance_criteria:
+      - { given: "a DRIVE_TICK with CognitiveAwareness pressure > threshold", when: "received", then: "forceCycle() runs; the in-flight guard prevents double-execution" }
+      - { given: "pressure <= threshold, or a timer tick while a pressure cycle is in flight", when: "received", then: "no trigger / tick dropped silently (existing guard)" }
+    files_in_scope: ["packages/learning/src/learning.service.ts", "packages/learning/src/learning.module.ts"]
+    depends_on: []
+
+  - { id: TK-56, kind: ticket, parent: EP-13, status: todo, priority: P3, estimate: S, engineering_level: prototype,
+      title: "EP13-POC — MorphologyExecutor 'call' step: string<->ValueNode bridge feasibility",
+      intent: "De-risk executor composition: verify a 'call' step can delegate to a sub-procedure and convert string<->ValueNode without rewriting either executor.",
+      poc: { question: "Can a MorphologyExecutor 'call' step delegate to a sub-procedure and convert raw string values <-> ValueNode IDs without a full rewrite, with a safe recursion limit?", hypothesis: "A bounded delegation with a documented string->ValueNode->string conversion contract works; circular calls hit a depth-limit error.", status: open },
+      complexity_budget: "<=4h spike; no production path wired",
+      acceptance_criteria: [ { given: "a minimal morphological procedure with one 'call' step referencing another procedure", when: "the POC executor runs", then: "the sub-procedure executes and its string result returns to the caller; the conversion contract + depth limit are documented" }, { given: "a circular call (A->B->A)", when: "run", then: "a RecursionError / explicit depth-limit exception is raised (not an infinite loop)" } ],
+      files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/morphology_executor.py", "packages/perception-service/cobeing/layer3_knowledge/procedure_executor.py"],
+      depends_on: [] }
+
+  - id: TK-57
+    kind: ticket
+    parent: EP-13
+    title: "EP13.1 — MorphologyExecutor 'call' step type (string-value delegation)"
+    intent: "Implement the 'call' branch in _execute_string_ast so morphological procedures compose; reuse ProcedureExecutor's recursion-depth + cycle detection."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=250 LOC; no change to ProcedureExecutor"
+    non_goals: ["Full executor unification; syntactic step types (TK-58)"]
+    acceptance_criteria:
+      - { given: "a procedure with a 'call' step to a valid sub-procedure", when: "executed", then: "the sub-procedure runs and its string result returns" }
+      - { given: "a 'call' to a missing procedure, or a circular chain past MAX_RECURSION_DEPTH", when: "executed", then: "a descriptive ValueError / a RecursionError before stack overflow (not NotImplementedError); the old NotImplementedError test is replaced by a passing test" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/morphology_executor.py"]
+    depends_on: ["TK-56"]
+
+  - id: TK-58
+    kind: ticket
+    parent: EP-13
+    title: "EP13.2 — ProcedureExecutor syntactic step types (matcher delegation)"
+    intent: "Dispatch syntactic step types (match_root/edge/optional, extract_role, match_property) to SyntacticTemplateMatcher; descriptive NotImplementedError when the matcher is absent."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC; wires the delegation contract only; the matcher itself is not built here"
+    non_goals: ["Building SyntacticTemplateMatcher (deferred — see DEF-3); the morphology 'call' step (TK-57)"]
+    acceptance_criteria:
+      - { given: "SyntacticTemplateMatcher injected", when: "a match_root step executes", then: "dispatched to matcher.match(); result returned" }
+      - { given: "the matcher is None", when: "a syntactic step is hit", then: "NotImplementedError with a descriptive message (not a bare raise); non-syntactic steps unchanged" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/procedure_executor.py"]
+    depends_on: []
+
+  - id: TK-59
+    kind: ticket
+    parent: EP-13
+    title: "EP13.3 — semantic_teaching_handler default sense-tag (replace 'noun_1')"
+    intent: "Apply a coarse POS heuristic ('-ing'->verb_1, '-ly'->adv_1, else 'unknown_1') instead of unconditional 'noun_1'; guardian callers may override with an explicit sense_tag."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=100 LOC in _resolve_or_create_word_sense; update node_id pattern"
+    non_goals: ["spaCy/full morphology at teaching time; migrating existing noun_1 tags; sense disambiguation"]
+    acceptance_criteria:
+      - { given: "a new '-ing' word / an unrecognised form", when: "resolved", then: "sense_tag verb_1 (node_id word:<lemma>:verb_1) / unknown_1 respectively" }
+      - { given: "an explicit sense_tag='adj_1'", when: "resolved", then: "the provided tag is used (no heuristic override)" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/semantic_teaching_handler.py"]
+    depends_on: []
+
+  - id: TK-60
+    kind: ticket
+    parent: EP-13
+    title: "EP13.4 — Inference depth-4+ advancement criteria"
+    intent: "Define real unlock predicates for depths 4 and 5 (mirroring depth-2/3), gating depth-4 on the E5 prerequisite + success metrics; replace the LOCKED_UNTIL_E5 short-circuit."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=150 LOC in _advance_inference_depth"
+    non_goals: ["Building E5 (inner-monologue); changing depth-2/3 logic"]
+    acceptance_criteria:
+      - { given: "depth 3, E5 met, depth-4 success rate >= threshold", when: "advancement runs", then: "depth advances to 4; (E5 not met -> stays 3)" }
+      - { given: "depth 4, depth-5 criteria met", when: "advancement runs", then: "depth advances to 5" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/inference_query.py"]
+    depends_on: []
+
+  - id: TK-61
+    kind: ticket
+    parent: EP-13
+    title: "EP13.5 — Configurable persistence-check weight profiles"
+    intent: "Promote _NEW_WEIGHTS/_KNOWN_WEIGHTS/_NEW_THRESHOLD/_KNOWN_THRESHOLD into PersistenceCheckConfig (defaults = current values) with weight-sum validation."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; wire through the service constructor; validate sum=1.0 at config load"
+    non_goals: ["Named profile presets; runtime hot-reload; debounce_iou_threshold"]
+    acceptance_criteria:
+      - { given: "a PersistenceCheckConfig with custom new_weights", when: "the service is constructed", then: "interpolation uses the custom profile; module constants unchanged" }
+      - { given: "weights not summing to 1.0 / no-arg config", when: "constructed", then: "Pydantic ValidationError / identical-to-current behavior respectively" }
+    files_in_scope: ["packages/perception-service/cobeing/layer2_perception/persistence_check_service.py", "packages/perception-service/cobeing/layer2_perception/config.py"]
+    depends_on: []
+
+  - id: TK-62
+    kind: ticket
+    parent: EP-14
+    title: "EP14.1 — Planning requeue exponential backoff on deferral"
+    intent: "Attach a retryAfter to a deferred opportunity that grows exponentially with deferralCount, so it isn't re-tried every 30s cycle."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=100 LOC; retryAfter on QueuedOpportunity; dequeue skips until it passes"
+    non_goals: ["Global backoff on LLM-down; LLM health ping; changing MAX_DEFERRALS"]
+    acceptance_criteria:
+      - { given: "an opportunity deferred once", when: "re-enqueued", then: "retryAfter = enqueuedAt + BASE_BACKOFF_MS*2; dequeue skips it until then" }
+      - { given: "an item at MAX_DEFERRALS before/after retryAfter expires", when: "dequeued", then: "skipped / returned-and-processed respectively" }
+    files_in_scope: ["packages/planning/src/queue/opportunity-queue.service.ts", "packages/planning/src/planning.service.ts", "packages/planning/src/interfaces/planning.interfaces.ts"]
+    depends_on: []
+
+  - id: TK-63
+    kind: ticket
+    parent: EP-14
+    title: "EP14.2 — Simulation cross-drive effect aggregation"
+    intent: "Aggregate ALL drives from the driveEffects history (not only affectedDrive) into estimatedDriveEffect so collateral harm/benefit is visible."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=100 LOC in evaluateCategory; SimulatedOutcome already supports the partial map"
+    non_goals: ["Weighting by live drive intensity (needs IPC read); changing viability/relief thresholds; sample-size scoring (TK-64)"]
+    acceptance_criteria:
+      - { given: "history where driveEffects has multiple drives", when: "evaluateCategory aggregates", then: "estimatedDriveEffect has an entry for every drive seen; the affectedDrive entry matches the prior single-drive result" }
+      - { given: "history where only affectedDrive has effects", when: "run", then: "behavior identical (single-entry map)" }
+    files_in_scope: ["packages/planning/src/pipeline/simulation.service.ts"]
+    depends_on: []
+
+  - id: TK-64
+    kind: ticket
+    parent: EP-14
+    title: "EP14.3 — Simulation sample-size-aware confidence + risk"
+    intent: "Replace min(0.8,successRate)/(1-successRate) with shrinkage-prior confidence (k=10) and variance-aware risk, so one lucky outcome != 50 consistent ones."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=80 LOC in evaluateCategory; add variance accumulation; no SimulatedOutcome shape change"
+    non_goals: ["Per-drive confidence/risk; persisting variance; cross-drive aggregation (TK-63)"]
+    acceptance_criteria:
+      - { given: "count=1 successRate=1.0 / count=50 successRate=1.0", when: "confidence computed", then: "confidence<0.2 / >0.7 respectively; count=0 -> confidence=0, risk=1.0" }
+      - { given: "effects [-0.9,+0.3,-0.3] high-variance / [-0.3,-0.3,-0.3] low-variance", when: "risk computed", then: "risk>0.5 / <0.3 respectively" }
+    files_in_scope: ["packages/planning/src/pipeline/simulation.service.ts"]
+    depends_on: []
+
+  - id: TK-65
+    kind: ticket
+    parent: EP-14
+    title: "EP14.4 — Constraint-validation trigger-context wiring (verify + test)"
+    intent: "Confirm fetchExistingTriggerContexts() is live (it runs a real Cypher now) and constraint-3 duplicate-trigger detection fires; add the missing integration test."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=80 LOC; mostly the test; verify the live query path"
+    non_goals: ["Caching the query per cycle; soft/hard constraint mode for bootstrap"]
+    acceptance_criteria:
+      - { given: "an ActionProcedure with trigger_context='greet' in WORLD and a new proposal with the same context", when: "validate() runs", then: "constraint 3 fires; violations contain DUPLICATE_TRIGGER" }
+      - { given: "no ActionProcedure nodes / Neo4j unreachable", when: "validate() runs", then: "empty set, no false positives / fail-closed defer (existing path)" }
+    files_in_scope: ["packages/planning/src/pipeline/constraint-validation.service.ts", "packages/planning/src/pipeline/constraint-validation.service.spec.ts"]
+    depends_on: []
+
+  - id: TK-66
+    kind: ticket
+    parent: EP-14
+    title: "EP14.5 — Decision cycle structured error recovery"
+    intent: "Thread a typed CycleErrorContext (LLM_TIMEOUT, CONTRADICTION_SCAN_FAILED, HANDLER_NOT_FOUND, ...) from catch sites to the episode writer so failures are distinguishable + the SHRUG downgrade is auditable."
+    status: todo
+    priority: P3
+    estimate: L
+    engineering_level: production
+    complexity_budget: "<=400 LOC across 4-5 files; additive optional field on Episode; no retry logic"
+    non_goals: ["Auto-retry/backoff on timeout; circuit-breaker recovery state; changing Learning confidence formulas"]
+    acceptance_criteria:
+      - { given: "an LLM timeout in deliberation", when: "caught", then: "episode written with cycleErrorContext.cause=LLM_TIMEOUT; cycle does not throw; Learning gets the error-tagged episode" }
+      - { given: "contradiction scan throws / a handler that previously returned null fails", when: "caught", then: "verdict SHRUG with arbitrationError=CONTRADICTION_SCAN_FAILED / a typed error object (not null) is returned" }
+    files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/executor/executor-engine.service.ts", "packages/decision-making/src/arbitration/arbitration.service.ts", "packages/decision-making/src/action-handlers/action-handler-registry.service.ts", "packages/decision-making/src/episodic-memory/episodic-memory.service.ts"]
+    depends_on: []
+
+  - id: TK-67
+    kind: ticket
+    parent: EP-14
+    title: "EP14.6 — ConfidenceUpdater deferred event emission (DriveSnapshot threading)"
+    intent: "Emit the currently-suppressed CONFIDENCE_UPDATED / TYPE_1_GRADUATION / TYPE_1_DEMOTION events by buffering during update() and flushing with a DriveSnapshot from the executor after the cycle."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC; deferred-queue + flushEvents(driveSnapshot); emit* become private helpers"
+    non_goals: ["Aggregating batch decay into one event; changing graduation/demotion criteria; the unified MAE store (TK-68)"]
+    acceptance_criteria:
+      - { given: "a 'reinforced' update with a DriveSnapshot at flush", when: "flushEvents runs", then: "a CONFIDENCE_UPDATED row is written with correct actionId/delta/driveSnapshot; a TYPE_1_GRADUATION row is written (no stdout-only)" }
+      - { given: "flushEvents on an empty buffer / a batch decay", when: "called", then: "no writes & no error / one row per action (no aggregation)" }
+    files_in_scope: ["packages/decision-making/src/confidence/confidence-updater.service.ts", "packages/decision-making/src/executor/executor-engine.service.ts"]
+    depends_on: []
+
+  - id: TK-68
+    kind: ticket
+    parent: EP-14
+    title: "EP14.7 — Unified MAE history store"
+    intent: "Replace three independent Map<string,number[]> MAE windows (prediction, confidence-updater, type1-tracker) with one shared MaeHistoryStore so graduation/demotion/confidence read the same window."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC; a small injectable store (no DB); remove the three private maps"
+    non_goals: ["Per-consumer window sizes; persisting MAE; emitting events on update"]
+    acceptance_criteria:
+      - { given: "PredictionService.recordMae('a',0.1) then a read via ConfidenceUpdater/Type1Tracker through the store", when: "read", then: "all return the same single window [0.1]" }
+      - { given: "a window at MAX_MAE_WINDOW=10", when: "an 11th value is appended", then: "oldest evicted (FIFO, unchanged)" }
+    files_in_scope: ["packages/decision-making/src/confidence/confidence-updater.service.ts", "packages/decision-making/src/graduation/type1-tracker.service.ts", "packages/decision-making/src/prediction/prediction.service.ts", "packages/decision-making/src/decision-making.module.ts"]
+    depends_on: []
+
+  - id: TK-69
+    kind: ticket
+    parent: EP-14
+    title: "EP14.8 — VERIFY mood-congruent episodic retrieval is live; close stub"
+    intent: "Confirm WS5 T2.5 mood-congruent retrieval (driveCosineSimilarity blend in queryByContext) is live + gate-provable, then close the stub-inventory entry. (Decomposer found it already done.)"
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=30min; read + grep only; no code change unless a gap is found"
+    non_goals: ["Any code change unless the implementation is absent"]
+    acceptance_criteria:
+      - { given: "EpisodicMemoryService", when: "inspected", then: "driveCosineSimilarity exists + is called from queryByContext when a driveSnapshot is given; MOOD_CONGRUENT_ALPHA defined; rumination breaker tracks congruent retrievals" }
+      - { given: "the confirmation", when: "complete", then: "the stub entry is closed with a file+line evidence reference" }
+    files_in_scope: ["packages/decision-making/src/episodic-memory/episodic-memory.service.ts"]
+    depends_on: []
+
+  - id: TK-70
+    kind: ticket
+    parent: EP-14
+    title: "EP14.9 — Adaptive candidate scoring weights (CANON gate first)"
+    intent: "Decide whether EMA weight-learning for scoreCandidates is CANON Std-6 safe; if cleared, implement an EMA-on-outcome updater; if not, raise an open_question instead of building."
+    status: todo
+    priority: P3
+    estimate: L
+    engineering_level: production
+    complexity_budget: "<=350 LOC; the CANON Std-6 gate runs FIRST; if blocked, emit an open_question and stop"
+    non_goals: ["Per-intent weight profiles day one; bandit/Thompson rules; persisting learned weights"]
+    acceptance_criteria:
+      - { given: "CANON Std-6 (no self-modification of evaluation)", when: "the design is reviewed against it", then: "a written determination: permitted (tunable heuristic) OR blocked (raise an open_question)" }
+      - { given: "CANON sign-off (permitted) + >=100 scored selections", when: "an outcome is reinforced", then: "the correlated weight is nudged by EMA (alpha=0.05), the vector is normalised, weights logged not persisted; under the floor, no update" }
+    files_in_scope: ["packages/decision-making/src/deliberation/deliberation.service.ts", "packages/decision-making/src/confidence/confidence-updater.service.ts"]
+    depends_on: []
+
+  - id: TK-71
+    kind: ticket
+    parent: EP-15
+    title: "EP15.1 — Scope-aware CALLS-edge resolution in codebase-pkg"
+    intent: "Eliminate phantom cross-service CALLS edges by constraining callee matches to the correct module via the caller's IMPORTS graph (two-pass: sync Functions, then resolve CALLS). External @sylphie-labs/codebase-pkg package."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=250 LOC across mutation-builder.ts + ast-parser.ts (external pkg)"
+    non_goals: ["Built-in Node API callee resolution; repairing existing false edges; applying to searchContent"]
+    acceptance_criteria:
+      - { given: "two functions named 'normalize' in different packages where one imports the other", when: "CALLS edges resolve", then: "only the importing package gets the correct edge; zero cross-service CALLS where no IMPORTS path connects them" }
+      - { given: "a local same-file call not imported", when: "resolved", then: "the CALLS edge is still created (local-call rule)" }
+    files_in_scope: ["mutation-builder.ts (codebase-pkg external package)", "ast-parser.ts (codebase-pkg external package)"]
+    depends_on: []
+
+  - id: TK-72
+    kind: ticket
+    parent: EP-15
+    title: "EP15.2 — PKG tools 'did you mean?' + fuzzy-fallback transparency"
+    intent: "getFunctionDetail/getDataFlow surface a 'MATCH MODE: suffix-fallback' notice when fuzzy and top-3 near-miss suggestions on a total miss. External codebase-pkg package."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=150 LOC + a shared suggestion helper; TS-side Levenshtein if APOC absent"
+    non_goals: ["Applying to searchContent; ranking suggestions by connectivity"]
+    acceptance_criteria:
+      - { given: "getFunctionDetail('evalute') (typo, 0 rows)", when: "resolved", then: "a did_you_mean list (<=3, incl 'evaluate' + filePath); not an empty body" }
+      - { given: "getFunctionDetail('tick') (suffix fallback) / an exact unique match", when: "resolved", then: "a leading 'MATCH MODE: suffix-fallback' field + all matches / no change" }
+    files_in_scope: ["getFunctionDetail.ts (codebase-pkg external package)", "getDataFlow.ts (codebase-pkg external package)"]
+    depends_on: []
+
+  - id: TK-73
+    kind: ticket
+    parent: EP-15
+    title: "EP15.3 — Skill installer cycle detection (DFS)"
+    intent: "Three-colour DFS cycle detection in skill-package dependency resolution (skill_installer.py:275 TODO); abort with the cycle path."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=100 LOC; pattern already present elsewhere in the file"
+    non_goals: ["Topological install ordering; soft-warning mode"]
+    acceptance_criteria:
+      - { given: "A->B and B->A", when: "resolving A", then: "ValueError 'Circular dependency detected: A -> B -> A'" }
+      - { given: "A->B->C (no cycle) / a single package", when: "resolved", then: "success, no false positive" }
+    files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/skill_installer.py"]
+    depends_on: []
+
+  - id: TK-74
+    kind: ticket
+    parent: EP-15
+    title: "EP15.4 — Narration sidecar model-state enrichment"
+    intent: "Inject SidecarControlService into NarrationBuilderService; populate convergenceScore (inverse training_loss), globalModelConfidence, panelDivergenceScores; undefined when the sidecar is down."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; getModelState() at buildNarration time; 5s timeout already in SidecarControlService"
+    non_goals: ["Updating the DeepSeek prompt; TTL caching; a dedicated convergence endpoint"]
+    acceptance_criteria:
+      - { given: "a valid model state (training_loss=0.2)", when: "buildNarration runs", then: "convergenceScore=1/(1+0.2); globalModelConfidence + panelDivergenceScores non-null" }
+      - { given: "the sidecar returns null", when: "buildNarration runs", then: "all three fields undefined; no exception" }
+    files_in_scope: ["packages/supervisor/src/narration-builder.service.ts", "packages/supervisor/src/supervisor.service.ts"]
+    depends_on: []
+
+  - id: TK-75
+    kind: ticket
+    parent: EP-15
+    title: "EP15.5 — VERIFY A2.1 latent-space hardening is live; close stub"
+    intent: "Confirm commit 80128a4 landed the latent-space confidence ceiling + schema CHECK, then close the verify-before-listing item. (Decomposer found it already done.)"
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=20min; grep + git show; no code change"
+    non_goals: ["Any code change"]
+    acceptance_criteria:
+      - { given: "latent-space.service.ts", when: "read", then: "WRITE_TIME_CONFIDENCE_CEILING exists; write() + updateConfidence() enforce it; the schema CHECK DDL is present in bootstrap" }
+      - { given: "the confirmation", when: "complete", then: "the stub §A2.1 entry is closed with the commit sha + file reference" }
+    files_in_scope: ["packages/decision-making/src/latent-space/latent-space.service.ts"]
+    depends_on: []
+
+  - id: TK-76
+    kind: ticket
+    parent: EP-15
+    title: "EP15.6 — research-report.md: archive or promote remaining ideas"
+    intent: "Triage the 46 April research-report ideas: each is already-ticketed (annotate), a genuine gap (promote to open_question), or stale (mark ARCHIVED); then archive the report."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: mvp
+    complexity_budget: "<=2h triage; no code change"
+    non_goals: ["Implementing any idea; reviewing ideas outside the report"]
+    acceptance_criteria:
+      - { given: "all 46 ideas", when: "cross-checked vs contract + stub-inventory", then: "each is annotated already-ticketed / promoted as an open_question / marked ARCHIVED with reason" }
+      - { given: "no genuine-gap items remain unfiled", when: "triage completes", then: "research-report.md is moved to wiki/ideas/archive/ with a closure-date header" }
+    files_in_scope: ["wiki/ideas/research-report.md", "planning/contract.yaml"]
+    depends_on: []
+
+  - id: TK-77
+    kind: ticket
+    parent: EP-14
+    title: "EP14.10 — Decision-cycle concurrency guard (verify or wire)"
+    intent: "Close the WS4 residual: confirm the decision cycle has a re-entrancy/overlap guard preventing two cycles running concurrently for the same backend; if absent, add it. Distinct from TK-66 typed error recovery."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC; verify CycleGuard in-flight gating first, add only if a gap is found"
+    non_goals: ["Typed error context (TK-66); changing tick timing; multi-backend scheduling"]
+    acceptance_criteria:
+      - { given: "two cycle triggers arriving for the same backend within one in-flight cycle", when: "processed", then: "the second is queued or dropped per the guard — never run concurrently; a test exercises the overlap" }
+      - { given: "CycleGuard as it exists today", when: "inspected", then: "either the guard is confirmed live (close with file:line evidence) or the gap is named and the guard added" }
+    depends_on: []
+
+  # ===== EP-17  Tier-6 resolved -> build (DEC-7/8/9) =====
+  - { id: EP-17, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+      title: "Tier-6 resolved — decided items to build (DEC-7/8/9)",
+      intent: "Build the three Tier-6 items the architect decided to DO (AD-0011/0014/0015): legacy provenance migration, /transcribe wiring, drives-UI cleanup." }
+  - id: TK-78
+    kind: ticket
+    parent: EP-17
+    title: "DEC-7 — one-shot legacy world-row -> guardian provenance migration (293 rows)"
+    intent: "Re-attribute the 293 legacy world-scoped rows to guardian provenance, closing the standing gap vs Wave-3 three-graph isolation. Idempotent, reversible, backed up."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=200 LOC migration script; counted dry-run + backup BEFORE write; re-run is a no-op"
+    non_goals: ["Changing the live provenance-write path; touching WORLD-graph schema"]
+    acceptance_criteria:
+      - { given: "a counted dry-run over the 293 legacy world-scoped rows", when: "run", then: "it reports the exact rows to be re-attributed and takes a backup before any write" }
+      - { given: "the migration applied", when: "completed", then: "the 293 rows carry guardian provenance; a re-run is a no-op (idempotent); a documented reverse step restores the prior state" }
+    files_in_scope: ["packages/decision-making/src/wkg/", "infra/migrations/"]
+    depends_on: []
+  - id: TK-79
+    kind: ticket
+    parent: EP-17
+    title: "DEC-8 — wire /transcribe to Deepgram REST; delete the empty-200 theater stub"
+    intent: "voice.controller.ts:32-36 returns a fake {text:'',confidence:0} at HTTP 200 (theater-prohibition violation). Wire real Deepgram REST transcription and delete the stub; press-to-talk UI stays."
+    status: todo
+    priority: P3
+    estimate: M
+    engineering_level: production
+    complexity_budget: "<=150 LOC; Deepgram already in stack; honest error on failure, never a fake 200"
+    non_goals: ["Streaming/live transcription; changing the press-to-talk UI"]
+    acceptance_criteria:
+      - { given: "POST /transcribe with real audio", when: "called", then: "returns a real transcript (text non-empty, confidence>0) via Deepgram REST" }
+      - { given: "a transcription failure", when: "it occurs", then: "an honest error status is returned (NOT a fake {text:'',confidence:0} 200); the empty-200 stub is gone" }
+    files_in_scope: ["apps/sylphie/src/controllers/voice.controller.ts", "apps/sylphie/src/services/stt.service.ts"]
+    depends_on: []
+  - id: TK-80
+    kind: ticket
+    parent: EP-17
+    title: "DEC-9 — remove decorative drives-controller UI affordances that can only 501"
+    intent: "Keep the honest-501 backend (CANON drive isolation, RLS-enforced) and remove the frontend override/drift/reset controls that can only ever 501. Do NOT route via guardian-feedback (separate design)."
+    status: todo
+    priority: P3
+    estimate: S
+    engineering_level: production
+    complexity_budget: "<=120 LOC frontend removal; zero backend change"
+    non_goals: ["Routing drive controls via guardian-feedback; changing the honest-501 backend"]
+    acceptance_criteria:
+      - { given: "the frontend drive override/drift/reset affordances", when: "audited", then: "the controls that hit 501 endpoints are removed; no dead 501-calling UI remains" }
+      - { given: "drives-controller backend", when: "inspected", then: "unchanged — still refuses app->drive mutation with 501 (CANON drive isolation preserved)" }
+    files_in_scope: ["frontend/src/components/Drives/"]
+    depends_on: []
+
+governance:
+  - { id: DEC-1, type: decision, status: accepted, scope: TK-8,
+      title: "IPC schema .passthrough() -> .strict() (TIGHTEN)",
+      context: "ipc-message-validator.ts:81 ends in .passthrough(), so an injected top-level driveEffects is silently preserved.",
+      decision: "Tighten ActionOutcomePayloadSchema to .strict() so an injected driveEffects hard-fails; audit all producers first.",
+      consequences: "CANON Std-6 hardening becomes executable; a rejection assertion is added to the spec." }
+  - { id: DEC-2, type: decision, status: accepted, scope: TK-11,
+      title: "Neo4jGraphPersistence — class-correct + round-trip ONLY",
+      context: "The dangling GraphPersistence class crashes at call-time only; the live re-bind path runs NestJS-side via Neo4jService.",
+      decision: "Build the class so the import resolves and a seeded round-trip passes; do NOT live-wire it into /detect.",
+      consequences: "Closes the dangling import without changing the live path; Python A.5 stays the reference spec." }
+  - { id: DEC-3, type: decision, status: accepted, scope: TK-25,
+      title: "EfficientNet retired LAST, behind a grep gate",
+      context: "EfficientNet is a shared backbone with two consumers (object + face).",
+      decision: "Delete OnnxEmbeddingExtractor only after BOTH DINOv2 object and ArcFace face paths are live; keep DominantColorExtractor.",
+      consequences: "Color stays an A.5 signal dependency; retirement is grep-gated." }
+  - { id: DEC-4, type: decision, status: accepted, scope: EP-4,
+      title: "Fork C is fully net-new triggering (no phantom code to preserve)",
+      context: "nudgeSceneChange/SCENE_CYCLE_COOLDOWN_MS/onSceneChange do not exist in source; SYSTEM_TRIGGER has no producer today.",
+      decision: "Write Fork C as a forward requirement: a new emitter enqueues a SYSTEM_TRIGGER cycle AND emits a clamped raw-magnitude drive signal (two distinct actions).",
+      consequences: "Trigger-vs-signal discipline is a design requirement, not preservation; uses the already-declared SYSTEM_TRIGGER category." }
+  - { id: DEC-5, type: decision, status: accepted, scope: EP-3,
+      title: "Per-modality backbones: DINOv2-base 768 (object) / ArcFace 512 (face)",
+      context: "Jim's final A/B/C adjudication (sylphie-abc-build-plan-resolved.md).",
+      decision: "Object embeddings DINOv2-base 768-D (768==fused dim deletes the JL projection); face embeddings ArcFace 512-D; dims NOT uniform.",
+      consequences: "Two independent dim constants + migration versions; each swap is a frozen+versioned destructive migration." }
+  - { id: ISS-1, type: issue, status: resolved, scope: TK-7, converted_from: null,
+      resolution: "Resolved by DEF-5 (AD-0016): per Jim's 0.4 directive the automated CANON enforcement hook system is intentionally out of commission; TK-7 (the armed-gate prerequisite) was CANCELED. enforce-canon is handled by the SKILL (tech-spec §9) + reviewer judgment, not an armed Stop-hook. Not a blocker. Revisit when Jim re-commissions the hook system. CANON standards themselves remain in force.",
+      title: "canon-check.cjs Stop-hook was DELETED, not hardened",
+      description: "Commit 4d19b03 removed .claude/hooks/canon-check.cjs. The ABC plan made this the machine-checkable 'meta-guard for Fork C' (P4 must refuse to run if the gate is absent/mispointed). The enforce-canon SKILL was repointed to tech-spec §9, but the automated gate that arms P4 is gone. Restore the GUARANTEE (deliberate Std-6 violation -> exit 2) before P4 lands." }
+  - { id: DEP-1, type: dependency, status: resolved, scope: EP-4, owner: ashby,
+      title: "ashby must ratify the Fork C trigger cooldown (loop-gain) + high-diversity cascade bound",
+      description: "Cooldown >= a few seconds; <=1 cycle/cooldown; a flapping scene cannot fill the 10-retrieval rumination window faster than ~10x cooldown. RESOLVED (AD-0006): specialist sign-off waived (changelog 0.4); the loop-gain/cascade bound is folded into TK-23's property tests; cooldown is the live SCENE_CYCLE_COOLDOWN_MS=5000 (perception.gateway.ts:46), NOT a 3000 default." }
+  - { id: DEF-1, type: deferral, status: deferred, scope: FEAT-1,
+      title: "BT.1 ByteTrack motion-model tracker",
+      revisit_trigger: "After P3 re-id quality is in place and the P4/P5 tail closes; ships with the occlusion/crossing clip fixture as its exit test." }
+  - { id: DEF-2, type: deferral, status: deferred, scope: FEAT-1,
+      title: "Exploration #4-#12 + temporal scene-state graph (later workstream)",
+      revisit_trigger: "After A/B/C value is delivered; each ships with its own acceptance test (§5.8)." }
+
+  - { id: DEC-6, type: decision, status: accepted, scope: EP-4, supersedes: DEC-4,
+      title: "Fork C reframe — sceneNudge mechanism ALREADY EXISTS (supersedes DEC-4)",
+      context: "Grounded re-decomposition (TK-19 POC area) found nudgeSceneChange/SCENE_CYCLE_COOLDOWN_MS/sceneNudgeCallback/onSceneChange ALL exist in source; the sceneNudge InboundTurn already enqueues a cycle categorized VISUAL_INPUT, and SCENE_CYCLE_COOLDOWN_MS is 5000ms. DEC-4 and the wiki plan wrongly said Fork C is fully net-new with no existing enqueue.",
+      decision: "Fork C = RECLASSIFY the existing sceneNudge turn to SYSTEM_TRIGGER in categorizeFrame (TK-21) + emit a presenceSurprise signal (TK-22), behind a feasibility POC (TK-19). Cooldown is the existing 5000ms const, not a new 3000ms default.",
+      consequences: "Smaller/lower-risk than DEC-4 implied; trigger-vs-signal preserved; TK-19 POC must prove the promotion before TK-21/22 build." }
+  - { id: Q-1, type: open_question, status: resolved, scope: project, resolution: "DEC-7 (AD-0011): migrate — re-attribute the 293 legacy world-scoped rows to guardian via a one-shot, idempotent, reversible migration (dry-run row-count assertion = 293; backup pre-migration scope). New migration ticket, owner sentinel.", title: "Tier-6: legacy-pattern-rescope migration — re-attribute 293 legacy world-scoped rows to guardian?", description: "One-shot migration; needs Jim. Resolves to a decision -> then a ticket." }
+  - { id: Q-2, type: open_question, status: resolved, scope: project, resolution: "NG-2 (AD-0012): non-goal — keep the single global TTS voice (tts.service.ts:17,59). A per-person voice cache is unrequested scope; Sylphie has one voice. No ticket added.", title: "Tier-6: per-person voice cache — wanted, or keep the global TTS voice cache?", description: "Product decision (Tier-0/6). Resolves to decision/non_goal." }
+  - { id: Q-3, type: open_question, status: resolved, scope: project, resolution: "DEF-4 (AD-0013): keep — spreading_activation.py is the Phase-3 multi-hop reference spec that live activation.ts:12 aligns its constants to (not orphaned dead code). Do NOT delete; bind to the multi-hop deferral (shares DEF-2's revisit_trigger).", title: "Tier-6: spreading_activation.py — keep as Phase-3 reference spec or delete the dead code?", description: "Multi-hop recall is parked; the file is dead. Resolves to deferral or non_goal." }
+  - { id: Q-4, type: open_question, status: resolved, scope: project, resolution: "DEC-8 (AD-0014): implement — wire POST /voice/transcribe (voice.controller.ts:32) to Deepgram REST (vendor already in stack) and DELETE the empty-200 silent stub; return real transcript or an honest error. Owner vox. Press-to-talk UI stays.", title: "Tier-6: voice one-shot /transcribe — implement (Deepgram REST) or remove the press-to-talk UI?", description: "Resolves to a decision -> ticket or non_goal." }
+  - { id: Q-5, type: open_question, status: resolved, scope: project, resolution: "DEC-9 (AD-0015): keep the honest-501 backend (drives.controller.ts:79-92 — CANON Drive Isolation); REMOVE the decorative frontend mutation affordances (a control that can only 501 is theater). Do NOT route via guardian-feedback now (separate deliberate design, out of scope). Owner forge.", title: "Tier-6: drives-controller UI — remove the decorative 501 affordances or route them via guardian-feedback?", description: "CANON forbids the app mutating drives directly; only the UX is open. Resolves to a decision -> ticket." }
+  - { id: DEF-3, type: deferral, status: deferred, scope: EP-13,
+      title: "SyntacticTemplateMatcher (P1.7-E4) — the matcher behind TK-58 syntactic step types",
+      revisit_trigger: "When E4 (syntactic parsing) is scheduled; TK-58 wires only the delegation contract + descriptive NotImplementedError until the matcher exists." }
+  - { id: RISK-1, type: risk, status: managed, scope: EP-4,
+      probability: low, impact: high,
+      mitigation: "Carrier already decided (AD-0003): stamp frame.raw['system_trigger']=true in runCycleForTurn when turn.sceneNudge, BEFORE processInput; categorizeFrame branches on it first. TK-19 POC gates TK-21/TK-22 (and thus all of EP-4) — nothing in Fork C builds until TK-19 proves the stamped flag survives sample() and reaches categorizeFrame. The frame.raw side-channel already carries turn_id/undiscovered_count through sample(), so the pattern is proven (probability low). TK-19 POC result is the closure trigger.",
+      title: "Fork C carrier — sceneNudge bit must reach categorizeFrame via frame.raw[system_trigger]",
+      description: "categorizeFrame sees only a SensoryFrame; the sceneNudge flag lives on InboundTurn and is consumed in runCycleForTurn. Carrier (AD-0003): stamp frame.raw[system_trigger]=true in runCycleForTurn when turn.sceneNudge, BEFORE processInput; categorizeFrame branches on it first. TK-19 POC must prove the flag survives sample(). NOT a new modality and NOT a processInput signature change." }
+  - { id: DEC-7, type: decision, status: accepted, scope: project, converted_from: Q-1,
+      title: "Legacy-pattern-rescope — migrate the 293 world-scoped rows to guardian attribution",
+      context: "293 legacy rows were written under the old world-scoped attribution pattern before the three-graph (Self/Other/World) isolation landed (commit 1f53de2). They sit in the wrong scope — a standing provenance gap against the isolation the system now depends on (CANON provenance-required).",
+      decision: "Run a one-shot, idempotent, reversible migration that re-attributes the 293 legacy world-scoped rows to the correct guardian attribution. Gate it with a dry-run row-count assertion (exactly 293 candidates) and a backup of pre-migration scope values. Only the attribution/scope column moves; payloads untouched. Becomes a migration ticket (owner: sentinel, conceptual: ashby) under the data-model epic.",
+      consequences: "Provenance gap removed; migration must be idempotent + reversible with a counted dry-run. A new migration ticket is added.",
+      decision_ref: AD-0011 }
+  - { id: DEC-8, type: decision, status: accepted, scope: project, converted_from: Q-4,
+      title: "Voice one-shot /transcribe — implement via Deepgram REST; remove the silent empty-200 stub",
+      context: "voice.controller.ts:32-36 POST /transcribe returns a hardcoded {text:'',confidence:0} with @HttpCode(200) — a silent stub that fakes success. The live frontend useVoiceRecording.ts (press-to-talk) calls it. CANON theater-prohibition: an empty-but-valid 200 misleads the caller.",
+      decision: "Wire /transcribe to a real Deepgram REST one-shot transcription (Deepgram is already the streaming-STT vendor — no new dependency) and DELETE the empty-200 return. The endpoint returns the actual text/confidence, or an honest 4xx/5xx on failure — never a faked 200-empty. The press-to-talk UI stays. Becomes a ticket (owner: vox, conceptual: skinner).",
+      consequences: "Closes a theater-prohibition violation. Until built, the honest interim is an explicit error, not empty-200. A new voice ticket is added.",
+      decision_ref: AD-0014 }
+  - { id: DEC-9, type: decision, status: accepted, scope: project, converted_from: Q-5,
+      title: "Drives-controller UI — keep the honest-501 backend, remove the decorative mutation affordances",
+      context: "drives.controller.ts:79-92 (/override,/drift,/reset) correctly throw 501 NotImplementedException because CANON Drive Isolation (separate process + Postgres RLS) forbids the app process mutating drive state (drives.controller.ts:64-77). The backend is CANON-correct and honest. The open piece is the frontend: decorative affordances that call these always-501 endpoints — a control that can only 501 is theater.",
+      decision: "Keep the backend 501 endpoints as-is (they honestly document the isolation boundary). REMOVE the decorative frontend drive-mutation affordances; leave the read-only GET /drives snapshot UI. Do NOT route the controls through guardian-feedback in this plan — a genuine guardian-feedback control surface is a separate deliberate design (event types, guardian asymmetry ×2/×3, gating) and is out of scope here. Becomes a small frontend ticket (owner: forge, conceptual: ashby).",
+      consequences: "Removes UI theater while preserving the honest boundary docs. A genuine guardian-feedback control surface remains unplanned (no committed need). Does NOT touch guardian asymmetry.",
+      decision_ref: AD-0015 }
+  - { id: NG-2, type: non_goal, status: accepted, scope: project, converted_from: Q-2,
+      title: "Per-person voice cache — NOT in scope; Sylphie keeps a single global voice",
+      description: "tts.service.ts uses a single global voiceId (tts.service.ts:17,24,59). A per-person voice cache is net-new product scope no ticket motivated (CON-1 / scope discipline). Sylphie speaks with one voice; varying her output voice by listener is neither requested nor coherent with a single-agent identity. Revisit only if Jim raises a concrete per-listener voice-rendering need — then it gets its own plan node.",
+      rationale: "Unrequested feature; the global cache already serves the only need (one voice, cached).",
+      decision_ref: AD-0012 }
+  - { id: DEF-4, type: deferral, status: deferred, scope: FEAT-1, converted_from: Q-3,
+      title: "spreading_activation.py — kept as the Phase-3 multi-hop reference spec (not deleted)",
+      revisit_trigger: "Same as DEF-2 — after A/B/C value is delivered and multi-hop / spreading-activation recall is scheduled. spreading_activation.py:1-60 is the four-layer design spec that live activation.ts:12 aligns its constants to; it is honest deferred-reference, not dead code. Retires only if multi-hop is permanently abandoned (DEF-2 canceled), at which point the file and the activation.ts:12 alignment comment retire together.",
+      rationale: "Deleting it would orphan activation.ts:12 and discard a complete Phase-3 design for no gain.",
+      decision_ref: AD-0013 }
+  - { id: DEF-5, type: deferral, status: deferred, scope: TK-7, converted_from: ISS-1,
+      title: "Automated CANON enforcement hook system — intentionally out of commission (Jim 0.4)",
+      revisit_trigger: "When Jim directs the canon-check/doc-check/question-route hook system back into commission. Per changelog 0.4 the enforcement hooks + settings.json hooks key were removed and TK-7 (the armed-gate prerequisite for Fork C) was CANCELED. In the interim CANON is enforced by the enforce-canon SKILL (tech-spec §9) + reviewer judgment, NOT an armed Stop-hook. The Six Immutable Standards remain in force; only the automated gate is dormant.",
+      rationale: "Jim made the call explicitly (0.4); this is the terminal record of a dormant-by-directive gate, not a forgotten blocker.",
+      decision_ref: AD-0016 }
+changelog:
+  - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
+  - { date: "2026-06-15", version: "0.1", change: "Reconciliation (/plan-reconcile) of the ABC vision plan against the working tree @ 1f557e8. CONFIRMED done: P1 (TK-1..5), P2.1 (TK-6), P3 (TK-9..11), the §6 test suite. DRIFT: TK-7 (P2.2) partial — enforce-canon SKILL repointed but the canon-check.cjs gate was DELETED (ISS-1); TK-8 (P2.3 .strict) NOT done. NOT STARTED: P4 Fork C (TK-12..14), P5 retirement (TK-15), live acceptance (TK-16..18). Ingested the remaining tail per Jim. Counts: confirmed-done 11, behind/partial 2, todo 7.", by: "plan-reconcile" }
+  - { date: "2026-06-15", version: "0.2", change: "TK-8 (P2.3) DONE. ipc-message-validator ActionOutcomePayloadSchema flipped .passthrough()->.strict() (DEC-1). drive-expert audited producers (only ActionOutcomeReporterService.reportOutcome + OutcomeQueue.enqueueOutcome, both map known fields only — SAFE). Verified: drive-engine build clean + 14/14 ipc-message-validator.spec green (injected top-level driveEffects rejected; [0,1] clamps intact; valid payloads still accepted).", by: "drive" }
+  - { date: "2026-06-15", version: "0.3", change: "TK-7 (P2.2) → BLOCKED. Investigation found the canon-check.cjs + doc-check.cjs + question-route.cjs hooks AND the settings.json hooks key were ALL removed as UNCOMMITTED working-tree changes (settings.json now has no hooks key). This is a wholesale hook-system removal, not the single-commit canon-check deletion ISS-1 assumed. Restoring the canon gate needs Jim's call on hook-system direction. Since EP-4 (Fork C) depends on TK-7, P4 is gated too. TK-15 (P5.1) remains buildable independently.", by: "plan-reconcile" }
+  - { date: "2026-06-16", version: "0.4", change: "Jim: CANON enforcement system is currently out of commission — get the ABC tail DONE by any means, as an ATOMIC step-by-step plan. WAIVED the armed-canon-gate prerequisite for Fork C: TK-7 (P2.2) CANCELED, removed from EP-4 depends_on. Replaced the two ashby sign-off acceptance criteria (TK-13/TK-14) with a concrete tunable default SCENE_TRIGGER_COOLDOWN_MS=3000 — no specialist sign-off blocks the build. Decomposed the build-heavy tickets into atomic ordered TASK steps (TASK-1..3 under TK-12, TASK-4..8 under TK-13, TASK-9..10 under TK-14, TASK-11..13 under TK-15). Remaining tail is now a strict linear chain: TK-12 -> TK-13 -> TK-14 -> TK-15 -> ACC(TK-16/17/18). No soft gates remain.", by: "plan-reconcile" }
+
+  - { date: "2026-06-16", version: "0.5", change: "/plan-tickets decomposition COMPLETE. Three plan-decomposer agents decomposed the open tail (vision EP-4/5/6 + backlog EP-7..15) into 58 atomic, code-grounded tickets (TK-19..76) replacing the hand-authored TK-12..18+TASKs; iterative atomicity + poc-router applied. 4 POCs routed ahead (TK-19 sceneNudge->SYSTEM_TRIGGER, TK-37 EWC-Fisher-live, TK-42 cp-hack-needed, TK-56 morphology call-step). Ground-truth corrections: DEC-6 supersedes DEC-4 (sceneNudge exists); OnnxEmbeddingExtractor already dead (TK-24/25); reinforce/correct already done (dropped from EP-8); mood-congruent + A2.1 already done (TK-69/75 = verify-and-close). Renumber maintenance: DEC-3 scope TK-15->TK-25, DEP-1 scope TK-13->EP-4. Next: /plan-analyze red-team + architect sign-off.", by: "plan-tickets" }
+  - { date: "2026-06-16", version: "0.6", change: "/plan-analyze red-team + architect sign-off (AD-0003..AD-0010, docs/decisions/architect-log.yaml). Applied the architect apply-list: 2 CRITICALs resolved (TK-20/22 -> verify-and-reuse the live sceneSurprise path per AD-0004; TK-19/21 carrier = frame.raw[system_trigger] per AD-0003), TK-25 grep symbol-scoped, TK-23 numeric habituation bound, TK-29 epic-dep -> leaf tickets, TK-31/32/35 characterization goldens, TK-43 healthcheck hang-not-crash, TK-58 -> DEF-3, TK-45 cost===, TK-50 decision-record. Added TK-77 (decision-cycle concurrency-guard coverage gap), DEF-3, RISK-1; DEP-1 RESOLVED (ashby waived). Coverage diff: complete (1 gap closed by TK-77, no invented scope). Verdict: build-ready. meta.stage -> analyze.", by: "plan-analyze" }
+
+  - { date: "2026-06-16", version: "0.7", change: "Architect resolved all open governance (AD-0011..0017): Q-1->DEC-7(migrate), Q-2->NG-2, Q-3->DEF-4, Q-4->DEC-8(implement /transcribe), Q-5->DEC-9, ISS-1->DEF-5(canon hooks dormant per Jim), RISK-1->risk(managed by TK-19). Added EP-17 + TK-78/79/80 to ticket the three DECIDED Tier-6 build items (no decided work left un-ticketed). analyze + tickets gates PASS. PLANNING PROCESS COMPLETE.", by: "plan-analyze" }

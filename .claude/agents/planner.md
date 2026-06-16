@@ -3,6 +3,9 @@ name: planner
 description: Planning subsystem engineer. Owns opportunity processing, research, simulation, plan proposal, LLM constraint validation, procedure creation, post-execution evaluation, ACT-R confidence on plans, priority queue with decay, and rate limiting. Use for any work on how Sylphie creates new behavioral procedures from detected opportunities.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: sonnet
+owns: ["packages/planning/**"]
+conceptual_reviewer: scout
+code_reviewer: code-reviewer
 ---
 
 # Planner -- Planning Subsystem Engineer

@@ -1,3 +1,8 @@
+---
+name: update-canon
+description: Propose and — only after Jim's explicit approval — apply a change to the CANON document, with rationale and mandatory impact assessment. Use when a CANON gap is found during planning/implementation or Jim requests a CANON change. Never modifies CANON without approval.
+---
+
 # Update Canon
 
 Propose and apply a change to the CANON document. Requires Jim's explicit approval.

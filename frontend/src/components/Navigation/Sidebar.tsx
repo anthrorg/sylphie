@@ -17,7 +17,6 @@ import {
   Hub as HubIcon,
   Insights as InsightsIcon,
   ChatBubbleOutline as ChatIcon,
-  Code as CodeIcon,
   Psychology as PsychologyIcon,
   Gavel as GavelIcon,
   RestartAlt as RestartAltIcon,
@@ -400,12 +399,6 @@ export const Sidebar: React.FC = () => {
             label="Chat"
             to="/dashboard/chat"
             accentHue={152} // sage green — conversation/organic
-          />
-          <NavItem
-            icon={<CodeIcon />}
-            label="Codebase"
-            to="/dashboard/codebase"
-            accentHue={195} // cyan — code/structure
           />
           {isGuardian && (
             <NavItem

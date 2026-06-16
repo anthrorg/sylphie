@@ -66,28 +66,10 @@ const EDGE_META_KEYS = new Set([
   'created_at',
 ]);
 
-// Properties too heavy for graph snapshot payloads (code body text).
-const SNAPSHOT_STRIP_KEYS = new Set([
-  'bodyText',
-  'args',
-  'properties',
-]);
-
-// ---------------------------------------------------------------------------
-// PKG snapshot cache — the codebase graph rarely changes at runtime.
-// ---------------------------------------------------------------------------
-
-const PKG_CACHE_TTL_MS = 60_000;
-
-interface PkgCache {
-  snapshot: GraphSnapshotDto;
-  expiresAt: number;
-}
-
 // ---------------------------------------------------------------------------
 // Neo4j index definitions for the knowledge graphs (WORLD, SELF, OTHER).
 //
-// The PKG has its own indexes created by initial-seed.ts. These cover the
+// These cover the
 // three Grafeo-style graphs used at runtime by the decision-making,
 // learning, communication, and planning subsystems.
 //
@@ -161,7 +143,6 @@ const LABEL_MIGRATION_CYPHER = `
 @Injectable()
 export class WkgQueryService implements OnModuleInit {
   private readonly logger = new Logger(WkgQueryService.name);
-  private pkgCache: PkgCache | null = null;
 
   constructor(private readonly neo4j: Neo4jService) {}
 
@@ -207,39 +188,6 @@ export class WkgQueryService implements OnModuleInit {
     const result = await this.getInstanceSnapshot(Neo4jInstanceName.SELF, 1000, 5000);
     vlog('WKG query: getSkgSnapshot complete', { instance: 'SELF', nodes: result.nodes.length, edges: result.edges.length, latencyMs: Date.now() - t0 });
     return result;
-  }
-
-  /**
-   * Fetch a snapshot of the Package Knowledge Graph (codebase structure).
-   *
-   * Optimizations vs the generic getInstanceSnapshot path:
-   *   1. Cached in-memory (60s TTL) — PKG only changes on code sync.
-   *   2. Excludes CodeBlock nodes — they carry bodyText up to 8KB each and
-   *      are an implementation detail for code search, not graph visualization.
-   *   3. Strips heavy properties (bodyText, args, properties JSON) from
-   *      remaining nodes to reduce payload size.
-   *
-   * Returns empty snapshot if PKG Neo4j is not configured.
-   */
-  async getPkgSnapshot(): Promise<GraphSnapshotDto> {
-    // Serve from cache if fresh.
-    if (this.pkgCache && Date.now() < this.pkgCache.expiresAt) {
-      return this.pkgCache.snapshot;
-    }
-
-    try {
-      const snapshot = await this.getPkgSnapshotFresh();
-      this.pkgCache = { snapshot, expiresAt: Date.now() + PKG_CACHE_TTL_MS };
-      return snapshot;
-    } catch (err) {
-      this.logger.warn(`PKG snapshot failed (instance may not be configured): ${(err as Error).message}`);
-      return { nodes: [], edges: [] };
-    }
-  }
-
-  /** Invalidate the PKG snapshot cache (call after code sync). */
-  invalidatePkgCache(): void {
-    this.pkgCache = null;
   }
 
   // -----------------------------------------------------------------------
@@ -491,7 +439,6 @@ export class WkgQueryService implements OnModuleInit {
       case 'wkg': return Neo4jInstanceName.WORLD;
       case 'okg': return Neo4jInstanceName.OTHER;
       case 'skg': return Neo4jInstanceName.SELF;
-      case 'pkg': return Neo4jInstanceName.PKG;
       default: return null;
     }
   }
@@ -571,111 +518,6 @@ export class WkgQueryService implements OnModuleInit {
       );
     } finally {
       await session.close();
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // PKG optimized snapshot (excludes CodeBlock, strips heavy props, cached)
-  // -----------------------------------------------------------------------
-
-  private async getPkgSnapshotFresh(): Promise<GraphSnapshotDto> {
-    const nodeSession = this.neo4j.getSession(Neo4jInstanceName.PKG, 'READ');
-    const edgeSession = this.neo4j.getSession(Neo4jInstanceName.PKG, 'READ');
-
-    try {
-      const [nodeResult, edgeResult] = await Promise.all([
-        // Exclude CodeBlock nodes — they carry large bodyText and are only
-        // used by the searchContent MCP tool, not graph visualization.
-        nodeSession.run(
-          `MATCH (n)
-           WHERE NOT n:CodeBlock
-           RETURN n, labels(n) AS labels, elementId(n) AS eid
-           LIMIT 8000`,
-        ),
-        // Exclude edges touching CodeBlock nodes (HAS_CODE edges).
-        edgeSession.run(
-          `MATCH (a)-[r]->(b)
-           WHERE NOT a:CodeBlock AND NOT b:CodeBlock
-           RETURN r, type(r) AS rel_type,
-                  elementId(r) AS eid,
-                  a.node_id AS source_node_id,
-                  b.node_id AS target_node_id,
-                  elementId(a) AS source_eid,
-                  elementId(b) AS target_eid
-           LIMIT 15000`,
-        ),
-      ]);
-
-      const nodes: GraphNodeDto[] = nodeResult.records.map((rec) => {
-        const n = rec.get('n');
-        const labels: string[] = rec.get('labels');
-        const eid: string = rec.get('eid');
-        const props = n.properties as Record<string, unknown>;
-        const nodeId = asString(props.node_id) || eid;
-        const nodeType = asString(props.node_type) || labels[0] || 'Unknown';
-
-        // Build properties bag, stripping promoted fields AND heavy content.
-        const properties: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(props)) {
-          if (!NODE_META_KEYS.has(k) && !SNAPSHOT_STRIP_KEYS.has(k)) {
-            properties[k] = toPlain(v);
-          }
-        }
-
-        return {
-          node_id: nodeId,
-          node_type: nodeType,
-          label: asString(props.label) || asString(props.name) || asString(props.normalized_text) || nodeId,
-          schema_level: asString(props.schema_level) || 'instance',
-          properties,
-          provenance_type: asString(props.provenance_type) || 'SYSTEM_BOOTSTRAP',
-          confidence: asNumber(props.confidence, 0.5),
-          created_at: asString(props.created_at) || new Date().toISOString(),
-          updated_at: asString(props.updated_at) || null,
-        };
-      });
-
-      const eidToNodeId = new Map<string, string>();
-      nodeResult.records.forEach((rec, i) => {
-        eidToNodeId.set(rec.get('eid') as string, nodes[i].node_id);
-      });
-
-      const edges: GraphEdgeDto[] = edgeResult.records.map((rec) => {
-        const r = rec.get('r');
-        const relType: string = rec.get('rel_type');
-        const eid: string = rec.get('eid');
-        const rProps = r.properties as Record<string, unknown>;
-
-        const sourceNodeId =
-          asString(rec.get('source_node_id')) ||
-          eidToNodeId.get(rec.get('source_eid') as string) ||
-          (rec.get('source_eid') as string);
-        const targetNodeId =
-          asString(rec.get('target_node_id')) ||
-          eidToNodeId.get(rec.get('target_eid') as string) ||
-          (rec.get('target_eid') as string);
-
-        const properties: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(rProps)) {
-          if (!EDGE_META_KEYS.has(k)) properties[k] = toPlain(v);
-        }
-
-        return {
-          edge_id: asString(rProps.edge_id) || eid,
-          source_node_id: sourceNodeId,
-          target_node_id: targetNodeId,
-          edge_type: relType,
-          label: asString(rProps.label) || relType,
-          properties,
-          confidence: asNumber(rProps.confidence, 0.5),
-          created_at: asString(rProps.created_at) || new Date().toISOString(),
-        };
-      });
-
-      this.logger.log(`PKG snapshot: ${nodes.length} nodes, ${edges.length} edges`);
-      return { nodes, edges };
-    } finally {
-      await Promise.all([nodeSession.close(), edgeSession.close()]);
     }
   }
 

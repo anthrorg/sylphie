@@ -1,41 +1,37 @@
 # Classify PKG Domains
 
-Classify unclassified Function nodes in the Codebase PKG into domain buckets. Runs locally — reads functions from Neo4j, classifies them using your own judgment, and writes labels back.
+Classify unclassified `Function` nodes in the codebase knowledge graph into domain buckets. Runs locally — reads functions from Neo4j, classifies them using your own judgment, and writes labels back. No external LLM API call is made by this skill; the classification work is done by the active Claude Code session.
 
 ## Usage
 
 ```
 /classify-pkg-domains
-/classify-pkg-domains --limit 50          # Classify up to 50 functions (default: all unclassified)
-/classify-pkg-domains --package planning  # Only classify functions in a specific subsystem
+/classify-pkg-domains --limit 50           # Up to 50 functions
+/classify-pkg-domains --package <name>     # Only one package/scope
 ```
 
 ## Prerequisites
 
-1. Codebase PKG Neo4j container running on `bolt://localhost:7691`
-2. PKG has been seeded (`cd packages/sylphie-pkg && npm run seed-pkg`)
+1. Neo4j reachable at the URI in `CODEBASE_PKG_NEO4J_URI` (default `bolt://localhost:7687`).
+2. The graph has been seeded (`npx codebase-pkg seed`).
 
----
+## Domain labels
 
-## Domain Labels
-
-Assign each function exactly ONE of these domains based on Sylphie's five-subsystem architecture:
+The set of allowed labels is whatever is configured via the `CODEBASE_PKG_DOMAIN_LABELS` env var (comma-separated). If unset, the package's default taxonomy is used:
 
 | Domain | Description |
-|--------|-------------|
-| `decision-making` | Cognitive loop, Type 1/Type 2 arbitration, episodic memory, predictions, action selection |
-| `communication` | Input parsing, LLM voice, person modeling (Other KG), TTS/chatbox output |
-| `learning` | Consolidation, entity extraction, edge refinement, maintenance cycles |
-| `drive-engine` | 12 drives, self-evaluation (Self KG), opportunity detection, isolated process |
-| `planning` | Opportunity research, simulations, plan creation, procedure validation |
-| `knowledge-graph` | WKG interface, Neo4j queries, Grafeo KGs, confidence dynamics, ACT-R |
-| `event-backbone` | TimescaleDB event store, event types, subscriptions |
-| `database` | PostgreSQL system DB, drive rules, settings, migrations |
-| `web-api` | HTTP routes, WebSocket handlers, REST endpoints, controllers |
-| `metrics` | Observability, monitoring, health checks |
-| `orchestration` | Main loop, app module, startup, module wiring, event bus |
-| `shared-utilities` | Generic helpers, type definitions, config, logging |
-| `testing` | Test utilities, fixtures, test infrastructure |
+|---|---|
+| `application` | Main application/domain logic |
+| `web-api` | HTTP routes, controllers, request handlers |
+| `frontend` | UI components, client-side code |
+| `database` | DB clients, migrations, ORM code |
+| `infrastructure` | Queues, caches, external service clients |
+| `shared-utilities` | Generic helpers, types, logging |
+| `cli` | Command-line entry points |
+| `testing` | Test utilities, fixtures |
+| `unclassified` | Default; functions you have not yet classified |
+
+If `CODEBASE_PKG_DOMAIN_LABELS` is set, use those labels exactly. Override projects almost always do better with a project-specific taxonomy.
 
 ---
 
@@ -43,7 +39,7 @@ Assign each function exactly ONE of these domains based on Sylphie's five-subsys
 
 ### Step 1: Query unclassified functions
 
-Run this Cypher against the Codebase PKG Neo4j (`bolt://localhost:7691`, user `neo4j`, password `sylphie-pkg-local`):
+Run this Cypher against Neo4j:
 
 ```cypher
 MATCH (f:Function)
@@ -55,41 +51,40 @@ ORDER BY f.filePath
 LIMIT $limit
 ```
 
-Use `$limit` from the `--limit` flag (default: no limit — classify all).
+Use `$limit` from the `--limit` flag (default: classify all).
 
-If `--package` is specified, add `AND f.filePath CONTAINS $package` to the WHERE clause.
+If `--package` is given, add `AND f.filePath CONTAINS $package` to the WHERE clause.
 
 ### Step 2: Classify in batches
 
-Process functions in batches of ~20. For each batch:
+Process functions in batches of ~20. For each:
 
-1. Read the function name, file path, JSDoc, return type, and arguments
-2. Use the file path to infer subsystem context (e.g., `src/drive-engine/` → `drive-engine`)
-3. Assign a domain label based on:
-   - **Directory location** (strongest signal — the `src/` subdirectory maps directly to subsystems)
-   - **Function name and JSDoc** (clarifying signal)
-   - **Return type and arguments** (supporting signal)
-4. When ambiguous, prefer the more specific domain over `shared-utilities`
+1. Read the function name, file path, JSDoc, return type, and arguments.
+2. Use the **file path** as the strongest signal — the directory the function lives in usually maps to a domain.
+3. Use **function name and JSDoc** as clarifying signals.
+4. Use **return type and arguments** as supporting signals.
+5. When ambiguous, prefer the more specific domain over `shared-utilities`.
 
 ### Step 3: Write labels back
 
-For each classified function, run:
+For each classified function:
 
 ```cypher
 MATCH (f:Function {filePath: $filePath, name: $name})
 SET f.domain = $domain
 ```
 
-Run these in a single transaction per batch for efficiency.
+Run in a single transaction per batch.
 
-### Step 4: Report results
+### Step 4: Report
 
 Print a summary:
+
 ```
 Classified X functions:
-  decision-making: N
-  communication: N
-  drive-engine: N
+  application:        N
+  web-api:            N
+  database:           N
   ...
   Still unclassified: N
 ```
@@ -98,10 +93,13 @@ Classified X functions:
 
 ## Key Rules
 
-- **No LLM API calls** — YOU are the classifier. Use your understanding of the codebase.
-- Classify based on the function's PRIMARY purpose, not secondary effects
-- If a function is genuinely general-purpose (logging, config, type guards), use `shared-utilities`
-- NestJS controllers and route handlers → `web-api`
-- NestJS services that DO domain work → classify by what they do, not that they're services
-- Functions in `src/decision-making/` → `decision-making`, etc. — directory is the strongest signal
-- Run Cypher via: `docker exec sylphie-pkg-neo4j cypher-shell -u neo4j -p sylphie-pkg-local "<query>"`
+- **No external LLM API calls** — the active Claude Code session is the classifier. Use your understanding of the code, not a separate Haiku/Sonnet call.
+- Classify based on a function's **primary** purpose, not secondary effects.
+- Genuinely general-purpose code (logging, config, type guards) → `shared-utilities`.
+- HTTP controllers and route handlers → `web-api`.
+- Service classes that do domain work → classify by what they do, not that they're services.
+- Functions in `src/database/` → `database`, etc. — directory is the strongest signal.
+- Run Cypher via `cypher-shell` or the `neo4j-driver`; example:
+  ```bash
+  docker exec codebase-pkg-neo4j cypher-shell -u neo4j -p codebase-pkg-local "<query>"
+  ```

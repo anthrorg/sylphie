@@ -59,35 +59,3 @@ export function useSkgSnapshot() {
     }
   }, [fetchSkg])
 }
-
-/**
- * Fetches the PKG (Package/Codebase Knowledge Graph) snapshot.
- * Polls less frequently (30s) since codebase structure changes rarely at runtime.
- */
-const PKG_POLL_INTERVAL_MS = 30_000
-
-export function usePkgSnapshot() {
-  const setPkgData = useAppStore((s) => s.setPkgData)
-  const setPkgStats = useAppStore((s) => s.setPkgStats)
-  const timerRef = useRef<number | null>(null)
-
-  const fetchPkg = useCallback(async () => {
-    try {
-      const res = await fetch('/api/graph/pkg')
-      if (!res.ok) return
-      const data = await res.json()
-      setPkgData(data)
-      setPkgStats({ nodes: data.nodes?.length ?? 0, edges: data.edges?.length ?? 0 })
-    } catch {
-      // Silently fail — PKG Neo4j may not be running
-    }
-  }, [setPkgData, setPkgStats])
-
-  useEffect(() => {
-    fetchPkg()
-    timerRef.current = window.setInterval(fetchPkg, PKG_POLL_INTERVAL_MS)
-    return () => {
-      if (timerRef.current !== null) clearInterval(timerRef.current)
-    }
-  }, [fetchPkg])
-}

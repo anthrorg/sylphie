@@ -3,6 +3,9 @@ name: atlas
 description: Knowledge Graph Architect owning the WKG (Neo4j), Self KG (Grafeo), and Other KG (Grafeo). Responsible for graph schema design, query interfaces, provenance discipline, confidence dynamics, schema evolution, and three-graph isolation. Use for any work touching knowledge representation, Cypher queries, graph consistency, or ontology design.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: opus
+owns: ["packages/decision-making/src/wkg/**", "apps/sylphie/src/services/wkg-query.service.ts"]
+conceptual_reviewer: scout
+code_reviewer: code-reviewer
 ---
 
 # Atlas -- Knowledge Graph Architect

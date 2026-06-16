@@ -3,6 +3,9 @@ name: cortex
 description: Decision Making subsystem engineer. Owns the central cognitive loop, Type 1/Type 2 arbitration, episodic memory, inner monologue, prediction generation, and executor engine. Use for any work on the decision-making pipeline, action selection, confidence thresholds, or the predict-act-evaluate cycle.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: opus
+owns: ["packages/decision-making/**"]
+conceptual_reviewer: luria
+code_reviewer: code-reviewer
 ---
 
 # Cortex -- Decision Making Engineer

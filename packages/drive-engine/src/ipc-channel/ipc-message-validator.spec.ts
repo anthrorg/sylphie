@@ -11,21 +11,26 @@
  *      (0, 1, 0.5) MUST be accepted. A vision sidecar that emits a garbage
  *      surprise value cannot silently poison the drive state.
  *
- *   2. INJECTED driveEffects IS IGNORED, NOT REJECTED. The ACTION_OUTCOME
- *      payload schema ends with .passthrough() (:68), so a hostile/erroneous
- *      top-level `driveEffects` field on the payload survives validation rather
- *      than being stripped or rejected. CANON §Drive Isolation is preserved not
- *      by the schema here but by the engine's design: the drive engine computes
- *      ALL effects itself (drive-engine.ts:547-567 → getDefaultAffect →
- *      computeDefaultAffect, constants/rules.ts:218). It never reads a
- *      pre-computed driveEffects field off the inbound payload.
+ *   2. INJECTED driveEffects IS REJECTED (CANON Standard 6, made executable).
+ *      The ACTION_OUTCOME payload schema ends with .strict(), so a
+ *      hostile/erroneous top-level `driveEffects` field on the payload HARD-FAILS
+ *      validation at the isolation boundary rather than silently passing through.
+ *      This is the primary, structural defense: the main process can never
+ *      dictate pre-computed drive effects across the boundary.
  *
- *      So we assert BOTH halves:
- *        (a) the payload-with-injected-driveEffects still parses, and
- *        (b) the affect computed for that exact payload (via the clean,
- *            unit-testable computeDefaultAffect layer) is byte-for-byte the
- *            same as the payload WITHOUT the injected field — i.e. the engine's
- *            effect computation is entirely unaffected by the injection.
+ *      We then keep the engine's design as a SECOND, defense-in-depth layer:
+ *      even if validation were bypassed, the drive engine computes ALL effects
+ *      itself (drive-engine.ts:547-567 → getDefaultAffect → computeDefaultAffect,
+ *      constants/rules.ts:218) and never reads a pre-computed driveEffects field
+ *      off the inbound payload.
+ *
+ *      So we assert:
+ *        (a) the payload-with-injected-driveEffects is REJECTED by the validator
+ *            (and a valid payload is accepted), and
+ *        (b) belt-and-suspenders: the affect computed for that exact payload
+ *            (via the clean, unit-testable computeDefaultAffect layer) is
+ *            byte-for-byte the same as the payload WITHOUT the injected field —
+ *            the engine's effect computation is independent of the injection.
  *
  * Golden affect values below were produced by RUNNING the real
  * computeDefaultAffect (ScenePrediction default curiosity:0.02 / anxiety:0.01,
@@ -131,10 +136,10 @@ describe('ipc-message-validator — metadata magnitude clamp [0, 1]', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Injected top-level driveEffects is ignored, not rejected
+// 2. Injected top-level driveEffects is REJECTED at the isolation boundary
 // ---------------------------------------------------------------------------
 
-describe('ipc-message-validator — injected driveEffects passes through but is ignored', () => {
+describe('ipc-message-validator — injected driveEffects is rejected (CANON Std-6)', () => {
   // A clean baseline payload and a hostile clone with a top-level driveEffects
   // field injected (cast away from the type, since the wire could carry it).
   const cleanPayload = makePayload({ sceneSurprise: 0.5 });
@@ -147,17 +152,29 @@ describe('ipc-message-validator — injected driveEffects passes through but is 
     },
   } as ActionOutcomePayload;
 
-  it('(a) does NOT reject a payload carrying an injected top-level driveEffects field', () => {
-    // The ACTION_OUTCOME schema ends with .passthrough(), so the extra field
-    // survives validation instead of causing a parse error.
-    const parsed = validateInboundMessage(makeInbound(injectedPayload)) as {
-      payload: Record<string, unknown>;
-    };
-    expect(parsed.payload).toHaveProperty('driveEffects');
-    expect(parsed.payload.driveEffects).toEqual({
-      [DriveName.Social]: 999,
-      [DriveName.Anxiety]: -999,
-    });
+  it('(a) REJECTS a payload carrying an injected top-level driveEffects field', () => {
+    // The ACTION_OUTCOME schema ends with .strict(), so the unrecognized
+    // top-level field hard-fails validation instead of passing through.
+    const result = safeValidateMessage(makeInbound(injectedPayload), 'inbound');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // .strict() produces a validation error (the unrecognized-key issue).
+      // Note: Zod's message text for unrecognized keys varies by version
+      // (it may read ": Invalid input" rather than naming the key), so we
+      // assert that an error was produced — NOT its exact text. The fact that
+      // `driveEffects` specifically is the cause is pinned by test (a2): the
+      // identical payload WITHOUT that field is ACCEPTED.
+      expect(result.error).toBeTruthy();
+    }
+    // And it throws on the strict parse path too.
+    expect(() => validateInboundMessage(makeInbound(injectedPayload))).toThrow();
+  });
+
+  it('(a2) ACCEPTS the same payload WITHOUT the injected field', () => {
+    // The clean baseline (every field declared in the schema) still validates —
+    // flipping to .strict() does not reject any legitimate producer payload.
+    const result = safeValidateMessage(makeInbound(cleanPayload), 'inbound');
+    expect(result.success).toBe(true);
   });
 
   it('(b) the drive engine ignores it: computed affect equals the clean default, unaffected by the injection', () => {

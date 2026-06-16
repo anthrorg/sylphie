@@ -4,18 +4,19 @@
       "command": "cmd",
       "args": ["/c", "npx", "@playwright/mcp"]
     },
-    "sylphie-pkg": {
-      "command": "node",
-      "args": ["./packages/sylphie-pkg/dist/mcp-server/index.js"],
-      "env": {
-        "SYLPHIE_PKG_NEO4J_URI": "bolt://localhost:7691",
-        "SYLPHIE_PKG_NEO4J_USER": "neo4j",
-        "SYLPHIE_PKG_NEO4J_PASSWORD": "sylphie-pkg-local"
-      }
-    },
     "railway-mcp-server": {
       "command": "cmd",
       "args": ["/c", "npx", "-y", "@railway/mcp-server"]
+    },
+    "codebase-pkg": {
+      "command": "npx",
+      "args": ["-y", "--package", "@sylphie-labs/codebase-pkg", "codebase-pkg-mcp"],
+      "env": {
+        "CODEBASE_PKG_NEO4J_URI": "bolt://localhost:7692",
+        "CODEBASE_PKG_NEO4J_USER": "neo4j",
+        "CODEBASE_PKG_NEO4J_PASSWORD": "codebase-pkg-local",
+        "CODEBASE_PKG_PACKAGES": "[{\"name\":\"sylphie\",\"dir\":\"apps/sylphie/src\"},{\"name\":\"drive-server\",\"dir\":\"apps/drive-server/src\"},{\"name\":\"decision-making\",\"dir\":\"packages/decision-making/src\"},{\"name\":\"drive-engine\",\"dir\":\"packages/drive-engine/src\"},{\"name\":\"learning\",\"dir\":\"packages/learning/src\"},{\"name\":\"planning\",\"dir\":\"packages/planning/src\"},{\"name\":\"shared\",\"dir\":\"packages/shared/src\"},{\"name\":\"supervisor\",\"dir\":\"packages/supervisor/src\"},{\"name\":\"frontend\",\"dir\":\"frontend/src\"},{\"name\":\"cognition-service\",\"dir\":\"packages/cognition-service\"},{\"name\":\"perception-service\",\"dir\":\"packages/perception-service\"}]"
+      }
     }
   }
 }

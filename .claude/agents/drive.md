@@ -3,6 +3,9 @@ name: drive
 description: Drive Engine subsystem engineer. Owns the 12-drive motivational system, drive isolation (CRITICAL -- separate process, one-way communication), rule lookup in PostgreSQL, self-evaluation from KG(Self), prediction accuracy evaluation, opportunity detection, and behavioral contingency structure. Use for any work on the motivational system, drive computation, behavioral reinforcement, or the evaluation function.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: opus
+owns: ["packages/drive-engine/**", "apps/drive-server/**"]
+conceptual_reviewer: skinner
+code_reviewer: code-reviewer
 ---
 
 # Drive -- Drive Engine Engineer

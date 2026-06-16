@@ -76,10 +76,6 @@ interface AppState {
   skgData: GraphSnapshot
   skgStats: GraphStats
 
-  // PKG graph data (Package/Codebase Knowledge Graph)
-  pkgData: GraphSnapshot
-  pkgStats: GraphStats
-
   // Conversation
   messages: ConversationMessage[]
   isThinking: boolean
@@ -148,8 +144,6 @@ interface AppState {
   setOkgStats: (stats: GraphStats) => void
   setSkgData: (data: GraphSnapshot) => void
   setSkgStats: (stats: GraphStats) => void
-  setPkgData: (data: GraphSnapshot) => void
-  setPkgStats: (stats: GraphStats) => void
   addMessage: (message: ConversationMessage) => void
   setThinking: (thinking: boolean) => void
   /** WS4 Ticket 6: update the queue position for this socket (null = not waiting). */
@@ -235,8 +229,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   okgStats: { nodes: 0, edges: 0 },
   skgData: { nodes: [], edges: [] },
   skgStats: { nodes: 0, edges: 0 },
-  pkgData: { nodes: [], edges: [] },
-  pkgStats: { nodes: 0, edges: 0 },
 
   messages: [],
   isThinking: false,
@@ -325,8 +317,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOkgStats: (stats) => set({ okgStats: stats }),
   setSkgData: (data) => set({ skgData: data }),
   setSkgStats: (stats) => set({ skgStats: stats }),
-  setPkgData: (data) => set({ pkgData: data }),
-  setPkgStats: (stats) => set({ pkgStats: stats }),
 
   addMessage: (message) =>
     set((prev) => {

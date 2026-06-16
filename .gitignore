@@ -37,9 +37,6 @@ npm-debug.log*
 .claude/worktrees/
 logs/
 
-# PKG sync cursor
-packages/sylphie-pkg/.last-sync-commit
-
 # Data backups (e.g. pre-migration Neo4j dumps) — never in source history
 backups/
 
@@ -57,3 +54,4 @@ __pycache__/
 codebase-*.png
 sylphie-initial.png
 learning-test-*.png
+planning/.state.json

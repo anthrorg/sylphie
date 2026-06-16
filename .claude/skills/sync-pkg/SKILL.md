@@ -1,6 +1,6 @@
 # Sync PKG
 
-Refresh the Codebase PKG: re-seed the graph from source, classify domains, and infer connections. Runs three steps sequentially.
+Refresh the codebase knowledge graph: re-seed or incrementally sync from source, classify domains, and infer connections. Three steps, run sequentially.
 
 ## Usage
 
@@ -10,24 +10,26 @@ Refresh the Codebase PKG: re-seed the graph from source, classify domains, and i
 
 ## When to Use
 
-- After code changes that affect function signatures, module structure, or call patterns
-- When the PKG graph needs to be brought up to date with the codebase
-- Before running analyses that depend on an accurate PKG
+- After code changes that affect function signatures, module structure, or call patterns.
+- When the graph needs to be brought up to date with the codebase before running analyses.
+- After a long pause where many commits have landed.
 
 ## Prerequisites
 
-1. Codebase PKG Neo4j container running on `bolt://localhost:7691`
+1. Neo4j running on `bolt://localhost:7687` (override via `CODEBASE_PKG_NEO4J_URI`).
+2. `@sylphie-labs/codebase-pkg` installed in this project.
+3. The initial seed has been run at least once (`npx codebase-pkg seed`). If not, run that first instead of sync.
 
 ---
 
 ## Workflow
 
-### Step 1: Seed the graph
+### Step 1: Sync the graph
 
 Run in the terminal:
 
 ```bash
-yarn sync-pkg
+npx codebase-pkg sync
 ```
 
 Wait for it to complete successfully before proceeding. If it fails, report the error and stop.
@@ -46,6 +48,6 @@ Run the `/infer-pkg-connections` skill.
 
 ## Key Rules
 
-- Steps must run sequentially -- each depends on the previous one
-- If any step fails, stop and report the error -- do not continue to the next step
-- Do not pass extra flags to the sub-skills unless Jim specifies them
+- Steps must run sequentially — each depends on the previous one.
+- If any step fails, stop and report the error — do not continue to the next step.
+- Do not pass extra flags to the sub-skills unless explicitly instructed.

@@ -24,11 +24,6 @@ export class GraphController {
     return this.wkg.getSkgSnapshot();
   }
 
-  @Get('pkg')
-  async getPkgSnapshot(): Promise<GraphSnapshotDto> {
-    return this.wkg.getPkgSnapshot();
-  }
-
   // ── Explorer view — search + neighborhood ───────────────────────────
   // These MUST appear before :instance/* wildcard routes.
 

@@ -202,11 +202,19 @@ export interface TelemetryMaintenanceCycle {
   phrase_consolidation: boolean
 }
 
+export interface TelemetrySystemLog {
+  type: 'system_log'
+  text: string
+  timestamp?: string
+  level?: 'info' | 'warn' | 'error'
+}
+
 export type TelemetryMessage =
   | TelemetryCycle
   | TelemetryStateTransition
   | TelemetryPrediction
   | TelemetryMaintenanceCycle
+  | TelemetrySystemLog
 
 // ---------------------------------------------------------------------------
 // Skills

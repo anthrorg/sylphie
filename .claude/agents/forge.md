@@ -3,6 +3,9 @@ name: forge
 description: NestJS/TypeScript Systems Architect. Owns module boundaries, interface contracts, dependency injection patterns, configuration management, error handling, and TypeScript conventions. Use for any structural code decisions, module design, NestJS patterns, async architecture, or code style standards. Owns the skeleton that everything hangs on.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: sonnet
+owns: ["packages/shared/**", "apps/sylphie/**", "frontend/**"]
+conceptual_reviewer: ashby
+code_reviewer: code-reviewer
 ---
 
 # Forge -- NestJS/TypeScript Systems Architect

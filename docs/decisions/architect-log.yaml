@@ -1,0 +1,751 @@
+# Architect decision log.
+#
+# A running register of every architectural / design decision the `architect`
+# agent makes, and why. Read before deciding (a past entry may already govern
+# the question); append after deciding. Never rewrite history — supersede an
+# entry by setting its status to `superseded` and pointing the new entry's
+# `supersedes` field at it.
+#
+# Schema per entry: id, date, title, status, context, decision, rationale,
+# alternatives[], consequences, canon, evidence[], supersedes.
+# See .claude/agents/architect.md §4 for the full protocol.
+
+decisions:
+  - id: AD-0001
+    date: 2026-06-15
+    title: Replace mythos with a single architect decision authority
+    status: accepted
+    context: >
+      The Claude config carried a `mythos` generalist reasoner (read-only-ish,
+      escalation target for hard questions) and five science-advisor agents
+      pinned to the `fable` model. The reasoning layer had no durable memory of
+      why past architectural calls were made.
+    decision: >
+      Retire `mythos`. Introduce `architect` (Opus) as the single
+      reasoning/decision authority that reads the plan, holds the whole-system
+      picture, decides how the system should work, and records each decision in
+      this log. Implementation stays delegated to `opus-agent`.
+    rationale: >
+      A named decision authority with a running rationale log gives the cascade
+      durable architectural memory instead of re-deriving context each session.
+      Folding "reason + decide + record" into one role removes the ambiguity of
+      a pure advisor that never commits to a call.
+    alternatives:
+      - option: Keep mythos, add a separate decision-logging mechanism
+        rejected_because: >
+          Splits the decider from the record; the logger drifts from the reasoner.
+      - option: Give the architect full code-edit tools (one agent does all)
+        rejected_because: >
+          Collapses the reasoner/doer split that keeps heavy builds on opus-agent;
+          revisit if the two-agent handoff proves to be friction.
+    consequences: >
+      rank / review-plan / question-route hook / CLAUDE.md / opus-agent now route
+      and refer to `architect`. The architect writes only this log and planning
+      docs, not production code.
+    canon: none
+    evidence:
+      - .claude/agents/architect.md:1
+      - .claude/skills/rank/SKILL.md:1
+    supersedes: null
+
+  - id: AD-0002
+    date: 2026-06-15
+    title: Move the five science advisors off the fable model
+    status: accepted
+    context: >
+      ashby, luria, piaget, skinner, and scout were pinned to `model: fable`.
+      The fable tier is being removed from this project's config.
+    decision: >
+      Repoint all five science-advisor agents to `model: opus`. Keep the agents
+      themselves — the architect consults them and tie-breaks when they disagree.
+    rationale: >
+      Their value is deep reasoning in their lane; opus is the right tier for
+      that. No `fable` reference should remain in the Claude configuration.
+    alternatives:
+      - option: Delete the five advisors and fold their role into architect
+        rejected_because: >
+          Loses domain-specialist lenses the architect leans on for review-plan
+          and specialist routing.
+    consequences: >
+      review-plan's model-assignment table and the rank routing keep the five
+      advisors; only their model tier changed.
+    canon: none
+    evidence:
+      - .claude/agents/ashby.md:5
+      - .claude/skills/review-plan/SKILL.md:129
+    supersedes: null
+
+  - id: AD-0003
+    date: 2026-06-16
+    title: Fork C sceneNudge carrier — a frame-level systemTrigger flag, not InboundTurn threading
+    status: accepted
+    context: >
+      CRITICAL-1. TK-21 reclassifies sceneNudge turns to SYSTEM_TRIGGER in
+      categorizeFrame (process-input.service.ts:213), but categorizeFrame only
+      sees a SensoryFrame and classifies purely off frame.active_modalities. The
+      sceneNudge bit lives on InboundTurn (inbound-turn.ts:112) and is consumed
+      ONLY in runCycleForTurn (decision-making.service.ts:349) to null
+      currentTurnContext. nudgeSceneChange() writes NO modality slot
+      (tick-sampler.ts:147) and does NOT mark the frame; the scene rides the
+      tick-sampler slot via updateScene. So the frame categorizeFrame sees has no
+      sceneNudge marker — there is no carrier today.
+    decision: >
+      Carry the bit as a frame-level marker, not a categorizeFrame signature
+      change and not a new 'scene' modality. In runCycleForTurn, when
+      turn.sceneNudge is true, stamp frame.raw['system_trigger'] = true on the
+      sampled frame (the same place turn_id is already stamped,
+      decision-making.service.ts:367-369), BEFORE processInput(frame). Then
+      categorizeFrame reads that flag as its FIRST branch and returns
+      SYSTEM_TRIGGER. Rationale for the carrier choice: (a) frame.raw is already
+      the established side-channel for per-cycle context (turn_id, undiscovered_count),
+      so this is assert+extend not re-architecture; (b) a new 'scene' modality was
+      explicitly rejected upstream (tick-sampler.ts:123-130 — scene must NOT be a
+      globally event-driven modality or it fires a cycle per 15fps frame); (c) a
+      processInput signature change ripples to every caller and breaks the
+      single-call-site discipline. categorizeFrame stays SensoryFrame-only.
+    rationale: >
+      The frame is the object that survives sample() and reaches categorizeFrame;
+      the turn does not. frame.raw is already the carrier for exactly this kind of
+      per-cycle, non-cognitive context. Reusing it keeps the change ~10 LOC and
+      avoids touching the modality set or the processInput contract.
+    alternatives:
+      - option: Make 'scene' a real active_modality and branch on it
+        rejected_because: >
+          A normal co-present visual frame also carries scene; cannot distinguish
+          an exogenous nudge from ambient vision, and risks re-enabling per-frame
+          cycling that tick-sampler.ts:123-130 deliberately prevents.
+      - option: Change processInput/categorizeFrame to take a turn-context arg
+        rejected_because: >
+          Ripples to all processInput call sites; categorizeFrame becomes
+          frame+context impure; larger blast radius for no benefit over a frame flag.
+    consequences: >
+      TK-19 POC must answer the carrier question concretely (does the stamped flag
+      survive sample() and reach categorizeFrame). TK-21 depends_on TK-19, drops
+      the "do NOT touch inputCallback" overscope clause (it never needed to), and
+      its budget rises to <=120 LOC to cover the runCycleForTurn stamp + the
+      categorizeFrame branch + threading. A RISK item is added.
+    canon: none
+    evidence:
+      - packages/decision-making/src/process-input/process-input.service.ts:213
+      - packages/decision-making/src/concurrency/inbound-turn.ts:112
+      - packages/decision-making/src/decision-making.service.ts:349
+      - packages/decision-making/src/decision-making.service.ts:367
+      - packages/decision-making/src/inputs/sampling/tick-sampler.ts:147
+    supersedes: null
+
+  - id: AD-0004
+    date: 2026-06-16
+    title: Reuse the live sceneSurprise drive path — collapse presenceSurprise (no distinct presence axis)
+    status: accepted
+    context: >
+      CRITICAL-2. TK-20 adds a NEW presenceSurprise Zod field + rules.ts mapping;
+      TK-22 emits it from a non-existent file
+      (apps/sylphie/.../scene-prediction.service.ts). Ground truth: the
+      sceneSurprise path is FULLY LIVE end-to-end. ipc-message-validator.ts:49
+      clamps sceneSurprise [0,1]; rules.ts:165-168 maps ScenePrediction ->
+      Curiosity +0.02*s, Anxiety +0.01*s (PRESSURE, no relief), with
+      ScenePrediction in METADATA_SCALED_ACTION_TYPES (rules.ts:179);
+      ScenePredictionService (scene-prediction.service.ts:142) computes surprise
+      with per-identity habituation; and routeScenePredictionErrors
+      (decision-making.service.ts:2725-2750) ALREADY emits the ScenePrediction
+      ActionOutcome to the drive engine every cycle. presenceSurprise exists only
+      in planning/wiki docs — zero source. The named file does not exist; the real
+      emit is the gateway (perception.gateway.ts:323 nudgeSceneChange) and the
+      real predictor is packages/decision-making/.../prediction/scene-prediction.service.ts.
+    decision: >
+      Do NOT introduce a distinct presenceSurprise axis. Collapse TK-20 to a
+      verify-and-reuse ticket that ASSERTS the live sceneSurprise path (validator
+      clamp + rules mapping + no-relief) with characterization tests — no new field,
+      no rules.ts edit. Retarget TK-22 from "emit a new presenceSurprise" to
+      "verify the ScenePrediction ActionOutcome is emitted on the sceneNudge path
+      and exercise the trigger-vs-signal split at the gateway/cooldown seam"; fix
+      files_in_scope to the real gateway + the real
+      packages/decision-making/.../prediction/scene-prediction.service.ts.
+      "Presence" (a person appearing/leaving) is already a scene change the existing
+      predictor scores; a separate axis would duplicate live behavior and add a
+      second un-habituated surprise source.
+    rationale: >
+      Building presenceSurprise next to a live sceneSurprise that already produces
+      the exact Curiosity+Anxiety PRESSURE the ticket wants is duplicate,
+      conflicting scope (CON-1, theater risk: two signals for one phenomenon). The
+      cheaper, correct move is to reuse the proven path and spend the tickets on
+      verifying the loop is cut and the trigger/signal split holds.
+    alternatives:
+      - option: Keep a distinct presenceSurprise axis for person-presence
+        rejected_because: >
+          Would require a justified, separately-habituated presence signal the
+          plan never motivates; revisit only if a product need for a person-specific
+          arousal axis distinct from scene-change is raised by Jim.
+    consequences: >
+      The drive-signal half of Fork C is already done; the remaining net-new work
+      is purely the TRIGGER reclassification (TK-21) + tests. Scope and risk drop
+      sharply. The contract's vision/goals that say "Zero relief deltas on
+      action_type='ScenePrediction'" already hold against the live mapping.
+    canon: none
+    evidence:
+      - packages/drive-engine/src/ipc-channel/ipc-message-validator.ts:49
+      - packages/drive-engine/src/constants/rules.ts:165
+      - packages/drive-engine/src/constants/rules.ts:179
+      - packages/decision-making/src/prediction/scene-prediction.service.ts:142
+      - packages/decision-making/src/decision-making.service.ts:2725
+      - apps/sylphie/src/gateways/perception.gateway.ts:323
+    supersedes: null
+
+  - id: AD-0005
+    date: 2026-06-16
+    title: TK-23 cascade bound is cooldown+habituation, not arousal decay (Curiosity/Anxiety decay = 0)
+    status: accepted
+    context: >
+      HIGH-5. TK-23 AC#2 asserts "decay dominates" so N distinct changes cannot
+      ratchet arousal. But DRIVE_DECAY_RATES (drives.ts:84-98) sets Curiosity=0.0
+      and Anxiety=0.0 — both are pure event-only drives with NO passive decay.
+      There is no arousal decay to "dominate" a ratchet, so the AC is unsatisfiable
+      as written.
+    decision: >
+      Reframe TK-23 AC#2 to bound the cascade by the two mechanisms that actually
+      exist: (1) the cooldown gate — at most ceil(elapsed / SCENE_CYCLE_COOLDOWN_MS)
+      SYSTEM_TRIGGER cycles over the window (perception.gateway.ts:46, 322-325);
+      and (2) per-identity habituation in ScenePredictionService — surprise on a
+      repeated identity strictly decreases (familiarityCounts attenuation,
+      scene-prediction.service.ts:161), so the per-event magnitude fed to the drive
+      shrinks even though the drive itself does not decay. State the numeric bound
+      in those terms: cycles bounded by the cooldown count; and for a REPEATED
+      scene/identity, surprise_{k+1} < surprise_k (habituation) so the cumulative
+      Curiosity/Anxiety pressure increments form a decreasing series, not a constant
+      ratchet. Drop the "decay dominates" phrasing entirely.
+    rationale: >
+      The real loop-safety property is "a flapping/static scene habituates and is
+      rate-limited," which is what the live code guarantees. Asserting decay would
+      test a mechanism that does not exist and would fail or be faked.
+    alternatives:
+      - option: Add passive decay to Curiosity/Anxiety so "decay dominates" becomes true
+        rejected_because: >
+          Changes core drive semantics (event-only by design) far outside this
+          ticket's scope and the CANON drive model; not this plan's call.
+    consequences: >
+      TK-23 becomes provable against live constants. The bound is habituation +
+      cooldown, which is also exactly DEP-1's loop-gain concern — folding DEP-1's
+      cascade clause into TK-23 (see AD-0006) is consistent.
+    canon: none
+    evidence:
+      - packages/drive-engine/src/constants/drives.ts:84
+      - packages/decision-making/src/prediction/scene-prediction.service.ts:161
+      - apps/sylphie/src/gateways/perception.gateway.ts:46
+    supersedes: null
+
+  - id: AD-0006
+    date: 2026-06-16
+    title: Close DEP-1 — fold ashby loop-gain bound into TK-23 AC; cooldown is the live 5000ms
+    status: accepted
+    context: >
+      HIGH-4. DEP-1 (ashby Fork C cooldown ratification) is still status:open
+      though changelog 0.4 waived specialist sign-off. There is a cooldown-value
+      contradiction: changelog 0.4 invented SCENE_TRIGGER_COOLDOWN_MS=3000, but the
+      live const is SCENE_CYCLE_COOLDOWN_MS=5000 (perception.gateway.ts:46) and
+      DEC-6 already says the existing 5000ms is authoritative.
+    decision: >
+      Close DEP-1 (set status: resolved) by folding its substantive requirement —
+      a flapping scene cannot out-pace the cognitive loop / rumination window — into
+      TK-23's property tests (AD-0005), with NO blocking specialist sign-off (per
+      Jim's 0.4 waiver). Fix the cooldown everywhere to the live SCENE_CYCLE_COOLDOWN_MS
+      = 5000; the 3000 value from changelog 0.4 is superseded and must not appear in
+      any AC. The cooldown const is NOT renamed and NOT changed in code.
+    rationale: >
+      The ashby concern is real engineering content but the gate was waived; the
+      right home for it is an executable property test (TK-23), not an open blocking
+      dependency. Pinning to the live 5000 const removes a contradiction that would
+      otherwise produce an un-runnable AC.
+    alternatives:
+      - option: Keep DEP-1 open as a soft advisory
+        rejected_because: >
+          Jim's 0.4 directive says no soft gates remain; an open dependency on EP-4
+          re-introduces one.
+    consequences: >
+      EP-4 has no open governance blocker. TK-23 carries the loop-gain assertion.
+      All ACs reference SCENE_CYCLE_COOLDOWN_MS (5000), never a 3000 default.
+    canon: none
+    evidence:
+      - apps/sylphie/src/gateways/perception.gateway.ts:46
+      - planning/contract.yaml:1283
+    supersedes: null
+
+  - id: AD-0007
+    date: 2026-06-16
+    title: EfficientNet retirement grep gate targets first-party SYMBOLS, not a blanket -ri
+    status: accepted
+    context: >
+      HIGH-3. TK-25 AC#1 "grep -ri efficientnet => ZERO" is unsatisfiable:
+      torchvision in the .venv defines efficientnet, and first-party docstrings
+      reference EfficientNet at main.py:253/256/887, types/observation.py:182, plus
+      a real const _DEFAULT_MODEL_FILENAME = "efficientnet_b0.onnx"
+      (feature_extraction.py:342). Also the face-path comment main.py:188 says face
+      "keeps OnnxEmbeddingExtractor" — TK-24 AC#2 already flags it stale (ArcFace is
+      its own extractor).
+    decision: >
+      Scope the retirement gate to first-party CODE SYMBOLS, excluding .venv: the
+      gate must show ZERO of (class OnnxEmbeddingExtractor definition,
+      _DEFAULT_MODEL_FILENAME / the efficientnet_b0.onnx filename literal, any live
+      OnnxEmbeddingExtractor instantiation/import) under packages/perception-service,
+      excluding site-packages/.venv. Explanatory comments/docstrings that merely
+      mention EfficientNet historically may remain (or be cleaned opportunistically)
+      and must NOT fail the gate. Fold the stale main.py:188 face comment fix into
+      TK-25 (it becomes false once the symbol is deleted).
+    rationale: >
+      A literal repo-wide case-insensitive grep can never reach zero with
+      torchvision vendored and history documented in prose. The retirement invariant
+      that matters is "no live EfficientNet code symbol / model artifact remains,"
+      which is symbol-scoped and .venv-excluded.
+    alternatives:
+      - option: Require zero matches including comments
+        rejected_because: >
+          Forces churny doc deletion and still cannot exclude .venv without the same
+          scoping; no added safety.
+    consequences: >
+      TK-25 AC#1 + AC#2 reworded to symbol+path scoping. The acceptance grep is
+      deterministic and reachable. TK-24's "stale comment" finding is the same
+      main.py:188 line.
+    canon: none
+    evidence:
+      - packages/perception-service/cobeing/layer2_perception/feature_extraction.py:342
+      - packages/perception-service/main.py:188
+    supersedes: null
+
+  - id: AD-0008
+    date: 2026-06-16
+    title: Docker HEALTHCHECK AC = hang/timeout, not crash; DB-bound probe needs start-period
+    status: accepted
+    context: >
+      HIGH-6. TK-43 AC#2 says the container "becomes unhealthy if the app crashes."
+      A crashed Node process exits the container (Docker state 'exited'), it does not
+      flip Health.Status to unhealthy — HEALTHCHECK detects a HUNG/unresponsive app.
+      Also GET /metrics/health (metrics.controller.ts:144) computes 7 CANON metrics,
+      each running TimescaleDB queries in parallel (Promise.all) — not free.
+    decision: >
+      Reword TK-43 AC#2 to a hang/timeout scenario: after startup Health.Status
+      becomes healthy; if the app is made unresponsive (e.g. event-loop blocked /
+      endpoint hangs past the probe timeout), Health.Status becomes unhealthy after
+      the configured retries. The HEALTHCHECK must set --start-period generous enough
+      for boot + first DB-backed probe and --timeout above the measured p95 of
+      /metrics/health, with --interval at 30s. Keep budget tiny (Dockerfile-only) but
+      allow the start-period/timeout/retries flags.
+    rationale: >
+      The AC must assert what HEALTHCHECK can actually observe. /metrics/health is an
+      acceptable probe target (it already exists, no new endpoint per the non-goal)
+      but it is DB-bound, so the probe timing must accommodate it rather than assume
+      a cheap ping.
+    alternatives:
+      - option: Add a new lightweight /healthz that does no DB work
+        rejected_because: >
+          TK-43 non_goals forbid a new endpoint; and a liveness probe that ignores DB
+          readiness is less useful for Railway. Revisit only if /metrics/health p95
+          proves too slow for a 30s interval.
+    consequences: >
+      TK-43 becomes runnable (docker inspect Health.Status transitions are
+      observable). Probe timing is explicit. No new endpoint.
+    canon: none
+    evidence:
+      - apps/sylphie/src/controllers/metrics.controller.ts:144
+    supersedes: null
+
+  - id: AD-0009
+    date: 2026-06-16
+    title: Medium/Low red-team rulings — golden-log refactor ACs, status AC, concrete deps, SearXNG decision, cost equality
+    status: accepted
+    context: >
+      The MEDIUM/LOW red-team findings on EP-7 refactors (TK-31/32/35), TK-26,
+      TK-29, TK-58, TK-50, TK-45.
+    decision: >
+      Approve all as proposed: (1) EP-7 byte-identical refactors (TK-31/32/35) add a
+      characterization AC — a captured golden of the affected log/IPC output is
+      identical pre/post, not merely "same test count"; (2) TK-26 add an AC asserting
+      GET /perception/status exposes model_loaded/face_model_loaded/embedding_init_failed;
+      (3) TK-29 replace epic-level depends_on EP-4 with the concrete leaf tickets
+      TK-21, TK-22, TK-23; (4) TK-58 the dangling "P1.7-E4" prerequisite becomes a
+      governance deferral DEF-3 with a revisit_trigger (SyntacticTemplateMatcher /
+      E4), and TK-58 stays (it wires the delegation contract + descriptive
+      NotImplementedError only); (5) TK-50 require the verify outcome be RECORDED as a
+      new decision (wire vs remove) and flag docker-compose.yml as sentinel-owned;
+      (6) TK-45 assert costUsd === estimateLlmCostUsd(tokens) for the TYPE_2 case, not
+      merely >0.
+    rationale: >
+      A byte-identical refactor is only provable by output characterization; "same
+      test count" is theater-adjacent. The other items tighten runnable checks or
+      give dangling references a governance home, all consistent with CON-1 and the
+      no-soft-gates directive.
+    alternatives:
+      - option: Mark TK-58 a non-goal since its matcher is unbuilt
+        rejected_because: >
+          TK-58 delivers real value now (dispatch contract + descriptive error);
+          only the matcher itself is deferred, which DEF-3 captures.
+    consequences: >
+      Refactor ACs become characterization-based; TK-58 gets DEF-3; TK-50 forces a
+      recorded decision + sentinel ownership of the compose change.
+    canon: none
+    evidence:
+      - planning/contract.yaml:466
+      - planning/contract.yaml:906
+    supersedes: null
+
+  - id: AD-0010
+    date: 2026-06-16
+    title: Coverage diff — one genuine gap (decision-cycle concurrency-guard); no invented scope
+    status: accepted
+    context: >
+      Coverage diff of wiki/phase4-backlog.md (Tier-4 c/d/e/f, Tier-5,
+      verify-before-listing, Tier-6) and the build-plan §10 milestone table against
+      tickets TK-19..76 and governance.
+    decision: >
+      The plan is coverage-complete EXCEPT one item: decision-cycle-concurrency-guard
+      (a WS4 residual) is named in EP-14's intent string (contract.yaml:265) and
+      Tier-5 decision-making (phase4-backlog.md:62) but has NO ticket — TK-62..70
+      cover every other EP-14 item but not the concurrency guard. Add a ticket
+      TK-77 under EP-14 for it (verify-or-wire the decision-cycle concurrency guard).
+      Everything else maps: §10 M0/BL/P1/P2/P3 -> EP-1/2/3 (done); P4.1/4.2/4.3 ->
+      TK-20/21/22/23; P5.1 -> TK-24/25; ACC.A/B/C -> TK-27/28/29; fixtures -> TK-30;
+      BT.1 -> DEF-1; LATER -> DEF-2; WS-SAM -> NG-1. Tier-4a/4b are prior-wave/parked
+      (WS5.5 done; multi-hop -> DEF-2 spirit). Tier-6 -> Q-1..Q-5. verify-before-listing
+      -> TK-69 (mood-congruent) + TK-75 (A2.1) + TK-76 (research-report). No
+      invented-scope ticket found.
+    rationale: >
+      latent-space-multimodal-drive-face-write (=T3) is correctly routed to the
+      WS5.5/4a world-fact cluster (already closed-with-residuals per memory), not a
+      gap here. The concurrency guard is the single item with a backlog entry and no
+      ticket home.
+    alternatives:
+      - option: Fold the concurrency guard into TK-66 (structured error recovery)
+        rejected_because: >
+          Different concern (re-entrancy/overlap guard vs typed error context); the
+          memory notes it as an explicit open WS4 residual deserving its own AC.
+    consequences: >
+      TK-77 added under EP-14. The FEAT-2 backlog is then fully ticketed or
+      governanced.
+    canon: none
+    evidence:
+      - planning/contract.yaml:265
+      - wiki/phase4-backlog.md:62
+    supersedes: null
+
+  - id: AD-0011
+    date: 2026-06-16
+    title: Q-1 legacy-pattern-rescope — DECISION to migrate; re-attribute the 293 world-scoped rows to guardian
+    status: accepted
+    context: >
+      Tier-6 Q-1. 293 legacy rows were written under the old world-scoped
+      attribution pattern before the three-graph (Self/Other/World) isolation
+      landed (commit 1f53de2, "feat/wave3-three-graph-isolation"). The question
+      is whether to run a one-shot migration re-attributing them to the guardian,
+      or leave them. Jim's directive: make the call, don't punt. Wave 3 made
+      guardian/self/other/world a hard isolation boundary; legacy rows that
+      predate it sit in the wrong scope and would otherwise be a permanent
+      provenance gap (CANON Std: provenance-required).
+    decision: >
+      Migrate. Run a one-shot, idempotent re-attribution that moves the 293
+      legacy world-scoped rows to the correct guardian attribution, gated by a
+      dry-run row-count assertion (exactly 293 candidates matched) and a
+      reversible backup of the pre-migration scope values. This becomes a ticket
+      under the data-model/migration owner (sentinel) — not left as an open
+      question. The migration is provenance-restoring, not data-changing: only
+      the attribution/scope column moves; payloads are untouched.
+    rationale: >
+      Leaving 293 mis-scoped rows is a standing provenance violation against the
+      three-graph isolation the system now depends on — exactly the kind of
+      "expensive to get wrong later" residue that compounds. A one-shot,
+      counted, reversible migration is cheap now and removes the gap permanently.
+      Re-attribution to guardian (not deletion) preserves the historical signal
+      while putting it in the CANON-correct scope.
+    alternatives:
+      - option: Leave the legacy rows world-scoped (non_goal)
+        rejected_because: >
+          Permanent provenance gap against Wave-3 isolation; revisit only if Jim
+          rules the 293 rows are genuinely world-facts (not guardian-attributed),
+          in which case the migration is a no-op — but the default per isolation
+          is guardian attribution for pre-isolation guardian-origin rows.
+      - option: Delete the 293 rows
+        rejected_because: >
+          Discards real historical signal; re-attribution preserves it at equal
+          cost.
+    consequences: >
+      A new migration ticket (owner: sentinel, conceptual: ashby) is added under
+      the data-model epic with a dry-run/backup AC. Q-1 resolves to DEC-7. The
+      migration must be idempotent and reversible.
+    canon: "supports Std: provenance-required (restores correct scope); no tension"
+    evidence:
+      - "git commit 1f53de2 (three-graph isolation)"
+    supersedes: null
+
+  - id: AD-0012
+    date: 2026-06-16
+    title: Q-2 per-person voice cache — NON-GOAL; keep the single global TTS voice
+    status: accepted
+    context: >
+      Tier-6 Q-2. tts.service.ts holds a single global voiceId
+      (tts.service.ts:17, 24, 59 — one ElevenLabs voice id for all output). The
+      question asks whether to build a per-person voice cache. No ticket, epic,
+      or vision goal asks for per-person voices; it is net-new product scope.
+    decision: >
+      Non-goal for this plan. Sylphie speaks with one voice (hers); there is no
+      product requirement for her to render different voices per interlocutor.
+      Keep the global voiceId. Do not build a per-person voice cache.
+    rationale: >
+      A per-person voice cache is speculative scope no ticket motivated
+      (CON-1 / scope discipline). Sylphie having a single stable voice is the
+      correct identity model — varying her output voice by listener is neither
+      requested nor coherent with a single-agent identity. The global cache
+      already serves the only need (one voice, cached).
+    alternatives:
+      - option: Build a per-person voice cache now
+        rejected_because: >
+          Unrequested feature; revisit only if a concrete product need for
+          per-listener voice rendering is raised by Jim — then it gets its own
+          plan node.
+    consequences: >
+      Q-2 resolves to NG-2. tts.service.ts stays single-voice. No ticket added.
+    canon: none
+    evidence:
+      - apps/sylphie/src/services/tts.service.ts:17
+      - apps/sylphie/src/services/tts.service.ts:59
+    supersedes: null
+
+  - id: AD-0013
+    date: 2026-06-16
+    title: Q-3 spreading_activation.py — KEEP as the Phase-3 reference spec (deferral, not delete)
+    status: accepted
+    context: >
+      Tier-6 Q-3. The question frames spreading_activation.py as "dead code" to
+      keep or delete. Grounding correction: no Python module imports it (it is
+      module-dead at runtime), BUT it is a complete four-layer multi-hop
+      spreading-activation DESIGN SPEC (spreading_activation.py:1-60), and the
+      LIVE TypeScript working-memory file activation.ts:12 explicitly states its
+      constants "are aligned with the Python spreading_activation.py parameters."
+      So it is a live design reference, not orphaned dead code. Multi-hop /
+      spreading-activation recall is already parked under DEF-2.
+    decision: >
+      Keep the file as the Phase-3 reference spec; do NOT delete. Bind its fate
+      to the existing multi-hop deferral DEF-2 (it is the design spec for exactly
+      that parked work). Q-3 resolves to a deferral pointing at the same
+      revisit_trigger as the multi-hop workstream. Add a one-line header note in
+      a future edit (not now) marking it "reference spec, not wired" — optional,
+      not gating.
+    rationale: >
+      Deleting it would (a) orphan the alignment reference in live code
+      (activation.ts:12) and (b) discard a complete, specialist-reviewed design
+      for the deferred multi-hop work — pure loss for no gain. It is not theater:
+      it does not pretend to run; it is documentation-as-code for a deferred
+      feature. The honest state is "deferred reference," which is what DEF-2
+      already represents.
+    alternatives:
+      - option: Delete spreading_activation.py as dead code (non_goal)
+        rejected_because: >
+          Orphans activation.ts:12 and throws away the Phase-3 multi-hop design;
+          revisit only if multi-hop is permanently abandoned (DEF-2 canceled),
+          at which point the file and the alignment comment retire together.
+    consequences: >
+      Q-3 resolves to DEF-4, scoped to FEAT-1, sharing DEF-2's revisit_trigger.
+      The file stays; activation.ts:12's reference stays valid.
+    canon: "supports theater-prohibition (file is honest deferred-reference, not a fake-live path)"
+    evidence:
+      - packages/perception-service/cobeing/layer3_knowledge/spreading_activation.py:1
+      - packages/decision-making/src/working-memory/activation.ts:12
+    supersedes: null
+
+  - id: AD-0014
+    date: 2026-06-16
+    title: Q-4 voice one-shot /transcribe — DECISION to implement via Deepgram REST (kill the silent stub)
+    status: accepted
+    context: >
+      Tier-6 Q-4. voice.controller.ts:32-36 POST /transcribe returns a
+      hardcoded { text:'', confidence:0, latencyMs:0 } with @HttpCode(200) — a
+      silent stub that shapes a fake-success response. The frontend
+      useVoiceRecording.ts hook calls it (press-to-talk). This is theater: a 200
+      with an empty-but-valid transcript misleads the caller into thinking
+      transcription ran. The choice is implement (Deepgram REST one-shot) or
+      remove the press-to-talk UI + endpoint.
+    decision: >
+      Implement the one-shot /transcribe via Deepgram REST (the project already
+      uses Deepgram for streaming STT, so no new vendor/dep). The endpoint must
+      perform a real transcription of the posted audio and return the actual
+      text/confidence, OR return an honest error (4xx/5xx) on failure — never a
+      faked 200-empty. This becomes a ticket under the vox-owned voice path
+      (vox owns stt.service.ts; voice.controller.ts is forge/app, but the STT
+      call belongs to vox's domain — owner: vox). The silent-stub return is
+      removed as part of the AC (CANON theater-prohibition: no fake success).
+    rationale: >
+      The press-to-talk UI is live and wired to this endpoint, so the feature is
+      wanted; the only defect is that the backend is a silent stub. The honest,
+      no-theater fix is to make it real with the STT vendor already in the stack
+      (Deepgram), not to amputate working UI. Returning empty-200 is precisely
+      the silent-stub pattern the project forbids — implementing closes that.
+    alternatives:
+      - option: Remove the press-to-talk UI and the /transcribe endpoint (non_goal)
+        rejected_because: >
+          The streaming /ws/audio path exists, but press-to-talk one-shot is a
+          distinct, live UX already wired; removing live UI to avoid a small
+          implementation is the wrong trade. Revisit only if Jim rules
+          press-to-talk redundant with streaming STT.
+      - option: Leave the empty-200 stub
+        rejected_because: >
+          Direct CANON theater-prohibition violation (fake success); not
+          permissible.
+    consequences: >
+      Q-4 resolves to DEC-8. A ticket (owner: vox, conceptual: skinner) wires
+      /transcribe to Deepgram REST and deletes the empty-200 return. Until built,
+      the honest interim is a 501/explicit-error, NOT empty-200 — but the
+      decision is to implement, so it goes straight to a ticket.
+    canon: "resolves a theater-prohibition violation (empty-200 stub -> real transcription or honest error)"
+    evidence:
+      - apps/sylphie/src/controllers/voice.controller.ts:32
+      - frontend/src/hooks/useVoiceRecording.ts
+    supersedes: null
+
+  - id: AD-0015
+    date: 2026-06-16
+    title: Q-5 drives-controller UI — DECISION keep the honest-501 backend; remove the decorative mutation UI affordances
+    status: accepted
+    context: >
+      Tier-6 Q-5. drives.controller.ts:79-92 exposes POST /drives/override,
+      /drift, /reset, all throwing NotImplementedException (501) with an explicit
+      message that CANON Drive Isolation forbids the app process mutating drive
+      state (drives.controller.ts:64-77). The backend is already CANON-correct
+      and honest (501, not fake-{}). The only open piece is the FRONTEND: there
+      are decorative UI affordances that call these always-501 endpoints. CANON
+      Drive Isolation (separate process + Postgres RLS denying app UPDATE/DELETE
+      on drive rules) forbids routing app->drive mutation; the only permitted
+      influence is guardian-feedback EVENTS the Drive Engine itself processes
+      (push, never an RPC mutation — matches the drive-engine event standard
+      memory).
+    decision: >
+      Keep the backend exactly as-is (honest 501 + message — do NOT delete the
+      endpoints; they are correct documentation of an isolation boundary).
+      REMOVE the decorative frontend affordances that present override/drift/reset
+      as if they were operable controls — a button that can only ever 501 is
+      theater. Do NOT route them via guardian-feedback in this plan: a real
+      guardian-feedback control surface is a separate, deliberate design (not a
+      reskin of forbidden mutation endpoints) and is out of scope here. This
+      becomes a small frontend ticket (owner: forge): strip the decorative
+      mutation controls; leave the read-only GET /drives snapshot UI.
+    rationale: >
+      CANON Drive Isolation makes app->drive mutation structurally impossible by
+      design (RLS), so a UI that appears to offer it is guaranteed-broken theater.
+      The honest options are (a) remove the controls or (b) build a genuine
+      guardian-feedback event path — and (b) is its own design problem (what
+      events, what asymmetry, what guardian gating), not a UI tweak. The minimal,
+      CANON-aligned, no-theater move is (a): remove the decorative controls now;
+      a guardian-feedback control surface can be planned later on its merits.
+    alternatives:
+      - option: Route the UI controls through guardian-feedback events now
+        rejected_because: >
+          That is a real subsystem design (event types, guardian asymmetry ×2/×3,
+          gating), not in this plan's scope; revisit when a guardian control
+          surface is explicitly planned. Folding it in here would be unscoped
+          design-on-the-fly touching CANON guardian asymmetry.
+      - option: Delete the backend 501 endpoints too
+        rejected_because: >
+          The 501 endpoints honestly document the isolation boundary and prevent
+          a future caller from assuming mutation is possible; keeping them is
+          cheaper and more honest than silence.
+    consequences: >
+      Q-5 resolves to DEC-9. A frontend ticket (owner: forge, conceptual: ashby)
+      removes the decorative drive-mutation affordances; backend untouched. A
+      genuine guardian-feedback control surface remains unplanned (not deferred
+      with a trigger — it has no committed need yet).
+    canon: "supports Drive Isolation + theater-prohibition; explicitly does NOT touch guardian asymmetry (deferred out of scope)"
+    evidence:
+      - apps/sylphie/src/controllers/drives.controller.ts:64
+      - apps/sylphie/src/controllers/drives.controller.ts:79
+    supersedes: null
+
+  - id: AD-0016
+    date: 2026-06-16
+    title: ISS-1 canon-check gate — DEFERRAL; CANON enforcement system is out of commission per Jim
+    status: accepted
+    context: >
+      ISS-1 (open issue). The canon-check.cjs / doc-check.cjs / question-route.cjs
+      Stop-hooks and the settings.json hooks key were ALL removed as uncommitted
+      working-tree changes (changelog 0.3) — a wholesale hook-system removal, not
+      the single-commit deletion ISS-1 originally assumed. Changelog 0.4 records
+      Jim's explicit directive: "CANON enforcement system is currently out of
+      commission"; TK-7 (the armed-canon-gate prerequisite for Fork C) was
+      CANCELED and removed from EP-4 depends_on. So the issue's premise — restore
+      the armed gate before P4 — has already been superseded by an explicit
+      product decision.
+    decision: >
+      Resolve ISS-1 as a deferral reflecting Jim's standing directive: the
+      automated CANON enforcement hook system stays out of commission for now;
+      enforce-canon is handled by the SKILL (repointed to tech-spec §9) and by
+      reviewer judgment, not an armed Stop-hook. The machine-checkable gate is
+      NOT a blocker for any current work (TK-7 canceled). Revisit when Jim
+      directs the hook system back into commission. This does not weaken CANON
+      itself — only the automated gate is dormant; the Six Immutable Standards
+      and reviewer enforcement remain in force.
+    rationale: >
+      Jim made the call explicitly (changelog 0.4); the architect's job is to
+      record it in terminal form, not re-litigate it. A deferral with a concrete
+      revisit_trigger (Jim re-arms the hook system) is the honest state: the gate
+      is intentionally dormant, not forgotten. Keeping ISS-1 open would falsely
+      block the analyze gate on work Jim has already unblocked.
+    alternatives:
+      - option: Restore the canon-check hook now (treat ISS-1 as a real blocker)
+        rejected_because: >
+          Directly contradicts Jim's 0.4 directive that the enforcement system is
+          out of commission; not the architect's call to override.
+      - option: Close ISS-1 as a non-goal (never restore)
+        rejected_because: >
+          Too strong — Jim said "out of commission for now," implying a possible
+          return; a deferral with a revisit_trigger captures that, a non_goal
+          would not.
+    consequences: >
+      ISS-1 status -> resolved, converted to DEF-5 (revisit: Jim re-commissions
+      the hook system). The analyze gate no longer blocks on it. CANON remains
+      enforced by skill + reviewers in the interim.
+    canon: "no tension — CANON standards remain in force; only the automated hook gate is dormant by Jim's directive"
+    evidence:
+      - planning/contract.yaml:1306
+      - "changelog 0.3 / 0.4 (planning/contract.yaml:1308)"
+    supersedes: null
+
+  - id: AD-0017
+    date: 2026-06-16
+    title: RISK-1 Fork C carrier — convert to a tracked RISK, fully mitigated by the TK-19 POC gating EP-4
+    status: accepted
+    context: >
+      RISK-1 is currently typed as an "issue" (status open), which blocks the
+      analyze gate, but its content is a RISK: the sceneNudge bit must reach
+      categorizeFrame via frame.raw['system_trigger'] (the carrier decided in
+      AD-0003). The mechanism is already designed (AD-0003) and explicitly
+      de-risked by the TK-19 POC, which gates TK-21/TK-22 and therefore all of
+      EP-4 — nothing in Fork C builds until TK-19 proves the stamped flag
+      survives sample() and reaches categorizeFrame.
+    decision: >
+      Reclassify RISK-1 from issue to risk (probability: low, impact: high,
+      with the AD-0003 carrier + TK-19 POC as the mitigation), status managed.
+      It is not an open issue — it is a known, mitigated risk whose mitigation
+      (TK-19 POC as a hard gate ahead of any EP-4 build) is already in the plan.
+      This clears the analyze gate's open-issue check while keeping the risk
+      visibly tracked rather than silently closed.
+    rationale: >
+      The gate blocks on open ISSUES, not on risks — and the substance here is a
+      tracked, mitigated risk, not an unresolved defect. AD-0003 already decided
+      the carrier; TK-19 already gates the build on proving it. The correct
+      governance shape is a risk with probability/impact/mitigation, not a
+      perpetually-open issue. Probability low (the frame.raw side-channel already
+      carries turn_id/undiscovered_count through sample(), so the pattern is
+      proven); impact high (if it failed, Fork C triggering would not fire) —
+      hence worth tracking, fully covered by the POC gate.
+    alternatives:
+      - option: Close RISK-1 outright as resolved
+        rejected_because: >
+          The POC has not yet RUN (TK-19 is routed-ahead, not executed); closing
+          it would overstate certainty. A managed risk gated by TK-19 is honest.
+      - option: Leave it as an open issue
+        rejected_because: >
+          Mis-typed (it is a risk, not a defect) and would block the gate on
+          something already mitigated by TK-19.
+    consequences: >
+      RISK-1 type issue->risk, status open->managed, with probability/impact/
+      mitigation fields. TK-19's POC result is its closure trigger. Analyze gate's
+      open-issue check passes (no open issues remain).
+    canon: none
+    evidence:
+      - docs/decisions/architect-log.yaml:78
+      - planning/contract.yaml:1301
+    supersedes: null

@@ -44,7 +44,6 @@ class FakeNeo4j {
     [Neo4jInstanceName.WORLD]: new Map(),
     [Neo4jInstanceName.OTHER]: new Map(),
     [Neo4jInstanceName.SELF]: new Map(),
-    [Neo4jInstanceName.PKG]: new Map(),
   };
 
   /** Records every (instance) a session was opened against. */

@@ -21,7 +21,6 @@ import { PlanningModule } from '@sylphie/planning';
 import { DriveEngineModule } from '@sylphie/drive-engine';
 import { SupervisorModule } from '@sylphie/supervisor';
 import { GraphController } from './controllers/graph.controller';
-import { PkgController } from './controllers/pkg.controller';
 import { SkillsController } from './controllers/skills.controller';
 import { DrivesController, PressureController } from './controllers/drives.controller';
 import { VoiceController } from './controllers/voice.controller';
@@ -40,7 +39,6 @@ import { SupervisorGateway } from './gateways/supervisor.gateway';
 import { SensoryLoggerService } from './services/sensory-logger.service';
 import { DrivePublisherService } from './services/drive-publisher.service';
 import { WkgQueryService } from './services/wkg-query.service';
-import { PkgQueryService } from './services/pkg-query.service';
 import { WkgBootstrapService } from './services/wkg-bootstrap.service';
 import { WkgDiffService } from './services/wkg-diff.service';
 import { SelfAssessmentService } from './services/self-assessment.service';
@@ -143,19 +141,6 @@ class CognitionModule {}
             connectionTimeoutMs: config.get('neo4j.other.connectionTimeoutMs')!,
           },
         ];
-        // PKG is optional — only connect if URI is configured
-        const pkgUri = config.get('neo4j.pkg.uri');
-        if (pkgUri) {
-          instances.push({
-            name: Neo4jInstanceName.PKG,
-            uri: pkgUri,
-            user: config.get('neo4j.pkg.user')!,
-            password: config.get('neo4j.pkg.password')!,
-            database: config.get('neo4j.pkg.database')!,
-            maxConnectionPoolSize: config.get('neo4j.pkg.maxConnectionPoolSize')!,
-            connectionTimeoutMs: config.get('neo4j.pkg.connectionTimeoutMs')!,
-          });
-        }
         return { instances };
       },
     }),
@@ -163,7 +148,6 @@ class CognitionModule {}
   controllers: [
     AuthController,
     GraphController,
-    PkgController,
     SkillsController,
     DrivesController,
     PressureController,
@@ -197,7 +181,6 @@ class CognitionModule {}
     SensoryLoggerService,
     DrivePublisherService,
     WkgQueryService,
-    PkgQueryService,
     WkgBootstrapService,
     // Phase 4 Wave 2 (3a) graph-compute layer — atlas side of the event-judge
     // model. These compute graph values; the apps push agent wires the cadence

@@ -1,0 +1,29 @@
+{
+  "version": "0.2.1",
+  "installedAt": "2026-06-15T23:35:01.700Z",
+  "lastUpgradedAt": "2026-06-15T23:35:01.700Z",
+  "installMode": "global",
+  "cliPathAtInstall": "C:\\Users\\Jim\\AppData\\Local\\nvm\\v24.11.1\\node_modules\\@sylphie-labs\\codebase-pkg\\dist\\cli\\codebase-pkg.js",
+  "managedFiles": [
+    {
+      "path": ".claude/skills/classify-pkg-domains/SKILL.md",
+      "installedHash": "1f6b5e0484814cc59b4ee1f833f1ab80ef5e8eec3bdd09a4c855a4ec2b9b2d83"
+    },
+    {
+      "path": ".claude/skills/infer-pkg-connections/SKILL.md",
+      "installedHash": "58ffa71d965e9cbdc673d7eb328f40465f2d868d1d2c8b82c3f44cac60b7150c"
+    },
+    {
+      "path": ".claude/skills/sync-pkg/SKILL.md",
+      "installedHash": "199c9fffdf3c9bcde5e26ad200cd16e3ae4c31791228b59e81ec15313e11c196"
+    },
+    {
+      "path": ".mcp.json",
+      "installedHash": "3625ac55a4e1a2f0a6c82cebaba2e4b9c4464accc2a3556d485e668866ecd5da"
+    },
+    {
+      "path": "constraints.json",
+      "installedHash": "e6d73be9dd001431b1d6c7670662823b63471e7b4613766e67ffa8ee263b2e08"
+    }
+  ]
+}

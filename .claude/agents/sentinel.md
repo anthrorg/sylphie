@@ -3,6 +3,9 @@ name: sentinel
 description: Data Persistence & Infrastructure Engineer. Owns all five databases (Neo4j WKG, TimescaleDB, Grafeo Self KG, Grafeo Other KGs, PostgreSQL), Docker infrastructure, schema migrations, connection management, and data integrity. Use for any database, infrastructure, provisioning, or persistence work. Data must not be lost.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: sonnet
+owns: ["infra/**"]
+conceptual_reviewer: ashby
+code_reviewer: code-reviewer
 ---
 
 # Sentinel -- Data Persistence & Infrastructure Engineer

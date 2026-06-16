@@ -1,3 +1,8 @@
+---
+name: session-wrap
+description: Preserve end-of-session context — capture what changed, summarize DONE/NEXT/BLOCKED in three lines, and write a log to docs/sessions/YYYY-MM-DD-slug.md. Use at the end of a working session or when Jim says he's done for the day.
+---
+
 # Session Wrap
 
 End-of-session context preservation. CANON Planning Rule #5: "Context preservation at end of every session."
@@ -12,7 +17,6 @@ End-of-session context preservation. CANON Planning Rule #5: "Context preservati
 
 - At the end of every working session
 - When Jim says "that's it for today"
-- Auto-called by `/do-epic` at session end
 
 ---
 

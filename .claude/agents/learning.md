@@ -3,6 +3,9 @@ name: learning
 description: Learning subsystem engineer. Owns the consolidation pipeline, pressure-driven maintenance cycles, entity extraction, LLM-assisted edge refinement, contradiction detection, provenance discipline, and catastrophic interference prevention. Use for any work on how Sylphie converts raw experience into durable knowledge in the WKG.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: sonnet
+owns: ["packages/learning/**"]
+conceptual_reviewer: piaget
+code_reviewer: code-reviewer
 ---
 
 # Learning -- Learning Subsystem Engineer

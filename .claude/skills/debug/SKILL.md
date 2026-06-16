@@ -1,3 +1,8 @@
+---
+name: debug
+description: Spawn the hopper agent for systematic root-cause analysis (reproduce → read error → hypothesize → verify → fix root cause). Use when something is broken, behaving unexpectedly, or an error recurs and needs investigating.
+---
+
 # Debug
 
 Spawn the Hopper agent for systematic root-cause analysis of a bug or unexpected behavior.

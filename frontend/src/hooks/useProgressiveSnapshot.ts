@@ -30,7 +30,6 @@ function legacyEndpoint(instance: string): string {
     case 'wkg': return '/api/graph/snapshot'
     case 'okg': return '/api/graph/okg'
     case 'skg': return '/api/graph/skg'
-    case 'pkg': return '/api/graph/pkg'
     default:    return `/api/graph/${instance}`
   }
 }
@@ -38,7 +37,7 @@ function legacyEndpoint(instance: string): string {
 /**
  * Progressively loads a graph snapshot in pages.
  *
- * @param instance  Graph slug: 'wkg' | 'okg' | 'skg' | 'pkg'
+ * @param instance  Graph slug: 'wkg' | 'okg' | 'skg'
  * @param pollMs    Re-poll interval in ms (0 = one-shot, no polling)
  */
 export function useProgressiveSnapshot(

@@ -3,6 +3,9 @@ name: vox
 description: Communication subsystem engineer. Owns input parsing, LLM-mediated response generation, Other Evaluation (person modeling via Grafeo), TTS/STT pipelines, chatbox interface, and Theater Prohibition enforcement. Use for any work on how Sylphie speaks, listens, models conversation partners, or delivers output.
 tools: Read, Glob, Grep, Bash, Write, Edit
 model: sonnet
+owns: ["apps/sylphie/src/services/communication.service.ts", "apps/sylphie/src/services/person-model.service.ts", "apps/sylphie/src/services/stt.service.ts", "apps/sylphie/src/services/tts.service.ts"]
+conceptual_reviewer: skinner
+code_reviewer: code-reviewer
 ---
 
 # Vox -- Communication Engineer

@@ -1,3 +1,8 @@
+---
+name: enforce-canon
+description: Run a CANON compliance check (via the canon agent) on a diff, epic plan, or proposal; returns COMPLIANT / NON-COMPLIANT / COMPLIANT-WITH-CONCERNS with every violation citing its CANON section. Use before an architectural change or when a proposal may drift from the Six Immutable Standards.
+---
+
 # Enforce Canon
 
 Run a CANON compliance check against a proposal, plan, or code change.

@@ -396,22 +396,13 @@ WebSocket channels: `/ws/conversation`, `/ws/perception`, `/ws/audio`, `/ws/grap
 
 ## 13. Codebase-as-Graph (PKG)
 
-A separate Neo4j instance (port 7691) indexed by ts-morph parses Sylphie's own source. Two consumer surfaces, both **outside** the cognitive loop:
+Sylphie's own source is parsed into a Neo4j graph (functions, types, imports, call chains, change history) by **`@sylphie-labs/codebase-pkg`** — a standalone published tool installed globally, **not** part of this repo. (It replaced the former in-repo `packages/sylphie-pkg`, retired in the codebase-pkg migration.) The graph has its own Neo4j instance: container `codebase-pkg-neo4j`, Bolt `bolt://localhost:7691` (deliberately clear of the WKG world graph on 7687), password `codebase-pkg-local`.
 
-**MCP tools for Claude Code** (`mcp__sylphie-pkg__*`):
-- `searchContent` — pattern search inside CodeBlock bodies
-- `getFunctionDetail` — body + types + callers + callees + recent changes + tests
-- `getDataFlow` — variable-length traversal of CALLS / USES_TYPE / IMPORTS / INJECTS / EXTENDS / IMPLEMENTS up to depth 6
-- `getModuleContext` — entry-point query by module/service/function name
-- `getConstraints` — surface CANON constraints attached to a scope
-- `getLogContext` — read `./logs/*.log` (NOT Neo4j) filtered by query/service/severity
-- `getRecentChanges` — :Change nodes with affected functions/types
+**One consumer surface, outside the cognitive loop — Claude Code via MCP** (`mcp__codebase-pkg__*`): the `codebase-pkg` server (registered in `.mcp.json`, launched via `npx … codebase-pkg-mcp`) exposes the code-graph query tools — content search, function detail (body + types + callers/callees + recent changes), data-flow traversal, module context, CANON constraints, and recent changes. Seed/refresh is **manual**: `npx codebase-pkg seed` (initial) and `npx codebase-pkg sync` (incremental deltas by content hash). The `/classify-pkg-domains`, `/infer-pkg-connections`, and `/sync-pkg` skills (codebase-pkg's own templates) drive graph maintenance.
 
-**REST surface for the dashboard:** the runtime backend exposes `PkgQueryService` via `/graph/pkg/search`, `/graph/pkg/function/:name`, and `/graph/pkg/dataflow/:name`. These power the Codebase Explorer panel — they are read-only Cypher against the PKG instance, called by the frontend, never by deliberation.
+The former REST/dashboard surface — the in-app "Codebase Explorer" (`PkgQueryService`, the `/graph/pkg/*` endpoints, the `getPkgSnapshot` path, and the frontend panel) — has been **removed**. The codebase graph is now a Claude Code tooling affordance only.
 
-Initial seed walks 5 watched packages, batches 50 files, runs 6-way integrity check, advances cursor to `git rev-parse HEAD`. Sync pipeline diffs against last cursor and applies mutations transactionally.
-
-**Sylphie does not query the PKG.** No deliberation step, working-memory source, or planning constraint reads from the PKG instance. Self-introspection of code is a *tooling* affordance for Jim and Claude Code, not a cognitive capability — consistent with Standard 6 (no self-modification of evaluation).
+**Sylphie does not query the PKG.** No deliberation step, working-memory source, or planning constraint reads from the codebase graph. Self-introspection of code is a *tooling* affordance for Jim and Claude Code, not a cognitive capability — consistent with Standard 6 (no self-modification of evaluation).
 
 ---
 

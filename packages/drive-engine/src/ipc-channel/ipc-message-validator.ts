@@ -78,7 +78,9 @@ const ActionOutcomePayloadSchema = z.object({
     source: z.enum(['WKG_DIFF', 'UNVERIFIED']),
   }).optional(),
   socialCommentTimestamp: z.number().optional(),
-}).passthrough();
+}).strict(); // CANON Std-6: reject any top-level field not declared above —
+             // an injected `driveEffects` MUST hard-fail at the isolation
+             // boundary, never silently pass through (was .passthrough()).
 
 /**
  * SELF_ASSESSMENT payload validation (Ticket 1 — KG(Self) self-evaluation).
