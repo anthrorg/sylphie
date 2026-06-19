@@ -83,6 +83,7 @@ import { AttractorMonitorService } from './monitoring/attractor-monitor.service'
 import { MoodBleedMonitorService } from './monitoring/mood-bleed-monitor.service';
 import { ContradictionScannerService } from './arbitration/contradiction-scanner.service';
 import { DecisionMakingService } from './decision-making.service';
+import { DecisionTickEngineService } from './tick-engine/decision-tick-engine.service';
 import { OllamaLlmService } from './llm/ollama-llm.service';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
 import { WkgContextService } from './wkg/wkg-context.service';
@@ -220,6 +221,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // ── WS4 Ticket 1: Concurrency guard (queue/mutex/watchdog/epoch fence) ─────
     CycleGuardService,
+
+    // ── EP7-A (TK-31): Tick engine — timer loop, self-tick mutex, event wiring ─
+    DecisionTickEngineService,
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────
     SensoryStreamLoggerService,

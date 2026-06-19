@@ -10,6 +10,7 @@ module.exports = {
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
       tsconfig: '<rootDir>/tsconfig.json',
+      diagnostics: false,
     }],
   },
   moduleNameMapper: {
