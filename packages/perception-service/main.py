@@ -1423,10 +1423,20 @@ async def status() -> JSONResponse:
 
     Returns:
         {
-          "active": bool,        -- True while the pipeline task is running
-          "tracked_objects": int, -- count of currently active tracks (non-DELETED)
-          "fps": float           -- configured processing fps (from PerceptionConfig)
+          "active": bool,               -- True while the pipeline task is running
+          "tracked_objects": int,       -- count of currently active tracks (non-DELETED)
+          "fps": float,                 -- configured processing fps (from PerceptionConfig)
+          "model_loaded": bool,         -- True if YOLO detector loaded at startup
+          "face_model_loaded": bool,    -- True if MediaPipe face detector loaded at startup
+          "embedding_init_failed": bool -- True if OnnxEmbeddingExtractor failed to init
         }
+
+    model_loaded and face_model_loaded mirror the same fields in /perception/health
+    and are exposed here so acceptance preflights have a single status endpoint to
+    probe for M0 substrate readiness without calling two endpoints.
+
+    embedding_init_failed is the module-level latch set by
+    _get_or_init_embedding_extractor on first failure; once True it stays True.
 
     tracked_objects reflects the tracker's current state. When the pipeline is
     not active it reports 0.
@@ -1452,4 +1462,10 @@ async def status() -> JSONResponse:
         "active": _state.pipeline_active,
         "tracked_objects": tracked_count,
         "fps": fps,
+        "model_loaded": _state.model_loaded,
+        "face_model_loaded": _state.face_model_loaded,
+        # _embedding_init_failed is a module-level bool (not on _state) because
+        # it is set by _get_or_init_embedding_extractor which runs on OS threads;
+        # read it directly here — it is only ever written once (latch).
+        "embedding_init_failed": _embedding_init_failed,
     })
