@@ -576,6 +576,7 @@ async def phase_transition(req: PhaseTransitionRequest):
         )
     else:
         trainer.ewc.set_reference(weights)
+        # NOTE: set_reference() fires before compute_fisher() — the first-call _fisher is seeded uniform; empirical Fisher blends in from the second boundary onward (Online EWC design).
         calibration = buffer.snapshot_calibration(
             _FISHER_CALIBRATION_SAMPLES, stratified=True,
         )

@@ -52,6 +52,12 @@ from cobeing.shared.types import EdgeId, NodeId
 
 _logger = logging.getLogger(__name__)
 
+# Maximum sub-procedure 'call' delegation depth. A 'call' step increments the
+# depth counter; once it exceeds this bound (e.g. a circular A->B->A chain),
+# _execute_string_procedure raises RecursionError instead of overflowing the
+# Python stack. Mirrors ProcedureExecutor's default max_call_depth (8).
+_MAX_CALL_DEPTH = 8
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -316,6 +322,7 @@ class MorphologyExecutor:
         self,
         procedure_id: str,
         word: str,
+        depth: int = 0,
     ) -> str | None:
         """Execute a morphological ProceduralTemplate with $WORD = word string.
 
@@ -325,10 +332,29 @@ class MorphologyExecutor:
         Args:
             procedure_id: Node ID of the ProceduralTemplate to execute.
             word: The input word string to transform.
+            depth: Current sub-procedure call depth. Incremented on every
+                ``call``-step delegation and used to bound recursion. A
+                ``RecursionError`` is raised once ``depth`` exceeds
+                :data:`_MAX_CALL_DEPTH`, which terminates circular call chains
+                (proc:A -> proc:B -> proc:A -> ...).
 
         Returns:
             The computed string result, or None if execution fails.
+
+        Raises:
+            RecursionError: Propagated up from a ``call`` step that drives the
+                delegation chain past :data:`_MAX_CALL_DEPTH`.
         """
+        # Recursion guard: a circular call chain (A->B->A) increments depth on
+        # every delegation and trips this limit instead of overflowing the
+        # Python stack. Raised (not swallowed) so callers see the cycle.
+        if depth > _MAX_CALL_DEPTH:
+            raise RecursionError(
+                f"morphology call depth exceeded {_MAX_CALL_DEPTH} executing "
+                f"procedure='{procedure_id}' word='{word}'; a circular "
+                f"sub-procedure call chain is the likely cause."
+            )
+
         # Load procedure template
         proc_node = await self._persistence.get_node(NodeId(procedure_id))
         if proc_node is None:
@@ -353,8 +379,12 @@ class MorphologyExecutor:
         root_step_id = body_edges[0].target_id
 
         try:
-            result = await self._execute_string_ast(root_step_id, word)
+            result = await self._execute_string_ast(root_step_id, word, depth)
             return str(result) if result is not None else None
+        except RecursionError:
+            # Depth-limit / circular-call signal must propagate; it is not an
+            # execution failure to be reported as None.
+            raise
         except Exception as exc:
             _logger.warning(
                 "morph_ast_execution_failed procedure=%s word=%s error=%s",
@@ -368,6 +398,7 @@ class MorphologyExecutor:
         self,
         step_id: NodeId,
         word: str,
+        depth: int = 0,
     ) -> Any:
         """Traverse AST step, resolving $WORD to the word string directly.
 
@@ -376,22 +407,35 @@ class MorphologyExecutor:
         - ``variable``: return word (the input string) -- only $WORD is valid
         - ``operation``: dispatch to OPERATIONS[operation_name](*evaluated_children)
         - ``conditional``: evaluate condition, branch accordingly
-        - ``call``: raises NotImplementedError (executor unification required)
+        - ``call``: delegate to a sub-procedure (string-space, no ValueNode)
 
         This is the key difference from ProcedureExecutor: variable resolution
         returns the Python string directly, not a ValueNode value.
 
+        Conversion contract for ``call`` (the asymmetry with ProcedureExecutor):
+        morphology stays entirely in string space. A ``call`` step reads its
+        ``target_procedure`` property and re-enters
+        :meth:`_execute_string_procedure` with the *same* Python ``word``
+        string bound to ``$WORD`` -- there is no string->ValueNode->string
+        round-trip. The sub-procedure is itself a MorphologyExecutor procedure
+        looked up by NodeId in the same graph, and it returns a Python ``str``
+        directly to the caller. ``depth`` is incremented on each delegation so
+        a circular chain hits :data:`_MAX_CALL_DEPTH` and raises
+        ``RecursionError``.
+
         Args:
             step_id: NodeId of the ProcedureStep to evaluate.
             word: The input word string bound to $WORD.
+            depth: Current sub-procedure call depth, threaded to ``call`` steps.
 
         Returns:
             The evaluated Python value (string, bool, int, etc.).
 
         Raises:
-            ValueError: If a step node is missing or has unknown step_type.
-            NotImplementedError: If step_type is ``'call'`` (requires
-                executor unification, planned for a future epic).
+            ValueError: If a step node is missing or has unknown step_type, or
+                a ``call`` step lacks a ``target_procedure`` property.
+            RecursionError: If a ``call`` step drives the delegation depth past
+                :data:`_MAX_CALL_DEPTH` (e.g. a circular call chain).
         """
         step_node = await self._persistence.get_node(step_id)
         if step_node is None:
@@ -425,7 +469,9 @@ class MorphologyExecutor:
             # Recursively evaluate each operand
             operand_values = []
             for edge in operand_edges:
-                value = await self._execute_string_ast(edge.target_id, word)
+                value = await self._execute_string_ast(
+                    edge.target_id, word, depth
+                )
                 operand_values.append(value)
 
             return OPERATIONS[operation_name](*operand_values)
@@ -445,23 +491,34 @@ class MorphologyExecutor:
                     f"on step {step_id}"
                 )
             condition_value = await self._execute_string_ast(
-                operand_edges[0].target_id, word
+                operand_edges[0].target_id, word, depth
             )
             if condition_value:
                 return await self._execute_string_ast(
-                    operand_edges[1].target_id, word
+                    operand_edges[1].target_id, word, depth
                 )
             else:
                 return await self._execute_string_ast(
-                    operand_edges[2].target_id, word
+                    operand_edges[2].target_id, word, depth
                 )
 
         if step_type == "call":
-            raise NotImplementedError(
-                f"step_type 'call' is not supported by MorphologyExecutor. "
-                f"Morphological procedure composition requires executor unification "
-                f"(planned for a future epic). Step: '{step_id}'."
+            # Delegate to a sub-procedure, staying entirely in string space.
+            # The target is another MorphologyExecutor procedure, looked up by
+            # NodeId in the same graph; $WORD (the Python str) is passed through
+            # unchanged -- no string->ValueNode->string conversion. depth+1
+            # bounds the delegation chain so circular calls raise RecursionError.
+            target_procedure = step_node.properties.get("target_procedure")
+            if target_procedure is None:
+                raise ValueError(
+                    f"call step '{step_id}' is missing required property "
+                    f"'target_procedure'; cannot determine which sub-procedure "
+                    f"to delegate to."
+                )
+            return await self._execute_string_procedure(
+                str(target_procedure), word, depth + 1
             )
+
         raise ValueError(f"Unknown step_type '{step_type}' on step '{step_id}'.")
 
     # ------------------------------------------------------------------

@@ -218,7 +218,8 @@
         "trigger": { "type": "string" },
         "validation_method": { "type": "string" },
         "revisit_trigger": { "type": "string" },
-        "rationale": { "type": "string" }
+        "rationale": { "type": "string" },
+        "decision_ref": { "type": "string", "description": "Cross-link to an external decision record (e.g. docs/decisions/architect-log.yaml AD-id)." }
       },
       "allOf": [
         {

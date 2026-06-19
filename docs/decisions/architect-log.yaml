@@ -749,3 +749,692 @@ decisions:
       - docs/decisions/architect-log.yaml:78
       - planning/contract.yaml:1301
     supersedes: null
+
+  - id: AD-0018
+    date: 2026-06-16
+    title: EP-16 §2.8 leak + ws5-t1 promotion are ALREADY BUILT (Wave 3 / WS5.5) — scope EP-16 as verify-and-seal, not rebuild
+    status: accepted
+    context: >
+      Scoping the missing EP-16 (Tier-4a world-fact / three-graph cluster). The
+      phase4-backlog (line 29) lists §2.8 person-fact WKG leak as an OPEN Tier-1
+      CANON Std-3 hazard, and the stub inventory §2.8 (dated 2026-06-10) describes
+      the 60s learning cycle leaking spoken proper nouns into the shared WKG so
+      Person B grounds off Person A's facts. Both docs predate commit 1f53de2
+      (feat/wave3-three-graph-isolation). Reading the live code at HEAD ccbbefe:
+      UpsertEntitiesService already mints SENSOR-provenance proper nouns as
+      `:Candidate` nodes (NOT `:Entity`), person-scoped via grounding_person_id,
+      confidence-capped at 0.60 (upsert-entities.service.ts:97-109, 267-318); all
+      four WKG grounding read-paths (matchEntities / getSubgraph / getEntityFacts /
+      getRelationships) carry `NOT <var>:Candidate` exclusions
+      (wkg-context.service.ts:286-298, 330-337, 1056-1099); the ws5-t1 world-fact
+      promotion path exists as the guardian-gated `promoteCandidate`
+      (wkg-context.service.ts:474-620, RELABELS :Candidate->:Entity, rejects
+      non-guardian with CANON Std-5); and the edge services match endpoints
+      label-agnostically so RELATED_TO/OWNS/KNOWS edges bind candidates without
+      lifting them to groundable (extract-edges.service.ts:136-144,
+      refine-edges.service.ts:411-438). Tests exist:
+      candidate-grounding-exclusion.spec.ts, candidate-promotion.spec.ts,
+      upsert-entities.candidate.spec.ts. Likewise §2.12 consolidation->visualContext
+      is built (deriveConsolidationProvenance reads episode.source + visualContext,
+      consolidation.service.ts:32-104, 206) and the durable OKG-recall path exists
+      (recall-retrieval.ts, the PRIMARY pre-arbitration branch). Memory confirms
+      "WS5.5 done."
+    decision: >
+      Scope EP-16 as a VERIFY-AND-SEAL epic, not a rebuild. The four already-built
+      items (§2.8 isolation, ws5-t1 promotion, §2.12 visualContext, durable
+      OKG-recall) get characterization/regression tickets that ASSERT the live
+      invariants and a cross-person isolation regression on a TWO-PERSON corpus
+      (the gate-invisible case the leak hid in) — NOT new write-path code. The
+      backlog's stale "§2.8 is an open Tier-1 hazard" framing is corrected here:
+      the breach is structurally closed at HEAD; what is missing is a
+      two-person regression test that proves it (the original leak was
+      gate-invisible precisely because the corpus was single-person). Only the two
+      genuinely-open items get net-new build tickets: T3 face->Type-1 reflex +
+      face-privacy machinery (latent face writes are deliberately DROPPED today,
+      latent-space.service.ts:645-650 / Wave 3 C6) and the drive hostility-appraisal
+      gap (no hostile/threat inbound maps to Anxiety/Social today — WS4 T8 blind).
+      Both are design-risky and get a `poc` sub-object.
+    rationale: >
+      Re-deriving and rebuilding work that Wave 3 already landed would be wasted
+      effort and a regression risk against tested code. The architect's value here
+      is catching that the backlog is stale against the code (the spec-matches-code
+      discipline cuts both ways) and re-pointing the epic at the real residual: a
+      missing two-person isolation regression and the two unbuilt items. Sealing
+      the isolation with a two-person test is the honest close of the Std-3 concern
+      — the leak was never gate-caught because the gate corpus is single-person.
+    alternatives:
+      - option: Scope EP-16 to rebuild the §2.8 fix + promotion path as new tickets
+        rejected_because: >
+          The code is already present and tested at HEAD; a rebuild ticket would
+          either no-op or risk regressing live isolation. Revisit only if the
+          verify ticket's two-person regression FAILS, which would prove the
+          built isolation is incomplete and reopen real build scope.
+    consequences: >
+      EP-16 lands as 6 tickets TK-81..86. TK-81 (the two-person isolation
+      regression) is the priority and is the true close of the §2.8 Std-3 concern.
+      The backlog line 29 / stub §2.8 should be marked RESOLVED-BY-WAVE-3 once
+      TK-81 passes. EP-16 sequences AHEAD of the P3 Tier-5 epics (it touches a
+      CANON standard) but does NOT block them — the hazard is already closed in
+      code, so this is confirmation, not a gating breach.
+    canon: "supports Std-3 (three-graph isolation) — TK-81 proves the built isolation with the two-person case the gate cannot see; no tension"
+    evidence:
+      - packages/learning/src/pipeline/upsert-entities.service.ts:97
+      - packages/decision-making/src/wkg/wkg-context.service.ts:474
+      - packages/decision-making/src/wkg/wkg-context.service.ts:1056
+      - packages/learning/src/pipeline/extract-edges.service.ts:136
+      - packages/decision-making/src/episodic-memory/consolidation.service.ts:98
+    supersedes: null
+
+  - id: AD-0019
+    date: 2026-06-16
+    title: Drive hostility-appraisal — new InboundHostility action type reusing the lexical affect scorer; pressure-only Anxiety+Social, no relief
+    status: accepted
+    context: >
+      The drive hostility-appraisal gap (WS4 T8 blind). The drive engine has NO
+      path that turns a hostile/aggressive inbound message into threat-driven
+      arousal: ACTION_TYPE_DEFAULTS (rules.ts:60-169) has no hostility/threat
+      entry, and no emitter sends one. The IPC validator's ACTION_OUTCOME schema
+      uses `actionType: z.string()` (ipc-message-validator.ts:40), so a new action
+      type needs NO schema change. A deterministic lexical valence/magnitude scorer
+      already exists (theater-affect-scorer.ts) producing valence in [-1,1] and
+      magnitude in [0,1] from response text — the same machinery can score INBOUND
+      text.
+    decision: >
+      Add an `InboundHostility` metadata-scaled action type to ACTION_TYPE_DEFAULTS
+      mapping a hostility magnitude to Anxiety + Social PRESSURE (positive deltas,
+      NO relief on any axis), added to METADATA_SCALED_ACTION_TYPES so the engine
+      scales by the magnitude. Detection reuses the existing lexical affect scorer
+      (strong negative valence + magnitude above a threshold => hostility
+      magnitude), invoked on inbound text on the app side, emitted as an
+      ActionOutcome to the drive engine over the existing IPC ACTION_OUTCOME path
+      (push, never a read/RPC into the drive — matches the drive-event standard).
+      Per-source habituation is NOT added in v1 (a genuinely hostile interlocutor
+      should keep registering); the cooldown/rate-limit is left to a follow-up if
+      flapping appears. Because the detector is heuristic and the drive-mapping is
+      a value judgment, the ticket carries a POC: open question = which drives and
+      what magnitude curve, hypothesis = Anxiety+Social pressure scaled by lexical
+      hostility magnitude is sufficient and non-theatrical.
+    rationale: >
+      Reusing the proven lexical scorer avoids a new classifier and keeps the
+      change to a rules.ts mapping + an emitter — the smallest move that closes the
+      blind spot. Pressure-only (no relief) is correct: a hostile message should
+      raise Anxiety, and its absence should NOT actively relieve it (Anxiety has no
+      passive decay by design — drives.ts:84 — so a relief delta would be the only
+      way it falls, which would let a calm message "reward away" prior threat;
+      that is the wrong dynamics and a theater risk). actionType being z.string()
+      means no validator change, only an additive rules entry.
+    alternatives:
+      - option: Train/wire a dedicated sentiment classifier for hostility
+        rejected_because: >
+          Net-new model + serving cost for a signal the existing lexical scorer
+          already approximates; revisit only if the lexical scorer proves too
+          coarse in the POC.
+      - option: Map hostility to a relief-capable axis (allow negative deltas)
+        rejected_because: >
+          Anxiety/Social are event-only (no passive decay); a relief delta lets a
+          subsequent calm turn cancel registered threat — wrong dynamics and a
+          theater hazard. Pressure-only is the CANON-aligned shape.
+    consequences: >
+      TK-86 adds InboundHostility to rules.ts + METADATA_SCALED_ACTION_TYPES + an
+      app-side emitter reusing theater-affect-scorer, POC-gated on the
+      drive-mapping. No IPC schema change. Owner: drive (rules) + vox/forge
+      (emitter); conceptual reviewer skinner.
+    canon: "supports theater-prohibition (pressure-only, no reward-away of threat) + drive isolation (push ActionOutcome, no RPC into drive); no tension"
+    evidence:
+      - packages/drive-engine/src/constants/rules.ts:165
+      - packages/drive-engine/src/ipc-channel/ipc-message-validator.ts:40
+      - apps/sylphie/src/services/theater-affect-scorer.ts:23
+      - packages/drive-engine/src/constants/drives.ts:84
+    supersedes: null
+
+  - id: AD-0020
+    date: 2026-06-16
+    title: Face->Type-1 reflex — POC-gated; the privacy gate (not the Type-1 mechanics) is the open design risk
+    status: accepted
+    context: >
+      The T3 face->Type-1 reflex + face-privacy item. latent-space.service.ts
+      DELIBERATELY DROPS drive/face modality writes today (lines 645-650, Wave 3
+      C6: "faces carry identity/privacy weight" — supplied face embeddings are
+      visibly dropped, not stored). Type-1 graduation machinery exists for the
+      conversational/latent path (type1-tracker.service.ts) but a recognized face
+      is not yet a graduation-eligible pattern. Promoting a face to a Type-1 reflex
+      means writing face embeddings into a latent index and letting useCount drive
+      graduation — which is exactly the write Wave 3 C6 refused on privacy grounds.
+    decision: >
+      Keep face->Type-1 a single POC-gated ticket whose POC is the PRIVACY GATE,
+      not the Type-1 mechanics. The open question: under what isolation can a face
+      embedding be stored and graduated to a reflex WITHOUT becoming a
+      cross-person grounding leak (the same §2.8 hazard one modality over) — e.g. a
+      person-scoped face index analogous to the :Candidate grounding_person_id
+      scope, never written to the shared conversational latent index. The ticket
+      does NOT commit acceptance criteria for the write until the POC answers the
+      isolation question; if the POC cannot find a privacy-safe scope, the item
+      stays deferred rather than shipping a privacy-leaking reflex. The Type-1
+      graduation reuse (type1-tracker) is the cheap part and is not the risk.
+    rationale: >
+      Wave 3 already made the call to NOT write faces to the shared index on
+      privacy grounds; reversing that requires a deliberate isolation design, not
+      an acceptance criterion. Treating the privacy gate as the POC keeps the
+      decision honest — we do not pre-commit to a write that may be unsafe.
+    alternatives:
+      - option: Write face embeddings to the existing latent index and graduate normally
+        rejected_because: >
+          Re-introduces the §2.8 cross-person leak one modality over (a face seen
+          with Person A could ground for Person B); Wave 3 C6 already refused this.
+          Revisit only behind a person-scoped face index the POC validates.
+    consequences: >
+      TK-85 ships as a POC-gated ticket (status: open) — the privacy-isolation
+      question gates any write-path AC. If the POC fails, the item defers; if it
+      succeeds, a follow-up ticket builds the scoped write + graduation. Owner:
+      cortex (latent-space) + marr (face provenance); conceptual reviewer luria.
+    canon: "touches provenance-required + Std-3 isolation (face must not cross-person leak) + guardian asymmetry on reflex promotion; POC defers the write until isolation is proven — no tension if gated"
+    evidence:
+      - packages/decision-making/src/latent-space/latent-space.service.ts:645
+      - packages/decision-making/src/graduation/type1-tracker.service.ts:54
+    supersedes: null
+
+  - id: AD-0021
+    date: 2026-06-17
+    title: Q-10 vision fixtures — synthesize COCO-plausible structure + lower the acceptance-run detection confidence threshold
+    status: accepted
+    context: >
+      TK-30 builds synthetic mug/book/person fixtures as labeled rectangles.
+      YOLO(-seg) is trained on natural images, so a flat rectangle may yield zero
+      COCO detections — no confirmed track, no mask polygon — breaking ACC.A
+      (768-D embedding + mask-zeroing), ACC.B (re-bind), and the intra-class
+      cosine floor. main.py:29 documents an env knob
+      COBEING_PERCEPTION_DETECTION__CONFIDENCE_THRESHOLD (default 0.25) read into
+      the detector config at boot (main.py:428-436), so detection sensitivity is
+      configurable for an acceptance run.
+    decision: >
+      Keep the fixtures synthetic but make them COCO-plausible (a clear
+      bounding-box subject on a solid background with the correct aspect ratio)
+      AND lower the detection confidence threshold for the acceptance run via the
+      existing env knob. The acceptance ACs assert the lowered-threshold run
+      yields at least one confirmed track per fixture so the embedding/mask path
+      actually exercises rather than silently no-opping.
+    rationale: >
+      Real-photo fixtures add an uncontrolled variable and make the acceptance
+      non-repeatable without a camera — contrary to TK-30's purpose (deterministic
+      inputs). Accepting a non-zero-norm proxy for mask-zeroing weakens the gate to
+      where it no longer proves masked-vs-unmasked behaviour. Synthetic plus
+      lowered-threshold keeps determinism while exercising the real YOLO to track
+      to embed to mask path.
+    alternatives:
+      - option: Real-photo fixtures
+        rejected_because: >
+          Uncontrolled variable; breaks the repeatable-without-camera property
+          TK-30 exists to provide.
+      - option: Accept a non-zero-norm proxy for mask-zeroing
+        rejected_because: >
+          Weakens the gate; revisit only if the lowered-threshold synthetic path
+          cannot confirm a track at all.
+    consequences: >
+      TK-30 fixtures stay synthetic but COCO-plausible; TK-26/27 ACs reference the
+      lowered-threshold acceptance run. Q-10 resolves to DEC-10.
+    canon: none
+    evidence:
+      - packages/perception-service/main.py:29
+      - packages/perception-service/main.py:428
+    supersedes: null
+
+  - id: AD-0022
+    date: 2026-06-17
+    title: Q-11 expose embedding_init_failed on GET /perception/health (one-line aggregate)
+    status: accepted
+    context: >
+      The TK-26 preflight AC reads model_loaded, face_model_loaded, and
+      embedding_init_failed. main.py:546-552 exposes model_loaded/
+      face_model_loaded/vlm_enabled/vlm_loaded but NOT any embedding-init flag.
+      The DINOv2 _object_embedding_init_failed (main.py:196) and the object/face
+      _embedding_init_failed latches (main.py:133, 261) are module-private.
+    decision: >
+      Expose embedding_init_failed on GET /perception/health as the
+      embedding-failure aggregate (_object_embedding_init_failed OR
+      _embedding_init_failed OR _face_embedding_init_failed). A one-line read.
+      Relaxing the AC to the two existing flags was rejected — it hides a latched
+      embedding init failure the preflight exists to surface.
+    rationale: >
+      The flag already exists; the only gap is serialization. A failed object
+      embedding would otherwise pass the preflight and break ACC.A opaquely, since
+      face_model_loaded says nothing about the DINOv2 object-embedding latch.
+    alternatives:
+      - option: Relax the preflight AC to the two existing flags
+        rejected_because: >
+          face_model_loaded does not cover the object-embedding latch; the failure
+          would be invisible to the preflight.
+    consequences: >
+      TK-26 files_in_scope gains packages/perception-service/main.py. Q-11
+      resolves to DEC-11.
+    canon: none
+    evidence:
+      - packages/perception-service/main.py:196
+      - packages/perception-service/main.py:546
+    supersedes: null
+
+  - id: AD-0023
+    date: 2026-06-17
+    title: Q-12 per-model freeze protects the on-disk NPZ snapshot — byte-provable AC
+    status: accepted
+    context: >
+      TK-38's freeze AC "panel[0] weights do NOT change" is trivially true on a
+      never-trained NPZ because the Trainer trains the global model, not per-panel
+      — the AC could pass without the freeze doing anything.
+    decision: >
+      Define the freeze to protect the on-disk NPZ at the panel's weights_path.
+      Rewrite the AC byte-provably: freeze panel_0, run a training pass targeting a
+      DIFFERENT model, assert panel_0's weights_path NPZ is byte-identical (sha256)
+      before vs after; then unfreeze and assert a panel_0-targeted train CHANGES
+      the sha256.
+    rationale: >
+      An AC must assert something a real training run can falsify. The on-disk NPZ
+      sha256 plus a cross-target train while frozen plus the unfreeze control
+      closes the trivially-true hole and makes the freeze observable.
+    alternatives:
+      - option: Keep the in-memory snapshot-before/after AC
+        rejected_because: >
+          Trivially true on a never-trained NPZ; the on-disk sha256 is the provable
+          artifact.
+    consequences: >
+      TK-38 AC reworded to a sha256 freeze/cross-target-train/unfreeze sequence.
+      Q-12 resolves to DEC-12.
+    canon: none
+    evidence:
+      - planning/contract.yaml:702
+    supersedes: null
+
+  - id: AD-0024
+    date: 2026-06-17
+    title: Q-13 convergence graduation accuracy proxy 1 minus abs(learned minus heuristic divergence) at 0.80, mvp-level
+    status: accepted
+    context: >
+      TK-41 graduates use_learned at sample_count>=1000 AND accuracy>=0.80, but no
+      convergence ground-truth dataset exists, so accuracy is undefined.
+    decision: >
+      Adopt the proxy accuracy = 1 - abs(learned_divergence - heuristic_divergence)
+      with the 0.80 threshold, recorded as an mvp-level assumption (TK-41 is mvp).
+      A real labelled convergence dataset is separate future scope. The TK-41 AC
+      defines accuracy via this proxy explicitly so it is provable.
+    rationale: >
+      Absent labels, agreement between learned and heuristic divergence is the
+      computable signal at this engineering level and captures "the learned model
+      converged toward the heuristic reference." Recording it as an explicit
+      assumption makes the AC runnable and the limitation honest.
+    alternatives:
+      - option: Agreement with panel majority-vote
+        rejected_because: >
+          Adds a vote path the ticket does not build and is no closer to
+          ground-truth; revisit if a labelled dataset is created.
+    consequences: >
+      TK-41 AC defines accuracy via the proxy. Q-13 resolves to DEC-13.
+    canon: none
+    evidence:
+      - planning/contract.yaml:753
+    supersedes: null
+
+  - id: AD-0025
+    date: 2026-06-17
+    title: Q-14 CognitiveAwareness pressure-trigger threshold = 0.5 (named tunable default)
+    status: accepted
+    context: >
+      TK-55 fires forceCycle() when CognitiveAwareness pressure exceeds a
+      threshold; the ticket gives no value (decomposition assumed 0.5).
+    decision: >
+      Use COGNITIVE_AWARENESS_PRESSURE_THRESHOLD = 0.5 (mid-scale) as the
+      production default, a named tunable constant overridable without a
+      structural change. Does NOT block the TK-55 build — a documented tuning
+      assumption.
+    rationale: >
+      A mid-scale default fires on meaningful pressure without flapping (too low)
+      or never triggering (too high); a named constant makes re-tuning a one-line
+      change once live telemetry exists. Blocking the build on an exact value is
+      false precision.
+    alternatives:
+      - option: Block TK-55 until a tuned value is supplied
+        rejected_because: >
+          The value is empirical; a named default unblocks and is re-tunable.
+    consequences: >
+      TK-55 builds against 0.5. Q-14 resolves to DEC-14.
+    canon: none
+    evidence:
+      - planning/contract.yaml:988
+    supersedes: null
+
+  - id: AD-0026
+    date: 2026-06-17
+    title: Q-15 TK-70 adaptive EMA weights — split-and-gate on CANON Std-6; build only if PERMITTED
+    status: accepted
+    context: >
+      scoreCandidates lives in deliberation.service.ts:986 (in scope). The
+      outcome-nudge call-site reaches the reinforcement seam of
+      decision-making.service.ts, OUTSIDE files_in_scope — a scope expansion.
+      task-1 is the CANON Std-6 (no-self-modification-of-evaluation)
+      determination that gates the build.
+    decision: >
+      Split-and-gate. task-1 runs FIRST as a hard CANON Std-6 gate with a WRITTEN
+      verdict. PERMITTED only if the EMA nudges scoring weights of NEW candidate
+      selections (a tunable heuristic on forward selection); BLOCKED if it
+      rewrites how the system evaluates its own PAST actions/outcomes. Build
+      (task-2+) opens ONLY on PERMITTED; on BLOCKED the ticket STOPS and records a
+      new open_question. decision-making.service.ts is added to files_in_scope
+      CONDITIONALLY — effective only if task-1 clears.
+    rationale: >
+      Std-6 is the standard most at risk. The distinction is decidable: tuning how
+      new candidates are scored is an allowed adaptive heuristic; rewriting the
+      evaluation of prior behaviour is the forbidden self-modification of the
+      evaluator. Putting the verdict before any build, and gating the scope
+      expansion behind it, keeps the CANON gate from being a post-hoc rubber stamp.
+    alternatives:
+      - option: Build the EMA and run the CANON review post-hoc
+        rejected_because: >
+          A verdict written after the code exists is theater; Std-6 must clear
+          first.
+      - option: Close TK-70 as a non-goal (assume unsafe)
+        rejected_because: >
+          Pre-judges the verdict; the forward-selection-weight case is plausibly
+          permitted.
+    consequences: >
+      TK-70 AC made gate-first; decision-making.service.ts conditionally in scope.
+      Q-15 resolves to DEC-15.
+    canon: "Std-6 is the gating standard; task-1 classifies the mechanism before any weight-update code lands"
+    evidence:
+      - packages/decision-making/src/deliberation/deliberation.service.ts:986
+      - planning/contract.yaml:1234
+    supersedes: null
+
+  - id: AD-0027
+    date: 2026-06-17
+    title: Q-16 re-grounding sweep — one-time idempotent Cypher backfill of pre-existing grounded:false Insights
+    status: accepted
+    context: >
+      TK-53's recurring sweep re-grounds grounded:false Insights against entities
+      added since creation. Insights created BEFORE the ticket lack
+      referenced_entities, so the IS NOT NULL predicate skips them forever — a
+      permanent blind spot on exactly the order-dependent insights the ticket
+      exists to fix.
+    decision: >
+      Run a one-time, idempotent Cypher backfill that brings existing
+      grounded:false Insights into the sweep's reach; the recurring 30-min sweep
+      then maintains them. Newly-created-only was rejected.
+    rationale: >
+      Without the backfill the feature has a permanent blind spot on the
+      historical insights it was built to repair. A one-time idempotent backfill
+      is cheap and closes the gap; re-runs are no-ops.
+    alternatives:
+      - option: Accept newly-created-only re-grounding
+        rejected_because: >
+          Leaves pre-existing ungrounded insights permanently unreachable — the
+          order-dependence the ticket targets.
+    consequences: >
+      TK-53 gains an additive backfill AC. Q-16 resolves to DEC-16.
+    canon: none
+    evidence:
+      - planning/contract.yaml:953
+    supersedes: null
+
+  - id: AD-0028
+    date: 2026-06-17
+    title: Q-17 legacy to guardian migration — tighten filter, hard-stop on backup failure, dry-run reports its own N
+    status: accepted
+    context: >
+      TK-78 is a destructive prod migration. (a) The filter (grounding_person_id
+      IS NULL AND knowledge_grounding=GROUNDED) could match NEW world-scoped rows;
+      (b) the pg_dump backup continues-with-WARN on failure; (c) the 293 count
+      cannot be verified statically and may have been zeroed by a DB reset.
+    decision: >
+      (a) Tighten with AND created_at < 2026-06-13 (the Wave-3 isolation merge
+      date) so post-isolation world rows cannot match. (b) Hard-stop on backup
+      failure (process.exit(1)); never continue-with-WARN on a destructive prod
+      migration. (c) Remove the hard-coded 293 — the counted dry-run reports its
+      OWN matched N and the apply count must equal the dry-run N.
+    rationale: >
+      A destructive prod migration must be conservative on all three axes: an
+      over-broad filter risks corrupting new world rows; continue-on-backup-failure
+      risks an irreversible write with no restore point; a hard-coded count that
+      no longer matches reality silently mis-migrates or fails confusingly.
+    alternatives:
+      - option: Keep the loose filter / continue-with-WARN / hard-coded 293
+        rejected_because: >
+          Each is an irreversibility or correctness hazard unacceptable at
+          engineering_level production.
+    consequences: >
+      TK-78 ACs updated. Q-17 resolves to DEC-17.
+    canon: "supports provenance-required; the tightened filter avoids touching Std-3 world rows"
+    evidence:
+      - planning/contract.yaml:1373
+      - "git commit 1f53de2 (Wave-3 three-graph isolation, 2026-06-13)"
+    supersedes: null
+
+  - id: AD-0029
+    date: 2026-06-17
+    title: Q-18 drive-server drive-engine dep — POC checks symlink presence; likely fix is a dependency declaration
+    status: accepted
+    context: >
+      apps/drive-server imports @sylphie/drive-engine but does not declare it. In
+      a --production Docker install the workspace symlink may be absent, in which
+      case the Dockerfile cp-hack (TK-42's subject) papered over a missing
+      dependency, not an exports gap.
+    decision: >
+      Fold a symlink-presence check into the TK-42 POC: in a --production install,
+      is @sylphie/drive-engine present under apps/drive-server/node_modules?
+      Report present/absent. Likely outcome: if absent, the fix is declaring the
+      dependency in apps/drive-server/package.json — exports fields do not resolve
+      a missing dependency. No new ticket; the POC verdict drives the fix.
+    rationale: >
+      The cp-hack and the exports question conflate two failure modes. The POC
+      must distinguish "subpath import from a package lacking exports" (exports
+      fix) from "the package is not installed" (dependency-declaration fix).
+    alternatives:
+      - option: Assume an exports gap and fix exports fields
+        rejected_because: >
+          Exports fields cannot make an absent dependency resolve; presence must be
+          established first.
+    consequences: >
+      TK-42 POC gains the symlink-presence check. Q-18 resolves to DEC-18.
+    canon: none
+    evidence:
+      - planning/contract.yaml:760
+    supersedes: null
+
+  - id: AD-0030
+    date: 2026-06-17
+    title: Q-19 EP-16 priority P1 to P2 (isolation breach sealed at HEAD); TK-81 stays P1
+    status: accepted
+    context: >
+      EP-16 was P1 because it touches CANON Std-3, but per AD-0018 the :Candidate
+      isolation is structurally SEALED at HEAD (Wave 3 / 1f53de2) — no active
+      breach. EP-16 is verify-and-seal, not an open-hazard fix.
+    decision: >
+      Drop EP-16 to P2. TK-81 (the two-person isolation regression that PROVES the
+      seal — the gate-invisible case) stays P1 as the single priority leaf;
+      TK-82..86 stay P2 (TK-85/86 POC-gated).
+    rationale: >
+      Priority should track active risk. A sealed-in-code breach is confirmation
+      work; only the proving regression (TK-81) carries residual risk worth P1 (if
+      it FAILS, real build scope reopens per AD-0018). Jim's read that EP-16 is
+      confirmation is correct.
+    alternatives:
+      - option: Keep EP-16 at P1
+        rejected_because: >
+          Over-states urgency on a structurally-closed breach.
+    consequences: >
+      EP-16.priority P1 to P2; TK-81 keeps P1. Q-19 resolves to DEC-19.
+    canon: "no tension — Std-3 isolation already enforced; TK-81 proves it with the two-person case"
+    evidence:
+      - docs/decisions/architect-log.yaml:753
+      - planning/contract.yaml:1416
+    supersedes: null
+
+  - id: AD-0031
+    date: 2026-06-17
+    title: Q-20 update the stale section-2.8 OPEN-hazard docs now — SEALED-BY-WAVE-3
+    status: accepted
+    context: >
+      phase4-backlog.md line 29 and sylphie-stub-inventory.md section 2.8 are
+      pre-Wave-3 snapshots still calling the :Candidate WKG leak an OPEN Tier-1
+      Std-3 hazard, though it is closed at HEAD (1f53de2, per AD-0018).
+    decision: >
+      Re-label both docs SEALED-BY-WAVE-3 (1f53de2) now, noting TK-81's two-person
+      regression is the proving test (not a reopening). Folded into TK-81's
+      acceptance criteria as a doc-update step on close; no separate ticket. Both
+      docs added to TK-81 files_in_scope.
+    rationale: >
+      A stale OPEN-Tier-1-hazard label on a structurally-closed breach is itself a
+      confusion/safety hazard — a future reader treats a sealed leak as live and
+      may rebuild or mis-prioritise. Correcting it now, tied to the proving
+      regression, keeps docs honest with code.
+    alternatives:
+      - option: Wait until TK-81 passes to update the docs
+        rejected_because: >
+          Leaves a misleading live-hazard label standing; the flip belongs to
+          TK-81's close.
+    consequences: >
+      TK-81 gains a doc-flip AC + the two docs in scope. Q-20 resolves to DEC-20.
+    canon: "supports theater-prohibition (docs match reality) + Std-3"
+    evidence:
+      - wiki/phase4-backlog.md:29
+      - sylphie-stub-inventory.md
+    supersedes: null
+
+  - id: AD-0032
+    date: 2026-06-17
+    title: Q-21 face to Type-1 — a recorded DEFERRAL is an acceptable TK-85 outcome; face reflexes stay in EP-16
+    status: accepted
+    context: >
+      TK-85 is POC-gated (AD-0020) on whether a person-scoped face index can
+      graduate a face to a Type-1 reflex without a cross-person leak. The
+      question: is a recorded deferral (with the isolation finding) acceptable, or
+      should face reflexes be out-of-scope for EP-16 entirely?
+    decision: >
+      A recorded DEFERRAL is an acceptable terminal outcome for TK-85 if the
+      privacy POC finds no safe person-scoped isolation — the Wave-3 C6 face-drop
+      is retained and the finding recorded. Face reflexes are NOT out-of-scope for
+      EP-16; the POC decides. Both branches are already in the TK-85 AC.
+    rationale: >
+      The honest shape of a POC-gated ticket is that EITHER outcome closes it.
+      Removing face reflexes from EP-16 would pre-judge the POC; letting it return
+      a deferral keeps the decision evidence-driven and avoids shipping a
+      privacy-leaking reflex.
+    alternatives:
+      - option: Make face reflexes out-of-scope for EP-16
+        rejected_because: >
+          Pre-judges the POC; the privacy gate might be satisfiable with a
+          person-scoped index.
+    consequences: >
+      TK-85's no-build branch is confirmed legitimate. Q-21 resolves to DEC-21.
+    canon: "supports Std-3 isolation + provenance — the deferral retains the privacy-safe face-drop"
+    evidence:
+      - planning/contract.yaml:1537
+      - docs/decisions/architect-log.yaml:890
+    supersedes: null
+
+  - id: AD-0033
+    date: 2026-06-17
+    title: Q-22 hostility detection — the lexical affect scorer is acceptable for the v1 drive signal
+    status: accepted
+    context: >
+      TK-86 detects inbound hostility via the deterministic lexical affect scorer
+      (theater-affect-scorer.ts) to move Anxiety+Social (AD-0019). Acceptable for
+      a CANON-adjacent threat signal, or gate behind a trained classifier first?
+    decision: >
+      The lexical affect scorer is acceptable for the v1 drive signal, recorded as
+      an assumption with a revisit trigger. The same scorer already gates CANON
+      theater detection, so treating its lexical affect as load-bearing for an
+      inbound-hostility signal is consistent. A trained classifier is future scope.
+    rationale: >
+      The scorer is already trusted for a CANON-adjacent purpose, so reuse is
+      consistent. The pressure-only mapping (AD-0019, no reward-away of threat)
+      bounds the downside of a coarse signal. Gating a v1 MVP behind a net-new
+      classifier is premature against an unproven need.
+    alternatives:
+      - option: Gate behind a trained hostility classifier first
+        rejected_because: >
+          Net-new model/serving cost for a signal the lexical scorer approximates;
+          revisit if it proves too coarse in the POC.
+    consequences: >
+      TK-86 builds on the lexical scorer; classifier upgrade is a revisit trigger.
+      Q-22 resolves to DEC-22.
+    canon: "supports theater-prohibition (pressure-only bounds the signal); consistent with existing lexical-affect trust"
+    evidence:
+      - apps/sylphie/src/services/theater-affect-scorer.ts:23
+      - docs/decisions/architect-log.yaml:828
+    supersedes: null
+
+  - id: AD-0034
+    date: 2026-06-17
+    title: Q-23 Type-1 face reflex anchor — a face-scoped procedure node in the person-scoped OKG, not an opaque key
+    status: accepted
+    context: >
+      type1-tracker graduation requires a procedureId anchor tied to a learned
+      procedure. A face to Type-1 path needs either (a) a face-scoped procedure
+      node in the person-scoped OKG, or (b) extending type1-tracker to accept an
+      opaque key not tied to learned_patterns. TK-85's POC must resolve which.
+    decision: >
+      Option (a). The face reflex graduates against a real face-scoped procedure
+      node in the person-scoped OKG (analogous to the :Candidate
+      grounding_person_id scope), never the shared WKG. type1-tracker must NOT
+      accept an opaque key disconnected from a learned procedure — that breaks the
+      Type-1 graduation invariant (every reflex traces to a learned procedure with
+      provenance and a useCount). The POC must prove this anchor is feasible
+      before build scope opens.
+    rationale: >
+      The graduation invariant — every reflex anchored to a learned,
+      provenance-carrying procedure with a usage count — makes a graduated reflex
+      auditable and prevents an ungrounded shortcut into reflexive behaviour. An
+      opaque key would let a face become a reflex with no learned-procedure
+      lineage, breaking that invariant and the provenance chain.
+    alternatives:
+      - option: Extend type1-tracker to accept an opaque key not tied to learned_patterns
+        rejected_because: >
+          Breaks the Type-1 graduation invariant and the provenance chain; revisit
+          only if a person-scoped procedure-node anchor proves infeasible (which
+          would defer the face reflex per DEC-21).
+    consequences: >
+      TK-85 POC gains the anchor-feasibility sub-question. Q-23 resolves to DEC-23.
+    canon: "supports provenance-required + Std-3 isolation — the anchor is person-scoped and traces to a learned procedure"
+    evidence:
+      - packages/decision-making/src/graduation/type1-tracker.service.ts:54
+      - planning/contract.yaml:1551
+    supersedes: null
+
+  - id: AD-0035
+    date: 2026-06-17
+    title: Q-24 add hostilityMagnitude to the IPC metadata Zod sub-schema (additive); reword the TK-86 non-goal
+    status: accepted
+    context: >
+      The metadata sub-object is a plain z.object().optional() with NO
+      .passthrough() (ipc-message-validator.ts:45-51), and the top-level payload is
+      .strict() (validator:81, per DEC-1). In Zod v3 a z.object() STRIPS unknown
+      keys, so hostilityMagnitude would be dropped before computeDefaultAffect. The
+      TK-86 non-goal "no IPC validator schema change" was scoped to actionType
+      staying z.string() (no new enum).
+    decision: >
+      Add hostilityMagnitude as z.number().min(0).max(1).optional() to the metadata
+      sub-schema. The non-goal meant "no actionType enum", NOT a frozen metadata
+      object — reword it in TK-86. Add ipc-message-validator.ts to TK-86
+      files_in_scope. Reusing an existing metadata field was rejected (semantic
+      collision — undiscoveredObjectCount / unknownPersonCount / sceneSurprise each
+      carry distinct validated meanings).
+    rationale: >
+      The schema mechanics are unambiguous from source: a z.object() without
+      .passthrough() drops unknown keys, so the signal never reaches affect
+      computation unless declared. The change is a single additive, range-clamped,
+      optional field — it does not touch the top-level .strict() isolation boundary
+      (the Std-6 hardening from DEC-1) and does not change actionType.
+    alternatives:
+      - option: Reuse an existing metadata field
+        rejected_because: >
+          Semantic collision — overloading a field with a distinct validated
+          meaning misleads every other consumer.
+      - option: Use .passthrough() on the metadata object
+        rejected_because: >
+          Re-opens the silent-unknown-key hole the .strict() hardening closed; an
+          explicit declared field is the honest path.
+    consequences: >
+      TK-86 gains ipc-message-validator.ts in scope + the additive field; the
+      non-goal is reworded. Q-24 resolves to DEC-24.
+    canon: "no tension — additive optional field; the top-level .strict() boundary (DEC-1 / Std-6 hardening) is untouched"
+    evidence:
+      - packages/drive-engine/src/ipc-channel/ipc-message-validator.ts:45
+      - packages/drive-engine/src/ipc-channel/ipc-message-validator.ts:81
+    supersedes: null
