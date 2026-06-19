@@ -582,6 +582,12 @@ async def phase_transition(req: PhaseTransitionRequest):
         )
         if calibration:
             try:
+                # TK-37 POC confirmed: this is the live active path — real
+                # empirical Fisher (squared per-chunk gradients) is computed and
+                # returned as fisher_computed=true when the buffer is non-empty.
+                # _compute_uniform_fisher() is only the first-call seed inside
+                # set_reference() (above), not the running estimator.  No wiring
+                # change needed (TK-39 Branch A).
                 trainer.ewc.compute_fisher(trainer, calibration)
                 fisher_computed = True
                 calibration_n = len(calibration)
