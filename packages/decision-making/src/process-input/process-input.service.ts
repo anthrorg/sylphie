@@ -213,6 +213,17 @@ export class ProcessInputService {
   private categorizeFrame(frame: SensoryFrame): InputCategory {
     const modalities = new Set(frame.active_modalities);
 
+    // P4.2 (TK-21): a sceneNudge cycle is stamped frame.raw['system_trigger'] in
+    // runCycleForTurn. It has NO human text/audio — it is an exogenous, vision-
+    // triggered tick — so it is a SYSTEM_TRIGGER, NOT VISUAL_INPUT, even though
+    // the frame carries video/scene modalities. This check leads so the riding
+    // sensory modalities never reclassify it as VISUAL_INPUT/MULTIMODAL, routing
+    // deliberation + P1.5 recall correctly. Distinct from a co-present VISUAL_INPUT
+    // frame that carries human text/audio (no system_trigger stamp).
+    if (frame.raw['system_trigger'] === true) {
+      return 'SYSTEM_TRIGGER';
+    }
+
     // Check for guardian feedback in raw text data
     const rawText = this.readText(frame);
     if (rawText?.guardianFeedback && rawText.guardianFeedback !== 'none') {

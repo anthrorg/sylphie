@@ -359,6 +359,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
       const frame = await this.tickSampler.sample();
 
+      // P4.2 (TK-21): stamp a sceneNudge frame as a system trigger BEFORE
+      // processInput so categorizeFrame returns SYSTEM_TRIGGER (not VISUAL_INPUT)
+      // — a vision-triggered cycle has no human text/audio and must route
+      // deliberation + P1.5 recall distinctly from a co-present visual frame.
+      // Stamped here (not at enqueue) because the frame is only sampled now.
+      if (turn.sceneNudge) {
+        (frame.raw as Record<string, unknown>)['system_trigger'] = true;
+      }
+
       // WS5 T4/P2 — stamp the in-flight turnId onto the frame so BOTH composition
       // paths (the LLM_GENERATE procedure handler AND deliberate()) can key the
       // test-only prompt-capture mirror by turn, enabling the gate's turn-correlated
