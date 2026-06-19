@@ -39,8 +39,6 @@ import {
   type DeliveryPayload,
   type InputParseResult,
   type DriveSnapshot,
-  type PressureVector,
-  type ActionOutcome,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
 import {
@@ -67,12 +65,11 @@ import {
   type IDriveStateReader,
   type IActionOutcomeReporter,
 } from '@sylphie/drive-engine';
-import { Neo4jService, Neo4jInstanceName } from '@sylphie/shared';
 import { TtsService } from './tts.service';
 import { ConversationHistoryService } from './conversation-history.service';
 import { PersonModelService, extractFactsFromText } from './person-model.service';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
-import { WkgDiffService } from './wkg-diff.service';
+import { FastFactWriterService } from './fast-fact-writer.service';
 
 // ---------------------------------------------------------------------------
 // CommunicationService
@@ -130,18 +127,15 @@ export class CommunicationService implements OnModuleInit {
 
     private readonly timescale: TimescaleService,
 
-    private readonly neo4j: Neo4jService,
-
     private readonly tts: TtsService,
     private readonly conversationHistory: ConversationHistoryService,
     private readonly personModel: PersonModelService,
     private readonly voiceCache: VoiceLatentSpaceService,
 
-    // Ticket 2 (§A.14): before/after WKG diff for curiosity information-gain.
-    // Wraps the WKG-touching fast-fact write so the diff is attributed to that
-    // action; the write stamps last_action_id, so a real fact write emits
-    // WKG_DIFF and earns curiosity relief (foreign-marker concurrency → UNVERIFIED).
-    private readonly wkgDiff: WkgDiffService,
+    // TK-34 (EP7-D): fast-fact KG writes extracted to a standalone service to
+    // remove 4 KG-write deps (Neo4jService ×2, WkgDiffService, outcomeReporter)
+    // from the Communication hot-path constructor.
+    private readonly fastFactWriter: FastFactWriterService,
 
     // WS4 Ticket 2: needed to update conversation-context slots (history, speaker)
     // and to call recordInputArrival() for the self-tick 30s suppression guard.
@@ -264,8 +258,8 @@ export class CommunicationService implements OnModuleInit {
       this.logger.log(
         `Fast facts detected: ${extractedFacts.map((f) => `${f.key}="${f.value}"`).join(', ')}`,
       );
-      // Fire-and-forget: write speaker facts to OKG (tiered by guardian status).
-      void this.writeFastFacts(userId, extractedFacts, isGuardian);
+      // Fire-and-forget: delegate to FastFactWriterService (TK-34).
+      void this.fastFactWriter.writeFastFacts(userId, extractedFacts, isGuardian);
     }
 
     // Guardian Teaching Detection: check if this is a teaching/planning request.
@@ -861,196 +855,6 @@ export class CommunicationService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
-  // Fast Fact Writes (OKG + WKG)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Write extracted facts immediately to the appropriate knowledge graph.
-   *
-   * This is the fast path — facts are written within milliseconds of being
-   * spoken, not after a 60-second learning cycle.
-   *
-   * Routing by fact.target:
-   *   'speaker' → OKG ONLY (Person anchor → HAS_FACT → Attribute), tiered by
-   *               the speaker's guardian status (WS4 Ticket 5 §1/§2.1).
-   *   'sylphie' → Self KG (CoBeing anchor → HAS_FACT → Attribute) + WKG CoBeing.
-   *
-   * WS4 Ticket 5 §2.1 (CANON-blocking): the speaker→WKG dual-write was DELETED.
-   * Self-reported personal facts are person facts, not world facts, regardless of
-   * speaker. They belong only on the speaker's OKG anchor. The old dual-write
-   * stamped every speaker's WKG value-Entity GUARDIAN/0.90 and let person A's
-   * value-Entity ground person B's question GROUNDED — the three-graph isolation
-   * breach this ticket fixes. No world path replaces it (deferred to WS5-T1).
-   *
-   * @param isGuardian - The speaker's verified guardian status, threaded to
-   *                     personModel.writeFact for the §1 confidence/provenance tier.
-   */
-  private async writeFastFacts(
-    userId: string,
-    facts: import('./person-model.service').ExtractedFact[],
-    isGuardian = true,
-  ): Promise<void> {
-    const writes: Promise<void>[] = [];
-
-    for (const fact of facts) {
-      if (fact.target === 'speaker') {
-        // Speaker facts → OKG ONLY (no WKG dual-write — §2.1).
-        writes.push(
-          this.personModel.writeFact(userId, fact, isGuardian).catch((err) => {
-            this.logger.warn(`OKG fast-fact write failed: ${err}`);
-          }),
-        );
-      } else if (fact.target === 'sylphie') {
-        // Sylphie facts → Self KG + WKG (CoBeing anchor)
-        writes.push(
-          this.writeFactToSelfKg(fact).catch((err) => {
-            this.logger.warn(`Self KG fast-fact write failed: ${err}`);
-          }),
-        );
-        writes.push(
-          this.writeFactToWkgCoBeing(fact).catch((err) => {
-            this.logger.warn(`WKG CoBeing fast-fact write failed: ${err}`);
-          }),
-        );
-      }
-    }
-
-    await Promise.all(writes);
-  }
-
-  /**
-   * Write a fact about Sylphie to the Self KG (Neo4j SELF).
-   *
-   * Example: "Your name is Sylphie" creates:
-   *   (self:CoBeing)-[:HAS_FACT]->(a:Attribute {key: "name", value: "Sylphie"})
-   */
-  private async writeFactToSelfKg(
-    fact: import('./person-model.service').ExtractedFact,
-  ): Promise<void> {
-    const session = this.neo4j.getSession(Neo4jInstanceName.SELF, 'WRITE');
-    try {
-      const attrId = `self-attr-${fact.key}`;
-      await session.run(
-        `MERGE (self:CoBeing {label: 'Sylphie'})
-         ON CREATE SET
-           self.node_id = 'cobeing-self',
-           self.created_at = datetime()
-         MERGE (a:Attribute {attr_id: $attrId})
-         ON CREATE SET
-           a.key = $key,
-           a.value = $value,
-           a.confidence = 0.95,
-           a.provenance_type = 'GUARDIAN',
-           a.source = $source,
-           a.raw_text = $rawText,
-           a.learned_at = datetime()
-         ON MATCH SET
-           a.value = $value,
-           a.confidence = 0.95,
-           a.updated_at = datetime(),
-           a.raw_text = $rawText
-         MERGE (self)-[:HAS_FACT]->(a)`,
-        {
-          attrId,
-          key: fact.key,
-          value: fact.value,
-          source: fact.source,
-          rawText: fact.rawText,
-        },
-      );
-      this.logger.log(`Self KG fast-fact: Sylphie.${fact.key} = "${fact.value}"`);
-    } finally {
-      await session.close();
-    }
-  }
-
-  /**
-   * Write a fact about Sylphie to the WKG's CoBeing anchor node.
-   *
-   * The WKG bootstrap creates a CoBeing node for Sylphie. This method
-   * attaches guardian-taught facts directly to that anchor.
-   */
-  private async writeFactToWkgCoBeing(
-    fact: import('./person-model.service').ExtractedFact,
-  ): Promise<void> {
-    // Ticket 2 (§A.14): this is a WKG-touching action — it can create a new
-    // Entity node in the WORLD graph. Capture a before snapshot, run the write,
-    // capture an after snapshot, and attribute the diff to THIS write so the
-    // Drive Engine can grant honest curiosity relief.
-    //
-    // The attribution key. The MERGE below stamps `last_action_id = $actionId`
-    // on the value Entity it creates, so computeInformationGain attributes the
-    // new node to THIS write and emits WKG_DIFF (real curiosity relief). A
-    // concurrent writer's foreign marker still forces UNVERIFIED (honesty gate).
-    const actionId = `wkg-fact-write:${fact.key}:${fact.value}`;
-    const before = await this.wkgDiff.captureWkgSnapshot();
-
-    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
-    try {
-      const relType = factKeyToRelType(fact.key);
-      await session.run(
-        `MATCH (self:CoBeing)
-         MERGE (value:Entity {label: $value})
-         ON CREATE SET
-           value.node_id = $valueNodeId,
-           value.node_type = 'Entity',
-           value.schema_level = 'instance',
-           value.provenance_type = 'GUARDIAN',
-           value.confidence = 0.95,
-           value.last_action_id = $actionId,
-           value.created_at = datetime()
-         MERGE (self)-[r:${relType}]->(value)
-         ON CREATE SET
-           r.confidence = 0.95,
-           r.provenance_type = 'GUARDIAN',
-           r.source = $source,
-           r.raw_text = $rawText,
-           r.created_at = datetime()
-         ON MATCH SET
-           r.confidence = 0.95,
-           r.updated_at = datetime()`,
-        {
-          value: fact.value,
-          valueNodeId: `self-${fact.key}-${fact.value.toLowerCase().replace(/\s+/g, '-').substring(0, 20)}`,
-          actionId,
-          source: fact.source,
-          rawText: fact.rawText,
-        },
-      );
-      this.logger.log(`WKG CoBeing fast-fact: (Sylphie) -[${relType}]-> "${fact.value}"`);
-    } finally {
-      await session.close();
-    }
-
-    // After the write lands, diff and report. computeInformationGain returns
-    // UNVERIFIED (→ zero relief) when the change carries no action attribution,
-    // when a snapshot failed, or when a concurrent writer touched the graph —
-    // never a guessed number. We thread the result verbatim; the Drive Engine
-    // honesty-gates on source === 'WKG_DIFF'.
-    try {
-      const after = await this.wkgDiff.captureWkgSnapshot();
-      const metrics = this.wkgDiff.computeInformationGain(before, after, actionId);
-      this.outcomeReporter.reportOutcome({
-        actionId,
-        actionType: 'WkgFactWrite',
-        // The write itself succeeded if we reached here; curiosity relief is
-        // gated separately by informationGainMetrics.source.
-        success: true,
-        feedbackSource: 'GUARDIAN',
-        theaterCheck: {
-          expressionType: 'none',
-          correspondingDrive: null,
-          driveValue: null,
-          isTheatrical: false,
-        },
-        informationGainMetrics: metrics,
-      });
-    } catch (err) {
-      this.logger.warn(`WKG-diff information-gain report failed: ${err}`);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // Theater Prohibition (CANON Standard 1)
   // ---------------------------------------------------------------------------
 
@@ -1490,17 +1294,3 @@ function detectGuardianFeedback(text: string): 'confirmation' | 'correction' | '
   return 'none';
 }
 
-/**
- * Map a fact key (from extractFactsFromText) to a WKG relationship type.
- */
-function factKeyToRelType(key: string): string {
-  const map: Record<string, string> = {
-    name: 'HAS_NAME',
-    identity: 'IDENTIFIES_AS',
-    likes: 'LIKES',
-    occupation: 'WORKS_AS',
-    location: 'LIVES_IN',
-    age: 'HAS_AGE',
-  };
-  return map[key] ?? `HAS_${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-}
