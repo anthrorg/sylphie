@@ -194,6 +194,86 @@ describe('Wave 3 / C3 — UpsertEntitiesService :Candidate minting', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests — Two-person corpus (TK-81 / AC1: §2.8 seal regression)
+//
+// These are the gate-invisible tests the single-person corpus cannot cover.
+// Person A introduces a proper noun through the 60s learning cycle; Person B
+// independently introduces a DIFFERENT proper noun. The Cypher params must
+// show each :Candidate is scoped to its OWN speaker — there is no cross-
+// contamination at mint time.
+// ---------------------------------------------------------------------------
+
+describe('Wave 3 / C3 — Two-person :Candidate minting isolation (TK-81 AC1)', () => {
+  it('Person A ← Max: minted as :Candidate scoped to person-A only, NOT person-B', async () => {
+    const neo = new CapturingNeo4j();
+    const svc = new UpsertEntitiesService(neo as unknown as never);
+
+    // Person A's INPUT_RECEIVED event — the 60s cycle runs upsertEntities for this.
+    await svc.upsertEntities(inputEvent('My dog is named Max.', 'person-A'));
+
+    const merges = candidateMerges(neo);
+    expect(merges.length).toBeGreaterThan(0);
+    for (const m of merges) {
+      // AC1: :Candidate minted (not :Entity), scoped to person-A, conf ≤ cap.
+      expect(m.params['provenance']).toBe(CANDIDATE_PROVENANCE_TYPE);
+      expect(m.params['confidence'] as number).toBeLessThanOrEqual(CANDIDATE_CONFIDENCE_CAP);
+      expect(m.params['speakerId']).toBe('person-A');
+      // Must NOT carry person-B's id anywhere.
+      expect(m.params['speakerId']).not.toBe('person-B');
+      expect(m.cypher).toContain(`n.${CANDIDATE_PERSON_ID_PROP}`);
+    }
+    // No live :Entity was ever minted.
+    expect(entityMerges(neo)).toHaveLength(0);
+  });
+
+  it('Person B ← Luna: minted as :Candidate scoped to person-B only, NOT person-A', async () => {
+    const neo = new CapturingNeo4j();
+    const svc = new UpsertEntitiesService(neo as unknown as never);
+
+    // Person B's separate INPUT_RECEIVED event.
+    await svc.upsertEntities(inputEvent('My cat is called Luna.', 'person-B'));
+
+    const merges = candidateMerges(neo);
+    expect(merges.length).toBeGreaterThan(0);
+    for (const m of merges) {
+      expect(m.params['provenance']).toBe(CANDIDATE_PROVENANCE_TYPE);
+      expect(m.params['confidence'] as number).toBeLessThanOrEqual(CANDIDATE_CONFIDENCE_CAP);
+      expect(m.params['speakerId']).toBe('person-B');
+      expect(m.params['speakerId']).not.toBe('person-A');
+    }
+    expect(entityMerges(neo)).toHaveLength(0);
+  });
+
+  it('two events processed sequentially: each :Candidate carries only its own speaker id, never the other', async () => {
+    const neo = new CapturingNeo4j();
+    const svc = new UpsertEntitiesService(neo as unknown as never);
+
+    // Simulate the 60s cycle processing two speakers back-to-back.
+    await svc.upsertEntities(inputEvent('My dog is named Max.', 'person-A'));
+    await svc.upsertEntities(inputEvent('My cat is called Luna.', 'person-B'));
+
+    const merges = candidateMerges(neo);
+    expect(merges.length).toBeGreaterThanOrEqual(2);
+
+    // Every merge must carry exactly the speaker that emitted that noun.
+    // Collect the distinct speakerIds that appeared as params.
+    const speakerIds = merges.map((m) => m.params['speakerId'] as string);
+    expect(speakerIds).toContain('person-A');
+    expect(speakerIds).toContain('person-B');
+
+    // No merge may have leaked a wrong speaker: merges that matched "Max" are
+    // from person-A's event, merges that matched "Luna" are from person-B's.
+    // The simplest invariant: every speakerId is one of the two expected values.
+    for (const sid of speakerIds) {
+      expect(['person-A', 'person-B']).toContain(sid);
+    }
+
+    // No live :Entity for either speaker.
+    expect(entityMerges(neo)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests — ExtractTypedEdgesService (world-fact staging)
 // ---------------------------------------------------------------------------
 

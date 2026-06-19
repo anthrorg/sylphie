@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": [
+      "C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules/@types",
+      "C:/Users/Jim/AppData/Local/npm-cache/_npx/2945e3c7a38efdf6/node_modules/@types"
+    ],
+    "types": ["jest", "node"],
+    "paths": {
+      "@sylphie/shared": ["../../packages/shared/src/index.ts"],
+      "@sylphie/shared/*": ["../../packages/shared/src/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}

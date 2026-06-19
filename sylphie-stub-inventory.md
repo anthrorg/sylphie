@@ -134,15 +134,17 @@ Ranked by severity. Severity reflects gap between architectural promise and runt
 
 ---
 
-### 2.8 Learning pipeline leaks person-fact values into shared WKG (2026-06-10)
+### 2.8 Learning pipeline leaks person-fact values into shared WKG — SEALED-BY-WAVE-3 (`1f53de2`, TK-81, 2026-06-19)
 
-**Where:** `packages/learning/src/pipeline/` — `upsert-entities.service.ts:128` (mints `entity-<uuid8>` from conversation proper nouns), `extract-edges.service.ts:139` (MERGEs RELATED_TO), edge-refinement (reclassifies to OWNS/KNOWS/LIVES_AT), `conversation-entry.service.ts:160` (MENTIONS).
+**Where:** `packages/learning/src/pipeline/` — `upsert-entities.service.ts` (mints SENSOR proper nouns), all four WKG grounding read-paths in `packages/decision-making/src/wkg/wkg-context.service.ts` (lines 286, 330, 1075, 1099).
 
-**What:** WS4 Ticket 5 closed the *fast-fact* privacy leak (speaker facts no longer dual-write to WKG; latent patterns person-scoped). But the slow 60s learning cycle independently re-extracts spoken proper nouns from conversation transcripts into the shared WKG — e.g. `entity-dog-max` (label "Max") with `person-guardian -[OWNS]->` edges at INFERENCE/0.3. Found live by mythos during T5 verification: these entities are the TOP fulltext hit in `matchEntities` (`wkg-context.service.ts:629`), so **Person B asking "what kind of animal is Max?" can ground a GROUNDED Type-2 reply off Person A's dog**. The replay-demotion (T5 §3.2) covers cached patterns once the predicate fix lands, but a fresh TYPE_2 turn still grounds off the WKG node directly.
+**What (historical):** WS4 Ticket 5 closed the *fast-fact* privacy leak (speaker facts no longer dual-write to WKG; latent patterns person-scoped). But the slow 60s learning cycle independently re-extracted spoken proper nouns from conversation transcripts into the shared WKG — e.g. `entity-dog-max` (label "Max") with `person-guardian -[OWNS]->` edges at INFERENCE/0.3, making **Person B able to ground a GROUNDED Type-2 reply off Person A's dog**.
 
-**Impact:** Same CANON three-graph-isolation breach the T5 contract fixed, one layer down. The privacy wall is HALF-closed until this lands. Invisible to the gate (single-person corpus).
+**Fix (SEALED):** `UpsertEntitiesService.mergeCandidateNode` now mints all SENSOR-provenance (conversation-derived) proper nouns as `:Candidate` nodes, NOT `:Entity`. The `:Candidate` is person-scoped (`grounding_person_id = speakerId`) and confidence-capped at ≤0.60. All four WKG grounding read-paths exclude `:Candidate` via `NOT <var>:Candidate` clauses: `matchEntities` (fulltext branch :1075, CONTAINS fallback :1099), `getSubgraph` (:286), `getEntityFacts` (:330), and `getRelationships` (also guarded). The fix was live as of commit `1f53de2`.
 
-**Fix complexity:** Medium — design question for **atlas** (person-scope WKG entity nodes? exclude OKG-sourced proper nouns from `matchEntities` grounding? speaker-tag conversation-derived entities at extraction time?). Tracked for WS4-T5-followup / WS5. Do NOT close WS4 claiming the privacy wall is whole without this.
+**Regression (TK-81, 2026-06-19):** Two-person corpus regression added in `packages/learning/src/pipeline/upsert-entities.candidate.spec.ts` and `packages/decision-making/src/wkg/candidate-grounding-exclusion.spec.ts` — proving Person B cannot ground off Person A's spoken proper noun across all four read-paths. This is the proving regression, not a reopening (DEC-20).
+
+**Status:** NOT a stub. The breach is sealed and regression-tested.
 
 ---
 
