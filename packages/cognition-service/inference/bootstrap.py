@@ -14,6 +14,11 @@ Mode progression:
 In shadow/audit mode, should_use_tensor() always returns False — the LLM
 decides. In partial mode, graduated categories return True. In full mode,
 all categories return True and the LLM exits the cognitive loop.
+
+Demotion: a graduated category whose rolling agreement drops below
+demotion_threshold (0.70) reverts to LLM-decided — it is removed from the
+graduated set and a WARNING is logged. Graduation threshold (0.85) is
+unchanged; a demoted category must re-earn graduation from scratch.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ class BootstrapTracker:
         self._category_history: dict[str, list[bool]] = {}
         self._window_size: int = 100   # maximum retained comparisons per category
         self._graduation_threshold: float = 0.85  # per-category threshold for partial
+        self._demotion_threshold: float = 0.70    # below this a graduated cat reverts
         self._full_threshold: float = 0.90         # overall threshold for full handoff
         self._graduated_categories: set[str] = set()
 
@@ -120,6 +126,38 @@ class BootstrapTracker:
                     len(history),
                 )
         return sorted(newly_graduated)
+
+    def check_demotions(self) -> list[str]:
+        """Check whether any graduated category has fallen below demotion_threshold.
+
+        A graduated category is demoted when its current rolling agreement rate
+        drops below _demotion_threshold (0.70). Requires at least 20 samples —
+        the same guard used for graduation — so a thin history cannot trigger a
+        spurious demotion. Demoted categories must re-earn graduation from scratch.
+
+        Returns:
+            Sorted list of category names that were demoted on this call.
+        """
+        newly_demoted: list[str] = []
+        # Iterate over a snapshot to allow mutation of the set mid-loop.
+        for cat in list(self._graduated_categories):
+            history = self._category_history.get(cat, [])
+            if len(history) < 20:
+                # Not enough evidence to demote; give it the benefit of the doubt.
+                continue
+            agreement = sum(history) / len(history)
+            if agreement < self._demotion_threshold:
+                self._graduated_categories.discard(cat)
+                newly_demoted.append(cat)
+                logger.warning(
+                    "Category '%s' demoted from graduated set "
+                    "(agreement=%.3f < demotion_threshold=%.2f, samples=%d)",
+                    cat,
+                    agreement,
+                    self._demotion_threshold,
+                    len(history),
+                )
+        return sorted(newly_demoted)
 
     # ------------------------------------------------------------------
     # Decision gate
