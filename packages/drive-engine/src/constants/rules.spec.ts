@@ -16,6 +16,8 @@
  * Goldens below were produced by RUNNING the real computeDefaultAffect.
  */
 
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { DriveName } from '@sylphie/shared';
 import type { ActionOutcomePayload } from '@sylphie/shared';
 import { computeDefaultAffect, METADATA_SCALED_ACTION_TYPES } from './rules';
@@ -70,6 +72,44 @@ describe('rules — ScenePrediction metadata scaling', () => {
 describe('rules — METADATA_SCALED_ACTION_TYPES membership', () => {
   it("'ScenePrediction' is a metadata-scaled action type", () => {
     expect(METADATA_SCALED_ACTION_TYPES.has('ScenePrediction')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AD-0004 guard — reuse sceneSurprise; NO distinct presenceSurprise axis
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively collect every production .ts source file under a directory.
+ * Excludes *.spec.ts so the guard scans only shipped source, not test text
+ * (this spec necessarily mentions the forbidden identifier in its assertion).
+ */
+function productionTsFilesUnder(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...productionTsFilesUnder(full));
+    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+describe('rules — AD-0004: no presenceSurprise axis in drive-engine src', () => {
+  const FORBIDDEN = 'presence' + 'Surprise'; // split so this spec is not self-matching
+
+  it('the forbidden identifier appears in no production source file under packages/drive-engine/src', () => {
+    // AD-0004 reversed the original Fork-C plan: the live sceneSurprise path
+    // already produces the Curiosity+Anxiety PRESSURE the ticket wants, so a
+    // separate presence-surprise field/axis must NOT be introduced. This static
+    // guard fails the moment such an identifier is reintroduced in shipped
+    // drive-engine source. `src` is one level up from this spec's directory.
+    const srcRoot = join(__dirname, '..');
+    const offenders = productionTsFilesUnder(srcRoot).filter((file) =>
+      readFileSync(file, 'utf8').includes(FORBIDDEN),
+    );
+    expect(offenders).toEqual([]);
   });
 });
 
