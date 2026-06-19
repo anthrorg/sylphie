@@ -61,7 +61,7 @@ const RING_BUFFER_CAPACITY = 50;
  * encoding after 2-3 minutes of active conversation, which is when the
  * curiosity + anxiety average crosses this threshold.
  */
-const ENCODING_GATE_THRESHOLD = 0.15;
+export const ENCODING_GATE_THRESHOLD = 0.15;
 
 /**
  * Jaccard threshold for the SHA-fingerprint path (queryByFingerprint).

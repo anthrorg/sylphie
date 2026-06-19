@@ -2894,7 +2894,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
  * spurious visual attention floor). Feeds attention ONLY — never arousal, never
  * Curiosity/Anxiety (ashby).
  */
-function saliencyTerm(cachedSceneSurprise: number): number {
+export function saliencyTerm(cachedSceneSurprise: number): number {
   if (cachedSceneSurprise <= 0) return 0;
   return Math.min(1.0, Math.max(0.05, cachedSceneSurprise));
 }
@@ -2981,7 +2981,7 @@ function deriveEpisodeSource(
  *
  * Result is clamped to [0.0, 1.0].
  */
-function computeAttention(driveSnapshot: DriveSnapshot): number {
+export function computeAttention(driveSnapshot: DriveSnapshot): number {
   const cognitiveAwareness = driveSnapshot.pressureVector[DriveName.CognitiveAwareness] ?? 0;
   const focus = driveSnapshot.pressureVector[DriveName.Focus] ?? 0;
   const raw = (cognitiveAwareness + focus) / 2;
@@ -2997,7 +2997,7 @@ function computeAttention(driveSnapshot: DriveSnapshot): number {
  *
  * Result is clamped to [0.0, 1.0].
  */
-function computeArousal(driveSnapshot: DriveSnapshot): number {
+export function computeArousal(driveSnapshot: DriveSnapshot): number {
   const anxiety = driveSnapshot.pressureVector[DriveName.Anxiety] ?? 0;
   const curiosity = driveSnapshot.pressureVector[DriveName.Curiosity] ?? 0;
   const raw = (anxiety + curiosity) / 2;
