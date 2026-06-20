@@ -56,7 +56,13 @@ Developmental depth governance (from discussion-resolutions-final.md T1.2):
       * two_hop_success_rate >= 0.80
       * min_confirmed_inferences >= 15
       * horizontal_decalage_check: success across 3+ concept clusters
-  - Depth 4+ blocked until E5 inner monologue (e5_prerequisite_met=true)
+  - Advances to depth=4 after (E5 prerequisite required):
+      * e5_prerequisite_met=True (E5 inner monologue available)
+      * three_hop_success_rate >= 0.75
+      * min_confirmed_inferences >= 10
+  - Advances to depth=5 after:
+      * four_hop_success_rate >= 0.70
+      * min_confirmed_inferences >= 8
 
   The depth is read once per session, not once per query. SemanticQueryHandler
   reads ``current_max_depth`` from the EvolutionRule at session initialization.
@@ -263,6 +269,25 @@ DEFAULT_DEPTH3_SUCCESS_RATE: float = 0.80
 
 DEFAULT_DEPTH3_MIN_CONFIRMED: int = 15
 """Minimum confirmed two-hop inferences for depth 3."""
+
+# Depth 4 unlock criteria (E5 prerequisite required + three-hop performance)
+DEFAULT_DEPTH4_SUCCESS_RATE: float = 0.75
+"""Three-hop success rate required to unlock depth 4.
+
+Lower than depth-3 threshold (0.80) because three-hop chains are inherently
+less reliable; we accept a lower bar once E5 working memory is available to
+compensate for deeper uncertainty accumulation.
+"""
+
+DEFAULT_DEPTH4_MIN_CONFIRMED: int = 10
+"""Minimum confirmed three-hop inferences for depth 4."""
+
+# Depth 5 unlock criteria (post-E5 maximum depth)
+DEFAULT_DEPTH5_SUCCESS_RATE: float = 0.70
+"""Four-hop success rate required to unlock depth 5."""
+
+DEFAULT_DEPTH5_MIN_CONFIRMED: int = 8
+"""Minimum confirmed four-hop inferences for depth 5."""
 
 
 # ---------------------------------------------------------------------------
@@ -1269,7 +1294,8 @@ async def _check_depth_advancement(
     Depth progression:
       1 -> 2: single_hop_success_rate >= 0.85, confirmed >= 20, clusters >= 3
       2 -> 3: two_hop_success_rate >= 0.80, confirmed >= 15, decalage check
-      3 -> 4+: LOCKED until e5_prerequisite_met
+      3 -> 4: e5_prerequisite_met required + three_hop_success_rate >= 0.75, confirmed >= 10
+      4 -> 5: four_hop_success_rate >= 0.70, confirmed >= 8
 
     Args:
         persistence: GraphPersistence backend.
@@ -1282,14 +1308,6 @@ async def _check_depth_advancement(
         The new max depth (may be same as current if no advancement).
     """
     props = depth_rule_node.properties
-
-    # Depth 4+ requires E5 inner monologue
-    if current_depth >= DEFAULT_INFERENCE_ARCHITECTURAL_MAX:
-        if not e5_prerequisite_met:
-            return current_depth
-        # E5 is available -- could advance to 4 or 5
-        # For now, depth 4+ advancement criteria are not defined in E3
-        return current_depth
 
     if current_depth == 1:
         # Check depth 2 unlock criteria
@@ -1362,6 +1380,72 @@ async def _check_depth_advancement(
         ):
             await _update_depth_rule(persistence, depth_rule_node, new_depth=3)
             return 3
+
+    elif current_depth == 3:
+        # Depth 3 -> 4 requires E5 inner monologue as a hard prerequisite.
+        # Without E5 working memory, four-hop chains produce unreliable results
+        # because context cannot be maintained across that many reasoning steps.
+        if not e5_prerequisite_met:
+            return current_depth
+
+        required_success_rate = float(
+            props.get("depth_4_success_rate", DEFAULT_DEPTH4_SUCCESS_RATE)
+        )
+        required_confirmed = int(
+            props.get("depth_4_min_confirmed", DEFAULT_DEPTH4_MIN_CONFIRMED)
+        )
+
+        success_rate = _compute_inference_success_rate(
+            neo4j_session, max_depth=3
+        )
+        confirmed_count = _count_confirmed_inferences(neo4j_session, max_depth=3)
+
+        _log.debug(
+            "inference_query depth advancement check (3->4): "
+            "e5_met=%s success_rate=%.2f/%.2f confirmed=%d/%d",
+            e5_prerequisite_met,
+            success_rate,
+            required_success_rate,
+            confirmed_count,
+            required_confirmed,
+        )
+
+        if (
+            success_rate >= required_success_rate
+            and confirmed_count >= required_confirmed
+        ):
+            await _update_depth_rule(persistence, depth_rule_node, new_depth=4)
+            return 4
+
+    elif current_depth == 4:
+        # E5 is already implied if we reached depth 4; check depth 5 criteria.
+        required_success_rate = float(
+            props.get("depth_5_success_rate", DEFAULT_DEPTH5_SUCCESS_RATE)
+        )
+        required_confirmed = int(
+            props.get("depth_5_min_confirmed", DEFAULT_DEPTH5_MIN_CONFIRMED)
+        )
+
+        success_rate = _compute_inference_success_rate(
+            neo4j_session, max_depth=4
+        )
+        confirmed_count = _count_confirmed_inferences(neo4j_session, max_depth=4)
+
+        _log.debug(
+            "inference_query depth advancement check (4->5): "
+            "success_rate=%.2f/%.2f confirmed=%d/%d",
+            success_rate,
+            required_success_rate,
+            confirmed_count,
+            required_confirmed,
+        )
+
+        if (
+            success_rate >= required_success_rate
+            and confirmed_count >= required_confirmed
+        ):
+            await _update_depth_rule(persistence, depth_rule_node, new_depth=5)
+            return 5
 
     return current_depth
 
@@ -1816,14 +1900,16 @@ async def bootstrap_inference_query_template(
                 "depth_3_success_rate": DEFAULT_DEPTH3_SUCCESS_RATE,
                 "depth_3_min_confirmed": DEFAULT_DEPTH3_MIN_CONFIRMED,
                 "depth_3_horizontal_decalage_check": True,
-                # Depth 4+ locked until E5
-                "depth_4_criteria": "LOCKED_UNTIL_E5",
-                "depth_5_criteria": "LOCKED_UNTIL_E5",
+                # Depth 4 unlock criteria (requires e5_prerequisite_met=True)
+                "depth_4_success_rate": DEFAULT_DEPTH4_SUCCESS_RATE,
+                "depth_4_min_confirmed": DEFAULT_DEPTH4_MIN_CONFIRMED,
+                # Depth 5 unlock criteria (post-E5 maximum)
+                "depth_5_success_rate": DEFAULT_DEPTH5_SUCCESS_RATE,
+                "depth_5_min_confirmed": DEFAULT_DEPTH5_MIN_CONFIRMED,
                 "description": (
                     "Governs inference_query multi-hop traversal depth with "
-                    "staged progression: starts at depth 1, advances to 2 "
-                    "after success criteria met, then to 3. Depth 4+ blocked "
-                    "until E5 inner monologue delivers working memory support."
+                    "staged progression: 1->2->3 without E5; 3->4->5 after "
+                    "E5 inner monologue delivers working memory support."
                 ),
                 "tunable_by_guardian": True,
                 "installed_by_skill": "semantic-ontology",
