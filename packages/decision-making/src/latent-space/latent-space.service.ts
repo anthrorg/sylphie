@@ -1069,8 +1069,9 @@ function isValidGrounding(v: string | null): v is KnowledgeGrounding {
  *
  * Single source of truth for the privacy invariant: a pattern whose GROUNDED
  * claim is backed by person A's private OKG must not replay GROUNDED to person B.
- * The decision-making latent-replay path calls this BEFORE applyOkgRecallGrounding,
- * so an honest re-ground off the CURRENT speaker's own facts can still happen.
+ * The decision-making latent-replay path calls this BEFORE the TK-84 collapsed
+ * re-ground (applyRecallGroundingFromRetrieval), so an honest re-ground off the
+ * CURRENT speaker's own facts can still happen.
  *
  * Demotes (GROUNDED → UNKNOWN), never suppresses — the cached reflex still fires;
  * only the borrowed grounding is stripped (theater prohibition / no behavior cliff).

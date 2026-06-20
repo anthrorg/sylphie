@@ -381,19 +381,20 @@ export function recallKeyForQuestion(inputText: string): string | null {
 }
 
 /**
- * Retrieve a person fact by key from the fused-stream person model, returning
- * its value and the deterministic provenance id PersonModelService.writeFact
- * computes (`attr-${personId}-${key}`). Mirrors PersonModelService.getFactByKey
- * over the knownFacts the OKG already loaded into the frame — the decision-making
- * package cannot import PersonModelService (it lives in the app), but the
- * provenance id is deterministic and the value comes from the same OKG-loaded
- * facts, so this is a real fact-node retrieval, not LLM text inference.
+ * WS3 T1 / TK-84 — OKG fact retrieval for the pre-arbitration recall step
+ * (recall-retrieval.ts). Deterministic-id lookup over the frame's knownFacts.
  *
  * knownFacts arrive as "key: value" strings (getPersonModel builds them as
  * `${key}: ${value}`). Returns null when the key is absent → unknowables and
  * un-taught dimensions stay LLM_ASSISTED/UNKNOWN (C2 safety by construction).
+ *
+ * TK-84 cleanup: the private getRecalledFact shim is inlined here. The three
+ * legacy post-hoc helpers (okgRecallProvenance, applyOkgRecallGrounding, and
+ * the old private getRecalledFact) are deleted — their four call sites collapsed
+ * to the single pre-arbitration path (applyRecallGroundingFromRetrieval), proven
+ * by the TK-84 subsumption spec (okg-recall-subsumption.spec.ts).
  */
-function getRecalledFact(
+export function getRecalledFactForRecall(
   personId: string,
   key: string,
   knownFacts: readonly string[] | undefined,
@@ -409,64 +410,6 @@ function getRecalledFact(
     return { key, value, attrId: `attr-${personId}-${key}` };
   }
   return null;
-}
-
-/**
- * WS3 T1 — exported alias of the OKG fact retrieval used by the pre-arbitration
- * recall retrieval step (recall-retrieval.ts). Same deterministic-id lookup over
- * the frame's knownFacts; exported so the single pre-arbitration retrieval can
- * reuse it rather than re-deriving the key→value→provenance mapping.
- */
-export function getRecalledFactForRecall(
-  personId: string,
-  key: string,
-  knownFacts: readonly string[] | undefined,
-): { key: string; value: string; attrId: string } | null {
-  return getRecalledFact(personId, key, knownFacts);
-}
-
-/**
- * Deterministic OKG recall grounding (CANON Standard 1 provenance-required +
- * Standard 4 theater-prohibition). Returns the provenance id when, and only
- * when, the question maps to a fact key, that fact node exists in the OKG, AND
- * the fact value appears verbatim in the response. Returns null otherwise — so
- * the LLM can never self-assert grounding and unknowables can never falsely read
- * GROUNDED. The caller upgrades knowledgeGrounding to GROUNDED on a non-null.
- */
-export function okgRecallProvenance(
-  personId: string | undefined,
-  inputText: string,
-  responseText: string,
-  knownFacts: readonly string[] | undefined,
-): string | null {
-  if (!personId) return null;
-  const key = recallKeyForQuestion(inputText);
-  if (!key) return null;
-  const fact = getRecalledFact(personId, key, knownFacts);
-  if (!fact) return null;
-  const valueLower = fact.value.toLowerCase();
-  if (valueLower.length < 2) return null;
-  return responseText.toLowerCase().includes(valueLower) ? fact.attrId : null;
-}
-
-/**
- * Shared helper: upgrade grounding to GROUNDED if OKG recall provenance is
- * available. Called from both the deliberation pipeline and the procedure-handler
- * path so the same logic covers TYPE_2 NOVEL and TYPE_2 PROCEDURE recall turns.
- * Returns current grounding unchanged when already GROUNDED or no provenance.
- */
-export function applyOkgRecallGrounding(
-  personId: string | undefined,
-  inputText: string,
-  responseText: string,
-  knownFacts: readonly string[] | undefined,
-  currentGrounding: KnowledgeGrounding,
-): { grounding: KnowledgeGrounding; provenance: string | null } {
-  if (currentGrounding === 'GROUNDED') return { grounding: currentGrounding, provenance: null };
-  const provenance = okgRecallProvenance(personId, inputText, responseText, knownFacts);
-  return provenance
-    ? { grounding: 'GROUNDED', provenance }
-    : { grounding: currentGrounding, provenance: null };
 }
 
 /**
@@ -551,7 +494,7 @@ export function inferGrounding(
  * mythos live-verified). Discriminating by rule precedence cannot.
  *
  * Priority (highest first), matching the grounding cascade:
- *   1. `okgProvenance` non-null (applyOkgRecallGrounding upgraded it) → 'OKG'.
+ *   1. `okgProvenance` non-null (applyRecallGroundingFromRetrieval upgraded it) → 'OKG'.
  *   2. `personFactRecalled` (a taught fact VALUE surfaced in the reply) → 'OKG'.
  *   3. real WKG fact or topical (non-base) entity → 'WKG'.
  *   4. anything else GROUNDED (e.g. LLM tag we couldn't attribute) → null

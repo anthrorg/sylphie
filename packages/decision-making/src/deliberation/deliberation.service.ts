@@ -51,11 +51,9 @@ import {
   parseGroundingTag,
   parseMonologueClassification,
   isIgnoranceResponse,
-  applyOkgRecallGrounding,
   personFactRecalled,
   hasTopicalEntity,
   inferGrounding,
-  discriminateGroundedBy,
   buildDriveSummary,
   buildEpisodeSummary,
   extractNewEntities,
@@ -67,8 +65,6 @@ export {
   isIgnoranceResponse,
   recallKeyForQuestion,
   getRecalledFactForRecall,
-  okgRecallProvenance,
-  applyOkgRecallGrounding,
   personFactRecalled,
   inferGrounding,
   discriminateGroundedBy,
@@ -430,38 +426,24 @@ export class DeliberationService {
         knowledgeGrounding = 'UNKNOWN';
       }
 
-      // ── WS3 Ticket T1 — grounding from the PRE-ARBITRATION recall retrieval ─
-      // When the cycle resolved a recall fact node before arbitration, the label
-      // is upgraded to GROUNDED off that ONCE-resolved node id (with the value-
-      // surfaced honesty guard inside applyRecallGroundingFromRetrieval), and the
-      // node id flows out as provenance. Non-recall turns (retrieval === null)
-      // fall back to the legacy post-hoc helper — TRANSITIONAL: that helper only
-      // ever upgrades via OKG recall, which the pre-arbitration step now owns, so
-      // for recall turns it is a no-op; it remains only to avoid regressing any
-      // non-recall path that historically depended on it.
-      let groundingProvenance: string | null;
-      let groundedBy: 'OKG' | 'WKG' | null;
-      if (recallRetrieval) {
-        const applied = applyRecallGroundingFromRetrieval(
-          recallRetrieval, responseText, knowledgeGrounding,
-        );
-        knowledgeGrounding = applied.grounding;
-        groundingProvenance = applied.provenance;
-        groundedBy = applied.groundedBy;
-        if (groundingProvenance) {
-          this.logger.debug(
-            `Recall grounded (short-circuit, pre-arbitration): node="${groundingProvenance}" ` +
-              `source=${groundedBy} response="${responseText.substring(0, 60)}"`,
-          );
-        }
-      } else {
-        const shortCircuitOkg = applyOkgRecallGrounding(
-          personModel?.personId, rawText, responseText, personModel?.knownFacts, knowledgeGrounding,
-        );
-        knowledgeGrounding = shortCircuitOkg.grounding;
-        groundingProvenance = shortCircuitOkg.provenance;
-        groundedBy = discriminateGroundedBy(
-          knowledgeGrounding, wkg, responseText, personModel?.knownFacts, groundingProvenance,
+      // ── TK-84 — grounding from the PRE-ARBITRATION recall retrieval (collapsed) ─
+      // The §2.10 else-fallback (applyOkgRecallGrounding) is deleted. TK-84
+      // proved: for every recall turn recallKeyForQuestion matches AND whose OKG
+      // fact is taught, computeRecallRetrieval returns non-null → the primary
+      // branch always fires. When recallRetrieval is null (untaught fact, WKG
+      // empty, or non-recall input), applyRecallGroundingFromRetrieval is a
+      // passthrough (null → provenance=null, grounding unchanged) — identical to
+      // what the deleted fallback returned in that scenario (same OKG miss).
+      const applied = applyRecallGroundingFromRetrieval(
+        recallRetrieval, responseText, knowledgeGrounding,
+      );
+      knowledgeGrounding = applied.grounding;
+      const groundingProvenance: string | null = applied.provenance;
+      const groundedBy: 'OKG' | 'WKG' | null = applied.groundedBy;
+      if (groundingProvenance) {
+        this.logger.debug(
+          `Recall grounded (short-circuit, pre-arbitration): node="${groundingProvenance}" ` +
+            `source=${groundedBy} response="${responseText.substring(0, 60)}"`,
         );
       }
 
@@ -813,34 +795,20 @@ export class DeliberationService {
       knowledgeGrounding = 'UNKNOWN';
     }
 
-    // ── WS3 Ticket T1 — grounding from the PRE-ARBITRATION recall retrieval ───
-    // TYPE_2 NOVEL recall turns (no procedure node) consume the same once-resolved
-    // node id as every other path. Non-recall novel turns fall back to the legacy
-    // post-hoc helper (transitional — a no-op for grounding except via OKG recall,
-    // which the pre-arbitration step now owns).
-    let groundingProvenance: string | null;
-    let groundedBy: 'OKG' | 'WKG' | null;
-    if (recallRetrieval) {
-      const applied = applyRecallGroundingFromRetrieval(
-        recallRetrieval, finalResponseText, knowledgeGrounding,
-      );
-      knowledgeGrounding = applied.grounding;
-      groundingProvenance = applied.provenance;
-      groundedBy = applied.groundedBy;
-      if (groundingProvenance) {
-        this.logger.debug(
-          `Recall grounded (novel-deliberation, pre-arbitration): node="${groundingProvenance}" ` +
-            `source=${groundedBy} response="${finalResponseText.substring(0, 60)}"`,
-        );
-      }
-    } else {
-      const novelOkg = applyOkgRecallGrounding(
-        personModel?.personId, rawText, finalResponseText, personModel?.knownFacts, knowledgeGrounding,
-      );
-      knowledgeGrounding = novelOkg.grounding;
-      groundingProvenance = novelOkg.provenance;
-      groundedBy = discriminateGroundedBy(
-        knowledgeGrounding, wkg, finalResponseText, personModel?.knownFacts, groundingProvenance,
+    // ── TK-84 — grounding from the PRE-ARBITRATION recall retrieval (collapsed) ─
+    // Same collapse as the short-circuit site above. The §2.10 else-fallback is
+    // deleted; applyRecallGroundingFromRetrieval(null, ...) is a passthrough for
+    // non-recall novel turns — same outcome as the deleted fallback in that case.
+    const novelApplied = applyRecallGroundingFromRetrieval(
+      recallRetrieval, finalResponseText, knowledgeGrounding,
+    );
+    knowledgeGrounding = novelApplied.grounding;
+    const groundingProvenance: string | null = novelApplied.provenance;
+    const groundedBy: 'OKG' | 'WKG' | null = novelApplied.groundedBy;
+    if (groundingProvenance) {
+      this.logger.debug(
+        `Recall grounded (novel-deliberation, pre-arbitration): node="${groundingProvenance}" ` +
+          `source=${groundedBy} response="${finalResponseText.substring(0, 60)}"`,
       );
     }
 

@@ -3,17 +3,18 @@
  *
  * THE DURABLE REPLACEMENT FOR THE POST-HOC OKG GROUNDING REGEX.
  *
- * Background (the C1 tactical version, still partly live as a fallback):
+ * Background (the C1 tactical post-hoc regex — DELETED in TK-84):
  *   Recall turns ("what is my name?") were grounded POST-HOC — after the LLM
  *   produced a response, `applyOkgRecallGrounding` re-ran `recallKeyForQuestion`
  *   and only upgraded the label to GROUNDED if the fact VALUE appeared verbatim
  *   in the free-generated text. Two structural problems:
- *     1. The retrieval was reconstructed at three separate grounding sites
+ *     1. The retrieval was reconstructed at four separate grounding sites
  *        (Type-1 latent, procedure path, deliberate() short-circuit + novel),
  *        each re-deriving the same key→value→provenance mapping.
  *     2. The node id was only captured if the value happened to survive into the
  *        response prose. A correctly-retrieved fact whose value the LLM
  *        paraphrased away lost its provenance entirely.
+ *   TK-84 confirmed subsumption and collapsed all four sites to this path.
  *
  * WS3 T1 closes both: a SINGLE pre-arbitration step resolves the recall fact
  * node id ONCE, BEFORE the procedure-vs-deliberate arbitration, and threads the
@@ -486,15 +487,16 @@ export function retrieveRecallGrounding(
 /**
  * Apply a pre-resolved RecallRetrieval to a path's base grounding.
  *
- * This REPLACES the per-site `applyOkgRecallGrounding` reconstruction with the
- * once-resolved node id. The honesty guard is preserved: the GROUNDED label is
- * only applied when the retrieved fact VALUE actually surfaced in the response
- * text (C2 — unknowables / paraphrased-away facts never falsely read GROUNDED).
+ * This IS the single path at all four grounding sites (TK-84 collapse). The
+ * per-site `applyOkgRecallGrounding` post-hoc reconstruction is deleted.
+ * The honesty guard is preserved: the GROUNDED label is only applied when the
+ * retrieved fact VALUE actually surfaced in the response text (C2 — unknowables /
+ * paraphrased-away facts never falsely read GROUNDED). A null retrieval is a
+ * passthrough (provenance=null, grounding unchanged) — safe for non-recall turns.
  *
  * CRUCIAL T1 DISTINCTION: the node id (`provenance`) is returned WHENEVER the
  * value surfaced — but it is the node id resolved AT RETRIEVAL TIME, identical
- * across the procedure path and the deliberate path, never reconstructed from
- * the prose. The post-hoc regex re-derivation is gone from the call sites.
+ * across all four paths, never reconstructed from the prose.
  *
  * @returns the (possibly upgraded) grounding + the real node id when GROUNDED,
  *   plus the source discriminator for write-time person-scoping (WS4 T5 §3.1).

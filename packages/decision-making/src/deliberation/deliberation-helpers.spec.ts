@@ -16,8 +16,6 @@ import {
   personFactRecalled,
   inferGrounding,
   discriminateGroundedBy,
-  applyOkgRecallGrounding,
-  okgRecallProvenance,
   getRecalledFactForRecall,
   parseGroundingTag,
   parseCandidates,
@@ -170,55 +168,6 @@ describe('getRecalledFactForRecall', () => {
 
   it('returns null with no facts', () => {
     expect(getRecalledFactForRecall('user-jim', 'name', undefined)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// okgRecallProvenance
-// ---------------------------------------------------------------------------
-
-describe('okgRecallProvenance', () => {
-  const facts = ['name: Jim', 'location: Seattle'];
-
-  it('returns attrId when fact value appears in response', () => {
-    const p = okgRecallProvenance('user-jim', 'what is my name?', 'Your name is Jim!', facts);
-    expect(p).toBe('attr-user-jim-name');
-  });
-
-  it('returns null when value not in response', () => {
-    const p = okgRecallProvenance('user-jim', 'what is my name?', 'I am not sure', facts);
-    expect(p).toBeNull();
-  });
-
-  it('returns null when personId is undefined', () => {
-    const p = okgRecallProvenance(undefined, 'what is my name?', 'Your name is Jim', facts);
-    expect(p).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// applyOkgRecallGrounding
-// ---------------------------------------------------------------------------
-
-describe('applyOkgRecallGrounding', () => {
-  const facts = ['name: Jim'];
-
-  it('upgrades to GROUNDED when provenance available', () => {
-    const r = applyOkgRecallGrounding('user-jim', 'what is my name?', 'Your name is Jim!', facts, 'LLM_ASSISTED');
-    expect(r.grounding).toBe('GROUNDED');
-    expect(r.provenance).toBe('attr-user-jim-name');
-  });
-
-  it('returns unchanged grounding when already GROUNDED', () => {
-    const r = applyOkgRecallGrounding('user-jim', 'what is my name?', 'Your name is Jim!', facts, 'GROUNDED');
-    expect(r.grounding).toBe('GROUNDED');
-    expect(r.provenance).toBeNull();
-  });
-
-  it('returns unchanged grounding when no provenance', () => {
-    const r = applyOkgRecallGrounding('user-jim', 'what is my name?', 'I have no idea', facts, 'LLM_ASSISTED');
-    expect(r.grounding).toBe('LLM_ASSISTED');
-    expect(r.provenance).toBeNull();
   });
 });
 
