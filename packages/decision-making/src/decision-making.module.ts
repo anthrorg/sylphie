@@ -95,6 +95,8 @@ import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
 import { WorkingMemoryService } from './working-memory/working-memory.service';
 import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
+import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
+import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
 
 // ---------------------------------------------------------------------------
 // Sensory pipeline services
@@ -233,6 +235,14 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // ── EP7-B (TK-32): Sensory prediction router — routes sensory/scene
     // prediction errors to drives. Extracted from DecisionMakingService. ────
     SensoryPredictionRouterService,
+
+    // ── EP7-C (TK-33): Tensor candidate builder — stateless pure transform
+    // for tensor-derived action candidates. ─────────────────────────────────
+    TensorCandidateBuilder,
+
+    // ── EP7-C (TK-33): Recall retrieval helper — pre-arbitration grounded
+    // recall retrieval. Extracted from computeRecallRetrieval(). ─────────
+    RecallRetrievalHelper,
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────
     SensoryStreamLoggerService,

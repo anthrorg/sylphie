@@ -70,7 +70,7 @@ import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatc
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse } from './deliberation/deliberation.service';
 import { nudgeScoringWeights } from './deliberation/deliberation-helpers';
-import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, resolveRecallKey, type RecallRetrieval, type RecallKeyEncoder } from './deliberation/recall-retrieval';
+import { applyRecallGroundingFromRetrieval, type RecallRetrieval } from './deliberation/recall-retrieval';
 import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { isDocumentEncoder } from './inputs/encoders/text.encoder';
@@ -79,6 +79,8 @@ import { ScenePredictionService, type ScenePredictionResult } from './prediction
 import type { SceneSnapshot, EpisodeSource, VisualContext } from '@sylphie/shared';
 import { DecisionTickEngineService } from './tick-engine/decision-tick-engine.service';
 import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
+import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
+import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -276,6 +278,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // EP7-B (TK-32): Sensory prediction router — routes sensory/scene prediction
     // errors to the Drive Engine. Extracted from the two former private methods.
     private readonly sensoryPredictionRouter: SensoryPredictionRouterService,
+
+    // EP7-C (TK-33): Tensor candidate builder — builds ActionCandidate from a
+    // TensorInferenceResult. Extracted from buildTensorCandidate().
+    private readonly tensorCandidateBuilder: TensorCandidateBuilder,
+
+    // EP7-C (TK-33): Recall retrieval helper — computes pre-arbitration grounded
+    // recall retrieval. Extracted from computeRecallRetrieval() + recallKeyEncoder().
+    private readonly recallRetrievalHelper: RecallRetrievalHelper,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -620,7 +630,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // Cheap guard inside computeRecallRetrieval(): a non-recall question exits
       // before any Neo4j round-trip. T2 will reinforce recallRetrieval.factNodeId;
       // T3 will decay unused nodes — both depend on this node id being surfaced.
-      const recallRetrieval = await this.computeRecallRetrieval(frame);
+      const recallRetrieval = await this.recallRetrievalHelper.computeRecallRetrieval(frame);
       if (recallRetrieval) {
         vlog('pre-arbitration recall retrieval HIT', {
           key: recallRetrieval.recallKey,
@@ -832,7 +842,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           tensorResult.tensorTopCategory &&
           tensorResult.shouldUseTensor(tensorResult.tensorTopCategory)
         ) {
-          const tensorCandidate = this.buildTensorCandidate(
+          const tensorCandidate = this.tensorCandidateBuilder.build(
             tensorResult,
             contextFingerprint,
             dominantDrive,
@@ -2316,19 +2326,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
   private static readonly SENSORY_VIDEO_THRESHOLD = 0.2;
 
   // ---------------------------------------------------------------------------
-  // Tensor Candidate Construction
+  // EP7-C (TK-33): buildTensorCandidate moved to TensorCandidateBuilder.
   // ---------------------------------------------------------------------------
 
-  /**
-   * Build an ActionCandidate from tensor inference results.
-   *
-   * The tensor's action_bias softmax gives a probability per category.
-   * The argmax category becomes the candidate's category; the argmax
-   * probability becomes its confidence score.
-   *
-   * In partial mode, confidence is capped below 0.80 (forces Type 2).
-   * In full mode, confidence can exceed 0.80 (allows Type 1 reflex).
-   */
   /**
    * Count of pattern write-backs that had to DROP their text modality because a
    * `search_document:`-prefixed document embedding could not be produced. Metered
@@ -2405,137 +2405,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     return result;
   }
 
-  private buildTensorCandidate(
-    tensorResult: TensorInferenceResult,
-    contextFingerprint: string,
-    dominantDrive: DriveName,
-  ): ActionCandidate | null {
-    const topCategory = tensorResult.tensorTopCategory;
-    if (!topCategory) return null;
-
-    // Argmax probability from the action_bias softmax
-    const maxProb = Math.max(...tensorResult.actionBias);
-    if (maxProb < 0.30) return null; // Tensor too uncertain
-
-    // Confidence gating by bootstrap mode
-    const isFullMode = tensorResult.bootstrapMode === 'full';
-    const mappedConfidence = isFullMode
-      ? Math.min(0.95, maxProb)       // Allow Type 1 in full mode
-      : Math.min(0.79, maxProb);      // Force Type 2 in partial mode
-
-    return {
-      procedureData: {
-        id: `tensor-${topCategory}-${Date.now()}`,
-        name: `tensor-${topCategory}`,
-        category: topCategory,
-        triggerContext: contextFingerprint,
-        actionSequence: [{
-          index: 0,
-          stepType: 'LLM_GENERATE',
-          params: {
-            instruction: `Respond as ${topCategory} (tensor-guided)`,
-            tensorUrgency: tensorResult.urgency,
-            tensorNovelty: tensorResult.noveltyScore,
-          },
-        }],
-        provenance: 'INFERENCE' as any,
-        confidence: mappedConfidence,
-      },
-      confidence: mappedConfidence,
-      motivatingDrive: dominantDrive,
-      contextMatchScore: maxProb,
-    };
-  }
-
   // ---------------------------------------------------------------------------
-  // Autonomous research target selection
+  // EP7-C (TK-33): buildTensorCandidate extracted to TensorCandidateBuilder.
+  // computeRecallRetrieval + recallKeyEncoder extracted to RecallRetrievalHelper.
+  // Calls are now delegated through this.tensorCandidateBuilder.build() and
+  // this.recallRetrievalHelper.computeRecallRetrieval().
   // ---------------------------------------------------------------------------
-  // NOTE: routeSensoryPredictionErrors and routeScenePredictionErrors were
-  // extracted to SensoryPredictionRouterService (EP7-B, TK-32). Calls are
-  // now delegated through this.sensoryPredictionRouter.
-
-  /**
-   * Pick a low-confidence Entity from the WKG that would benefit from research.
-   *
-   * Strategy: query entities with few relationships and moderate confidence
-   * (enough to exist but not well-understood). Picks randomly from the top
-   * candidates to avoid always researching the same thing.
-   *
-   * Returns null if no suitable target is found.
-   */
-  // ---------------------------------------------------------------------------
-  // WS3 Ticket T1 — pre-arbitration grounded recall retrieval
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Resolve the grounding fact node id for a recall question ONCE, before
-   * arbitration. Single-hop, provenance-carrying. Returns null for non-recall
-   * input (cheap exit, no DB hit) and for recall input with no taught OKG fact
-   * and no topical WKG entity (honest NOT_GROUNDED by construction).
-   *
-   * OKG self-fact recall is resolved purely from the frame's knownFacts (no DB
-   * round-trip). The WKG single-hop fallback is only consulted when the OKG
-   * misses AND the question is a recall — and it reuses getContextForFrame's
-   * one fulltext hop, not a second traversal.
-   *
-   * CANON Std 4: the node id is real (deterministic attr-id for OKG; matched
-   * node_id for WKG); never fabricated. Std 3: confidence is surfaced, not lifted.
-   */
-  private async computeRecallRetrieval(frame: SensoryFrame): Promise<RecallRetrieval | null> {
-    const inputText = (frame.raw['text'] as string | undefined) ?? '';
-    if (!inputText.trim()) return null;
-
-    const personModel = frame.raw['person_model'] as
-      { personId?: string; knownFacts?: string[] } | null | undefined;
-    const personId = personModel?.personId ?? null;
-    const knownFacts = personModel?.knownFacts;
-
-    // ── WS3 C8 — semantic recall-key resolution (regex FIRST, embed fallback) ──
-    // resolveRecallKey tries recallKeyForQuestion first (preserving C1 exactly,
-    // and short-circuiting before any embed on a regex hit), and only on a regex
-    // MISS embeds the question and cosine-matches it against the canonical forms
-    // of the keys THIS person taught. Fail-closed: a null/zero-vector encoder
-    // skips the semantic pass entirely → behavior == regex-only (never regresses
-    // C1). A non-recall, non-paraphrase turn resolves to null → cheap exit below.
-    const encoder = this.recallKeyEncoder();
-    const resolvedKey = await resolveRecallKey(inputText, knownFacts, encoder);
-    // Not a recall question (regex miss + no semantic match) → no provenance, no DB.
-    if (!resolvedKey) return null;
-
-    // Try OKG first (pure, no DB). If it grounds, we never touch Neo4j.
-    const okgFirst = retrieveRecallGrounding(personId, inputText, knownFacts, {
-      entities: [], facts: [], relationships: [], procedures: [], summary: '',
-    }, resolvedKey);
-    if (okgFirst) return okgFirst;
-
-    // OKG missed on a recall question — consult the single-hop WKG context.
-    try {
-      const wkg = await this.wkgContext.getContextForFrame(frame);
-      return retrieveRecallGrounding(personId, inputText, knownFacts, wkg, resolvedKey);
-    } catch (err) {
-      this.logger.warn(`computeRecallRetrieval WKG lookup failed: ${err}`);
-      return null;
-    }
-  }
-
-  /**
-   * WS3 C8 — adapt the registered text encoder to the pure resolver's seam.
-   *
-   * Returns a RecallKeyEncoder bound to the registered 'text' modality encoder,
-   * honoring nomic's MANDATORY query/document asymmetry: the live QUESTION is a
-   * `search_query:` (encoder.encode) and each canonical key form is a
-   * `search_document:` (encoder.encodeDocument). Returns null when no text
-   * encoder is registered or it cannot produce documents — the resolver then
-   * fail-closes to regex-only (no semantic pass, C1 preserved).
-   */
-  private recallKeyEncoder(): RecallKeyEncoder | null {
-    const enc = this.modalityRegistry.get('text');
-    if (!enc || !isDocumentEncoder(enc)) return null;
-    return {
-      encodeQuery: (t: string) => enc.encode(t),
-      encodeDocument: (t: string) => enc.encodeDocument(t),
-    };
-  }
 
 }
 
