@@ -24,7 +24,7 @@
  * Confirmation = 2x delta, correction = 3x delta (CANON Standard 5).
  *
  * Graduation check: after every 'reinforced' update, qualifiesForGraduation()
- * is evaluated against the most recent MAE from getMaeHistory(). A TYPE_1_GRADUATION
+ * is evaluated against the most recent MAE from MaeHistoryStore. A TYPE_1_GRADUATION
  * event is emitted if the procedure qualifies.
  *
  * Demotion check: after every 'decayed' update on a TYPE_1_GRADUATED record,
@@ -69,6 +69,7 @@ import type {
   IDecisionEventLogger,
 } from '../interfaces/decision-making.interfaces';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
+import { MaeHistoryStore } from '../mae/mae-history.store';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -127,13 +128,6 @@ interface ActionConfidenceRecord {
 /** Base confidence reduction applied on counter-indication. */
 const COUNTER_INDICATION_REDUCTION = 0.15;
 
-/**
- * Maximum number of MAE observations in the rolling window per action.
- * Matches the graduation requirement of 10 observations and the window
- * size used by Type1TrackerService.
- */
-const MAX_MAE_WINDOW = 10;
-
 // ---------------------------------------------------------------------------
 // ConfidenceUpdaterService
 // ---------------------------------------------------------------------------
@@ -146,16 +140,10 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   private readonly records = new Map<string, ActionConfidenceRecord>();
 
   /**
-   * Rolling window of recent prediction MAE values per action, keyed by
-   * action ID. Each array holds at most MAX_MAE_WINDOW entries (FIFO).
-   * Ephemeral — not persisted across restarts.
-   */
-  private readonly maeHistory = new Map<string, number[]>();
-
-  /**
    * Events buffered during update() that are waiting for a DriveSnapshot.
    * Flushed by flushEvents() once the executor supplies the cycle snapshot.
    * Cleared after every flush so stale events never attach to a later cycle.
+   * (TK-67; MAE history now lives in the injected MaeHistoryStore — TK-68.)
    */
   private pendingEvents: PendingConfidenceEvent[] = [];
 
@@ -163,6 +151,8 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+    // Shared MAE window — the single source of truth for graduation/demotion checks.
+    private readonly maeStore: MaeHistoryStore,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -243,30 +233,26 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   /**
    * Record a prediction MAE observation for an action procedure.
    *
-   * Appends the MAE value to the rolling window for the given action ID,
-   * evicting the oldest entry if the window is at capacity (FIFO, capped
-   * at MAX_MAE_WINDOW = 10). The stored values are consumed by
-   * getRecentMAEForRecord() during graduation and demotion checks.
+   * Delegates to MaeHistoryStore — the shared window read by both this service
+   * and Type1TrackerService. Callers that write here and then read via
+   * getRecentMAEForRecord() will see the same window as Type1TrackerService.
+   *
+   * NOTE: reportOutcome() in DecisionMakingService no longer calls this after
+   * evaluatePrediction() — PredictionService.appendMae() already wrote to the
+   * shared store during evaluation. This method is retained for compatibility
+   * with the IConfidenceUpdaterService interface and for callers that feed MAE
+   * from outside the prediction path (e.g. tests, decay passes with synthetic MAE).
    *
    * @param actionId - WKG procedure node ID.
    * @param mae      - Mean absolute error from PredictionEvaluation (0.0–1.0).
    */
   recordPredictionMAE(actionId: string, mae: number): void {
-    let history = this.maeHistory.get(actionId);
-    if (!history) {
-      history = [];
-      this.maeHistory.set(actionId, history);
-    }
-
-    if (history.length >= MAX_MAE_WINDOW) {
-      history.shift();
-    }
-    history.push(mae);
+    this.maeStore.append(actionId, mae);
 
     vlog('MAE recorded for confidence updater', {
       actionId,
       mae: +mae.toFixed(4),
-      windowSize: history.length,
+      windowSize: this.maeStore.getWindow(actionId).length,
     });
   }
 
@@ -466,23 +452,12 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   }
 
   /**
-   * Retrieve the mean of recent MAE observations for an action.
+   * Retrieve the mean of recent MAE observations for an action from the shared store.
    *
-   * Returns the arithmetic mean of all values in the rolling MAE window
-   * for the given action. If no MAE data has been recorded yet (window is
-   * empty), returns 0.0 as a conservative sentinel — this ensures graduation
-   * checks that rely on MAE < 0.10 will pass only when real data is available
-   * AND meets the threshold.
-   *
-   * MAE data is fed in via recordPredictionMAE(), called from the decision
-   * loop after each prediction evaluation.
+   * Returns 0.0 when no data exists — see MaeHistoryStore.getMean() for semantics.
    */
   private getRecentMAEForRecord(actionId: string): number {
-    const history = this.maeHistory.get(actionId);
-    if (!history || history.length === 0) {
-      return 0.0;
-    }
-    return history.reduce((sum, v) => sum + v, 0) / history.length;
+    return this.maeStore.getMean(actionId);
   }
 
   // ---------------------------------------------------------------------------

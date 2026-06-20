@@ -49,13 +49,11 @@ import type {
   IDecisionEventLogger,
 } from '../interfaces/decision-making.interfaces';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
+import { MaeHistoryStore } from '../mae/mae-history.store';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Maximum number of MAE values to retain per action in the rolling window. */
-const MAE_HISTORY_MAX = 10;
 
 /** Prediction confidence discount relative to candidate confidence. */
 const PREDICTION_CONFIDENCE_DISCOUNT = 0.8;
@@ -91,16 +89,12 @@ export class PredictionService implements IPredictionService {
    */
   private readonly activePredictions = new Map<string, StoredPrediction>();
 
-  /**
-   * Per-action rolling MAE history. Key = WKG procedure node ID (actionId).
-   * Value = last MAE_HISTORY_MAX MAE values in insertion order.
-   */
-  private readonly maeHistory = new Map<string, number[]>();
-
   constructor(
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+    // Shared MAE window — the single source of truth for graduation/demotion checks.
+    private readonly maeStore: MaeHistoryStore,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -318,14 +312,14 @@ export class PredictionService implements IPredictionService {
   /**
    * Return the rolling MAE history for a given action ID.
    *
-   * Used by Type1TrackerService and ConfidenceUpdaterService to access
-   * accuracy trends without coupling to the prediction store internals.
+   * Delegates to MaeHistoryStore — the single shared window for all consumers
+   * (PredictionService, ConfidenceUpdaterService, Type1TrackerService).
    *
    * @param actionId - WKG procedure node ID.
-   * @returns Read-only array of the last MAE_HISTORY_MAX MAE values. Empty if none.
+   * @returns Read-only array of the last MAX_MAE_WINDOW MAE values. Empty if none.
    */
   getMaeHistory(actionId: string): readonly number[] {
-    return this.maeHistory.get(actionId) ?? [];
+    return this.maeStore.getWindow(actionId);
   }
 
   // ---------------------------------------------------------------------------
@@ -333,16 +327,14 @@ export class PredictionService implements IPredictionService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Append a MAE value to the per-action rolling history.
-   * Trims to the last MAE_HISTORY_MAX entries.
+   * Append a MAE value to the shared rolling history.
+   *
+   * Delegates to MaeHistoryStore — the authoritative single write path for all
+   * MAE observations in this module. ConfidenceUpdaterService and Type1TrackerService
+   * read from the same store, so this write is immediately visible to both.
    */
   private appendMae(actionId: string, mae: number): void {
-    const history = this.maeHistory.get(actionId) ?? [];
-    history.push(mae);
-    if (history.length > MAE_HISTORY_MAX) {
-      history.splice(0, history.length - MAE_HISTORY_MAX);
-    }
-    this.maeHistory.set(actionId, history);
+    this.maeStore.append(actionId, mae);
   }
 
   // ---------------------------------------------------------------------------

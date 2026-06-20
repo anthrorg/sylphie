@@ -16,8 +16,10 @@
  * Demotion condition:
  *   - rolling MAE > 0.15 (CONFIDENCE_THRESHOLDS.demotionMAE)
  *
- * The MAE window is capped at 10 entries. Older observations are evicted
- * FIFO as new ones arrive.
+ * MAE window: all MAE reads delegate to MaeHistoryStore — the shared rolling
+ * window written exclusively by PredictionService.appendMae(). This ensures
+ * graduation/demotion decisions here use the same observations as
+ * ConfidenceUpdaterService rather than a separate, potentially diverged window.
  *
  * GraduationRecords are stored in-process in a Map keyed by procedureId.
  * The map grows without bound for this lifetime — AttractorMonitorService
@@ -43,6 +45,7 @@ import {
 const vlog = verboseFor('Cortex');
 import type { IType1TrackerService, IDecisionEventLogger } from '../interfaces/decision-making.interfaces';
 import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
+import { MaeHistoryStore } from '../mae/mae-history.store';
 
 // ---------------------------------------------------------------------------
 // Internal mutable record
@@ -53,20 +56,17 @@ import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
  *
  * The public interface returns GraduationRecord (immutable); internally we
  * work with this mutable structure and snapshot it on every read.
+ *
+ * MAE history is no longer stored here — it lives in MaeHistoryStore so all
+ * consumers (this service + ConfidenceUpdaterService) read the same window.
  */
 interface MutableRecord {
   procedureId: string;
   state: GraduationState;
-  /** Rolling MAE window, capped at MAX_MAE_WINDOW entries (FIFO). */
-  maeHistory: number[];
-  recentMAE: number;
   lastUpdatedAt: Date;
   graduatedAt: Date | null;
   demotedAt: Date | null;
 }
-
-/** Maximum number of MAE observations in the rolling window. */
-const MAX_MAE_WINDOW = 10;
 
 // ---------------------------------------------------------------------------
 // Type1TrackerService
@@ -83,6 +83,8 @@ export class Type1TrackerService implements IType1TrackerService {
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+    // Shared MAE window — the single source of truth for graduation/demotion checks.
+    private readonly maeStore: MaeHistoryStore,
   ) {}
 
   /**
@@ -101,8 +103,8 @@ export class Type1TrackerService implements IType1TrackerService {
   /**
    * Record a new MAE observation and evaluate graduation/demotion transitions.
    *
-   * Appends the MAE to the rolling window (evicting the oldest if over 10).
-   * Recomputes the mean over the full window. Then applies state transitions:
+   * Appends the MAE to the shared MaeHistoryStore (evicting the oldest if over
+   * 10). Recomputes the mean over the full window. Then applies state transitions:
    *   - From TYPE_2_ONLY or TYPE_1_CANDIDATE: if qualifiesForGraduation() → TYPE_1_GRADUATED
    *   - From TYPE_1_GRADUATED: if qualifiesForDemotion() → TYPE_1_DEMOTED
    *   - From TYPE_1_DEMOTED: transition to TYPE_2_ONLY (reset demotion)
@@ -121,15 +123,11 @@ export class Type1TrackerService implements IType1TrackerService {
   recordObservation(procedureId: string, mae: number, confidence: number): void {
     const record = this.getOrCreate(procedureId);
 
-    // Append to rolling window, evict oldest if at capacity.
-    if (record.maeHistory.length >= MAX_MAE_WINDOW) {
-      record.maeHistory.shift();
-    }
-    record.maeHistory.push(mae);
+    // Append to the shared rolling window (evicts oldest when at MAX_MAE_WINDOW).
+    this.maeStore.append(procedureId, mae);
 
-    // Recompute mean over the full (now updated) window.
-    record.recentMAE =
-      record.maeHistory.reduce((sum, v) => sum + v, 0) / record.maeHistory.length;
+    const recentMAE = this.maeStore.getMean(procedureId);
+    const windowSize = this.maeStore.getWindow(procedureId).length;
 
     record.lastUpdatedAt = new Date();
 
@@ -137,13 +135,13 @@ export class Type1TrackerService implements IType1TrackerService {
       procedureId,
       mae: +mae.toFixed(4),
       confidence: +confidence.toFixed(4),
-      recentMAE: +record.recentMAE.toFixed(4),
+      recentMAE: +recentMAE.toFixed(4),
       state: record.state,
-      windowSize: record.maeHistory.length,
+      windowSize,
     });
 
     // Evaluate state transitions.
-    this.evaluateTransitions(record, confidence);
+    this.evaluateTransitions(record, confidence, recentMAE);
   }
 
   /**
@@ -173,8 +171,6 @@ export class Type1TrackerService implements IType1TrackerService {
     const fresh: MutableRecord = {
       procedureId,
       state: 'UNCLASSIFIED',
-      maeHistory: [],
-      recentMAE: 0,
       lastUpdatedAt: new Date(),
       graduatedAt: null,
       demotedAt: null,
@@ -192,8 +188,10 @@ export class Type1TrackerService implements IType1TrackerService {
    *   2. If currently TYPE_1_DEMOTED → TYPE_2_ONLY (complete the demotion cycle)
    *   3. If currently TYPE_2_ONLY or TYPE_1_CANDIDATE and qualifies for graduation → TYPE_1_GRADUATED
    *   4. If currently UNCLASSIFIED → advance to TYPE_2_ONLY (first observation)
+   *
+   * @param recentMAE - Pre-computed mean from MaeHistoryStore (avoids a second lookup).
    */
-  private evaluateTransitions(record: MutableRecord, confidence: number): void {
+  private evaluateTransitions(record: MutableRecord, confidence: number, recentMAE: number): void {
     const previousState = record.state;
 
     switch (record.state) {
@@ -207,36 +205,36 @@ export class Type1TrackerService implements IType1TrackerService {
 
       case 'TYPE_2_ONLY':
       case 'TYPE_1_CANDIDATE':
-        if (qualifiesForGraduation(confidence, record.recentMAE)) {
+        if (qualifiesForGraduation(confidence, recentMAE)) {
           record.state = 'TYPE_1_GRADUATED';
           record.graduatedAt = new Date();
           vlog('TYPE_1 GRADUATION', {
             procedureId: record.procedureId,
             from: previousState,
             confidence: +confidence.toFixed(3),
-            mae: +record.recentMAE.toFixed(4),
+            mae: +recentMAE.toFixed(4),
           });
           this.logger.log(
             `Type1Tracker: ${record.procedureId} ${previousState} → TYPE_1_GRADUATED ` +
-              `(confidence=${confidence.toFixed(3)}, MAE=${record.recentMAE.toFixed(4)})`,
+              `(confidence=${confidence.toFixed(3)}, MAE=${recentMAE.toFixed(4)})`,
           );
-          this.emitGraduationEvent(record);
+          this.emitGraduationEvent(record, recentMAE);
         }
         break;
 
       case 'TYPE_1_GRADUATED':
-        if (qualifiesForDemotion(record.recentMAE)) {
+        if (qualifiesForDemotion(recentMAE)) {
           record.state = 'TYPE_1_DEMOTED';
           record.demotedAt = new Date();
           vlog('TYPE_1 DEMOTION', {
             procedureId: record.procedureId,
-            mae: +record.recentMAE.toFixed(4),
+            mae: +recentMAE.toFixed(4),
           });
           this.logger.warn(
             `Type1Tracker: ${record.procedureId} TYPE_1_GRADUATED → TYPE_1_DEMOTED ` +
-              `(MAE=${record.recentMAE.toFixed(4)} exceeds demotionMAE threshold)`,
+              `(MAE=${recentMAE.toFixed(4)} exceeds demotionMAE threshold)`,
           );
-          this.emitDemotionEvent(record);
+          this.emitDemotionEvent(record, recentMAE);
         }
         break;
 
@@ -254,7 +252,7 @@ export class Type1TrackerService implements IType1TrackerService {
    * Emit a TYPE_1_GRADUATION event to the decision event logger.
    * Uses a placeholder drive snapshot since we do not have one at this point.
    */
-  private emitGraduationEvent(record: MutableRecord): void {
+  private emitGraduationEvent(record: MutableRecord, recentMAE: number): void {
     if (!this.eventLogger) {
       return;
     }
@@ -267,8 +265,8 @@ export class Type1TrackerService implements IType1TrackerService {
         'TYPE_1_GRADUATION',
         {
           procedureId: record.procedureId,
-          recentMAE: record.recentMAE,
-          maeHistoryLength: record.maeHistory.length,
+          recentMAE,
+          maeHistoryLength: this.maeStore.getWindow(record.procedureId).length,
           graduatedAt: record.graduatedAt?.toISOString(),
         },
         // Drive snapshot not available here; pass a sentinel to satisfy the interface.
@@ -284,7 +282,7 @@ export class Type1TrackerService implements IType1TrackerService {
   /**
    * Emit a TYPE_1_DEMOTION event to the decision event logger.
    */
-  private emitDemotionEvent(record: MutableRecord): void {
+  private emitDemotionEvent(record: MutableRecord, recentMAE: number): void {
     if (!this.eventLogger) {
       return;
     }
@@ -294,8 +292,8 @@ export class Type1TrackerService implements IType1TrackerService {
         'TYPE_1_DEMOTION',
         {
           procedureId: record.procedureId,
-          recentMAE: record.recentMAE,
-          maeHistoryLength: record.maeHistory.length,
+          recentMAE,
+          maeHistoryLength: this.maeStore.getWindow(record.procedureId).length,
           demotedAt: record.demotedAt?.toISOString(),
         },
         buildPlaceholderSnapshot(),
@@ -313,8 +311,8 @@ export class Type1TrackerService implements IType1TrackerService {
     return {
       procedureId: record.procedureId,
       state: record.state,
-      recentMAE: record.recentMAE,
-      maeHistoryLength: record.maeHistory.length,
+      recentMAE: this.maeStore.getMean(record.procedureId),
+      maeHistoryLength: this.maeStore.getWindow(record.procedureId).length,
       lastUpdatedAt: record.lastUpdatedAt,
       graduatedAt: record.graduatedAt,
       demotedAt: record.demotedAt,

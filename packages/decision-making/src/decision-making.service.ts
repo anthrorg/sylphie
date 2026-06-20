@@ -2041,9 +2041,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         ? 'reinforced'
         : 'counter_indicated';
 
-      if (predictionEvaluation) {
-        this.confidenceUpdater.recordPredictionMAE(actionId, predictionEvaluation.mae);
-      }
+      // Note: recordPredictionMAE() is NOT called here. PredictionService.evaluatePrediction()
+      // already wrote the MAE to MaeHistoryStore (the shared window) when it ran above.
+      // Calling recordPredictionMAE() again would double-append the same observation.
 
       try {
         await this.confidenceUpdater.update(actionId, confidenceOutcome);

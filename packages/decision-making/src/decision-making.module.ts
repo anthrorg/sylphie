@@ -100,6 +100,7 @@ import { SensoryPredictionRouterService } from './sensory/sensory-prediction-rou
 // Sensory pipeline services
 // ---------------------------------------------------------------------------
 
+import { MaeHistoryStore } from './mae/mae-history.store';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
 import { TextEncoder } from './inputs/encoders/text.encoder';
 import { VideoEncoder } from './inputs/encoders/video.encoder';
@@ -196,6 +197,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
       provide: LLM_SERVICE,
       useClass: OllamaLlmService,
     },
+
+    // ── Shared MAE history (single rolling window for graduation/demotion/confidence) ─
+    MaeHistoryStore,
 
     // ── WKG Context Service (central read/write interface to World Knowledge Graph)
     WkgContextService,
