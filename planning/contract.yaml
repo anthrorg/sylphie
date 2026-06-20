@@ -783,7 +783,7 @@ nodes:
     parent: EP-8
     title: "EP8-4 — use_learned graduation criterion in ConvergenceModel"
     intent: "Flip use_learned=True when convergence_sample_count>=1000 AND accuracy>=0.80; persist across restart; expose in /cognition/bootstrap."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/18"
     branch: "agent/tk-41-ep8-4-uselearned-graduation-criterion-in"
     priority: P2
