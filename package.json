@@ -33,7 +33,9 @@
     "gate:update-baseline": "npx tsx test/gate/gate.ts --mode=update-baseline",
     "reset:dry-run": "npx tsx scripts/reset-data.ts",
     "reset:confirm": "npx tsx scripts/reset-data.ts --confirm",
-    "test:vision:a": "npx tsx test/e2e/vision/accept-A.e2e.ts"
+    "test:vision:a": "npx tsx test/e2e/vision/accept-A.e2e.ts",
+    "migrate:legacy-rescope:dry-run": "npx tsx infra/migrations/001-legacy-pattern-rescope.ts",
+    "migrate:legacy-rescope:confirm": "npx tsx infra/migrations/001-legacy-pattern-rescope.ts --confirm"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0"
