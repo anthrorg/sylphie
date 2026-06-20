@@ -12,6 +12,7 @@
  */
 
 import { PredictionService } from './prediction.service';
+import { MaeHistoryStore } from '../mae/mae-history.store';
 import type {
   ActionCandidate,
   ActionOutcome,
@@ -112,7 +113,7 @@ describe('PredictionService', () => {
 
   beforeEach(() => {
     // No event logger — @Optional injection
-    service = new PredictionService(null);
+    service = new PredictionService(null, new MaeHistoryStore());
   });
 
   describe('generatePredictions', () => {
