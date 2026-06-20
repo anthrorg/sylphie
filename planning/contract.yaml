@@ -544,7 +544,7 @@ nodes:
     parent: EP-6
     title: "ACC.B — durable cross-session re-bind (live)"
     intent: "Prove a power-cycled NestJS app re-binds a previously-seen object to the SAME :VisualObject node with sighting_count incrementing, centroid drift, and bbox round-tripping."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/23"
     branch: "agent/tk-28-accb-durable-cross-session-re-bind-live"
     priority: P1
