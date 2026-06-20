@@ -93,6 +93,13 @@ export interface QueuedOpportunity {
    * an opportunity forever. Absent/0 on first intake.
    */
   deferralCount?: number;
+  /**
+   * Earliest wall-clock time at which this opportunity may be dequeued.
+   * Set when an opportunity is re-enqueued after a deferral using exponential
+   * backoff: retryAfter = enqueuedAt + BASE_BACKOFF_MS * 2^deferralCount.
+   * Absent on first intake; dequeue skips the item until this timestamp passes.
+   */
+  retryAfter?: Date;
 }
 
 export interface OpportunityQueueStatus {

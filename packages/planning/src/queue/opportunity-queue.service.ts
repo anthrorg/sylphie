@@ -52,6 +52,13 @@ const GUARDIAN_TEACHING_PRIORITY = 1.5;
 /** Maximum items in the queue. */
 const MAX_QUEUE_SIZE = 50;
 
+/**
+ * Base backoff delay for deferred-opportunity re-enqueues (milliseconds).
+ * The actual delay grows exponentially: BASE_BACKOFF_MS * 2^deferralCount.
+ * A deferral count of 1 therefore waits 2 minutes before re-processing.
+ */
+export const BASE_BACKOFF_MS = 60_000;
+
 /** Maximum plans that can be created per rate-limit window. */
 const MAX_PLANS_PER_WINDOW = 3;
 
@@ -172,11 +179,27 @@ export class OpportunityQueueService implements IOpportunityQueue {
 
   dequeue(): QueuedOpportunity | null {
     if (this.queue.length === 0) return null;
-    const item = this.queue.shift()!;
+
+    const now = Date.now();
+
+    // Walk the priority-sorted queue to find the first item whose backoff has
+    // elapsed. Items with a retryAfter still in the future are skipped (they
+    // stay in the queue for a later cycle).
+    const idx = this.queue.findIndex(
+      (item) => item.retryAfter === undefined || item.retryAfter.getTime() <= now,
+    );
+
+    if (idx === -1) {
+      // Every item is still in its backoff window; nothing to process this tick.
+      return null;
+    }
+
+    const [item] = this.queue.splice(idx, 1);
     vlog('opportunity dequeued', {
       opportunityId: item.payload.id,
       classification: item.payload.classification,
       priority: item.currentPriority,
+      deferralCount: item.deferralCount,
       remainingQueueSize: this.queue.length,
     });
     return item;

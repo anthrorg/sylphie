@@ -56,7 +56,7 @@ import {
   PLAN_EVALUATION_SERVICE,
   PLANNING_EVENT_LOGGER,
 } from './planning.tokens';
-import { priorityToNumeric } from './queue/opportunity-queue.service';
+import { priorityToNumeric, BASE_BACKOFF_MS } from './queue/opportunity-queue.service';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -608,6 +608,10 @@ export class PlanningService implements IPlanningService, OnModuleInit, OnModule
       }
 
       opportunity.deferralCount = priorDeferrals + 1;
+      // Exponential backoff: don't retry for at least BASE_BACKOFF_MS * 2^deferralCount.
+      // enqueuedAt is the original intake time; retryAfter is computed from now so the
+      // backoff is measured from the deferral moment, not from the original arrival.
+      opportunity.retryAfter = new Date(Date.now() + BASE_BACKOFF_MS * Math.pow(2, opportunity.deferralCount));
       this.logger.error(
         `Deferring opportunity ${oppId} (attempt ${opportunity.deferralCount}/${MAX_DEFERRALS}): ` +
           `${validationResult.reasoning}`,
