@@ -1005,7 +1005,7 @@ nodes:
     parent: EP-12
     title: "EP12.2 — Reflection windowed sampling for long sessions"
     intent: "Replace head-only truncation in buildReflectionPrompt with head+tail+sampled-middle within the existing MAX_CONVERSATION_CHARS budget."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
