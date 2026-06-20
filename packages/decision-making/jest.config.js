@@ -17,8 +17,4 @@ module.exports = {
     '^@sylphie/shared$': '<rootDir>/../shared/src/index.ts',
     '^@sylphie/drive-engine$': '<rootDir>/../drive-engine/src/index.ts',
   },
-  // Worktree: node_modules live in the main checkout one level up from sylphie-worktrees/<branch>.
-  modulePaths: [
-    'C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules',
-  ],
 };
