@@ -27,6 +27,7 @@ import { TimescaleService, EMBEDDING_DIM, verboseFor, type KnowledgeGrounding } 
 
 const vlog = verboseFor('Memory');
 import { cosineSimilarity, parseEmbedding } from './vector-math';
+import { PersonScopedFaceIndex } from './person-scoped-face-index';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -274,14 +275,25 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Wave 3 / C6 — audit counter for modality writes intentionally dropped by
-   * writeMultiModal (drives/faces). These modalities are NOT written to the
-   * shared conversational latent index yet: faces carry identity/privacy weight
-   * (CANON Std-3) and want a separate person-scoped index, which is deferred to
-   * a later wave (Jim's decision, 2026-06-15). Until then the drop is honest and
-   * audited rather than silent (Std-1 — no silent stubs). A dedicated index, not
-   * an unconditional skip, is the end state.
+   * writeMultiModal (drives/faces with no person scope). Faces that DO carry a
+   * groundingPersonId are routed to personScopedFaceIndex instead of being
+   * dropped; the remaining cases (no person scope, or the 'drives' modality)
+   * are still dropped and counted here for auditing (Std-1 — no silent stubs).
    */
   private readonly droppedModalityWrites = new Map<string, number>();
+
+  /**
+   * TK-85 — person-scoped face index (POC).
+   *
+   * Face embeddings with a groundingPersonId are written here instead of
+   * being dropped silently. Search is always person-scoped: Person A's face
+   * entries are never visible to a search keyed by Person B's id. The shared
+   * conversational index (hotLayer) remains completely face-free.
+   *
+   * Exposed as `readonly` so tests and callers can introspect or search
+   * without the service needing to own the full face-reflex API.
+   */
+  readonly personScopedFaceIndex = new PersonScopedFaceIndex();
 
   constructor(
     private readonly timescale: TimescaleService,
@@ -642,19 +654,43 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     const ids: string[] = [];
 
     for (const [modality, embedding] of Object.entries(modalityEmbeddings)) {
-      // Wave 3 / C6 — drive/face modalities are intentionally NOT written to the
-      // shared conversational index (a separate person-scoped index is deferred
-      // to a later wave). Audit the drop instead of swallowing it silently
-      // (Std-1): count it and emit a one-time warn per modality so callers can
-      // see that supplied drive/face embeddings are being dropped, not stored.
-      if (modality === 'drives' || modality === 'faces') {
+      // TK-85 — faces with a groundingPersonId go to the person-scoped face
+      // index (NEVER the shared conversational index). This is the privacy gate:
+      // a face seen with Person A is isolated in A's store and can never ground
+      // or reflex for Person B.
+      //
+      // Faces WITHOUT a groundingPersonId (world-scoped / anonymous) still fall
+      // through to the Wave 3 C6 drop below — we cannot safely scope them.
+      if (modality === 'faces') {
+        const personId = opts.groundingPersonId ?? null;
+        if (personId) {
+          const faceId = this.personScopedFaceIndex.writeFace(personId, embedding);
+          if (faceId) ids.push(faceId);
+        } else {
+          // No person scope — drop and audit (Wave 3 C6 preserved).
+          const prior = this.droppedModalityWrites.get(modality) ?? 0;
+          this.droppedModalityWrites.set(modality, prior + 1);
+          if (prior === 0) {
+            this.logger.warn(
+              `writeMultiModal: dropping 'faces' modality write — no groundingPersonId ` +
+                `supplied. Face embeddings require a person scope to avoid the §2.8 ` +
+                `cross-person grounding leak (Wave 3 C6 / TK-85).`,
+            );
+          }
+        }
+        continue;
+      }
+
+      // Wave 3 / C6 — drives modality is still dropped (no person-scoped index
+      // yet for drive embeddings). Audit the drop (Std-1 — no silent stubs).
+      if (modality === 'drives') {
         const prior = this.droppedModalityWrites.get(modality) ?? 0;
         this.droppedModalityWrites.set(modality, prior + 1);
         if (prior === 0) {
           this.logger.warn(
-            `writeMultiModal: dropping '${modality}' modality writes — not yet ` +
+            `writeMultiModal: dropping 'drives' modality writes — not yet ` +
               `indexed (separate person-scoped index deferred; Wave 3 C6). ` +
-              `Supplied ${modality} embeddings are NOT persisted.`,
+              `Supplied drives embeddings are NOT persisted.`,
           );
         }
         continue;

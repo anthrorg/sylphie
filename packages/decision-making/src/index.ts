@@ -60,6 +60,15 @@ export { TENSOR_INFERENCE_SERVICE } from './decision-making.tokens';
 export { LatentSpaceService } from './latent-space/latent-space.service';
 export type { LatentMatch, MultiModalLatentMatch } from './latent-space/latent-space.service';
 
+/**
+ * TK-85 — person-scoped face index (POC).
+ * Exported so callers can access PersonFaceEntry / PersonFaceMatch types and
+ * the graduation threshold constant without importing internal files directly.
+ * The index itself lives at LatentSpaceService.personScopedFaceIndex.
+ */
+export { PersonScopedFaceIndex, FACE_GRADUATION_THRESHOLD } from './latent-space/person-scoped-face-index';
+export type { PersonFaceEntry, PersonFaceMatch } from './latent-space/person-scoped-face-index';
+
 /** Sensory prediction — exported for system reset. */
 export { SensoryPredictionService } from './prediction/sensory-prediction.service';
 
