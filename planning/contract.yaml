@@ -1672,7 +1672,7 @@ nodes:
     parent: EP-16
     pr_url: "https://github.com/anthrorg/sylphie/pull/28"
     branch: "agent/tk-84-ws554-confirm-durable-okg-recall-path"
-    status: in_progress
+    status: done
     priority: P2
     estimate: M
     engineering_level: production
