@@ -17,13 +17,6 @@ module.exports = {
     }],
   },
   moduleNameMapper: {
-    // Point shared to main repo source — worktrees don't have independent node_modules,
-    // and shared's src barrel pulls in @nestjs/config, @prisma/client etc which live only
-    // in the main repo's node_modules (resolved via modulePaths below).
-    '^@sylphie/shared$': 'C:/Users/Jim/OneDrive/desktop/Code/sylphie/packages/shared/src/index.ts',
+    '^@sylphie/shared$': '<rootDir>/../../packages/shared/src/index.ts',
   },
-  modulePaths: [
-    // Worktrees share the yarn-installed node_modules from the main repo root.
-    'C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules',
-  ],
 };
