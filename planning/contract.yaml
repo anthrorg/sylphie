@@ -1616,8 +1616,9 @@ nodes:
   - id: TK-82
     kind: ticket
     parent: EP-16
-    status: in_progress
-    pr_url: "https://github.com/anthrorg/sylphie/pull/21"
+    status: done
+    verification_note: "Verify-only ticket; promoteCandidate + 3 WKG specs (33 tests) already on main. Ran in main checkout: 33/33 pass incl. CANON Std-5 non-guardian rejection. PR #21 closed unmerged (its only change was a hardcoded-path jest crutch). Verification proven."
+    pr_url: "https://github.com/anthrorg/sylphie/pull/21 (closed — verify-only, no code change)"
     branch: "agent/tk-82-ws552-verify-guardian-gated-candidate--"
     priority: P1
     estimate: S
