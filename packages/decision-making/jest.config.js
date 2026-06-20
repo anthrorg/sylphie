@@ -17,7 +17,4 @@ module.exports = {
     '^@sylphie/shared$': '<rootDir>/../shared/src/index.ts',
     '^@sylphie/drive-engine$': '<rootDir>/../drive-engine/src/index.ts',
   },
-  // Resolve node_modules from the main checkout (worktrees share git history
-  // but not node_modules — point to the sibling repo's installed packages).
-  modulePaths: ['C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules'],
 };
