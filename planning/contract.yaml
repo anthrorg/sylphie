@@ -640,7 +640,7 @@ nodes:
     parent: EP-7
     title: "EP7-C — Extract TensorCandidateBuilder + RecallRetrievalHelper"
     intent: "Extract buildTensorCandidate into TensorCandidateBuilder and computeRecallRetrieval+recallKeyEncoder into RecallRetrievalHelper (both stateless pure transforms)."
-    status: in_progress
+    status: done
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -1384,7 +1384,7 @@ nodes:
     title: "EP15.1 — Scope-aware CALLS-edge resolution in codebase-pkg"
     intent: "Eliminate phantom cross-service CALLS edges by constraining callee matches to the correct module via the caller's IMPORTS graph (two-pass: sync Functions, then resolve CALLS). External @sylphie-labs/codebase-pkg package."
     status: done
-    verification_note: "PATCH STAGED, NOT YET LIVE. Fix (two-branch CALLS resolution: imported->cross-file, else same-file-only) staged in docs/codebase-pkg-patches/tk-71/ (PR #54 merged), 55/55 in isolation. RESIDUAL: NOT yet upstreamed to the external @sylphie-labs/codebase-pkg repo (no external commit, unlike TK-72/7d59ce6); behavioral ACs (zero phantom edges in live graph) provable only after upstream + re-sync. Action for Jim: upstream the patch."
+    verification_note: "UPSTREAMED. Two-branch CALLS resolution (imported->cross-file, else same-file-only) committed to external @sylphie-labs/codebase-pkg at fe40c06 on release/0.4.0 (tsc build clean, 55/55). Staged copy at docs/codebase-pkg-patches/tk-71/ (PR #54). Remaining (deploy-side, Jim): push/publish the codebase-pkg release + re-sync the live graph to realize zero-phantom-edges behaviorally."
     priority: P3
     estimate: M
     engineering_level: production
