@@ -967,31 +967,95 @@ const SYSTEM_PROMPT = [
 /**
  * Build the user prompt from session events and known entities.
  * Caps total content at MAX_CONVERSATION_CHARS.
+ *
+ * When the session fits within the budget, all events are included unchanged.
+ * When the session exceeds the budget, the budget is split into thirds:
+ *   ~33% earliest events (head) + ~33% latest events (tail)
+ *   + ~33% evenly-sampled events from the middle segment.
+ * This preserves conversational shape — opening context, closing context, and
+ * a representative sample of the middle — rather than discarding the tail entirely.
  */
-function buildReflectionPrompt(
+export function buildReflectionPrompt(
   events: SessionEvent[],
   knownEntities: string[],
 ): string {
-  // Format each event as a timeline entry.
-  const lines: string[] = [];
-  let charBudget = MAX_CONVERSATION_CHARS;
-
-  for (const event of events) {
-    if (charBudget <= 0) break;
-
+  // Pre-format every event into a timeline line (cheap, avoids two-pass cost).
+  const allLines = events.map((event) => {
     const time = event.timestamp.toISOString().substring(11, 19); // HH:MM:SS
     const role = resolveRole(event.type, event.subsystem);
     const content = event.content || `[${event.type}]`;
-    const line = `[${time}] (${role}) ${content}`;
+    return `[${time}] (${role}) ${content}`;
+  });
 
-    if (line.length <= charBudget) {
-      lines.push(line);
-      charBudget -= line.length;
-    } else {
-      // Truncate to fit remaining budget.
-      lines.push(line.substring(0, charBudget) + '...');
-      charBudget = 0;
+  // Budget accounting counts line.length + 1 per line to include the '\n'
+  // that join() inserts between entries in the final prompt string.
+  const lineSize = (l: string) => l.length + 1;
+  const totalChars = allLines.reduce((sum, l) => sum + lineSize(l), 0);
+
+  let selectedLines: string[];
+
+  if (totalChars <= MAX_CONVERSATION_CHARS) {
+    // Session fits within budget — include everything unchanged (AC2).
+    selectedLines = allLines;
+  } else {
+    // Session exceeds budget — apply head + tail + sampled-middle windowing (AC1).
+    //
+    // Divide MAX_CONVERSATION_CHARS into thirds. head and tail each get one
+    // third; middle gets the remainder (rounding gives it a slight advantage).
+    const thirdBudget = Math.floor(MAX_CONVERSATION_CHARS / 3);
+    const middleBudget = MAX_CONVERSATION_CHARS - 2 * thirdBudget;
+
+    // Greedily collect head lines until the head budget is exhausted.
+    const headLines: string[] = [];
+    let headChars = 0;
+    for (const line of allLines) {
+      if (headChars + lineSize(line) > thirdBudget) break;
+      headLines.push(line);
+      headChars += lineSize(line);
     }
+
+    // Greedily collect tail lines (iterating from the end) until tail budget exhausted.
+    const tailLines: string[] = [];
+    let tailChars = 0;
+    for (let i = allLines.length - 1; i >= headLines.length; i--) {
+      const line = allLines[i];
+      if (tailChars + lineSize(line) > thirdBudget) break;
+      tailLines.unshift(line);
+      tailChars += lineSize(line);
+    }
+
+    // Middle segment: events between head and tail (exclusive).
+    const headEnd = headLines.length;
+    const tailStart = allLines.length - tailLines.length;
+    const middleAll = allLines.slice(headEnd, tailStart);
+
+    // Evenly sample the middle segment to fill the middle budget.
+    // To spread evenly we pick at a stride that distributes picks across the range.
+    const middleLines: string[] = [];
+    if (middleAll.length > 0 && middleBudget > 0) {
+      // Estimate how many middle events we can afford (rough lower bound by avg size).
+      const avgMiddleSize =
+        middleAll.reduce((s, l) => s + lineSize(l), 0) / middleAll.length;
+      const targetCount = Math.max(1, Math.floor(middleBudget / Math.max(avgMiddleSize, 1)));
+      // Clamp to the number of available middle events.
+      const pickCount = Math.min(targetCount, middleAll.length);
+
+      // Evenly-spaced indices across middleAll (0-based).
+      // For pickCount=1 this yields just the midpoint; for pickCount=N it covers the range.
+      let middleChars = 0;
+      for (let pick = 0; pick < pickCount; pick++) {
+        // Map each pick slot to an index proportionally spread across middleAll.
+        const idx = pickCount === 1
+          ? Math.floor(middleAll.length / 2)
+          : Math.round((pick / (pickCount - 1)) * (middleAll.length - 1));
+        const line = middleAll[idx];
+        if (middleChars + lineSize(line) > middleBudget) break;
+        middleLines.push(line);
+        middleChars += lineSize(line);
+      }
+    }
+
+    selectedLines = [...headLines, ...middleLines, ...tailLines];
   }
 
   const duration = events.length >= 2
@@ -1007,7 +1071,7 @@ function buildReflectionPrompt(
     `The conversation had ${events.length} events over ${duration}.`,
     '',
     'Conversation timeline:',
-    ...lines,
+    ...selectedLines,
     entitySection,
   ].join('\n');
 }
