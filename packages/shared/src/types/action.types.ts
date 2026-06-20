@@ -229,6 +229,20 @@ export type ArbitrationResult =
        * types of incomprehension rather than treating all SHRUGs identically.
        */
       readonly shrugDetail?: ShrugDetail;
+      /**
+       * EP14.5b (TK-90): typed arbitration-level error code when the SHRUG was
+       * caused by an infrastructure fault rather than a knowledge gap.
+       *
+       * CONTRADICTION_SCAN_FAILED: the contradiction scanner threw unexpectedly
+       *   during Type 1 verification. The system cannot safely commit the Type 1
+       *   candidate, so it degrades to SHRUG to satisfy Standard 4 (Shrug
+       *   Imperative) while exposing the error cause for diagnostics.
+       *
+       * Absent on all normal knowledge-gap SHRUGs (MISSING_CONTEXT,
+       * LOW_CONFIDENCE, CONTRADICTION). Only present on infrastructure-fault SHRUGs
+       * so callers that do not inspect it are entirely unaffected.
+       */
+      readonly arbitrationError?: 'CONTRADICTION_SCAN_FAILED';
     };
 
 // ---------------------------------------------------------------------------
