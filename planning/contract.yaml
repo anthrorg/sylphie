@@ -1338,7 +1338,7 @@ nodes:
     parent: EP-14
     title: "EP14.8 — VERIFY mood-congruent episodic retrieval is live; close stub"
     intent: "Confirm WS5 T2.5 mood-congruent retrieval (driveCosineSimilarity blend in queryByContext) is live + gate-provable, then close the stub-inventory entry. (Decomposer found it already done.)"
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: mvp
