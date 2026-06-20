@@ -968,7 +968,7 @@ nodes:
     parent: EP-12
     title: "EP12.1a — Consolidation entity extraction LLM path + ILlmService injection"
     intent: "Inject @Optional() ILlmService into ConsolidationService and replace the whitespace-split entity heuristic (extractEntities at consolidation.service.ts:364-387) with LLM-assisted entity extraction; lesion-fallback to the existing heuristic silently when LLM is null or unavailable. This is the injection-bearing half of the split — it stands up extractWithLlm(), the structured-response parser, and the consolidate() wiring; TK-88 reuses the injected llm for relationships."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
