@@ -124,6 +124,6 @@ EXPOSE 3000
 # (process.env.PORT || process.env.APP_PORT || 3000) so the healthcheck always
 # hits the port the app is actually listening on, even in local docker runs.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT:-3000}/metrics/health || exit 1
+  CMD wget -qO- http://localhost:${PORT:-3000}/api/metrics/health || exit 1
 
 CMD ["./docker-entrypoint.sh"]
