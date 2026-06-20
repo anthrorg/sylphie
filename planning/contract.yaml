@@ -1731,7 +1731,7 @@ nodes:
     parent: EP-16
     pr_url: "https://github.com/anthrorg/sylphie/pull/33"
     branch: "agent/tk-86-ws556-drive-hostility-appraisal-inboundh"
-    status: in_progress
+    status: done
     priority: P2
     estimate: M
     engineering_level: production

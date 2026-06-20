@@ -330,6 +330,12 @@ export interface IActionOutcomeReporter {
       readonly sensoryPredictionError?: number;
       readonly sceneSurprise?: number;
       readonly guardianTeachingDrive?: DriveName;
+      /**
+       * Hostility magnitude of an inbound message [0.0, 1.0].
+       * Carried by InboundHostility action outcomes (TK-86 / DEC-24);
+       * mirrors the field on the IPC ActionOutcomePayload metadata.
+       */
+      readonly hostilityMagnitude?: number;
     };
 
     /**
