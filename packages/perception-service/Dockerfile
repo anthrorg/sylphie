@@ -25,7 +25,6 @@ COPY cobeing/ cobeing/
 COPY main.py .
 COPY blaze_face_short_range.tflite .
 COPY face_landmarker.task .
-COPY efficientnet_b0.onnx .
 
 ENV PYTHONPATH=/app
 EXPOSE 8430

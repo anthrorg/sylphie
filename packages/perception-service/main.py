@@ -84,9 +84,9 @@ class _AppState:
     pipeline_task: asyncio.Task | None = None  # background task running pipeline.run()
     detector: Any | None = None          # YoloDetector, for the /detect endpoint
     face_detector: Any | None = None     # MediaPipeFaceDetector, for face detection
-    embedding_extractor: Any | None = None  # OnnxEmbeddingExtractor, lazy-init
+    embedding_extractor: Any | None = None  # unused after P5.1b (OnnxEmbeddingExtractor deleted)
     # P3.A — DominantColorExtractor (8x8x8 RGB histogram, no cv2/numpy hard dep),
-    # lazy-init like embedding_extractor so a fresh process pays the cost once.
+    # lazy-init so a fresh process pays the cost once.
     color_extractor: Any | None = None
     config: Any | None = None            # PerceptionConfig
     model_loaded: bool = False
@@ -115,82 +115,12 @@ _state = _AppState()
 # is replaced with a real instance in _startup().
 _state.frame_sequence_lock = asyncio.Lock()
 
-# threading.Lock protecting the lazy-init of _state.embedding_extractor.
-# The embedding functions (_compute_embedding and _extract_track_embedding)
-# run inside loop.run_in_executor(), meaning they execute on OS threads from
-# the default ThreadPoolExecutor.  Two concurrent /detect requests can both
-# see embedding_extractor is None simultaneously and both attempt to
-# construct OnnxEmbeddingExtractor -- a genuine TOCTOU race.
-# threading.Lock (not asyncio.Lock) is required because the code runs on
-# executor threads, not on the event loop thread.
-_embedding_init_lock = threading.Lock()
-
-# Set True once an OnnxEmbeddingExtractor init has failed, to short-circuit
-# all future attempts. A missing/broken ONNX model or runtime does not
-# self-heal at request time, so retrying on every /detect frame (3 fps) or
-# /crop-face call only wastes work and floods the logs. Both embedding call
-# sites go through _get_or_init_embedding_extractor(), so this flag is shared.
-_embedding_init_failed: bool = False
-
-
-def _get_or_init_embedding_extractor() -> Any | None:  # noqa: ANN401
-    """Return the shared OnnxEmbeddingExtractor, initialising it on first use.
-
-    Thread-safe double-checked locking. Both embedding code paths
-    (``_compute_embedding`` for ``/crop-face`` and ``_extract_track_embedding``
-    for tracked objects) run inside ``loop.run_in_executor`` on OS threads from
-    the default ThreadPoolExecutor, so a ``threading.Lock`` (not an
-    ``asyncio.Lock``) is required to serialise the init.
-
-    On the first init failure the module-level ``_embedding_init_failed`` flag
-    is set and every subsequent call returns ``None`` immediately without
-    re-attempting -- the ONNX model/runtime does not recover at request time.
-
-    Returns:
-        The initialised ``OnnxEmbeddingExtractor``, or ``None`` if init has
-        failed (now or on a previous attempt).
-    """
-    global _embedding_init_failed  # noqa: PLW0603
-
-    if _embedding_init_failed:
-        return None
-
-    # Fast path: already initialised, no lock acquisition.
-    if _state.embedding_extractor is not None:
-        return _state.embedding_extractor
-
-    with _embedding_init_lock:
-        # Re-check inside the lock (another thread may have won the race).
-        if _state.embedding_extractor is not None:
-            return _state.embedding_extractor
-        if _embedding_init_failed:
-            return None
-        try:
-            from cobeing.layer2_perception.feature_extraction import (  # noqa: PLC0415
-                OnnxEmbeddingExtractor,
-            )
-            _state.embedding_extractor = OnnxEmbeddingExtractor()
-            logger.info("OnnxEmbeddingExtractor initialized")
-        except (ImportError, RuntimeError) as exc:
-            logger.warning(
-                "OnnxEmbeddingExtractor unavailable (embeddings will be null): %s",
-                exc,
-            )
-            _embedding_init_failed = True
-            return None
-
-    return _state.embedding_extractor
-
-
 # ---------------------------------------------------------------------------
 # P3.1 — DINOv2-base object-track embedder (separate from the face path above)
 #
-# The /crop-face FACE path uses ArcFaceEmbedder (P3.2 landed; OnnxEmbeddingExtractor
-# is dead code on the face path — confirmed TK-24). Only the OBJECT-TRACK embedder
-# uses DINOv2-base (768-D CLS token). It gets its OWN double-checked lazy-init +
-# failed-flag so its degrade behaviour is independent of the face path and
-# identical in shape to _get_or_init_embedding_extractor (degrade-not-crash, no
-# retry storm).
+# The /crop-face FACE path uses ArcFaceEmbedder (P3.2); the OBJECT-TRACK
+# embedder uses DINOv2-base (768-D CLS token). Each has its own double-checked
+# lazy-init + failed-flag so degrade behaviour is independent.
 # ---------------------------------------------------------------------------
 
 _object_embedding_init_lock = threading.Lock()
@@ -382,8 +312,9 @@ def _prune_embed_throttle_state(live_track_ids: set[int]) -> None:
             _track_embedding_cache.pop(tid, None)
 
 
-# threading.Lock protecting lazy-init of the VLM model. Same pattern as
-# _embedding_init_lock -- caption generation runs in run_in_executor.
+# threading.Lock protecting lazy-init of the VLM model. Same double-checked
+# locking pattern as the embedding init locks -- caption generation runs in
+# run_in_executor on OS threads, not on the event loop.
 _vlm_init_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -1428,15 +1359,15 @@ async def status() -> JSONResponse:
           "fps": float,                 -- configured processing fps (from PerceptionConfig)
           "model_loaded": bool,         -- True if YOLO detector loaded at startup
           "face_model_loaded": bool,    -- True if MediaPipe face detector loaded at startup
-          "embedding_init_failed": bool -- True if OnnxEmbeddingExtractor failed to init
+          "embedding_init_failed": bool -- always False (OnnxEmbeddingExtractor removed P5.1b)
         }
 
     model_loaded and face_model_loaded mirror the same fields in /perception/health
     and are exposed here so acceptance preflights have a single status endpoint to
     probe for M0 substrate readiness without calling two endpoints.
 
-    embedding_init_failed is the module-level latch set by
-    _get_or_init_embedding_extractor on first failure; once True it stays True.
+    embedding_init_failed is retained for API schema compatibility; it is always
+    False because OnnxEmbeddingExtractor was removed in P5.1b (TK-25).
 
     tracked_objects reflects the tracker's current state. When the pipeline is
     not active it reports 0.
@@ -1464,8 +1395,7 @@ async def status() -> JSONResponse:
         "fps": fps,
         "model_loaded": _state.model_loaded,
         "face_model_loaded": _state.face_model_loaded,
-        # _embedding_init_failed is a module-level bool (not on _state) because
-        # it is set by _get_or_init_embedding_extractor which runs on OS threads;
-        # read it directly here — it is only ever written once (latch).
-        "embedding_init_failed": _embedding_init_failed,
+        # Always False after P5.1b: OnnxEmbeddingExtractor (and its init-failed
+        # latch) were deleted; the field is retained for API schema compatibility.
+        "embedding_init_failed": False,
     })

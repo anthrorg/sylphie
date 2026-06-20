@@ -11,9 +11,9 @@ the Layer 2 -> Layer 3 persistence-check (CANON A.5) to answer the
 - ``DominantColorExtractor`` has no dependency on OpenCV or numpy.  It works
   directly on raw RGB byte arrays so it can be used in tests and in any
   execution context without the ``[cv]`` extras installed.
-- ``OnnxEmbeddingExtractor`` requires ``cv2`` and ``onnxruntime`` but
-  delays their import to ``__init__`` time so that *importing this module*
-  never fails even when the ``[cv]`` extras are absent.
+- ``DINOv2BaseEmbeddingExtractor`` (object tracks) and ``ArcFaceEmbedder``
+  (face crops) delay their heavy imports to ``__init__`` time so that
+  *importing this module* never fails even when the ``[cv]`` extras are absent.
 - All extractors are safe to use as drop-in replacements for each other via
   the :class:`EmbeddingExtractor` protocol.
 
@@ -22,7 +22,6 @@ Typical usage::
     from cobeing.layer2_perception.feature_extraction import (
         DominantColorExtractor,
         MockEmbeddingExtractor,
-        OnnxEmbeddingExtractor,
         EmbeddingExtractor,
     )
 
@@ -39,13 +38,6 @@ Typical usage::
     mock = MockEmbeddingExtractor()
     vec = mock.extract(raw_rgb_bytes, (10, 20, 110, 120), 640, 480)
     # [0.0] * 128
-
-    # For real inference (requires [cv] extras):
-    try:
-        real = OnnxEmbeddingExtractor()
-        vec = real.extract(raw_rgb_bytes, (10, 20, 110, 120), 640, 480)
-    except ImportError:
-        pass  # Fall back to mock in environments without cv extras
 """
 
 from __future__ import annotations
@@ -215,9 +207,9 @@ class EmbeddingExtractor(Protocol):
 
     Any class that implements ``extract(frame_data, bbox, frame_width,
     frame_height)`` returning ``list[float] | None`` satisfies this protocol.
-    Use :class:`MockEmbeddingExtractor` in tests and during development before
-    the ONNX model is available; use :class:`OnnxEmbeddingExtractor` when the
-    ``[cv]`` extras are installed and a model is available.
+    Use :class:`MockEmbeddingExtractor` in tests and during development;
+    use :class:`DINOv2BaseEmbeddingExtractor` for object tracks or
+    :class:`ArcFaceEmbedder` for face crops in production.
 
     The protocol is ``@runtime_checkable`` so ``isinstance(obj, EmbeddingExtractor)``
     works in tests.
@@ -321,197 +313,6 @@ class MockEmbeddingExtractor:
         key = f"{int(bbox[0])},{int(bbox[1])},{int(bbox[2])},{int(bbox[3])}"
         source = self._overrides.get(key, self._default)
         return source.copy()
-
-
-# ---------------------------------------------------------------------------
-# OnnxEmbeddingExtractor
-# ---------------------------------------------------------------------------
-
-# Filename for the EfficientNet-B0 feature-extractor ONNX model.
-# The model MUST be present at ``model_path`` (baked into the image — see the
-# Dockerfile ``COPY efficientnet_b0.onnx``). It is a real efficientnet_b0
-# feature extractor: input NCHW ``[1, 3, 224, 224]``, output ``[1, 1280]`` (the
-# penultimate avg-pool layer, before the FC classification head).
-#
-# Auto-download has been REMOVED. The previous URL pointed to
-# ``efficientnet-lite4-11.onnx`` — a 1000-class NHWC *classifier*, which is
-# incompatible with this extractor in BOTH layout (NHWC vs NCHW) and output
-# (1000-class softmax vs 1280-D features). At runtime it produced only
-# ``ONNXRuntimeError: INVALID_ARGUMENT: Got invalid dimensions for input``,
-# so every embedding was silently null. The model is now a build artifact.
-_DEFAULT_MODEL_FILENAME = "efficientnet_b0.onnx"
-_DEFAULT_MODEL_URL = None  # no auto-download — model must be provided/baked
-_MODEL_INPUT_SIZE = 224  # EfficientNet-B0 input: 224x224 RGB
-_EMBEDDING_DIM = 1280  # Feature vector dimension before the FC head
-
-
-class OnnxEmbeddingExtractor:
-    """EfficientNet-B0 visual embeddings via ONNX Runtime.
-
-    Crops the bounding-box region from the raw-RGB frame, resizes to 224x224,
-    applies ImageNet normalisation, runs inference with ONNX Runtime, and
-    returns the 1280-dimensional feature vector from the penultimate layer.
-
-    **Lazy imports:** ``cv2`` and ``onnxruntime`` are imported inside
-    ``__init__``, not at module level.  Importing this module never raises
-    ``ImportError`` even when the ``[cv]`` extras are absent.  The error is
-    deferred to the point of construction.
-
-    Args:
-        model_path: Path to the ``.onnx`` model file.  If ``None`` the
-            extractor looks for ``efficientnet_b0.onnx`` in the current
-            working directory and attempts to download it automatically if
-            not found.
-
-    Raises:
-        ImportError: If ``cv2`` or ``onnxruntime`` is not installed.
-            The message includes the pip install hint for the ``[cv]``
-            extras.
-
-    Example::
-
-        try:
-            extractor = OnnxEmbeddingExtractor()
-        except ImportError as exc:
-            print(exc)  # Explains which package is missing and how to install
-    """
-
-    def __init__(self, model_path: str | None = None) -> None:
-        # Lazy import -- fail loudly with an actionable message.
-        try:
-            import cv2 as _cv2  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "OnnxEmbeddingExtractor requires OpenCV. "
-                "Install with: pip install 'cobeing[cv]'"
-            ) from exc
-
-        try:
-            import onnxruntime as _ort  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "OnnxEmbeddingExtractor requires ONNX Runtime. "
-                "Install with: pip install 'cobeing[cv]'"
-            ) from exc
-
-        self._cv2 = _cv2
-        self._ort = _ort
-
-        resolved_path = model_path or _DEFAULT_MODEL_FILENAME
-        if not _path_exists(resolved_path):
-            resolved_path = self._download_model(resolved_path)
-
-        self._session: object = _ort.InferenceSession(
-            resolved_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
-        # Cache the input name once so extract() does not introspect every call.
-        self._input_name: str = self._session.get_inputs()[0].name  # type: ignore[union-attr]
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def extract(
-        self,
-        frame_data: bytes,
-        bbox: tuple[float, float, float, float],
-        frame_width: int,
-        frame_height: int,
-    ) -> list[float] | None:
-        """Extract a 1280-dimensional visual embedding from a bounding-box crop.
-
-        Steps:
-
-        1. Decode ``frame_data`` as raw RGB (row-major, 3 bytes/pixel).
-        2. Crop the region defined by ``bbox``.
-        3. Resize the crop to 224x224 using bilinear interpolation.
-        4. Normalise to ImageNet mean/std.
-        5. Run ONNX Runtime inference.
-        6. Return the output as a Python list of floats.
-
-        Args:
-            frame_data: Raw RGB bytes of the full frame.
-                ``len(frame_data)`` must equal ``frame_width * frame_height * 3``.
-            bbox: ``(x_min, y_min, x_max, y_max)`` in pixel coordinates.
-                Clamped to frame boundaries automatically.
-            frame_width: Full frame width in pixels.
-            frame_height: Full frame height in pixels.
-
-        Returns:
-            A list of 1280 floats, or ``None`` if the crop area is zero
-            (degenerate bounding box).
-        """
-        import numpy as np  # type: ignore[import-untyped]
-
-        cv2 = self._cv2
-
-        # Build a numpy array from raw bytes without copying if possible.
-        arr = np.frombuffer(frame_data, dtype=np.uint8).reshape(
-            (frame_height, frame_width, 3)
-        )
-
-        # Clamp bbox and check for degenerate region.
-        x_min = max(0, int(bbox[0]))
-        y_min = max(0, int(bbox[1]))
-        x_max = min(frame_width, int(bbox[2]))
-        y_max = min(frame_height, int(bbox[3]))
-
-        if x_min >= x_max or y_min >= y_max:
-            return None
-
-        crop = arr[y_min:y_max, x_min:x_max]
-
-        # Resize to model input size (bilinear).
-        resized = cv2.resize(
-            crop,
-            (_MODEL_INPUT_SIZE, _MODEL_INPUT_SIZE),
-            interpolation=cv2.INTER_LINEAR,
-        )
-
-        # Normalise: ImageNet mean and std per channel (RGB order).
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        normalised = (resized.astype(np.float32) / 255.0 - mean) / std
-
-        # ONNX Runtime expects NCHW layout.
-        blob = normalised.transpose(2, 0, 1)[np.newaxis, ...]  # (1, 3, H, W)
-
-        outputs = self._session.run(None, {self._input_name: blob})  # type: ignore[union-attr]
-        # The first output is the feature vector (shape: (1, 1280) or similar).
-        feature_vector = outputs[0].flatten()
-
-        return feature_vector.tolist()
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _download_model(self, dest_path: str) -> str:
-        """Fail loudly — the model is NOT auto-downloaded, it must be provided.
-
-        Auto-download was removed: the prior URL fetched efficientnet-lite4 (a
-        1000-class NHWC classifier), which is incompatible with this NCHW 1280-D
-        feature extractor. Raising here ensures a missing model is never silently
-        replaced by a wrong one (which would make every embedding null).
-
-        Raises:
-            RuntimeError: Always — directs the operator to provide the model.
-        """
-        raise RuntimeError(
-            f"EfficientNet-B0 feature model not found at '{dest_path}'. It must "
-            f"be provided as a build artifact (Dockerfile 'COPY efficientnet_b0.onnx'). "
-            f"Auto-download was removed because the prior URL pointed to "
-            f"efficientnet-lite4 (a 1000-class NHWC classifier) incompatible with "
-            f"this NCHW 1280-D feature extractor."
-        )
-
-
-def _path_exists(path: str) -> bool:
-    """Return True if ``path`` points to an existing file."""
-    import os
-
-    return os.path.isfile(path)
 
 
 # ---------------------------------------------------------------------------
@@ -898,5 +699,4 @@ __all__ = [
     "DominantColorExtractor",
     "EmbeddingExtractor",
     "MockEmbeddingExtractor",
-    "OnnxEmbeddingExtractor",
 ]
