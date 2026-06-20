@@ -1493,7 +1493,7 @@ nodes:
     parent: EP-14
     title: "EP14.10 — Decision-cycle concurrency guard (verify or wire)"
     intent: "Close the WS4 residual: confirm the decision cycle has a re-entrancy/overlap guard preventing two cycles running concurrently for the same backend; if absent, add it. Distinct from TK-89/TK-90 typed error recovery (formerly TK-66)."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
