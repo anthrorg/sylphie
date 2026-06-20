@@ -1357,7 +1357,8 @@ nodes:
     parent: EP-14
     title: "EP14.9 — Adaptive candidate scoring weights (CANON gate first)"
     intent: "Decide whether EMA weight-learning for scoreCandidates is CANON Std-6 safe; if cleared, implement an EMA-on-outcome updater; if not, raise an open_question instead of building."
-    status: in_progress
+    status: done
+    verification_note: "CANON Std-6 gate: PERMITTED (EMA tunes scoreCandidates selection only, in-memory/non-persisted/reset-on-restart; never touches evaluation/confidence/prediction-error/drive-relief — orchestrator independently confirmed nudgeScoringWeights call sites). Build clean; 21/21 ema-scoring-weights spec. Fixed forward: short-circuit DeliberationResult missing winningCandidateFactors (TS2741). Note: no formal canon-agent sign-off run this pass — enforce-canon available if Jim wants belt-and-suspenders."
     priority: P3
     estimate: L
     engineering_level: production

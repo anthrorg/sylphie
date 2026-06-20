@@ -487,6 +487,8 @@ export class DeliberationService {
         intent: monologueParsed.intent,
         groundingProvenance,
         groundedBy,
+        // Short-circuit path runs no candidate scoring, so no winning factors (TK-70).
+        winningCandidateFactors: [],
         candidates: [{ text: monologueParsed.response, reasoning: 'Direct monologue response' }],
         trace: {
           innerMonologue,
