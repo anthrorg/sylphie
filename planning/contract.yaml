@@ -640,7 +640,7 @@ nodes:
     parent: EP-7
     title: "EP7-C — Extract TensorCandidateBuilder + RecallRetrievalHelper"
     intent: "Extract buildTensorCandidate into TensorCandidateBuilder and computeRecallRetrieval+recallKeyEncoder into RecallRetrievalHelper (both stateless pure transforms)."
-    status: todo
+    status: in_progress
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -651,6 +651,8 @@ nodes:
       - { given: "tensor partial-mode boot", when: "a tensor-eligible category arrives", then: "TensorCandidateBuilder returns the same ActionCandidate as before" }
     files_in_scope: ["packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/tensor/tensor-candidate-builder.ts", "packages/decision-making/src/latent-space/recall-retrieval-helper.ts", "packages/decision-making/src/decision-making.module.ts"]
     depends_on: ["TK-32"]
+    pr_url: "https://github.com/anthrorg/sylphie/pull/67"
+    branch: "agent/tk-33-ep7-c-extract-tensorcandidatebuilder-rec"
 
   - id: TK-34
     kind: ticket
@@ -988,7 +990,7 @@ nodes:
     parent: EP-12
     title: "EP12.1b — Consolidation relationship extraction LLM path"
     intent: "Replace the two-hardcoded-triple relationship extractor (extractRelationships at consolidation.service.ts:398-424 — whose second triple's object is the literal string 'observed_outcome') with LLM-assisted relationship extraction, reusing the ILlmService injected by TK-87; lesion-fallback to the existing two-triple logic when LLM is unavailable or the response yields no usable triple."
-    status: todo
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
@@ -999,6 +1001,8 @@ nodes:
       - { given: "this.llm is null/unavailable OR the LLM response yields zero parseable triples (parseLlmExtractionResponse relationship branch returns none)", when: "the relationship path runs", then: "it falls back to the existing two-triple logic at extractRelationships :398-424 silently (no exception); the (inputSummary[:80] -> 'triggered' -> actionTaken) and (actionTaken -> 'produced' -> 'observed_outcome') triples are produced; build + existing tests green" }
     files_in_scope: ["packages/decision-making/src/episodic-memory/consolidation.service.ts", "packages/decision-making/src/episodic-memory/consolidation.llm-extraction.spec.ts"]
     depends_on: ["TK-87"]
+    pr_url: "https://github.com/anthrorg/sylphie/pull/65"
+    branch: "agent/tk-88-ep121b-consolidation-relationship-extrac"
 
   - id: TK-52
     kind: ticket
@@ -1282,7 +1286,7 @@ nodes:
     parent: EP-14
     title: "EP14.5b — CONTRADICTION_SCAN_FAILED + HANDLER_NOT_FOUND typed returns"
     intent: "Make the two silent-failure sites typed: wrap the contradiction scan (arbitration.service.ts:257, no catch today) in try/catch returning a SHRUG with arbitrationError='CONTRADICTION_SCAN_FAILED', and replace the handler-not-found `return null` (action-handler-registry.service.ts:150-157) with a returned HandlerNotFoundError instance; then detect that error in the processInput action loop to build a HANDLER_NOT_FOUND cycleErrorContext (reusing the type + encode threading from TK-89)."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1294,6 +1298,8 @@ nodes:
       - { given: "the processInput procedure-execution loop receiving a HandlerNotFoundError from execute()", when: "the loop inspects the result with instanceof HandlerNotFoundError", then: "a cycleErrorContext with cause==='HANDLER_NOT_FOUND' is built (using the TK-89 type) and threaded to encode(); the cycle completes without throwing" }
     files_in_scope: ["packages/decision-making/src/arbitration/arbitration.service.ts", "packages/shared/src/types/action.types.ts", "packages/decision-making/src/action-handlers/action-handler-registry.service.ts", "packages/decision-making/src/decision-making.service.ts"]
     depends_on: ["TK-89"]
+    pr_url: "https://github.com/anthrorg/sylphie/pull/66"
+    branch: "agent/tk-90-ep145b-contradictionscanfailed-handlerno"
 
   - id: TK-67
     kind: ticket
