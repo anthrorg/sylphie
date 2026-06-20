@@ -1148,7 +1148,7 @@ nodes:
     parent: EP-13
     title: "EP13.4 — Inference depth-4+ advancement criteria"
     intent: "Define real unlock predicates for depths 4 and 5 (mirroring depth-2/3), gating depth-4 on the E5 prerequisite + success metrics; replace the LOCKED_UNTIL_E5 short-circuit."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
