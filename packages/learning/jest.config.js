@@ -10,6 +10,10 @@ module.exports = {
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
       tsconfig: '<rootDir>/tsconfig.json',
+      // diagnostics: false suppresses ts-jest type-checking errors for test globals
+      // (describe/it/expect) — the production tsconfig intentionally excludes *.spec.ts
+      // and @types/jest, matching the decision-making package pattern.
+      diagnostics: false,
     }],
   },
   moduleNameMapper: {

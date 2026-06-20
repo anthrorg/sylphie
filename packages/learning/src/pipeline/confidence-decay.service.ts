@@ -10,13 +10,22 @@
  * This service runs as a periodic cycle (separate from the per-event
  * maintenance cycle). On each run it:
  *
- *   1. DECAY: Apply time-based confidence reduction to all nodes and edges
- *      using per-provenance decay rates from DEFAULT_DECAY_RATES.
+ *   1. DECAY (WORLD): Apply time-based confidence reduction to all nodes and
+ *      edges using per-provenance decay rates.
  *      Formula: new_conf = max(0.0, old_conf - decayRate * ln(hours + 1))
  *
- *   2. PRUNE: Remove orphaned Entity nodes with confidence < PRUNE_THRESHOLD
- *      that have no relationships. Structural nodes (Drive, CoBeing,
- *      ActionProcedure) are never pruned.
+ *   2. PRUNE (WORLD): Remove orphaned Entity nodes with confidence <
+ *      PRUNE_THRESHOLD that have no relationships. Structural nodes (Drive,
+ *      CoBeing, ActionProcedure) are never pruned.
+ *
+ *   3. DECAY (OTHER / OKG): Apply the same ACT-R formula to :Attribute nodes
+ *      in the OTHER instance, using WORLD-matching per-provenance rates.
+ *      GUARDIAN identity facts are unconditionally excluded — a guardian-
+ *      confirmed person fact ("my name is Jim") must never silently fade.
+ *      (TK-49 / EP11.1 — implements stub §2.11.)
+ *
+ *   4. PRUNE (OTHER / OKG): Remove orphaned :Attribute nodes below
+ *      PRUNE_THRESHOLD that have no relationships (same semantics as WORLD).
  *
  * The decay formula is a simplified ACT-R model keyed on the node's *last use*.
  * As of WS3 T3 it reads `last_retrieval_at` (written by the knowledge
@@ -29,13 +38,6 @@
  * compounding dynamic. The per-provenance decay rates ensure GUARDIAN knowledge
  * decays slowest and LLM_GENERATED decays fastest, matching the epistemic trust
  * hierarchy.
- *
- * Scope (WS3 T3): decay runs only against Neo4jInstanceName.WORLD (WKG), where
- * decay already existed and where T2 reinforces WKG fact nodes. OKG self-facts
- * in the OTHER instance are NOT decayed by this service (they never were); see
- * stub inventory §2.11 for why OTHER decay is deferred to T4 gate-design
- * (guardian/identity facts must not silently fade, and the prune protections
- * here target :Entity orphans, not :Attribute self-facts).
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -82,19 +84,31 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
     const edgesDecayed = await this.decayEdges();
     const nodesPruned = await this.pruneOrphanedNodes();
 
+    // OKG (OTHER instance) — TK-49 / EP11.1
+    const okgNodesDecayed = await this.decayOkgNodes();
+    const okgNodesPruned = await this.pruneOrphanedOkgNodes();
+
     const durationMs = Date.now() - t0;
 
-    vlog('decay cycle complete', { nodesDecayed, edgesDecayed, nodesPruned, durationMs });
+    vlog('decay cycle complete', { nodesDecayed, edgesDecayed, nodesPruned, okgNodesDecayed, okgNodesPruned, durationMs });
     this.logger.log(
       `Decay cycle: ${nodesDecayed} nodes decayed, ${edgesDecayed} edges decayed, ` +
-        `${nodesPruned} orphans pruned (${durationMs}ms)`,
+        `${nodesPruned} orphans pruned; ` +
+        `OKG: ${okgNodesDecayed} nodes decayed, ${okgNodesPruned} orphans pruned (${durationMs}ms)`,
     );
 
-    return { nodesDecayed, edgesDecayed, nodesPruned, wasNoop: nodesDecayed + edgesDecayed + nodesPruned === 0 };
+    return {
+      nodesDecayed,
+      edgesDecayed,
+      nodesPruned,
+      okgNodesDecayed,
+      okgNodesPruned,
+      wasNoop: nodesDecayed + edgesDecayed + nodesPruned + okgNodesDecayed + okgNodesPruned === 0,
+    };
   }
 
   // ---------------------------------------------------------------------------
-  // Private: decay nodes
+  // Private: decay nodes (WORLD)
   // ---------------------------------------------------------------------------
 
   /**
@@ -152,7 +166,7 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
   }
 
   // ---------------------------------------------------------------------------
-  // Private: decay edges
+  // Private: decay edges (WORLD)
   // ---------------------------------------------------------------------------
 
   /**
@@ -209,7 +223,7 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
   }
 
   // ---------------------------------------------------------------------------
-  // Private: prune orphaned nodes
+  // Private: prune orphaned nodes (WORLD)
   // ---------------------------------------------------------------------------
 
   /**
@@ -237,6 +251,104 @@ export class ConfidenceDecayService implements IConfidenceDecayService {
     } catch (err) {
       this.logger.warn(
         `pruneOrphanedNodes failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: decay OKG nodes (OTHER instance) — TK-49 / EP11.1
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Apply time-based confidence decay to :Attribute nodes in the OTHER (OKG)
+   * instance, using the same ACT-R formula and WORLD-matching per-provenance
+   * rates.
+   *
+   * GUARDIAN exclusion (mandatory — TK-49 AC2): nodes with
+   * provenance_type = 'GUARDIAN' are unconditionally skipped. Guardian-confirmed
+   * identity facts ("my name is Jim") represent ground truth taught directly by
+   * the guardian and must never silently fade. The GUARDIAN rate (0.03) slows
+   * but does not stop decay, which is insufficient for identity facts; hard
+   * exclusion is the only safe design.
+   *
+   * All other OKG :Attribute nodes (SELF_REPORTED, OBSERVED, INFERENCE, etc.)
+   * decay at the same per-provenance rates as WORLD, from coalesce(
+   * last_retrieval_at, updated_at, created_at) — identical to the WORLD path.
+   */
+  private async decayOkgNodes(): Promise<number> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+
+    try {
+      const result = await session.run(
+        `MATCH (n:Attribute)
+         WHERE n.confidence > $pruneThreshold
+           AND n.provenance_type <> 'GUARDIAN'
+         WITH n,
+              coalesce(n.last_retrieval_at, n.updated_at, n.created_at) AS lastActivity
+         WHERE lastActivity IS NOT NULL
+         WITH n, lastActivity,
+              (datetime().epochMillis - lastActivity.epochMillis) / 3600000.0 AS hoursSince,
+              CASE n.provenance_type
+                WHEN 'SENSOR'        THEN 0.05
+                WHEN 'LLM_GENERATED' THEN 0.08
+                WHEN 'INFERENCE'     THEN 0.06
+                ELSE 0.05
+              END AS decayRate
+         WHERE hoursSince > $minHours
+         WITH n, n.confidence - decayRate * log(hoursSince + 1) AS newConf
+         WHERE newConf < n.confidence
+         SET n.confidence = CASE WHEN newConf < 0.0 THEN 0.0 ELSE newConf END,
+             n.decayed_at = datetime()
+         RETURN count(n) AS decayed`,
+        { pruneThreshold: PRUNE_THRESHOLD, minHours: MIN_HOURS_BEFORE_DECAY },
+      );
+
+      const record = result.records[0];
+      return record ? toNumber(record.get('decayed')) : 0;
+    } catch (err) {
+      this.logger.warn(
+        `decayOkgNodes failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: prune orphaned OKG nodes (OTHER instance) — TK-49 / EP11.1
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Remove :Attribute nodes in the OTHER (OKG) instance that have fallen below
+   * PRUNE_THRESHOLD and have no remaining relationships. This mirrors the WORLD
+   * orphan-prune semantics (TK-49 AC3).
+   *
+   * Person anchor nodes (:Person) and :CoBeing are never pruned — only the
+   * leaf :Attribute fact nodes are eligible. An :Attribute with at least one
+   * edge (e.g. a :HAS_FACT link to its :Person) is not orphaned and is kept.
+   */
+  private async pruneOrphanedOkgNodes(): Promise<number> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+
+    try {
+      const result = await session.run(
+        `MATCH (n:Attribute)
+         WHERE n.confidence <= $pruneThreshold
+           AND NOT EXISTS { (n)--() }
+         DELETE n
+         RETURN count(n) AS pruned`,
+        { pruneThreshold: PRUNE_THRESHOLD },
+      );
+
+      const record = result.records[0];
+      return record ? toNumber(record.get('pruned')) : 0;
+    } catch (err) {
+      this.logger.warn(
+        `pruneOrphanedOkgNodes failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       return 0;
     } finally {

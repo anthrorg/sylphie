@@ -360,6 +360,17 @@ export interface DecayCycleResult {
   readonly edgesDecayed: number;
   /** Number of orphaned low-confidence Entity nodes removed from the graph. */
   readonly nodesPruned: number;
+  /**
+   * Number of OKG :Attribute nodes (Neo4jInstanceName.OTHER) whose confidence
+   * was reduced by time-based decay (TK-49 / EP11.1). Only non-GUARDIAN nodes
+   * are decayed; GUARDIAN identity facts are always skipped.
+   */
+  readonly okgNodesDecayed: number;
+  /**
+   * Number of OKG :Attribute nodes below PRUNE_THRESHOLD with no relationships
+   * that were deleted (TK-49 / EP11.1).
+   */
+  readonly okgNodesPruned: number;
   /** Whether this cycle was a no-op (nothing decayed or pruned). */
   readonly wasNoop: boolean;
 }
