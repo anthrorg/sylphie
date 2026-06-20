@@ -205,25 +205,76 @@ The guardian can resolve it by approving one side or asserting a new fact."""
 # ---------------------------------------------------------------------------
 
 
+def _infer_sense_tag(normalized_lemma: str) -> str:
+    """Return a coarse POS-based sense_tag for a novel lemma.
+
+    This heuristic runs only when the caller does not supply an explicit
+    sense_tag; it replaces the previous unconditional 'noun_1' default.
+
+    Rules (checked in order):
+      - ends with '-ing'  → 'verb_1'   (running, swimming, …)
+      - ends with '-ly'   → 'adv_1'    (quickly, slowly, …)
+      - anything else     → 'unknown_1'
+
+    The three-way split is intentionally coarse; deeper disambiguation
+    (e.g. 'running' as a gerund used as a noun) is the guardian's job via
+    an explicit sense_tag override.
+    """
+    if normalized_lemma.endswith("ing"):
+        return "verb_1"
+    if normalized_lemma.endswith("ly"):
+        return "adv_1"
+    return "unknown_1"
+
+
+# Derived part_of_speech label for each canonical sense_tag prefix.
+# Used when constructing a new WordSenseNode so the two fields stay consistent.
+_SENSE_TAG_TO_POS: dict[str, str] = {
+    "verb": "verb",
+    "adv": "adverb",
+    "adj": "adjective",
+    "noun": "noun",
+    "unknown": "unknown",
+}
+
+
+def _pos_from_sense_tag(sense_tag: str) -> str:
+    """Derive the ``part_of_speech`` string from a sense_tag like 'verb_1'.
+
+    Splits on '_', looks up the prefix in ``_SENSE_TAG_TO_POS``, and falls
+    back to 'unknown' for unrecognised tags so the node is always consistent.
+    """
+    prefix = sense_tag.split("_")[0]
+    return _SENSE_TAG_TO_POS.get(prefix, "unknown")
+
+
 async def _resolve_or_create_word_sense(
     lemma: str,
     persistence: GraphPersistence,
     session_id: str,
     correlation_id: str,
+    sense_tag: str | None = None,
 ) -> tuple[NodeId, str]:
     """Find a WordSenseNode for the given lemma, or create one.
 
     Searches for nodes with node_type=WordSenseNode whose ``spelling``
     property matches the lemma (case-insensitive). Returns the first match.
 
-    If no match is found, creates a new WordSenseNode with GUARDIAN provenance
-    and a placeholder sense_tag of 'noun_1' (the most common default).
+    If no match is found, creates a new WordSenseNode with GUARDIAN provenance.
+    The sense_tag for the new node is determined as follows:
+
+    1. If ``sense_tag`` is supplied by the caller (non-None, non-empty), it is
+       used verbatim -- the guardian's explicit annotation always wins.
+    2. Otherwise ``_infer_sense_tag`` applies a coarse POS heuristic:
+       '-ing' → 'verb_1', '-ly' → 'adv_1', else → 'unknown_1'.
 
     Args:
         lemma: The word lemma to look up (e.g., 'cat', 'animal').
         persistence: The graph persistence backend.
         session_id: Current session ID for provenance.
         correlation_id: Correlation ID for logging.
+        sense_tag: Optional explicit sense_tag supplied by the guardian caller.
+            When None or empty, the heuristic is applied instead.
 
     Returns:
         (node_id, lemma) tuple. The lemma is normalized to lowercase.
@@ -249,8 +300,12 @@ async def _resolve_or_create_word_sense(
         if spelling.lower() == normalized:
             return node.node_id, normalized
 
-    # No match -- create a new WordSenseNode with GUARDIAN provenance
-    new_node_id = NodeId(f"word:{normalized}:noun_1")
+    # No match -- determine the sense_tag for the new node.
+    # Explicit caller-supplied tag takes priority; heuristic is the fallback.
+    resolved_tag = sense_tag if sense_tag else _infer_sense_tag(normalized)
+    part_of_speech = _pos_from_sense_tag(resolved_tag)
+
+    new_node_id = NodeId(f"word:{normalized}:{resolved_tag}")
     new_node = KnowledgeNode(
         node_id=new_node_id,
         node_type=WORD_SENSE_NODE,
@@ -258,8 +313,8 @@ async def _resolve_or_create_word_sense(
         properties={
             "word": normalized,
             "spelling": normalized,
-            "part_of_speech": "noun",
-            "sense_tag": "noun_1",
+            "part_of_speech": part_of_speech,
+            "sense_tag": resolved_tag,
             "frequency_rank": 0,
             "scope_contexts": 0,
         },
@@ -273,9 +328,12 @@ async def _resolve_or_create_word_sense(
     )
     await persistence.save_node(new_node)
     _log.info(
-        "Created new WordSenseNode '%s' for novel lemma '%s' (correlation_id=%s)",
+        "Created new WordSenseNode '%s' for novel lemma '%s' "
+        "(sense_tag=%r heuristic=%s correlation_id=%s)",
         new_node_id,
         normalized,
+        resolved_tag,
+        not bool(sense_tag),
         correlation_id,
     )
     return new_node_id, normalized
