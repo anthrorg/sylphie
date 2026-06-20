@@ -232,7 +232,7 @@ Separately, the **live** TS port `spreadActivation` (`packages/decision-making/s
 
 Both paths read `ollama.searxngUrl` (default `http://localhost:8888`) from ConfigService. The `infra/searxng/settings.yml` exposes the JSON format at `:8080/search?format=json` which the docker-compose port-maps to `8888:8080`.
 
-**Governance decision:** DEC-10 (appended to `planning/contract.yaml`) — wire confirmed live, no docker-compose change, no code removed.
+**Governance decision:** DEC-25 (appended to `planning/contract.yaml`) — wire confirmed live, no docker-compose change, no code removed.
 
 **Residual (separate scope):** `packages/learning/src/services/research.service.ts` still uses only TimescaleDB. Wiring SearXNG into the planning/learning research path is a distinct ticket outside TK-50 scope.
 

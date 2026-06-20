@@ -950,7 +950,8 @@ nodes:
     branch: "agent/tk-50-ep112-searxng-verify-wire-status"
     title: "EP11.2 — SearXNG: verify wire status, then validate or remove"
     intent: "Confirm whether SearXNG is genuinely reachable in the live web_search/RESEARCH_ENTITY paths; validate with a live smoke or remove the container + dead code."
-    status: in_progress
+    status: done
+    verification_note: "Verified wired (kept, DEC-25). Two live SearXNG fetch paths in decision-making (tool-registry executeGoogleSearch, RESEARCH_ENTITY handler) + DEBUG log added; searxng-wire.spec 11/11; build clean. Agent's duplicate-DEC-10 contract edit dropped, recorded as DEC-25 by orchestrator. Residual: learning/research.service.ts is TimescaleDB-only (separate ticket)."
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -5723,6 +5724,12 @@ governance:
       decision: "Add hostilityMagnitude: z.number().min(0).max(1).optional() to the metadata sub-schema. The non-goal meant 'no actionType enum', NOT a frozen metadata object — it is reworded in TK-86. Add packages/drive-engine/src/ipc-channel/ipc-message-validator.ts to TK-86 files_in_scope. Reusing an existing metadata field rejected (semantic collision).",
       consequences: "TK-86 gains the validator file in scope + an additive metadata field; the non-goal is reworded so the schema change is in-scope and bounded.",
       canon: "no tension — additive optional field; the top-level .strict() isolation boundary is untouched." }
+  - { id: DEC-25, type: decision, status: accepted, scope: TK-50,
+      title: "SearXNG — wire confirmed live, stub-inventory §3.2 closed",
+      context: "TK-50 verification (PR #31): ToolRegistryService.executeGoogleSearch (tool-registry.ts) and the RESEARCH_ENTITY handler (action-handler-registry.service.ts) both issue real HTTP fetches to ${ollama.searxngUrl}/search?format=json with AbortController timeouts, HTTP-status checks, and graceful warn-and-empty fallbacks. docker-compose.yml runs the searxng service (8888->8080) with infra/searxng/settings.yml enabling JSON. The original stub §3.2 was stale — it cited only packages/learning/src/services/research.service.ts; the decision-making package had the live wire all along. PR added a DEBUG log in the RESEARCH_ENTITY fetch loop for observability; searxng-wire.spec.ts (11/11) pins the wire. Recorded by orchestrator as DEC-25 (the PR's own contract edit used a duplicate DEC-10 id and was dropped).",
+      decision: "Keep the SearXNG container and both deliberation search paths as-is. No docker-compose change, no code removal. Stub §3.2 closed: wiring confirmed live in the decision-making package.",
+      consequences: "packages/learning/src/services/research.service.ts TimescaleDB-only path remains a separate open stub (outside TK-50 scope). The searxng container stays sentinel-owned in docker-compose.yml.",
+      canon: "no tension — graceful fallback on error satisfies Theater Prohibition; low_trust_consensus_signal provenance satisfies Std-2 provenance-required." }
 
 changelog:
   - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
