@@ -1300,7 +1300,7 @@ nodes:
     parent: EP-14
     title: "EP14.6 — ConfidenceUpdater deferred event emission (DriveSnapshot threading)"
     intent: "Emit the currently-suppressed CONFIDENCE_UPDATED / TYPE_1_GRADUATION / TYPE_1_DEMOTION events by buffering during update() and flushing with a DriveSnapshot from the executor after the cycle."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
