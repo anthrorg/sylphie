@@ -1044,7 +1044,7 @@ nodes:
     parent: EP-12
     title: "EP12.4 — Learning pipeline dead-letter tracking"
     intent: "Record every event that fails in processEvent() to a failed_learning_events table so silent data loss is auditable; still mark-learned to unblock the queue."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
