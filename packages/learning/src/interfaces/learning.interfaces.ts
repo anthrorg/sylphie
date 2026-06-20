@@ -205,6 +205,12 @@ export interface IUpdateWkgService {
   ensureSchema(): Promise<void>;
 
   /**
+   * Ensure the failed_learning_events hypertable exists.
+   * Safe to call multiple times (idempotent DDL).
+   */
+  ensureDeadLetterSchema(): Promise<void>;
+
+  /**
    * Fetch up to `limit` events that have not yet been processed by Learning.
    * Orders by timestamp ASC so oldest events are processed first.
    */
@@ -214,6 +220,17 @@ export interface IUpdateWkgService {
    * Mark an event as processed so it is not fetched again.
    */
   markAsLearned(eventId: string): Promise<void>;
+
+  /**
+   * Record a failed event to the dead-letter table so data loss is auditable.
+   * Fire-and-forget from the pipeline catch block; errors are swallowed so the
+   * dead-letter write never causes a secondary failure.
+   */
+  writeDeadLetter(
+    eventId: string,
+    pipelineStep: string,
+    errorMessage: string,
+  ): Promise<void>;
 }
 
 /**
