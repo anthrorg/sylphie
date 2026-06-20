@@ -1091,7 +1091,7 @@ nodes:
     parent: EP-13
     title: "EP13.1 — MorphologyExecutor 'call' step type (string-value delegation)"
     intent: "Implement the 'call' branch in _execute_string_ast so morphological procedures compose; reuse ProcedureExecutor's recursion-depth + cycle detection."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
