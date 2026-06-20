@@ -35,6 +35,7 @@ import type { IEpisodicMemoryService } from '../../interfaces/decision-making.in
 import { EPISODIC_MEMORY_SERVICE, ACTION_HANDLER_REGISTRY } from '../../decision-making.tokens';
 import type { ToolDefinition, ToolExecutor } from '../../llm/ollama-llm.service';
 import type { ActionHandlerRegistryService } from '../../action-handlers/action-handler-registry.service';
+import { HandlerNotFoundError } from '../../action-handlers/action-handler-registry.service';
 
 // ---------------------------------------------------------------------------
 // High-fidelity domains for search filtering
@@ -566,6 +567,17 @@ export class ToolRegistryService {
       } as any,
       inputSummary: `Research: ${entity}`,
     });
+
+    // TK-90: execute() now returns HandlerNotFoundError as a typed value (not a
+    // throw) when no handler is registered. Narrow it out before indexing result.
+    if (result instanceof HandlerNotFoundError) {
+      return {
+        source: 'research',
+        entity,
+        success: false,
+        note: `Research on "${entity}" failed — no handler for step type ${result.stepType}.`,
+      };
+    }
 
     if (!result) {
       return {

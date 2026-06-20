@@ -1286,7 +1286,7 @@ nodes:
     parent: EP-14
     title: "EP14.5b — CONTRADICTION_SCAN_FAILED + HANDLER_NOT_FOUND typed returns"
     intent: "Make the two silent-failure sites typed: wrap the contradiction scan (arbitration.service.ts:257, no catch today) in try/catch returning a SHRUG with arbitrationError='CONTRADICTION_SCAN_FAILED', and replace the handler-not-found `return null` (action-handler-registry.service.ts:150-157) with a returned HandlerNotFoundError instance; then detect that error in the processInput action loop to build a HANDLER_NOT_FOUND cycleErrorContext (reusing the type + encode threading from TK-89)."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
