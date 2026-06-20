@@ -17,7 +17,4 @@ module.exports = {
     '^@sylphie/shared$': '<rootDir>/../shared/src/index.ts',
     '^@sylphie/drive-engine$': '<rootDir>/../drive-engine/src/index.ts',
   },
-  // Resolve third-party packages (e.g. @nestjs/*) from the main checkout's
-  // node_modules, since worktrees share the parent repo's dependency install.
-  modulePaths: ['C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules'],
 };
