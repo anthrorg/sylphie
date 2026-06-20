@@ -2050,6 +2050,20 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       } catch (err) {
         this.logger.warn(`reportOutcome confidence update failed for ${actionId}: ${err}`);
       }
+
+      // Flush deferred confidence events with the cycle's DriveSnapshot.
+      // The updater buffers events during update() because it has no snapshot;
+      // we supply it here from the executor so events carry real drive context.
+      // If no cycle snapshot exists (cold start / test path) we still call
+      // flushEvents with a null-safe guard — the updater clears its buffer
+      // so stale events don't attach to a later cycle's snapshot.
+      const cycleSnapshot = this.executorEngine.getCycleSnapshot();
+      if (cycleSnapshot) {
+        this.confidenceUpdater.flushEvents(cycleSnapshot);
+      } else {
+        // No snapshot — discard buffered events rather than holding them.
+        this.confidenceUpdater.flushEvents(this.driveStateReader.getCurrentState());
+      }
     } else {
       this.logger.debug(
         `reportOutcome: skipping confidence update for ${arbitrationType} (no procedure node).`,
