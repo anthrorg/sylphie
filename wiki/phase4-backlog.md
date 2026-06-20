@@ -26,7 +26,7 @@ Tier-1 CANON hazards + Tier-2 quick wins. 5 commits (`a5d6648`, `e82c9e8`, `4122
 ## Tier 1 — CANON / Six-Standards hazards (do FIRST — these are breaches)
 | Item | What | Std | Size | Blocker |
 |---|---|---|---|---|
-| **§2.8 person-fact WKG leak** | 60s learning cycle leaks spoken proper nouns into shared WKG → Person B grounds off Person A's facts. **Gate-invisible** (single-person corpus). | 3 / §4.1 isolation | ticket | atlas design call (part of world-fact cluster, Tier 4a) |
+| ~~**§2.8 person-fact WKG leak**~~ **SEALED-BY-WAVE-3** (`1f53de2`) | ~~60s learning cycle leaks spoken proper nouns into shared WKG → Person B grounds off Person A's facts. **Gate-invisible** (single-person corpus).~~ Fix live: `UpsertEntitiesService` mints SENSOR nouns as person-scoped `:Candidate`; all four grounding read-paths exclude `:Candidate` (NOT `<var>:Candidate`). Two-person corpus regression added TK-81 (proving test, not a reopening — DEC-20). | 3 / §4.1 isolation | DONE | — |
 | `latent-space-confidence-ceiling-enforcement` | `write` stores caller confidence >0.60 at useCount=0 — direct ceiling breach. | 3 | quick | canon sign-off |
 | `action-emotion-runtime-registration-bypass` | casts Readonly→mutable, self-modifies the eval table; **zero callers**. | 6 | quick (guard/remove) | canon |
 | `theater-prohibition-real-validation` (§3.1) | `checkTheaterProhibition` only flags anxiety>0.7, always returns grounded — toothless. | 1 | ticket | needs sentiment-vs-drive correlation design |

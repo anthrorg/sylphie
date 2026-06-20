@@ -397,3 +397,172 @@ describe('Wave3-C0 — :Candidate is never grounding-eligible (CANON Std-3 §2.8
     expect(targets).not.toContain('cand-c');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Two-person cross-grounding regression (TK-81 / AC2 + AC3 — §2.8 seal).
+//
+// This is the gate-invisible corpus the ticket calls out: a :Candidate minted
+// from Person A's speech must never ground a reply for Person B, regardless of
+// which read-path Person B's turn exercises.  The fake graph holds ONLY the
+// :Candidate (no promoted :Entity), exactly as the real §2.8 breach looked.
+// ---------------------------------------------------------------------------
+
+describe('TK-81 / §2.8 two-person isolation regression — Person B cannot ground off Person A\'s candidate', () => {
+  /**
+   * Seed the shared WORLD graph with only Person A's :Candidate "Max".
+   * No promoted :Entity exists, mimicking the exact pre-fix leak shape.
+   */
+  function seedPersonACandidate(graph: FakeWorldGraph): void {
+    graph.addNode({
+      node_id: 'cand-max-A',
+      label: 'Max',
+      labels: [CANDIDATE_NODE_LABEL],
+      confidence: 0.6,
+      provenance_type: 'CANDIDATE',
+      props: { grounding_person_id: 'person-A' },
+    });
+  }
+
+  // AC2 — matchEntities (fulltext): Person B's turn must find nothing groundable.
+  it("AC2 — matchEntities (fulltext): Person B finds zero grounding entities for 'Max' (only A's :Candidate exists)", async () => {
+    const graph = new FakeWorldGraph();
+    seedPersonACandidate(graph);
+    const svc = makeService(graph);
+
+    // Person B's TYPE_2 turn asks about "Max" — a noun A introduced.
+    const results = await svc.queryEntities('Max');
+
+    // The :Candidate is excluded by the NOT node:Candidate gate.
+    expect(results).toHaveLength(0);
+    expect(results.find((e) => e.nodeId === 'cand-max-A')).toBeUndefined();
+    expect(results.every((e) => e.provenance !== 'CANDIDATE')).toBe(true);
+  });
+
+  // AC2 — matchEntities (CONTAINS fallback): same exclusion when fulltext index is down.
+  it('AC2 — matchEntities (CONTAINS fallback): same exclusion when fulltext index unavailable', async () => {
+    const graph = new FakeWorldGraph();
+    graph.failFulltext = true;
+    seedPersonACandidate(graph);
+    const svc = makeService(graph);
+
+    const results = await svc.queryEntities('Max');
+
+    expect(results).toHaveLength(0);
+    expect(results.find((e) => e.nodeId === 'cand-max-A')).toBeUndefined();
+  });
+
+  // AC2 — getContextForFrame end-to-end: Person B's real grounding entry must yield
+  // zero entities so the reply is not GROUNDED off Person A's fact.
+  it('AC2 — getContextForFrame: Person B\'s grounding pass yields zero entities (reply cannot be GROUNDED)', async () => {
+    const graph = new FakeWorldGraph();
+    seedPersonACandidate(graph);
+    const svc = makeService(graph);
+
+    // Person B asks the exact question that would match "Max".
+    const ctx = await svc.getContextForFrame(frameMentioning('What kind of animal is Max?'));
+
+    expect(ctx.entities).toHaveLength(0);
+    expect(ctx.entities.find((e) => e.nodeId === 'cand-max-A')).toBeUndefined();
+  });
+
+  // AC2 — getSubgraph: even if Person A's candidate id were passed in, it is excluded.
+  it('AC2 — getSubgraph: Person A\'s candidate node is excluded from subgraph enrichment', async () => {
+    const graph = new FakeWorldGraph();
+    seedPersonACandidate(graph);
+    // Add a live entity connected to the candidate to verify the neighbour does
+    // not pull the candidate in transitively.
+    graph.addNode({ node_id: 'entity-world-dog', label: 'Dog', labels: ['Entity'] });
+    graph.addRel('cand-max-A', 'RELATED_TO', 'entity-world-dog');
+    const svc = makeService(graph);
+
+    const { entities } = await svc.getSubgraph(['entity-world-dog'], 1);
+
+    const ids = entities.map((e) => e.nodeId);
+    expect(ids).toContain('entity-world-dog'); // live entity still surfaces
+    expect(ids).not.toContain('cand-max-A');   // candidate excluded
+  });
+
+  // AC2 — getEntityFacts: even if a candidate-id were passed directly, no facts emit.
+  it('AC2 — getEntityFacts on Person A\'s candidate id directly: emits nothing', async () => {
+    const graph = new FakeWorldGraph();
+    seedPersonACandidate(graph);
+    graph.addNode({ node_id: 'entity-world-dog', label: 'Dog', labels: ['Entity'] });
+    graph.addRel('cand-max-A', 'OWNS', 'entity-world-dog');
+    const svc = makeService(graph);
+
+    const facts = await svc.getEntityFacts('cand-max-A');
+    expect(facts).toHaveLength(0);
+  });
+
+  // AC3 — RELATED_TO/OWNS/KNOWS edge between two :Candidate endpoints:
+  // neither endpoint must become groundable through getRelationships.
+  it('AC3 — getRelationships: edge between two :Candidate endpoints never surfaces either endpoint', async () => {
+    const graph = new FakeWorldGraph();
+    // Two candidates: one from person-A, one from person-B — connected by an OWNS edge
+    // as extract-edges / refine-edges would create.
+    graph.addNode({
+      node_id: 'cand-max-A',
+      label: 'Max',
+      labels: [CANDIDATE_NODE_LABEL],
+      confidence: 0.6,
+      provenance_type: 'CANDIDATE',
+      props: { grounding_person_id: 'person-A' },
+    });
+    graph.addNode({
+      node_id: 'cand-luna-B',
+      label: 'Luna',
+      labels: [CANDIDATE_NODE_LABEL],
+      confidence: 0.5,
+      provenance_type: 'CANDIDATE',
+      props: { grounding_person_id: 'person-B' },
+    });
+    graph.addRel('cand-max-A', 'RELATED_TO', 'cand-luna-B');
+
+    const svc = makeService(graph);
+
+    // Even if both candidate ids are passed (label-agnostic MATCH would bind
+    // the edge), the C0 endpoint exclusion keeps neither surfacing.
+    const rels = await (svc as unknown as {
+      getRelationships(session: unknown, ids: string[]): Promise<unknown[]>;
+    }).getRelationships(graph.getSession(Neo4jInstanceName.WORLD, 'READ'), [
+      'cand-max-A',
+      'cand-luna-B',
+    ]);
+
+    // No relationship returned — both endpoints are :Candidate.
+    expect(rels).toHaveLength(0);
+  });
+
+  // AC3 — same check for OWNS and KNOWS edge types (distinct rel types, same guard).
+  it('AC3 — getRelationships: OWNS/KNOWS edges between :Candidate endpoints are also excluded', async () => {
+    const graph = new FakeWorldGraph();
+    graph.addNode({
+      node_id: 'cand-alpha',
+      label: 'Alpha',
+      labels: [CANDIDATE_NODE_LABEL],
+      provenance_type: 'CANDIDATE',
+      confidence: 0.5,
+      props: {},
+    });
+    graph.addNode({
+      node_id: 'cand-beta',
+      label: 'Beta',
+      labels: [CANDIDATE_NODE_LABEL],
+      provenance_type: 'CANDIDATE',
+      confidence: 0.4,
+      props: {},
+    });
+    graph.addRel('cand-alpha', 'OWNS', 'cand-beta');
+    graph.addRel('cand-alpha', 'KNOWS', 'cand-beta');
+
+    const svc = makeService(graph);
+    const rels = await (svc as unknown as {
+      getRelationships(session: unknown, ids: string[]): Promise<unknown[]>;
+    }).getRelationships(graph.getSession(Neo4jInstanceName.WORLD, 'READ'), [
+      'cand-alpha',
+      'cand-beta',
+    ]);
+
+    expect(rels).toHaveLength(0);
+  });
+});
