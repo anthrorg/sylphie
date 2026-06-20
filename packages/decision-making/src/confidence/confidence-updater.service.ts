@@ -31,9 +31,12 @@
  * qualifiesForDemotion() is evaluated. A TYPE_1_DEMOTION event is emitted if
  * demotion is triggered.
  *
- * Drive snapshot for events: the service does not hold a cycle snapshot.
- * Event emission is skipped when no driveSnapshot is available rather than
- * fabricating a zero-filled placeholder (per design brief).
+ * Drive snapshot for events: the service does not hold a cycle snapshot at
+ * update() time, so events are buffered during update() and flushed with the
+ * cycle DriveSnapshot via flushEvents(). The caller (DecisionMakingService)
+ * invokes flushEvents() after update() completes, passing the executor's
+ * cycle snapshot so all events carry real drive context rather than a
+ * fabricated placeholder.
  *
  * DriveName.InformationIntegrity does NOT exist in this codebase. The correct
  * name is DriveName.Focus (drive.types.ts). This service uses only
@@ -70,6 +73,31 @@ import { DECISION_EVENT_LOGGER } from '../decision-making.tokens';
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
+
+/**
+ * A buffered confidence event waiting for a DriveSnapshot before it can be
+ * written to TimescaleDB. Populated during update(); flushed by flushEvents().
+ */
+type PendingConfidenceEvent =
+  | {
+      kind: 'CONFIDENCE_UPDATED';
+      actionId: string;
+      newConfidence: number;
+      delta: number;
+      outcome: string;
+      guardianFeedback: 'confirmation' | 'correction' | undefined;
+    }
+  | {
+      kind: 'TYPE_1_GRADUATION';
+      actionId: string;
+      newConfidence: number;
+    }
+  | {
+      kind: 'TYPE_1_DEMOTION';
+      actionId: string;
+      newConfidence: number;
+      recentMAE: number;
+    };
 
 /**
  * Per-action confidence record maintained in the in-memory store.
@@ -123,6 +151,13 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
    * Ephemeral — not persisted across restarts.
    */
   private readonly maeHistory = new Map<string, number[]>();
+
+  /**
+   * Events buffered during update() that are waiting for a DriveSnapshot.
+   * Flushed by flushEvents() once the executor supplies the cycle snapshot.
+   * Cleared after every flush so stale events never attach to a later cycle.
+   */
+  private pendingEvents: PendingConfidenceEvent[] = [];
 
   constructor(
     @Optional()
@@ -233,6 +268,76 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
       mae: +mae.toFixed(4),
       windowSize: history.length,
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // IConfidenceUpdaterService — flushEvents
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Flush buffered confidence events to TimescaleDB using the provided DriveSnapshot.
+   *
+   * Called by DecisionMakingService after confidenceUpdater.update() completes,
+   * passing the executor's cycle snapshot so events carry real drive context.
+   * Each update() call may buffer 1–2 events (CONFIDENCE_UPDATED always, plus
+   * TYPE_1_GRADUATION or TYPE_1_DEMOTION when thresholds are crossed). This
+   * method writes them all then clears the buffer.
+   *
+   * Safe to call with an empty buffer: no-ops without error.
+   *
+   * @param driveSnapshot - The cycle-level drive snapshot from the executor.
+   */
+  flushEvents(driveSnapshot: DriveSnapshot): void {
+    if (!this.eventLogger || this.pendingEvents.length === 0) {
+      this.pendingEvents = [];
+      return;
+    }
+
+    const sessionId = driveSnapshot.sessionId;
+
+    for (const event of this.pendingEvents) {
+      try {
+        if (event.kind === 'CONFIDENCE_UPDATED') {
+          this.eventLogger.log(
+            'CONFIDENCE_UPDATED',
+            {
+              actionId: event.actionId,
+              newConfidence: +event.newConfidence.toFixed(4),
+              delta: +event.delta.toFixed(4),
+              outcome: event.outcome,
+              guardianFeedback: event.guardianFeedback ?? null,
+            },
+            driveSnapshot,
+            sessionId,
+          );
+        } else if (event.kind === 'TYPE_1_GRADUATION') {
+          this.eventLogger.log(
+            'TYPE_1_GRADUATION',
+            {
+              actionId: event.actionId,
+              newConfidence: +event.newConfidence.toFixed(4),
+            },
+            driveSnapshot,
+            sessionId,
+          );
+        } else if (event.kind === 'TYPE_1_DEMOTION') {
+          this.eventLogger.log(
+            'TYPE_1_DEMOTION',
+            {
+              actionId: event.actionId,
+              newConfidence: +event.newConfidence.toFixed(4),
+              recentMAE: +event.recentMAE.toFixed(4),
+            },
+            driveSnapshot,
+            sessionId,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(`flushEvents: failed to emit ${event.kind} for action ${(event as { actionId: string }).actionId}: ${err}`);
+      }
+    }
+
+    this.pendingEvents = [];
   }
 
   // ---------------------------------------------------------------------------
@@ -385,12 +490,10 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Emit a CONFIDENCE_UPDATED event.
+   * Buffer a CONFIDENCE_UPDATED event for deferred emission via flushEvents().
    *
-   * Because ConfidenceUpdaterService does not hold a cycle-level DriveSnapshot,
-   * the event is skipped when no snapshot is available rather than fabricating
-   * a zero-filled placeholder. The executor should ensure the event logger is
-   * called with the cycle snapshot directly for cycle-level correlation.
+   * The DriveSnapshot is not available at update() time, so we store the
+   * event fields here and let the caller supply the snapshot at flush time.
    */
   private emitConfidenceUpdated(
     actionId: string,
@@ -401,38 +504,56 @@ export class ConfidenceUpdaterService implements IConfidenceUpdaterService {
   ): void {
     if (!this.eventLogger) return;
 
-    // No DriveSnapshot available at this layer — skip event emission per design brief.
-    // The executor is responsible for emitting outcome-correlated events with the
-    // cycle snapshot. This service defers to that pattern.
+    const delta = record.currentConfidence - oldConfidence;
+    this.pendingEvents.push({
+      kind: 'CONFIDENCE_UPDATED',
+      actionId,
+      newConfidence: record.currentConfidence,
+      delta,
+      outcome,
+      guardianFeedback,
+    });
+
     this.logger.debug(
-      `[event deferred] CONFIDENCE_UPDATED: action=${actionId} outcome=${outcome} ` +
+      `[event buffered] CONFIDENCE_UPDATED: action=${actionId} outcome=${outcome} ` +
         `old=${oldConfidence.toFixed(4)} new=${record.currentConfidence.toFixed(4)}` +
         (guardianFeedback ? ` guardian=${guardianFeedback}` : ''),
     );
   }
 
   /**
-   * Emit a TYPE_1_GRADUATION event.
-   * Skipped when no DriveSnapshot is available (see emitConfidenceUpdated comment).
+   * Buffer a TYPE_1_GRADUATION event for deferred emission via flushEvents().
    */
   private emitGraduationEvent(record: ActionConfidenceRecord): void {
     if (!this.eventLogger) return;
 
+    this.pendingEvents.push({
+      kind: 'TYPE_1_GRADUATION',
+      actionId: record.actionId,
+      newConfidence: record.currentConfidence,
+    });
+
     this.logger.debug(
-      `[event deferred] TYPE_1_GRADUATION: action=${record.actionId} ` +
+      `[event buffered] TYPE_1_GRADUATION: action=${record.actionId} ` +
         `conf=${record.currentConfidence.toFixed(4)}`,
     );
   }
 
   /**
-   * Emit a TYPE_1_DEMOTION event.
-   * Skipped when no DriveSnapshot is available (see emitConfidenceUpdated comment).
+   * Buffer a TYPE_1_DEMOTION event for deferred emission via flushEvents().
    */
   private emitDemotionEvent(record: ActionConfidenceRecord, recentMAE: number): void {
     if (!this.eventLogger) return;
 
+    this.pendingEvents.push({
+      kind: 'TYPE_1_DEMOTION',
+      actionId: record.actionId,
+      newConfidence: record.currentConfidence,
+      recentMAE,
+    });
+
     this.logger.debug(
-      `[event deferred] TYPE_1_DEMOTION: action=${record.actionId} ` +
+      `[event buffered] TYPE_1_DEMOTION: action=${record.actionId} ` +
         `conf=${record.currentConfidence.toFixed(4)} MAE=${recentMAE.toFixed(4)}`,
     );
   }

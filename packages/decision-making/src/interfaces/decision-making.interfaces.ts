@@ -566,6 +566,22 @@ export interface IConfidenceUpdaterService {
    * @param mae      - Mean absolute error from PredictionEvaluation (0.0–1.0).
    */
   recordPredictionMAE(actionId: string, mae: number): void;
+
+  /**
+   * Flush buffered confidence events to TimescaleDB using the provided DriveSnapshot.
+   *
+   * update() buffers CONFIDENCE_UPDATED, TYPE_1_GRADUATION, and TYPE_1_DEMOTION
+   * events during the cycle because no DriveSnapshot is available at that layer.
+   * The caller (DecisionMakingService.reportOutcome) calls this method immediately
+   * after update() completes, passing the executor's cycle snapshot so the events
+   * carry real drive context for TimescaleDB correlation.
+   *
+   * Safe to call with an empty buffer — no-ops without error. Clears the buffer
+   * after every flush so stale events never attach to a later cycle.
+   *
+   * @param driveSnapshot - The cycle-level drive snapshot from the executor.
+   */
+  flushEvents(driveSnapshot: DriveSnapshot): void;
 }
 
 // ---------------------------------------------------------------------------
