@@ -107,25 +107,33 @@ _KNOWN_THRESHOLD: int = 10
 # ---------------------------------------------------------------------------
 
 
-def _interpolate_weights(confirmation_count: int) -> dict[str, float]:
+def _interpolate_weights(
+    confirmation_count: int,
+    config: PersistenceCheckConfig | None = None,
+) -> dict[str, float]:
     """Return dynamic scoring weights based on how well-known an object is.
 
     Weight profiles:
 
-    - New objects (``confirmation_count < 5``): spatial-dominant.
-      Spatial position is the most reliable signal for an object we have
-      barely seen -- we know where it is but not much else.
-    - Well-known objects (``confirmation_count >= 10``): embedding-dominant.
-      The embedding has been confirmed many times; it is the highest-fidelity
-      signal for re-identification.
-    - In-between (``5 <= confirmation_count < 10``): linear interpolation
-      between the two profiles.
+    - New objects (``confirmation_count < new_threshold``): spatial-dominant
+      by default. Spatial position is the most reliable signal for an object
+      we have barely seen -- we know where it is but not much else.
+    - Well-known objects (``confirmation_count >= known_threshold``):
+      embedding-dominant by default. The embedding has been confirmed many
+      times; it is the highest-fidelity signal for re-identification.
+    - In-between: linear interpolation between the two profiles.
 
-    The returned weights always sum to exactly 1.0.
+    When ``config`` is provided the weight dicts and thresholds are read from
+    it; otherwise the module-level constants are used directly. Either way the
+    returned weights sum to 1.0 (the config validator enforces this at
+    construction time for config-supplied profiles).
 
     Args:
         confirmation_count: The ``confirmation_count`` from the candidate
             ``KnowledgeNode``. Must be >= 0.
+        config: Optional ``PersistenceCheckConfig``. When supplied its
+            ``new_weights``, ``known_weights``, ``new_threshold``, and
+            ``known_threshold`` fields override the module-level constants.
 
     Returns:
         A dict mapping the five signal names (``"spatial"``, ``"embedding"``,
@@ -140,16 +148,22 @@ def _interpolate_weights(confirmation_count: int) -> dict[str, float]:
         weights = _interpolate_weights(10)
         assert weights["embedding"] == 0.45  # embedding-dominant for known object
     """
-    if confirmation_count < _NEW_THRESHOLD:
-        return _NEW_WEIGHTS.copy()
-    if confirmation_count >= _KNOWN_THRESHOLD:
-        return _KNOWN_WEIGHTS.copy()
+    # Use config-supplied profiles when available; fall back to module constants.
+    new_w = config.new_weights if config is not None else _NEW_WEIGHTS
+    known_w = config.known_weights if config is not None else _KNOWN_WEIGHTS
+    new_thr = config.new_threshold if config is not None else _NEW_THRESHOLD
+    known_thr = config.known_threshold if config is not None else _KNOWN_THRESHOLD
 
-    # Linear interpolation: t=0.0 at count=5, t=1.0 at count=10.
-    t = (confirmation_count - _NEW_THRESHOLD) / float(_KNOWN_THRESHOLD - _NEW_THRESHOLD)
+    if confirmation_count < new_thr:
+        return dict(new_w)
+    if confirmation_count >= known_thr:
+        return dict(known_w)
+
+    # Linear interpolation: t=0.0 at new_thr, t=1.0 at known_thr.
+    t = (confirmation_count - new_thr) / float(known_thr - new_thr)
     return {
-        k: _NEW_WEIGHTS[k] * (1.0 - t) + _KNOWN_WEIGHTS[k] * t
-        for k in _NEW_WEIGHTS
+        k: new_w[k] * (1.0 - t) + known_w[k] * t
+        for k in new_w
     }
 
 
@@ -383,6 +397,7 @@ def compute_match_score(
     observation: Observation,
     candidate_node_properties: dict[str, Any],
     confirmation_count: int,
+    config: PersistenceCheckConfig | None = None,
 ) -> float:
     """Compute a weighted multi-modal match score for a candidate node.
 
@@ -390,13 +405,16 @@ def compute_match_score(
     shift based on how many times the candidate node has been confirmed
     (Piaget R1). The final score is a weighted sum in [0.0, 1.0].
 
-    Weight profiles:
+    Weight profiles (when no ``config`` is supplied):
 
     - New objects (``confirmation_count < 5``):
       ``spatial=0.50, embedding=0.25, color=0.15, size=0.05, label_raw=0.05``
     - Well-known objects (``confirmation_count >= 10``):
       ``embedding=0.45, color=0.25, spatial=0.15, size=0.10, label_raw=0.05``
     - Between 5 and 10: linear interpolation.
+
+    When ``config`` is supplied, its ``new_weights``, ``known_weights``,
+    ``new_threshold``, and ``known_threshold`` fields replace the defaults.
 
     Args:
         observation: The current structured observation from the perception
@@ -407,13 +425,15 @@ def compute_match_score(
             ``"dominant_colors"``, ``"label_raw"``.
         confirmation_count: The ``confirmation_count`` from the candidate
             ``KnowledgeNode``. Controls which weight profile is applied.
+        config: Optional ``PersistenceCheckConfig``. When supplied its weight
+            profile fields override the module-level defaults.
 
     Returns:
         A weighted match score in [0.0, 1.0]. Higher values indicate
         a closer match. Does not cross any threshold internally --
         thresholding is done by the caller.
     """
-    weights = _interpolate_weights(confirmation_count)
+    weights = _interpolate_weights(confirmation_count, config=config)
 
     node_embedding: list[float] | None = candidate_node_properties.get("embedding")
     node_bbox: dict[str, float] | None = candidate_node_properties.get("bounding_box")
@@ -568,6 +588,7 @@ class PersistenceCheckService:
                 observation=observation,
                 candidate_node_properties=node.properties,
                 confirmation_count=node.confirmation_count,
+                config=self._config,
             )
             node_emb: list[float] | None = node.properties.get("embedding")
             scored.append((str(node.node_id), score, node.confirmation_count, node_emb))
