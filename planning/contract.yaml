@@ -1243,7 +1243,7 @@ nodes:
     parent: EP-14
     title: "EP14.4 — Constraint-validation trigger-context wiring (verify + test)"
     intent: "Confirm fetchExistingTriggerContexts() is live (it runs a real Cypher now) and constraint-3 duplicate-trigger detection fires; add the missing integration test."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production

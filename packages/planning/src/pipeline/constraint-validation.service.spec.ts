@@ -27,7 +27,7 @@ import type {
   PlanningEventType,
   ValidationResult,
 } from '../interfaces/planning.interfaces.js';
-import { DriveName } from '@sylphie/shared';
+import { DriveName, type Neo4jService } from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Stub types (match the shapes the service calls — nothing more)
@@ -48,8 +48,9 @@ class StubNeo4jService {
   }
 }
 
-/** IProposalService stub — refine() echoes the proposal back unchanged. */
-class StubProposalService implements IProposalService {
+/** IProposalService stub — refine() echoes the proposal back unchanged.
+ *  Structurally typed; cast to IProposalService at the injection site. */
+class StubProposalService {
   async generate(_opportunity: QueuedOpportunity): Promise<PlanProposal> {
     throw new Error('StubProposalService.generate should not be called in this test');
   }
@@ -166,7 +167,7 @@ function buildService(session: StubSession): {
   const service = new ConstraintValidationService(
     proposalService as unknown as IProposalService,
     eventLogger as unknown as IPlanningEventLogger,
-    neo4j as unknown,
+    neo4j as unknown as Neo4jService,
   );
   return { service, eventLogger };
 }
