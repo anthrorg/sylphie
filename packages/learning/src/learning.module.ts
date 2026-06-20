@@ -14,17 +14,23 @@
  *   REFINE_EDGES_SERVICE, LEARNING_EVENT_LOGGER
  *
  * Dependencies:
+ *   - DriveEngineModule: provides DRIVE_STATE_READER so LearningService can
+ *     subscribe to driveState$ and trigger forceCycle() on CognitiveAwareness
+ *     pressure. CANON §Drive Isolation: read-only (IDriveStateReader only).
  *   - DecisionMakingModule: provides LLM_SERVICE (OllamaLlmService) and
- *     WkgContextService. Importing this module gives Learning access to the
- *     LLM without creating a direct dependency on OllamaLlmService.
+ *     WkgContextService. Learning uses LLM_SERVICE for edge refinement.
+ *     Note: DecisionMakingModule also imports DriveEngineModule internally —
+ *     listing DriveEngineModule explicitly here makes DRIVE_STATE_READER
+ *     resolvable in LearningModule's own provider scope.
  *   - TimescaleModule: @Global() but explicitly imported for DI clarity.
  *
  * CANON §No Circular Module Dependencies: LearningModule only imports
- * DecisionMakingModule (which imports DriveEngineModule). It does not import
- * CommunicationModule or PlanningModule.
+ * DriveEngineModule, DecisionMakingModule, and TimescaleModule. It does not
+ * import CommunicationModule or PlanningModule.
  */
 
 import { Module } from '@nestjs/common';
+import { DriveEngineModule } from '@sylphie/drive-engine';
 import { DecisionMakingModule } from '@sylphie/decision-making';
 import { TimescaleModule } from '@sylphie/shared';
 
@@ -62,6 +68,10 @@ import { LearningEventLoggerService } from './logging/learning-event-logger.serv
 
 @Module({
   imports: [
+    // DriveEngineModule exports DRIVE_STATE_READER — required by LearningService
+    // to subscribe to driveState$ and fire pressure-triggered learning cycles.
+    // CANON §Drive Isolation: this import grants read-only access only.
+    DriveEngineModule,
     // DecisionMakingModule exports: LLM_SERVICE, WkgContextService, and the
     // full sensory pipeline. Learning uses LLM_SERVICE for edge refinement.
     DecisionMakingModule,

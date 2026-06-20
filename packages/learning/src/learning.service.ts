@@ -5,13 +5,13 @@
  * into durable knowledge (WKG entities and edges) through a 7-step pipeline
  * executed in discrete, bounded maintenance cycles.
  *
- * Cycle trigger: setInterval (timer-based) with a configurable interval.
- * This is the fallback trigger. In a future phase, the Cognitive Awareness drive
- * should trigger cycles when pressure exceeds a threshold. For now, the timer
- * fires every CYCLE_INTERVAL_MS.
+ * Cycle trigger: CognitiveAwareness drive pressure is the primary trigger.
+ * When pressure exceeds COGNITIVE_AWARENESS_PRESSURE_THRESHOLD the service calls
+ * forceCycle() immediately. The setInterval timer is a safety floor that fires
+ * when no pressure event has been received for CYCLE_INTERVAL_MS.
  *
  * Overlap guard: cycleInFlight prevents concurrent cycles. If a cycle is still
- * running when the timer fires, the new tick is dropped silently.
+ * running when the timer or a pressure event fires, the new tick is dropped silently.
  *
  * Per-cycle limit: MAX_EVENTS_PER_CYCLE = 5. CANON §Subsystem 3 is explicit:
  * "Max 5 learnable events per cycle." This is a cognitive constraint, not a
@@ -78,7 +78,9 @@ import {
   SELF_MODEL_WRITER_SERVICE,
   LEARNING_EVENT_LOGGER,
 } from './learning.tokens';
-import { verboseFor } from '@sylphie/shared';
+import { verboseFor, DriveName } from '@sylphie/shared';
+import type { Subscription } from 'rxjs';
+import { DRIVE_STATE_READER, type IDriveStateReader } from '@sylphie/drive-engine';
 
 const vlog = verboseFor('Learning');
 
@@ -104,6 +106,13 @@ const DECAY_INTERVAL_MS = 600_000; // 10 minutes
 /** Interval between self-model write cycles in milliseconds. */
 const SELF_MODEL_INTERVAL_MS = 600_000; // 10 minutes
 
+/**
+ * CognitiveAwareness pressure threshold above which a learning cycle is
+ * triggered immediately (timer demoted to safety floor).
+ * Value in [0.0, 1.0]; drive clamped to DRIVE_RANGE.max = 1.0.
+ */
+const COGNITIVE_AWARENESS_PRESSURE_THRESHOLD = 0.5;
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -126,6 +135,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
   /** Guard against overlapping self-model write cycles. */
   private selfModelInFlight = false;
+
+  /** RxJS subscription to drive snapshots for pressure-triggered cycles. */
+  private driveSubscription: Subscription | null = null;
 
   /** Timer handle for the automatic maintenance cycle. */
   private cycleTimer: ReturnType<typeof setInterval> | null = null;
@@ -181,6 +193,9 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
     @Inject(LEARNING_EVENT_LOGGER)
     private readonly eventLogger: ILearningEventLogger,
+
+    @Inject(DRIVE_STATE_READER)
+    private readonly driveStateReader: IDriveStateReader,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -242,6 +257,24 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       });
     }, SELF_MODEL_INTERVAL_MS);
 
+    // Subscribe to drive snapshots; trigger forceCycle() when CognitiveAwareness
+    // pressure exceeds the threshold. The cycleInFlight guard inside
+    // runMaintenanceCycle() silently drops the call when a cycle is already running.
+    this.driveSubscription = this.driveStateReader.driveState$.subscribe(
+      (snapshot) => {
+        const cogPressure = snapshot.pressureVector[DriveName.CognitiveAwareness];
+        if (cogPressure > COGNITIVE_AWARENESS_PRESSURE_THRESHOLD) {
+          this.forceCycle().catch((err: unknown) => {
+            this.logger.error(
+              `Pressure-triggered cycle threw an unhandled error: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+        }
+      },
+    );
+
     this.logger.log(
       `Learning subsystem started — maintenance cycle every ${CYCLE_INTERVAL_MS / 1000}s, ` +
         `reflection cycle every ${REFLECTION_INTERVAL_MS / 1000}s, ` +
@@ -271,6 +304,10 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
     if (this.selfModelTimer !== null) {
       clearInterval(this.selfModelTimer);
       this.selfModelTimer = null;
+    }
+    if (this.driveSubscription !== null) {
+      this.driveSubscription.unsubscribe();
+      this.driveSubscription = null;
     }
     this.logger.log('Learning subsystem stopped');
   }
