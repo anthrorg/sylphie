@@ -353,6 +353,12 @@ export class EpisodicMemoryService implements IEpisodicMemoryService, OnModuleIn
       ...(input.speakerId !== undefined
         ? { speakerId: input.speakerId, speakerIsGuardian: input.speakerIsGuardian ?? false }
         : {}),
+      // EP14.5a (TK-89): additive spread — only present when deliberation threw.
+      // Absent on all normal (non-error) episodes so consumers that do not
+      // inspect this field are entirely unaffected.
+      ...(input.cycleErrorContext !== undefined
+        ? { cycleErrorContext: input.cycleErrorContext }
+        : {}),
     };
 
     // Write to the ring buffer at head, then advance.

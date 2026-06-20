@@ -115,6 +115,43 @@ export interface VisualContext {
 export type EncodingDepth = 'DEEP' | 'NORMAL' | 'SHALLOW' | 'SKIP';
 
 // ---------------------------------------------------------------------------
+// Cycle Error Classification (EP14.5a — TK-89)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cause of a classified cycle error.
+ *
+ * LLM_TIMEOUT:              The deliberation call threw an error whose message
+ *                           contains 'timeout' or 'ECONNRESET', or whose name is
+ *                           'AbortError'. The LLM was unreachable or too slow.
+ * DELIBERATION_ERROR:       Any other error thrown from deliberation.deliberate().
+ *                           Covers malformed responses, unexpected rejections, etc.
+ */
+export type CycleErrorCause = 'LLM_TIMEOUT' | 'DELIBERATION_ERROR';
+
+/**
+ * Typed error context stamped onto an episode when the deliberation step throws
+ * rather than completing normally.
+ *
+ * This is the type-and-threading half of EP14.5a (TK-89). The field is
+ * OPTIONAL and ADDITIVE: it is absent on all normal (non-error) episodes so
+ * existing consumers that do not inspect it are entirely unaffected.
+ *
+ * TK-90 adds arbitration/handler typed returns that can also populate this.
+ */
+export interface CycleErrorContext {
+  /**
+   * Classified cause of the cycle error. Discriminates the two expected failure
+   * modes (LLM unreachable / general deliberation fault) from each other so
+   * the ring buffer can distinguish transient LLM outages from logic errors.
+   */
+  readonly cause: CycleErrorCause;
+
+  /** Human-readable error message from the caught exception. */
+  readonly message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Episode Types
 // ---------------------------------------------------------------------------
 
@@ -202,6 +239,17 @@ export interface EpisodeInput {
    * for the ×2/×3 guardian-asymmetry scoring on prediction accuracy.
    */
   readonly speakerIsGuardian?: boolean;
+
+  /**
+   * Classified error context for cycles where deliberation threw (EP14.5a TK-89).
+   *
+   * ABSENT on all normal (non-error) cycles — never set to undefined explicitly.
+   * Present only when a deliberation.deliberate() call was caught and classified;
+   * the cycle degrades rather than re-throwing so the episode still encodes with
+   * diagnostic context attached. Consumers that do not inspect this field are
+   * entirely unaffected (additive, optional).
+   */
+  readonly cycleErrorContext?: CycleErrorContext;
 }
 
 /**
@@ -281,6 +329,16 @@ export interface Episode {
 
   /** Guardian status of the speaker, persisted with the episode (Std 5 tier). */
   readonly speakerIsGuardian?: boolean;
+
+  /**
+   * Classified error context for cycles where deliberation threw (EP14.5a TK-89).
+   *
+   * ABSENT on normal episodes — additive, never set on successful cycles.
+   * Present when a deliberation error was caught and the cycle degraded cleanly.
+   * Enables the ring buffer to distinguish transient LLM outages (LLM_TIMEOUT)
+   * from logic errors (DELIBERATION_ERROR) in post-hoc analysis.
+   */
+  readonly cycleErrorContext?: CycleErrorContext;
 }
 
 // ---------------------------------------------------------------------------
