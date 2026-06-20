@@ -46,6 +46,7 @@ import { SelfAssessmentPusherService } from './services/self-assessment-pusher.s
 import { SttService } from './services/stt.service';
 import { TtsService } from './services/tts.service';
 import { CommunicationService } from './services/communication.service';
+import { CycleOutcomeReporterService } from './services/cycle-outcome-reporter.service';
 import { FastFactWriterService } from './services/fast-fact-writer.service';
 import { ConversationHistoryService } from './services/conversation-history.service';
 import { PersonModelService } from './services/person-model.service';
@@ -197,6 +198,9 @@ class CognitionModule {}
     // TK-34 (EP7-D): FastFactWriterService carries the 4 KG-write deps extracted
     // from CommunicationService (Neo4jService ×2, WkgDiffService, outcomeReporter).
     FastFactWriterService,
+    // TK-35 (EP7-E): theater check + basic outcome reporting extracted from
+    // CommunicationService; must be provided before CommunicationService resolves.
+    CycleOutcomeReporterService,
     CommunicationService,
     ConversationHistoryService,
     PersonModelService,
