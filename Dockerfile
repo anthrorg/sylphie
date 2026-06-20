@@ -94,17 +94,6 @@ COPY --from=build /app/packages/learning/dist                ./packages/learning
 COPY --from=build /app/packages/planning/dist                ./packages/planning/dist
 COPY --from=build /app/packages/supervisor/dist              ./packages/supervisor/dist
 
-# The Sylphie app and drive-server both import @sylphie/drive-engine subpaths
-# (e.g. /ipc-channel/ipc-message-validator). The drive-engine package has no
-# `exports` field, so Node resolves subpaths from the package root, not dist.
-# Mirror dist contents to each package root so the lookups land.
-RUN cp -r /app/packages/drive-engine/dist/.    /app/packages/drive-engine/    \
- && cp -r /app/packages/shared/dist/.          /app/packages/shared/          \
- && cp -r /app/packages/decision-making/dist/. /app/packages/decision-making/ \
- && cp -r /app/packages/learning/dist/.        /app/packages/learning/        \
- && cp -r /app/packages/planning/dist/.        /app/packages/planning/        \
- && cp -r /app/packages/supervisor/dist/.      /app/packages/supervisor/
-
 # Copy NestJS backend compiled output
 COPY --from=build /app/apps/sylphie/dist                     ./apps/sylphie/dist
 
