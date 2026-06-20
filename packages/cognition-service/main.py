@@ -480,6 +480,7 @@ async def bootstrap_status():
     they can be reported even when the tracker has no comparison data yet.
     """
     tracker = _state.bootstrap_tracker
+    conv = _state.cycle.convergence_model if _state.cycle else None
     if tracker is not None:
         status = tracker.get_status()
         return BootstrapStatus(
@@ -489,6 +490,8 @@ async def bootstrap_status():
             total_shadow_samples=_state.total_shadow_samples,
             total_audit_samples=_state.total_audit_samples,
             categories_graduated=status["categories_graduated"],
+            use_learned=conv.use_learned if conv is not None else False,
+            convergence_sample_count=conv.convergence_sample_count if conv is not None else 0,
         )
     # Tracker not yet initialised (pre-lifespan call — should not happen in practice).
     return BootstrapStatus(
@@ -498,6 +501,8 @@ async def bootstrap_status():
         total_shadow_samples=_state.total_shadow_samples,
         total_audit_samples=_state.total_audit_samples,
         categories_graduated=[],
+        use_learned=conv.use_learned if conv is not None else False,
+        convergence_sample_count=conv.convergence_sample_count if conv is not None else 0,
     )
 
 

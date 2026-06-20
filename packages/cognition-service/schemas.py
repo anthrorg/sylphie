@@ -167,3 +167,6 @@ class BootstrapStatus(BaseModel):
     total_shadow_samples: int = 0
     total_audit_samples: int = 0
     categories_graduated: list[str] = Field(default_factory=list)
+    # Convergence model graduation state (TK-41)
+    use_learned: bool = False
+    convergence_sample_count: int = 0
