@@ -39,6 +39,8 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
   type ILlmService,
   type LlmRequest,
 } from '@sylphie/shared';
@@ -115,6 +117,8 @@ const EDGE_LINE_RE = /^EDGE:\s*(.+?)\s*->\s*(.+?)\s*\|\s*([A-Z_]+)\s*$/;
 @Injectable()
 export class ConversationReflectionService implements IConversationReflectionService {
   private readonly logger = new Logger(ConversationReflectionService.name);
+  // Resolved once at startup; same env vars as the Supervisor so rates cannot drift.
+  private readonly pricingRates = resolveLlmPricingFromEnv();
 
   constructor(
     @Optional() @Inject(LLM_SERVICE) private readonly llm: ILlmService | null,
@@ -256,14 +260,13 @@ export class ConversationReflectionService implements IConversationReflectionSer
       },
     };
 
-    let responseContent: string;
+    let response: Awaited<ReturnType<ILlmService['complete']>>;
     try {
-      const response = await withTimeout(
+      response = await withTimeout(
         this.llm.complete(request),
         REFLECTION_LLM_TIMEOUT_MS,
         'CONVERSATION_REFLECTION',
       );
-      responseContent = response.content;
     } catch (err) {
       this.logger.warn(
         `reflectOnSession: LLM call failed: ${
@@ -274,6 +277,15 @@ export class ConversationReflectionService implements IConversationReflectionSer
       await this.markSessionReflected(sessionId, 0, 0);
       return noopResult;
     }
+
+    const promptTokens = response.tokensUsed.prompt;
+    const completionTokens = response.tokensUsed.completion;
+    const costUsd = estimateLlmCostUsd(promptTokens, completionTokens, this.pricingRates);
+    this.logger.log(
+      `LLM cost [conversation-reflection]: $${costUsd.toFixed(6)} (${promptTokens}p+${completionTokens}c tokens)`,
+    );
+
+    const responseContent = response.content;
 
     // 5. Parse insights from LLM response.
     const insights = parseReflectionResponse(responseContent);

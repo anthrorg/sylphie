@@ -33,6 +33,8 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
   type ILlmService,
   type LlmRequest,
 } from '@sylphie/shared';
@@ -141,6 +143,8 @@ const REFINEMENT_LINE_RE = /^EDGE:\s*(.+?)\s*->\s*(.+?)\s*\|\s*([A-Z_]+)\s*$/;
 @Injectable()
 export class RefineEdgesService implements IRefineEdgesService {
   private readonly logger = new Logger(RefineEdgesService.name);
+  // Resolved once at startup; same env vars as the Supervisor so rates cannot drift.
+  private readonly pricingRates = resolveLlmPricingFromEnv();
 
   constructor(
     @Optional() @Inject(LLM_SERVICE) private readonly llm: ILlmService | null,
@@ -274,6 +278,13 @@ export class RefineEdgesService implements IRefineEdgesService {
       this.logger.warn(`RefineEdges: LLM call failed: ${message}`);
       return refined;
     }
+
+    const promptTokens = response.tokensUsed.prompt;
+    const completionTokens = response.tokensUsed.completion;
+    const costUsd = estimateLlmCostUsd(promptTokens, completionTokens, this.pricingRates);
+    this.logger.log(
+      `LLM cost [refine-edges]: $${costUsd.toFixed(6)} (${promptTokens}p+${completionTokens}c tokens)`,
+    );
 
     const llmRefinements = parseRefinements(response.content, llmCandidates);
 

@@ -43,6 +43,8 @@ import {
   Neo4jService,
   Neo4jInstanceName,
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
   type ILlmService,
   type LlmRequest,
 } from '@sylphie/shared';
@@ -131,6 +133,8 @@ const CITES_RE = /^CITES:\s*(.+)$/;
 @Injectable()
 export class CrossSessionSynthesisService implements ICrossSessionSynthesisService {
   private readonly logger = new Logger(CrossSessionSynthesisService.name);
+  // Resolved once at startup; same env vars as the Supervisor so rates cannot drift.
+  private readonly pricingRates = resolveLlmPricingFromEnv();
 
   constructor(
     @Optional() @Inject(LLM_SERVICE) private readonly llm: ILlmService | null,
@@ -279,14 +283,13 @@ export class CrossSessionSynthesisService implements ICrossSessionSynthesisServi
       },
     };
 
-    let responseContent: string;
+    let response: Awaited<ReturnType<ILlmService['complete']>>;
     try {
-      const response = await withTimeout(
+      response = await withTimeout(
         this.llm.complete(request),
         SYNTHESIS_LLM_TIMEOUT_MS,
         'CROSS_SESSION_SYNTHESIS',
       );
-      responseContent = response.content;
     } catch (err) {
       this.logger.warn(
         `synthesizePair: LLM call failed: ${
@@ -295,6 +298,15 @@ export class CrossSessionSynthesisService implements ICrossSessionSynthesisServi
       );
       return noPattern;
     }
+
+    const promptTokens = response.tokensUsed.prompt;
+    const completionTokens = response.tokensUsed.completion;
+    const costUsd = estimateLlmCostUsd(promptTokens, completionTokens, this.pricingRates);
+    this.logger.log(
+      `LLM cost [cross-session-synthesis]: $${costUsd.toFixed(6)} (${promptTokens}p+${completionTokens}c tokens)`,
+    );
+
+    const responseContent = response.content;
 
     // Parse the structured response.
     const parsed = parseSynthesisResponse(responseContent, pair.insight1Id, pair.insight2Id);
