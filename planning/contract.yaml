@@ -620,7 +620,7 @@ nodes:
     parent: EP-7
     title: "EP7-B — Extract SensoryPredictionRouter service"
     intent: "Extract routeSensoryPredictionErrors + routeScenePredictionErrors into a SensoryPredictionRouter (stateless modulo the injected reporter)."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/25"
     branch: "agent/tk-32-ep7-b-extract-sensorypredictionrouter-se"
     priority: P2
