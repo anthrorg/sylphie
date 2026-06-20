@@ -71,7 +71,7 @@ Tier-1 CANON hazards + Tier-2 quick wins. 5 commits (`a5d6648`, `e82c9e8`, `4122
 
 ## Verify-before-listing (status uncertain)
 - A2.1 latent-space production hardening — commit `80128a4` suggests it landed; confirm.
-- `mood-congruent-episodic-retrieval` — likely shipped as WS5 T2.5; confirm, then close.
+- `mood-congruent-episodic-retrieval` — CLOSED (TK-69, 2026-06-20). Live in `episodic-memory.service.ts`: `MOOD_CONGRUENT_ALPHA=0.20` (:126), `driveCosineSimilarity` (:876) called from `queryByContent` (:537-541), rumination breaker window (:195, :688-727). Note: mood blend lives in `queryByContent`, NOT `queryByContext` (which is a SHA-fingerprint alias at :425).
 - `research-report.md` (46 ideas, April) — stale vs the June cluster; mine for any not-yet-ticketed gems, otherwise archive.
 
 ---
