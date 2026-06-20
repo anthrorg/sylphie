@@ -23,6 +23,9 @@ import { ConfigService } from '@nestjs/config';
 import { Ollama } from 'ollama';
 import {
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
+  type LlmPricingRates,
   type ILlmService,
   type LlmRequest,
   type LlmResponse,
@@ -65,10 +68,6 @@ const MS_PER_TOKEN = 15;
 /** Cognitive effort cost per 1000 tokens. Maps token usage to drive pressure. */
 const EFFORT_PER_1K_TOKENS = 0.05;
 
-/** DeepSeek API cost per million tokens (for cost tracking). */
-const DEEPSEEK_INPUT_COST_PER_M = 0.28;
-const DEEPSEEK_OUTPUT_COST_PER_M = 0.42;
-
 @Injectable()
 export class OllamaLlmService implements ILlmService, OnModuleInit {
   private readonly logger = new Logger(OllamaLlmService.name);
@@ -88,6 +87,9 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
 
   /** Whether the medium tier also routes to DeepSeek. */
   private useDeepSeekMedium = false;
+
+  /** Resolved DeepSeek pricing rates (set in onModuleInit via env; env vars take effect at startup). */
+  private deepseekPricingRates!: LlmPricingRates;
 
   /** Set to false for Lesion Test or when Ollama is unreachable. */
   private available = true;
@@ -116,6 +118,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     this.deepseekMediumModel = this.config.get<string>('ollama.deepseekMediumModel', '');
     this.useDeepSeek = this.deepseekApiKey.length > 0;
     this.useDeepSeekMedium = this.useDeepSeek && this.deepseekMediumModel.length > 0;
+    this.deepseekPricingRates = resolveLlmPricingFromEnv();
 
     this.client = new Ollama({ host });
     this.logger.log(
@@ -197,9 +200,8 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     const promptTokens = data.usage?.prompt_tokens ?? 0;
     const completionTokens = data.usage?.completion_tokens ?? 0;
 
-    // Compute actual API cost
-    const cost = (promptTokens / 1_000_000) * DEEPSEEK_INPUT_COST_PER_M
-      + (completionTokens / 1_000_000) * DEEPSEEK_OUTPUT_COST_PER_M;
+    // Compute actual API cost via shared utility so rate changes are a single env-var update.
+    const cost = estimateLlmCostUsd(promptTokens, completionTokens, this.deepseekPricingRates);
 
     // Reasoning models (DeepSeek-reasoner) return chain-of-thought in a
     // separate reasoning_content field. Keep it distinct from the final answer.
