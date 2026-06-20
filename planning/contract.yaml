@@ -1516,7 +1516,8 @@ nodes:
     parent: EP-17
     title: "DEC-7 — one-shot legacy world-row -> guardian provenance migration (293 rows)"
     intent: "Re-attribute the 293 legacy world-scoped rows to guardian provenance, closing the standing gap vs Wave-3 three-graph isolation. Idempotent, reversible, backed up."
-    status: in_progress
+    status: done
+    verification_note: "Migration script + test merged (PR #61), DEC-17-compliant (created_at<2026-06-13, dry-run default, pg_dump backup + hard-stop on backup failure, dynamic count). build clean; 14/14. RESIDUAL: one-shot DESTRUCTIVE migration NOT yet executed against live DB — Jim runs `yarn migrate:legacy-rescope:dry-run` then `:confirm` at deploy time."
     priority: P3
     estimate: M
     engineering_level: production
