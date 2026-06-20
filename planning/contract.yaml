@@ -872,7 +872,7 @@ nodes:
     branch: "agent/tk-46-ep10-2-cost-logging-on-learning"
     title: "EP10-2 — Cost logging on learning LLM call sites"
     intent: "Log token counts + USD estimate after each LLM call in conversation-reflection, cross-session-synthesis, refine-edges (observability only)."
-    status: in_progress
+    status: done
     priority: P2
     estimate: S
     engineering_level: mvp
