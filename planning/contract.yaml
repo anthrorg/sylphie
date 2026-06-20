@@ -1186,7 +1186,7 @@ nodes:
     parent: EP-14
     title: "EP14.1 — Planning requeue exponential backoff on deferral"
     intent: "Attach a retryAfter to a deferred opportunity that grows exponentially with deferralCount, so it isn't re-tried every 30s cycle."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
