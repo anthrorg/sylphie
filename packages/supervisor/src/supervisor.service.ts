@@ -244,7 +244,7 @@ export class SupervisorService
     if (reason === null) return;
 
     // Build narration (also folds this cycle into the behavioral baseline).
-    const narration = this.narrationBuilder.buildNarration(cycle);
+    const narration = await this.narrationBuilder.buildNarration(cycle);
 
     // Budget gate — pre-flight affordability, not just "any budget left".
     // A single expensive call must not overshoot the daily ceiling.
