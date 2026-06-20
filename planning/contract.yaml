@@ -1414,7 +1414,7 @@ nodes:
     parent: EP-15
     title: "EP15.3 — Skill installer cycle detection (DFS)"
     intent: "Three-colour DFS cycle detection in skill-package dependency resolution (skill_installer.py:275 TODO); abort with the cycle path."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
