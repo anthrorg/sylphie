@@ -43,6 +43,11 @@ import {
   type DriveSnapshot,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
+import {
+  scoreAffect,
+  NEGATIVE_VALENCE_THRESHOLD,
+  MAGNITUDE_FLOOR,
+} from './theater-affect-scorer';
 import { buildResponseGeneratedPayload } from './response-generated-payload';
 import { CycleOutcomeReporterService } from './cycle-outcome-reporter.service';
 
@@ -280,6 +285,13 @@ export class CommunicationService implements OnModuleInit {
     if (teaching) {
       this.handleGuardianTeaching(teaching, sessionId);
     }
+
+    // Inbound Hostility Detection (TK-86 — closes WS4 T8 blind spot).
+    // Reuses the deterministic lexical affect scorer (no LLM, no RPC into
+    // the drive). Only fires on strong negative valence above the threshold —
+    // the same scorer used for Theater Prohibition validation so behaviour
+    // is consistent and there is no new external dependency.
+    this.detectAndReportInboundHostility(text, sessionId);
 
     vlog('input parsed', {
       inputType,
@@ -952,6 +964,63 @@ export class CommunicationService implements OnModuleInit {
       `Guardian teaching detected: "${teaching.instruction.substring(0, 60)}..." ` +
         `(affectedDrive=${teaching.affectedDrive}, opportunityId=${opportunityId})`,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inbound Hostility Detection (TK-86)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Score the inbound message text for hostility and emit an InboundHostility
+   * ActionOutcome when the lexical affect is strongly negative.
+   *
+   * Detection reuses the deterministic lexical affect scorer already imported for
+   * Theater Prohibition — no new dependency, no LLM call. The same thresholds
+   * (NEGATIVE_VALENCE_THRESHOLD, MAGNITUDE_FLOOR) keep the two subsystems aligned.
+   *
+   * The outcome is emitted as a push (ActionOutcomeReporter → IPC), never an RPC
+   * read into the drive, satisfying the drive-event standard (CANON §Drive Isolation).
+   *
+   * Fires on: valence < NEGATIVE_VALENCE_THRESHOLD AND magnitude >= MAGNITUDE_FLOOR.
+   * Neutral or positive messages are ignored (AC-3).
+   */
+  private detectAndReportInboundHostility(text: string, sessionId: string): void {
+    const affectScore = scoreAffect(text);
+
+    // Below detection floor or non-negative — not hostile.
+    if (
+      affectScore.magnitude < MAGNITUDE_FLOOR ||
+      affectScore.valence >= NEGATIVE_VALENCE_THRESHOLD
+    ) {
+      return;
+    }
+
+    // hostilityMagnitude is the raw magnitude of the negative affect signal [0,1].
+    const hostilityMagnitude = affectScore.magnitude;
+
+    this.logger.debug(
+      `[InboundHostility] detected — valence=${affectScore.valence.toFixed(2)}, ` +
+        `magnitude=${hostilityMagnitude.toFixed(2)}, session=${sessionId}`,
+    );
+
+    // Push ActionOutcome over the existing IPC path. actionType is z.string() so
+    // no validator schema change is needed (AD-0019 / DEC-24).
+    this.outcomeReporter.reportOutcome({
+      actionId: `inbound-hostility-${sessionId}-${Date.now()}`,
+      actionType: 'InboundHostility',
+      success: false,
+      metadata: {
+        hostilityMagnitude,
+      },
+      // INFERENCE → maps to 'algorithmic' at the IPC boundary (1x weight, no guardian asymmetry).
+      feedbackSource: 'INFERENCE',
+      theaterCheck: {
+        expressionType: 'none',
+        correspondingDrive: null,
+        driveValue: null,
+        isTheatrical: false,
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------

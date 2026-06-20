@@ -166,6 +166,16 @@ export const ACTION_TYPE_DEFAULTS: Record<string, Partial<Record<DriveName, numb
     [DriveName.Curiosity]: 0.02,    // scaled by scene surprise magnitude
     [DriveName.Anxiety]: 0.01,
   },
+
+  // -- Inbound hostility (WS4 T8 blind-spot closed by TK-86) ----------------
+  // Hostile/aggressive inbound messages have no relief path — they are a
+  // pure threat signal. Effects are metadata-scaled by hostilityMagnitude [0,1].
+  // Base values are per-unit: at magnitude 1.0 a strongly hostile message
+  // raises Anxiety by 0.15 and Social by 0.10 per turn (no relief axis).
+  InboundHostility: {
+    [DriveName.Anxiety]: 0.15,     // scaled by metadata.hostilityMagnitude
+    [DriveName.Social]: 0.10,      // hostile turn strains social drive too
+  },
 };
 
 /**
@@ -177,6 +187,7 @@ export const METADATA_SCALED_ACTION_TYPES = new Set([
   'UnknownPersonPressure',
   'SensoryPrediction',
   'ScenePrediction',
+  'InboundHostility',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -238,6 +249,8 @@ export function computeDefaultAffect(
           scaledDelta = delta * meta.sensoryPredictionError;
         } else if (payload.actionType === 'ScenePrediction' && meta.sceneSurprise != null) {
           scaledDelta = delta * meta.sceneSurprise;
+        } else if (payload.actionType === 'InboundHostility' && meta.hostilityMagnitude != null) {
+          scaledDelta = delta * meta.hostilityMagnitude;
         }
       }
 
