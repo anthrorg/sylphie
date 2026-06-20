@@ -526,7 +526,7 @@ nodes:
     parent: EP-6
     title: "ACC.A — embeddings flow end-to-end (live)"
     intent: "Prove tracked_objects[].embedding is non-null, 768-D, and distinguishes mug-vs-book in the fused latent by a measurable cosine gap."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/19"
     branch: "agent/tk-27-acca-embeddings-flow-end-to-end-live"
     priority: P1
