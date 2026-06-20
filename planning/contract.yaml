@@ -1474,7 +1474,8 @@ nodes:
     parent: EP-15
     title: "EP15.6 — research-report.md: archive or promote remaining ideas"
     intent: "Triage the 46 April research-report ideas: each is already-ticketed (annotate), a genuine gap (promote to open_question), or stale (mark ARCHIVED); then archive the report."
-    status: in_progress
+    status: done
+    verification_note: "research-report.md archived to wiki/ideas/archive/ (PR #59, docs). The PR's proposed Q-25 (guilt-repair detectBehavioralChange always-false) was DROPPED — verified stale: contingency-coordinator.ts:105 + guilt-repair.ts:68-71 pass distinct current/previous action types; 0.15/0.30 relief paths reachable + tested (guilt-repair.spec:45). No genuine gap promoted. files_in_scope archive path not updated (agent contract edit dropped; orchestrator owns contract)."
     priority: P3
     estimate: S
     engineering_level: mvp
