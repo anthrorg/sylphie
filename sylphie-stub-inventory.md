@@ -222,18 +222,19 @@ Separately, the **live** TS port `spreadActivation` (`packages/decision-making/s
 
 ---
 
-### 3.2 SearXNG container runs but no code uses it
+### 3.2 SearXNG wire confirmed live — ✅ CLOSED (TK-50, 2026-06-20)
 
-**Where:** `docker-compose.yml:172-186`, `packages/learning/src/services/research.service.ts:53-188`
+**Where:** `docker-compose.yml:175-189`, `packages/decision-making/src/deliberation/tools/tool-registry.ts`, `packages/decision-making/src/action-handlers/action-handler-registry.service.ts`
 
-**What:** SearXNG container is configured and exposed on port 8888. `ollamaConfig.searxngUrl` is registered. ResearchService runs three SQL queries against TimescaleDB and that's it — no HTTP fetch to SearXNG anywhere.
+**Resolution:** TK-50 verified the wire is live. The original stub entry was stale: it cited `packages/learning/src/services/research.service.ts` as the only search consumer, but the decision-making package had already wired two real SearXNG HTTP fetch paths:
+- `ToolRegistryService.executeGoogleSearch` — deliberation `web_search` tool, logs DEBUG on successful `/search` response, warns and falls back gracefully on HTTP error or network failure.
+- `ActionHandlerRegistryService` `RESEARCH_ENTITY` handler — fires three parallel SearXNG queries per entity, logs DEBUG on each successful `/search` response (added TK-50), catches and silences failures per query (no uncaught exception).
 
-**Impact:**
-- Planning's "research" step that informs proposal generation is purely retrospective (look at past events with similar fingerprints). It can't actually research anything new.
-- Architectural promise: when an opportunity has insufficient historical data, fall back to web research. Currently: when data is insufficient, return `sufficient: false` and fail the proposal.
-- For GuardianTeaching opportunities specifically (sufficiency threshold 0), this isn't fatal — the guardian's instruction text *is* the research. For other classifications, it bottlenecks.
+Both paths read `ollama.searxngUrl` (default `http://localhost:8888`) from ConfigService. The `infra/searxng/settings.yml` exposes the JSON format at `:8080/search?format=json` which the docker-compose port-maps to `8888:8080`.
 
-**Fix complexity:** Medium. Add a SearXNG client to ResearchService, define how web results are merged into `extractPatterns()` output, decide on rate limits.
+**Governance decision:** DEC-10 (appended to `planning/contract.yaml`) — wire confirmed live, no docker-compose change, no code removed.
+
+**Residual (separate scope):** `packages/learning/src/services/research.service.ts` still uses only TimescaleDB. Wiring SearXNG into the planning/learning research path is a distinct ticket outside TK-50 scope.
 
 ---
 

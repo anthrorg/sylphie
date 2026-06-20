@@ -383,12 +383,15 @@ export class ActionHandlerRegistryService {
           const data = (await response.json()) as {
             results?: Array<{ title?: string; url?: string; content?: string }>;
           };
-          return (data.results ?? []).slice(0, 5).map((r) => ({
+          const hits = (data.results ?? []).slice(0, 5).map((r) => ({
             title: r.title ?? '',
             url: r.url ?? '',
             snippet: r.content ?? '',
             source: classifySource(r.url ?? ''),
           }));
+          // AC1 — confirm the /search wire is live at DEBUG so the smoke gate can observe it.
+          this.logger.debug(`RESEARCH_ENTITY SearXNG /search: "${q}" → ${hits.length} hits`);
+          return hits;
         } catch {
           return [];
         }
