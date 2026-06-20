@@ -51,6 +51,7 @@ import type {
   ILearningEventLogger,
   ReflectionInsight,
   ReflectionResult,
+  RegroundResult,
   SessionCandidate,
   InsightType,
 } from '../interfaces/learning.interfaces';
@@ -474,18 +475,21 @@ export class ConversationReflectionService implements IConversationReflectionSer
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
     try {
       // Create Insight node.
+      // referenced_entities is stored so the re-grounding sweep (TK-53) can
+      // find which entity labels to attempt REVEALS edges for on future cycles.
       await session.run(
         `CREATE (i:Insight {
-           node_id:         $nodeId,
-           label:           $label,
-           node_type:       'Insight',
-           insight_type:    $insightType,
-           description:     $description,
-           session_id:      $sessionId,
-           schema_level:    'instance',
-           provenance_type: $provenance,
-           confidence:      $confidence,
-           created_at:      datetime()
+           node_id:             $nodeId,
+           label:               $label,
+           node_type:           'Insight',
+           insight_type:        $insightType,
+           description:         $description,
+           session_id:          $sessionId,
+           schema_level:        'instance',
+           provenance_type:     $provenance,
+           confidence:          $confidence,
+           referenced_entities: $referencedEntities,
+           created_at:          datetime()
          })`,
         {
           nodeId,
@@ -495,6 +499,7 @@ export class ConversationReflectionService implements IConversationReflectionSer
           sessionId,
           provenance: REFLECTION_PROVENANCE,
           confidence: REFLECTION_CONFIDENCE,
+          referencedEntities: [...insight.referencedEntities],
         },
       );
 
@@ -640,6 +645,228 @@ export class ConversationReflectionService implements IConversationReflectionSer
   }
 
   // ---------------------------------------------------------------------------
+  // Re-grounding sweep (TK-53 / DEC-16)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Re-grounding sweep — runs after the 30-min synthesis pass.
+   *
+   * Finds Insight nodes that are still ungrounded (grounded:false, with
+   * referenced_entities populated) and attempts to create REVEALS edges for
+   * any referenced entity that has since been added to the WKG.  When the
+   * grounding ratio reaches 1.0, grounded is set to true.
+   *
+   * MERGE semantics make successive calls safe (idempotent).
+   *
+   * Before the sweep runs it executes the DEC-16 one-time backfill, which
+   * populates referenced_entities on pre-existing insights that were created
+   * before TK-53 and therefore lack the property.  The backfill is idempotent
+   * (it only writes nodes where the property is absent).
+   */
+  async regroundUngroundedInsights(): Promise<RegroundResult> {
+    const noopResult: RegroundResult = {
+      insightsExamined: 0,
+      insightsUpdated: 0,
+      edgesCreated: 0,
+      wasNoop: true,
+    };
+
+    try {
+      // DEC-16: populate referenced_entities on pre-existing ungrounded insights
+      // that were written before TK-53 added the property at creation time.
+      await this.runBackfillReferencedEntities();
+    } catch (err) {
+      this.logger.warn(
+        `regroundUngroundedInsights: DEC-16 backfill failed (continuing): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // Fetch all ungrounded insights that have at least one entity label to try.
+    const candidates = await this.findUngroundedInsights();
+    if (candidates.length === 0) {
+      return noopResult;
+    }
+
+    vlog('regroundUngroundedInsights: candidates found', { count: candidates.length });
+
+    let insightsUpdated = 0;
+    let totalEdgesCreated = 0;
+
+    for (const candidate of candidates) {
+      try {
+        const { newEdges, newRatio, newConfidence } = await this.regroundInsight(candidate);
+        if (newEdges > 0) {
+          insightsUpdated++;
+          totalEdgesCreated += newEdges;
+        }
+        vlog('regroundUngroundedInsights: insight processed', {
+          nodeId: candidate.nodeId,
+          newEdges,
+          newRatio,
+          newConfidence,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `regroundUngroundedInsights: failed for ${candidate.nodeId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        // Non-critical — continue with remaining insights.
+      }
+    }
+
+    this.logger.log(
+      `Re-grounding sweep: ${candidates.length} examined, ${insightsUpdated} updated, ` +
+        `${totalEdgesCreated} new REVEALS edges`,
+    );
+
+    return {
+      insightsExamined: candidates.length,
+      insightsUpdated,
+      edgesCreated: totalEdgesCreated,
+      wasNoop: false,
+    };
+  }
+
+  /**
+   * DEC-16 backfill — idempotent.
+   *
+   * For Insight nodes that are grounded:false but lack referenced_entities
+   * (created before TK-53), reconstruct the property by collecting all Entity
+   * labels reachable from the insight's source Conversation nodes via MENTIONS.
+   * This gives the sweep a candidate entity set to work from.
+   *
+   * Only writes to nodes where referenced_entities is null/absent; existing
+   * values are never overwritten (idempotent re-run guarantee).
+   */
+  private async runBackfillReferencedEntities(): Promise<void> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      await session.run(
+        `MATCH (i:Insight)
+         WHERE i.grounded = false
+           AND i.referenced_entities IS NULL
+         OPTIONAL MATCH (i)-[:DERIVED_FROM]->(c:Conversation)
+                        <-[:MENTIONS]-(e:Entity)
+         WITH i, COLLECT(DISTINCT e.label) AS sessionEntities
+         SET i.referenced_entities = sessionEntities`,
+      );
+      vlog('runBackfillReferencedEntities: DEC-16 backfill applied');
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Query the WORLD graph for all ungrounded insights that have entity labels
+   * to try (referenced_entities is not null and not empty).
+   */
+  private async findUngroundedInsights(): Promise<UngroundedInsightCandidate[]> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
+    try {
+      const result = await session.run(
+        `MATCH (i:Insight)
+         WHERE i.grounded = false
+           AND i.referenced_entities IS NOT NULL
+           AND SIZE(i.referenced_entities) > 0
+         RETURN
+           i.node_id             AS nodeId,
+           i.referenced_entities AS referencedEntities,
+           i.grounding_ratio     AS groundingRatio`,
+      );
+      return result.records.map((r) => ({
+        nodeId: r.get('nodeId') as string,
+        referencedEntities: (r.get('referencedEntities') as string[]) ?? [],
+        currentGroundingRatio: toNumber(r.get('groundingRatio')),
+      }));
+    } catch (err) {
+      this.logger.warn(
+        `findUngroundedInsights failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return [];
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * Attempt REVEALS edges for each referenced entity label on a single
+   * ungrounded insight.  Recomputes grounding ratio from the total REVEALS
+   * edge count vs. the full referenced_entities list and updates the node.
+   *
+   * Returns the number of newly created REVEALS edges (pre/post delta),
+   * the new ratio, and the new adjusted confidence.
+   */
+  private async regroundInsight(
+    candidate: UngroundedInsightCandidate,
+  ): Promise<{ newEdges: number; newRatio: number; newConfidence: number }> {
+    const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'WRITE');
+    try {
+      // Count pre-existing REVEALS edges so we can compute a true delta.
+      const priorResult = await session.run(
+        `MATCH (i:Insight {node_id: $insightId})-[:REVEALS]->()
+         RETURN COUNT(*) AS total`,
+        { insightId: candidate.nodeId },
+      );
+      const priorReveals = toNumber(priorResult.records[0]?.get('total'));
+
+      // Attempt a REVEALS MERGE for each referenced entity label.
+      for (const entityLabel of candidate.referencedEntities) {
+        try {
+          await session.run(
+            `MATCH (i:Insight {node_id: $insightId}), (e:Entity)
+             WHERE toLower(e.label) = toLower($entityLabel)
+             MERGE (i)-[r:REVEALS]->(e)
+             ON CREATE SET
+               r.provenance_type = $provenance,
+               r.confidence      = $confidence,
+               r.created_at      = datetime()`,
+            {
+              insightId: candidate.nodeId,
+              entityLabel,
+              provenance: REFLECTION_PROVENANCE,
+              confidence: REFLECTION_CONFIDENCE,
+            },
+          );
+        } catch {
+          // Non-critical — skip this entity and continue.
+        }
+      }
+
+      // Recount to get the true post-sweep total and compute the delta.
+      const afterResult = await session.run(
+        `MATCH (i:Insight {node_id: $insightId})-[:REVEALS]->()
+         RETURN COUNT(*) AS total`,
+        { insightId: candidate.nodeId },
+      );
+      const totalReveals = toNumber(afterResult.records[0]?.get('total'));
+      const newEdges = Math.max(0, totalReveals - priorReveals);
+
+      const attempted = candidate.referencedEntities.length;
+      const { adjustedConfidence, grounded, groundingRatio } = computeGroundedConfidence(
+        attempted,
+        totalReveals,
+      );
+
+      await session.run(
+        `MATCH (i:Insight {node_id: $nodeId})
+         SET i.confidence      = $adjustedConfidence,
+             i.grounded        = $grounded,
+             i.grounding_ratio = $groundingRatio`,
+        { nodeId: candidate.nodeId, adjustedConfidence, grounded, groundingRatio },
+      );
+
+      return { newEdges, newRatio: groundingRatio, newConfidence: adjustedConfidence };
+    } finally {
+      await session.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Private: session tracking
   // ---------------------------------------------------------------------------
 
@@ -678,6 +905,30 @@ interface SessionEvent {
   readonly timestamp: Date;
   readonly subsystem: string;
   readonly content: string;
+}
+
+/** A candidate for the re-grounding sweep — an ungrounded insight with entity labels to try. */
+interface UngroundedInsightCandidate {
+  readonly nodeId: string;
+  readonly referencedEntities: readonly string[];
+  readonly currentGroundingRatio: number;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a Neo4j Integer or plain number to a JS number.
+ * Neo4j driver returns integer properties as objects with .toNumber().
+ */
+function toNumber(val: unknown): number {
+  if (val == null) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof (val as Record<string, unknown>).toNumber === 'function') {
+    return (val as { toNumber(): number }).toNumber();
+  }
+  return Number(val) || 0;
 }
 
 // ---------------------------------------------------------------------------

@@ -467,6 +467,33 @@ export interface IConversationReflectionService {
    * Analyze a completed session holistically and persist insights to WKG.
    */
   reflectOnSession(sessionId: string): Promise<ReflectionResult>;
+
+  /**
+   * Re-grounding sweep: find Insight nodes with grounded:false and
+   * referenced_entities populated, attempt to create REVEALS edges for
+   * any entity that now exists in the WKG, and recompute confidence.
+   * Sets grounded:true when the grounding ratio reaches 1.0.
+   *
+   * Runs on the 30-minute synthesis cadence, after the synthesis pass.
+   * Safe to call repeatedly — MERGE semantics make it idempotent.
+   *
+   * @returns Summary of how many insights were examined and updated.
+   */
+  regroundUngroundedInsights(): Promise<RegroundResult>;
+}
+
+/**
+ * Summary of a completed re-grounding sweep.
+ */
+export interface RegroundResult {
+  /** Number of grounded:false insights examined. */
+  readonly insightsExamined: number;
+  /** Number of insights that had at least one new REVEALS edge created. */
+  readonly insightsUpdated: number;
+  /** Number of new REVEALS edges created across all insights. */
+  readonly edgesCreated: number;
+  /** Whether the sweep was a no-op (no eligible insights found). */
+  readonly wasNoop: boolean;
 }
 
 // ---------------------------------------------------------------------------
