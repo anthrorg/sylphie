@@ -1262,7 +1262,7 @@ nodes:
     parent: EP-14
     title: "EP14.5a — CycleErrorContext type + LLM_TIMEOUT classification threaded to episode encode"
     intent: "Define the typed CycleErrorContext (cause union: LLM_TIMEOUT | CONTRADICTION_SCAN_FAILED | HANDLER_NOT_FOUND | DELIBERATION_ERROR), make it an additive optional field on EpisodeInput/Episode, catch LLM-timeout/deliberation errors at the four deliberation call sites in processInput, and thread the classified context through EpisodicMemoryService.encode() onto the stored episode so failures are distinguishable in the ring buffer. This is the type-and-threading half of the split; TK-90 adds the arbitration/handler typed returns that also feed this context."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
