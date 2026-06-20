@@ -17,6 +17,4 @@ module.exports = {
     '^@sylphie/shared$': '<rootDir>/../shared/src/index.ts',
     '^@sylphie/drive-engine$': '<rootDir>/../drive-engine/src/index.ts',
   },
-  // Worktrees don't have their own node_modules — resolve from the main checkout.
-  moduleDirectories: ['node_modules', 'C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules'],
 };
