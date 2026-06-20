@@ -62,12 +62,26 @@ class ConvergenceModel:
     (the learned model's random weights would be unreliable). The model
     learns to refine the threshold based on which types of disagreement
     actually warranted escalation.
+
+    Graduation criterion (DEC-13, mvp-level):
+        use_learned flips True when convergence_sample_count >= 1000 AND
+        the proxy accuracy >= 0.80 over the last sample. Proxy accuracy is
+        1 - |learned_divergence - heuristic_divergence|, which measures how
+        closely the learned head tracks the heuristic baseline (no ground-truth
+        labels available at mvp level).
     """
+
+    # Minimum samples before use_learned can be flipped.
+    _GRAD_MIN_SAMPLES: int = 1000
+    # Proxy accuracy threshold for graduation (DEC-13 assumption).
+    _GRAD_MIN_ACCURACY: float = 0.80
 
     def __init__(self) -> None:
         self.input_dim = config.ACTION_SPACE_DIM * 5  # 32 * 5 = 160
         self.total_params = 0
         self.use_learned = False  # Start with heuristic, switch when trained
+        # Counts how many check() calls have run (proxy for training exposure).
+        self.convergence_sample_count: int = 0
 
         self._build()
 
@@ -111,7 +125,9 @@ class ConvergenceModel:
         """Check convergence between global and panel models.
 
         Uses heuristic cosine similarity during early bootstrap,
-        switches to learned model when trained.
+        switches to learned model when trained. After each call the sample
+        count is incremented and the graduation criterion is evaluated so
+        use_learned can flip automatically without an external trigger.
         """
         global_arr = np.array(global_action_bias, dtype=np.float32)
 
@@ -122,12 +138,34 @@ class ConvergenceModel:
             sim = cosine_similarity(global_arr, panel_arr)
             panel_agreement[panel.panel_name] = sim
 
-        if self.use_learned:
-            divergence_score = self._predict_learned(global_arr, panel_outputs)
-        else:
-            # Heuristic: divergence = 1 - mean cosine similarity
-            mean_sim = np.mean(list(panel_agreement.values())) if panel_agreement else 1.0
-            divergence_score = 1.0 - mean_sim
+        # Heuristic baseline is always cheap to compute and needed for the
+        # graduation proxy even after graduation (for logging continuity).
+        mean_sim = np.mean(list(panel_agreement.values())) if panel_agreement else 1.0
+        heuristic_divergence = 1.0 - mean_sim
+
+        learned_divergence = self._predict_learned(global_arr, panel_outputs)
+
+        self.convergence_sample_count += 1
+
+        # Graduation check: flip use_learned once when the criterion is first met.
+        # Guarded by `not self.use_learned` so we never re-evaluate after graduation.
+        if not self.use_learned:
+            # Proxy accuracy: how closely does the learned head track heuristic?
+            # (DEC-13 mvp assumption — no ground-truth labels available.)
+            proxy_accuracy = 1.0 - abs(learned_divergence - heuristic_divergence)
+            if (
+                self.convergence_sample_count >= self._GRAD_MIN_SAMPLES
+                and proxy_accuracy >= self._GRAD_MIN_ACCURACY
+            ):
+                self.use_learned = True
+                logger.info(
+                    "ConvergenceModel graduated to learned mode "
+                    "(sample_count=%d, proxy_accuracy=%.4f)",
+                    self.convergence_sample_count,
+                    proxy_accuracy,
+                )
+
+        divergence_score = learned_divergence if self.use_learned else heuristic_divergence
 
         consensus = divergence_score < threshold
 
@@ -159,10 +197,6 @@ class ConvergenceModel:
         div_raw = h1 @ self.w_div + self.b_div
         divergence = 1.0 / (1.0 + np.exp(-div_raw))
 
-        # TODO: use_learned graduation criterion: flip to True when trained on
-        # >= N convergence samples with validation accuracy > threshold.
-        # Target: after panel models have seen >= 1000 cycles. Until then this
-        # learned divergence path stays gated off (check() uses the heuristic).
         return float(divergence[0, 0])
 
     def save(self, directory: str) -> None:
@@ -175,6 +209,7 @@ class ConvergenceModel:
             w1=self.w1, b1=self.b1,
             w_div=self.w_div, b_div=self.b_div,
             use_learned=np.array([self.use_learned]),
+            convergence_sample_count=np.array([self.convergence_sample_count]),
         )
         os.replace(tmp_stem + ".npz", final_path)
 
@@ -198,6 +233,8 @@ class ConvergenceModel:
                 )
             if "use_learned" in data:
                 self.use_learned = bool(data["use_learned"][0])
+            if "convergence_sample_count" in data:
+                self.convergence_sample_count = int(data["convergence_sample_count"][0])
             # Recompute param count from the live tensors (the loaded arrays may
             # differ in shape from the build-time defaults across versions).
             self.total_params = sum(
