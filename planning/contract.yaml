@@ -1205,7 +1205,7 @@ nodes:
     parent: EP-14
     title: "EP14.2 — Simulation cross-drive effect aggregation"
     intent: "Aggregate ALL drives from the driveEffects history (not only affectedDrive) into estimatedDriveEffect so collateral harm/benefit is visible."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production

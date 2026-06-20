@@ -106,7 +106,7 @@ function it(testName: string, fn: () => void): void {
 
 describe('AC1: cross-drive aggregation', () => {
   it('includes all drives seen in driveEffects history', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 2,
         payload: {
@@ -141,7 +141,7 @@ describe('AC1: cross-drive aggregation', () => {
   it('affectedDrive average matches the prior single-drive result', () => {
     // count-weighted average for Curiosity:
     //   row1: -0.3 * 2 = -0.6, row2: -0.1 * 1 = -0.1 => total = -0.7 / 3 ≈ -0.2333
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       { count: 2, payload: { driveEffects: { [DriveName.Curiosity]: -0.3 }, outcome: 'positive' } },
       { count: 1, payload: { driveEffects: { [DriveName.Curiosity]: -0.1 }, outcome: 'negative' } },
     ];
@@ -157,7 +157,7 @@ describe('AC1: cross-drive aggregation', () => {
 
   it('collateral drive averages are count-weighted correctly', () => {
     // Anxiety only appears in row1 (count=2): 0.1 * 2 / 3 = 0.0667
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 2,
         payload: {
@@ -181,7 +181,7 @@ describe('AC1: cross-drive aggregation', () => {
   });
 
   it('entry count equals the number of distinct drives across all rows', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 1,
         payload: {
@@ -207,7 +207,7 @@ describe('AC1: cross-drive aggregation', () => {
 
 describe('AC2: single-drive history is backward-compatible', () => {
   it('produces a one-entry map when only affectedDrive has effects', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 3,
         payload: { driveEffects: { [DriveName.Satisfaction]: -0.15 }, outcome: 'positive' },
@@ -226,7 +226,7 @@ describe('AC2: single-drive history is backward-compatible', () => {
 
   it('single-drive average is identical to count-weighted formula', () => {
     // (-0.15 * 3 + -0.05 * 2) / 5 = (-0.45 - 0.10) / 5 = -0.11
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 3,
         payload: { driveEffects: { [DriveName.Satisfaction]: -0.15 }, outcome: 'positive' },
@@ -247,7 +247,7 @@ describe('AC2: single-drive history is backward-compatible', () => {
   });
 
   it('affectedDrive is present with value 0 when no row has any driveEffects', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       { count: 1, payload: { outcome: 'negative' } },
       { count: 2, payload: { outcome: 'positive' } },
     ];
@@ -265,7 +265,7 @@ describe('AC2: single-drive history is backward-compatible', () => {
 
 describe('Edge cases', () => {
   it('non-numeric drive values in driveEffects are ignored', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       {
         count: 1,
         payload: {
@@ -285,7 +285,7 @@ describe('Edge cases', () => {
   });
 
   it('rows with missing driveEffects do not crash and do not contribute drive entries', () => {
-    const rows = [
+    const rows: Array<{ payload: HistoryRow; count: number }> = [
       { count: 1, payload: { outcome: 'positive' } },
       {
         count: 1,
