@@ -17,6 +17,12 @@ export interface TranscriptResult {
   speechFinal: boolean;
 }
 
+export interface OneShot {
+  text: string;
+  confidence: number;
+  latencyMs: number;
+}
+
 /**
  * Manages Deepgram live transcription sessions using the WebSocket API directly.
  *
@@ -204,6 +210,59 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
       this.sessions.delete(clientId);
       vlog('STT session stopped', { clientId });
     }
+  }
+
+  /**
+   * One-shot transcription via Deepgram REST (pre-recorded audio).
+   * Used by POST /voice/transcribe — sends the full audio buffer once,
+   * waits for a single transcript response, and returns.
+   *
+   * Throws on network failure or a non-2xx Deepgram response so callers
+   * can surface an honest error rather than a fake empty-200.
+   */
+  async transcribeBuffer(audio: Buffer, mimeType: string): Promise<OneShot> {
+    if (!this.available) {
+      throw new Error('STT unavailable — DEEPGRAM_API_KEY not set');
+    }
+
+    const params = new URLSearchParams({
+      model: 'nova-2',
+      language: 'en-US',
+      smart_format: 'true',
+    });
+
+    const t0 = Date.now();
+    vlog('STT REST transcribe start', { bytes: audio.length, mimeType });
+
+    const response = await fetch(
+      `https://api.deepgram.com/v1/listen?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${this.apiKey}`,
+          'Content-Type': mimeType,
+        },
+        // Deepgram expects raw bytes. Convert to ArrayBuffer (BodyInit-compatible)
+        // via a copy so the slice is a plain ArrayBuffer, not SharedArrayBuffer.
+        body: new Uint8Array(audio).buffer as ArrayBuffer,
+      },
+    );
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      this.logger.error(`Deepgram REST error ${response.status}: ${body.slice(0, 200)}`);
+      throw new Error(`Deepgram REST error ${response.status}`);
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = (await response.json()) as any;
+    const alt = data?.results?.channels?.[0]?.alternatives?.[0];
+    const text: string = alt?.transcript ?? '';
+    const confidence: number = alt?.confidence ?? 0;
+    const latencyMs = Date.now() - t0;
+
+    vlog('STT REST transcribe done', { text, confidence, latencyMs });
+    return { text, confidence, latencyMs };
   }
 
   onModuleDestroy() {

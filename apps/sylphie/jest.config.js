@@ -6,10 +6,14 @@ const TSJEST = require.resolve(
 module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  testMatch: ['**/*.spec.ts'],
+  // Scoped to *.controller.spec.ts (jest-style) so the tsx-run service specs
+  // (theater-affect-scorer, cycle-outcome-reporter, communication.cost) — which
+  // are NOT jest-compatible — are never picked up by this jest config.
+  testMatch: ['**/*.controller.spec.ts'],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
       tsconfig: '<rootDir>/tsconfig.json',
+      diagnostics: false,
     }],
   },
   moduleNameMapper: {

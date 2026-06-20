@@ -16,6 +16,12 @@ async function bootstrap() {
   const logger = new WebSocketLoggerService();
   const app = await NestFactory.create(AppModule, { logger });
 
+  // Parse raw audio bodies for POST /api/voice/transcribe so req.body is a Buffer.
+  // express.raw() runs before NestJS routing; no global-prefix interference.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
+  const expressRaw = (require('express') as any).raw as (opts: Record<string, unknown>) => any;
+  app.use('/api/voice/transcribe', expressRaw({ type: 'audio/*', limit: '10mb' }));
+
   app.setGlobalPrefix('api');
   app.useWebSocketAdapter(new WsAdapter(app));
   app.enableShutdownHooks();
