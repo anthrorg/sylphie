@@ -853,7 +853,7 @@ nodes:
     branch: "agent/tk-45-ep10-1-wire-llm-cost-to"
     title: "EP10-1 — Wire LLM cost to CycleResponse + DeliveryPayload"
     intent: "Replace the hardcoded costUsd:0 on DeliveryPayload with the real estimated cost (from DeliberationResult / estimateLlmCostUsd) so every response has an honest dollar figure."
-    status: in_progress
+    status: done
     priority: P2
     estimate: M
     engineering_level: mvp

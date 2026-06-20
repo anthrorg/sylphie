@@ -22,7 +22,7 @@ import {
   estimateLlmCostUsd,
   resolveLlmPricingFromEnv,
   type LlmPricingRates,
-} from '../../../../packages/shared/src/config/llm-pricing';
+} from '@sylphie/shared';
 
 // ---------------------------------------------------------------------------
 // Mirror of the pure helper under test.
