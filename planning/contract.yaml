@@ -1705,6 +1705,30 @@ nodes:
     - packages/decision-making/src/decision-making.service.ts
     non_goals:
     - Changing the durable retrieval semantics; new recall keys; embedding-path changes
+  - id: TK-91
+    kind: ticket
+    parent: EP-16
+    status: todo
+    priority: P2
+    estimate: M
+    engineering_level: production
+    title: "EP16 — Persist PersonScopedFaceIndex to DB with person-scoped isolation (TK-85 follow-on)"
+    intent: "TK-85 proved face isolation in-memory (PersonScopedFaceIndex, Map<personId,entries>); it is lost on restart. Back it with a person_face_embeddings table (model the existing visual_object_embeddings persistence in visual-working-memory.service.ts) so face graduation survives a restart, WITHOUT weakening the §2.8 isolation invariant: every read/write is personId-scoped, a face stored for Person A is never returnable for a Person B query, and faces still never enter the shared conversational latent index. Load per-person on init; persist on writeFace + on graduation; keep the zero-vector guard and graduation/recurrence counts."
+    complexity_budget: "<=250 LOC: new person_face_embeddings table (CREATE TABLE IF NOT EXISTS, idx on person_id) + load/save wired into PersonScopedFaceIndex; no schema for other subsystems"
+    acceptance_criteria:
+    - given: a graduated face entry for Person A written to the index
+      when: the index is re-instantiated and loads from the DB (restart simulation)
+      then: searchFace(PersonA, ...) returns the graduated entry with its recurrenceCount/graduated state intact; searchFace(PersonB, ...) returns null (isolation preserved at the DB layer — all queries personId-scoped)
+    - given: a zero-vector or wrong-dim embedding
+      when: writeFace runs
+      then: it is rejected and never persisted (existing guard retained); a blank/no-personId face is still dropped-with-warning (never persisted, never in the shared index)
+    files_in_scope:
+    - packages/decision-making/src/latent-space/person-scoped-face-index.ts
+    - packages/decision-making/src/latent-space/person-scoped-face-index.spec.ts
+    non_goals:
+    - Row-Level-Security hardening (personId-scoped queries are the v1 isolation; RLS is a separate hardening ticket); a face-management UI; changing graduation thresholds or the latent-space routing
+    depends_on:
+    - TK-85
   - id: TK-85
     kind: ticket
     parent: EP-16
