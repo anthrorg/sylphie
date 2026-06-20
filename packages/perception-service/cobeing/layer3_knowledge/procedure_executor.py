@@ -214,6 +214,11 @@ class ProcedureExecutor:
             (Piaget: cap=threshold creates floating-point boundary artifacts).
         guardian_confirmation_boost: Base confidence after guardian confirms.
             Must exceed retrieval_threshold to enable direct recall.
+        syntactic_matcher: Optional SyntacticTemplateMatcher instance.  When
+            injected, syntactic step_types (``match_root``, ``match_edge``,
+            ``match_optional``, ``extract_role``, ``match_property``) are
+            delegated to ``matcher.match()``.  When ``None``, hitting a
+            syntactic step raises ``NotImplementedError`` with a clear message.
     """
 
     def __init__(
@@ -223,12 +228,16 @@ class ProcedureExecutor:
         procedural_cap: float = PROCEDURAL_CAP,
         guardian_confirmation_boost: float = BASE_GUARDIAN_CONFIRMED,
         contradiction_detector: object | None = None,
+        syntactic_matcher: object | None = None,
     ) -> None:
         self.graph = graph
         self.retrieval_threshold = retrieval_threshold
         self.procedural_cap = procedural_cap
         self.guardian_confirmation_boost = guardian_confirmation_boost
         self._contradiction_detector = contradiction_detector
+        # Typed as ``object`` to avoid a circular import; runtime type is
+        # SyntacticTemplateMatcher.  Required to execute syntactic step types.
+        self._syntactic_matcher = syntactic_matcher
 
     # ------------------------------------------------------------------
     # Alternative constructors
@@ -405,9 +414,10 @@ class ProcedureExecutor:
         Handles step_types: ``literal``, ``variable``, ``operation``,
         ``conditional``, ``call``. Syntactic step_types (``match_root``,
         ``match_edge``, ``match_optional``, ``extract_role``,
-        ``match_property``) are recognised but raise
-        ``NotImplementedError`` -- they require the SyntacticTemplateMatcher
-        (P1.7-E4).
+        ``match_property``) are delegated to the injected
+        ``SyntacticTemplateMatcher`` when one is present (P1.7-E4), or raise
+        ``NotImplementedError`` with a descriptive message when the matcher
+        has not been wired.
 
         The ``call`` step type enables inter-procedure invocation. It reads
         the ``target_procedure`` property from the step node, evaluates its
@@ -440,7 +450,7 @@ class ProcedureExecutor:
                 cross-procedure cycle (A calls B calls A). Self-recursion
                 is allowed; depth limiting handles infinite self-recursion.
             NotImplementedError: If a syntactic step_type is encountered
-                (requires SyntacticTemplateMatcher from P1.7-E4).
+                and no ``syntactic_matcher`` was injected (P1.7-E4).
         """
         # Deadline check: abort immediately if time is up
         if time.monotonic() > ctx.deadline:
@@ -621,8 +631,11 @@ class ProcedureExecutor:
             ctx.memo[step_id] = result
             return result
 
-        # Syntactic step_types -- executed by SyntacticTemplateMatcher (P1.7-E4).
-        # Direct execution through ProcedureExecutor is not supported.
+        # Syntactic step_types -- delegated to SyntacticTemplateMatcher (P1.7-E4).
+        # match_root is the entry point of a syntactic template; the remaining
+        # syntactic types (match_edge, match_optional, extract_role,
+        # match_property) are internal to the template tree and are also only
+        # valid inside a SyntacticTemplateMatcher traversal.
         if step_type in (
             "match_root",
             "match_edge",
@@ -630,10 +643,29 @@ class ProcedureExecutor:
             "extract_role",
             "match_property",
         ):
-            raise NotImplementedError(
-                f"step_type '{step_type}' requires SyntacticTemplateMatcher "
-                f"(implemented in P1.7-E4). Cannot execute directly via ProcedureExecutor."
-            )
+            if self._syntactic_matcher is None:
+                raise NotImplementedError(
+                    f"step_type '{step_type}' requires a SyntacticTemplateMatcher "
+                    f"to be injected into ProcedureExecutor (see the "
+                    f"'syntactic_matcher' constructor argument, P1.7-E4). "
+                    f"No matcher is currently wired."
+                )
+
+            # Resolve the input text from the first variable binding's ValueNode.
+            # Syntactic templates declare a single text-input parameter (e.g.
+            # "$text") whose operand NodeId points to a node whose 'value'
+            # property holds the raw utterance string.
+            text: str = ""
+            if bindings:
+                first_node_id = next(iter(bindings.values()))
+                text_node = await self.graph.get_node(first_node_id)
+                if text_node is not None:
+                    raw = text_node.properties.get("value", "")
+                    text = str(raw) if raw is not None else ""
+
+            result = await self._syntactic_matcher.match(text)  # type: ignore[union-attr]
+            ctx.memo[step_id] = result
+            return result
 
         raise OperandTypeMismatchError(
             f"Unknown step_type '{step_type}' on ProcedureStep '{step_id}'."
