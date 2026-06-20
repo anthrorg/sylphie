@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 from cobeing.layer3_knowledge.exceptions import KnowledgeGraphError
 from cobeing.layer3_knowledge.node_types import KnowledgeNode, KnowledgeEdge, NodeStatus, SchemaLevel
-from cobeing.layer3_knowledge.query_types import NodeFilter
+from cobeing.layer3_knowledge.query_types import EdgeFilter, NodeFilter
 from cobeing.shared.provenance import Provenance, ProvenanceSource
 from cobeing.shared.types import NodeId, EdgeId
 
@@ -272,8 +272,12 @@ async def _resolve_dependencies(
                 ),
             )
 
-        # TODO: Add cycle detection here when multiple packages are being installed
-        # For now, single package installation cannot create cycles
+        # Cycle detection: build the full dependency graph (existing + incoming)
+        # and DFS-check for cycles before any write occurs.
+        dep_graph = await _build_installed_dependency_graph(persistence)
+        # Overlay the new package's edges (replacing any stale prior entry).
+        dep_graph[package_id] = list(requires)
+        _check_dependency_cycle(dep_graph, package_id)
 
         logger.debug(
             "dependencies_resolved package_id=%s requires=%s available=%s",
@@ -284,6 +288,9 @@ async def _resolve_dependencies(
 
         return DependencyResult(success=True)
 
+    except ValueError:
+        # Cycle-detection raises ValueError — let it propagate to install_package.
+        raise
     except Exception as exc:
         return DependencyResult(
             success=False,
@@ -310,6 +317,82 @@ async def _get_installed_package_ids(persistence: GraphPersistence) -> set[str]:
             installed.add(str(package_id))
 
     return installed
+
+
+async def _build_installed_dependency_graph(
+    persistence: GraphPersistence,
+) -> dict[str, list[str]]:
+    """Build an adjacency map of installed package dependencies.
+
+    Queries all SKILL_REQUIRES edges and returns a dict mapping each source
+    package ID to the list of package IDs it requires. Used as the base
+    graph for cycle detection before a new package is added.
+
+    Args:
+        persistence: Graph persistence backend.
+
+    Returns:
+        Dict of {package_id: [required_package_id, ...]} for every installed
+        package that has at least one SKILL_REQUIRES edge. Packages with no
+        outgoing SKILL_REQUIRES edges are not present as keys.
+    """
+    skill_requires_edges = await persistence.query_edges(
+        EdgeFilter(edge_type="SKILL_REQUIRES")
+    )
+
+    graph: dict[str, list[str]] = {}
+    for edge in skill_requires_edges:
+        # Edge source_id has the form "skill:<package_id>"; strip the prefix.
+        src_raw = str(edge.source_id)
+        tgt_raw = str(edge.target_id)
+        src = src_raw.removeprefix("skill:")
+        tgt = tgt_raw.removeprefix("skill:")
+        if src not in graph:
+            graph[src] = []
+        graph[src].append(tgt)
+
+    return graph
+
+
+def _check_dependency_cycle(
+    graph: dict[str, list[str]],
+    start: str,
+) -> None:
+    """Three-colour DFS cycle detection in the package dependency graph.
+
+    Only reachable nodes (those accessible from ``start``) are visited,
+    which keeps the check focused and avoids false positives from
+    unrelated installed packages.
+
+    Args:
+        graph: Adjacency map {package_id: [required_package_ids]}.
+        start: The package whose sub-graph to check (the new package).
+
+    Raises:
+        ValueError: If a cycle is reachable from ``start``, with a message
+            of the form ``'Circular dependency detected: A -> B -> A'``
+            where the path ends by repeating the node that closes the cycle.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {}
+
+    def _dfs(node: str, path: list[str]) -> None:
+        color[node] = GRAY
+        path.append(node)
+        for neighbour in graph.get(node, []):
+            if color.get(neighbour, WHITE) == GRAY:
+                # neighbour is on the current path — cycle found.
+                cycle_start = path.index(neighbour)
+                cycle_path = path[cycle_start:] + [neighbour]
+                raise ValueError(
+                    f"Circular dependency detected: {' -> '.join(cycle_path)}"
+                )
+            if color.get(neighbour, WHITE) == WHITE:
+                _dfs(neighbour, path)
+        path.pop()
+        color[node] = BLACK
+
+    _dfs(start, [])
 
 
 # ---------------------------------------------------------------------------
