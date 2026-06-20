@@ -8,13 +8,14 @@
  * at the semantic/behavioral level.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { CycleResponse, DriveName, PressureVector } from '@sylphie/shared';
 import { DRIVE_INDEX_ORDER } from '@sylphie/shared';
 import type {
   BehavioralBaseline,
   DecisionNarration,
 } from './interfaces/supervisor.types';
+import { SidecarControlService } from './sidecar-control.service';
 
 /** One entry in the behavioral-baseline rolling window. */
 interface BaselineSample {
@@ -42,12 +43,22 @@ export class NarrationBuilderService {
    */
   private readonly baselineWindow: BaselineSample[] = [];
 
+  constructor(
+    // Optional so the service remains constructable without NestJS DI in unit
+    // tests that only exercise baseline logic.
+    @Optional() private readonly sidecarControl: SidecarControlService | null = null,
+  ) {}
+
   /**
    * Build a compact narration from a CycleResponse.
    *
    * This is the primary data the supervisor LLM will evaluate.
+   *
+   * Fetches model state from the cognition sidecar to populate convergenceScore,
+   * globalModelConfidence, and panelDivergenceScores. All three are undefined
+   * when the sidecar is down or returns null — no exception is thrown.
    */
-  buildNarration(cycle: CycleResponse): DecisionNarration {
+  async buildNarration(cycle: CycleResponse): Promise<DecisionNarration> {
     const driveSnapshot = cycle.driveSnapshot.pressureVector;
 
     // Find the dominant drive (highest positive pressure)
@@ -71,6 +82,10 @@ export class NarrationBuilderService {
       latencyMs: cycle.latencyMs,
     });
 
+    // Fetch sidecar model state — undefined when sidecar is down (null return).
+    const { convergenceScore, globalModelConfidence, panelDivergenceScores } =
+      await this.fetchSidecarModelFields();
+
     return {
       cycleId: cycle.turnId,
       timestamp: new Date(),
@@ -82,13 +97,79 @@ export class NarrationBuilderService {
       driveSnapshot,
       behavioralBaseline,
       // Sidecar fields — populated when cognition-service is running
-      convergenceScore: undefined,
-      globalModelConfidence: undefined,
-      panelDivergenceScores: undefined,
+      convergenceScore,
+      globalModelConfidence,
+      panelDivergenceScores,
       // Outcome — populated later when reportOutcome fires
       predictionMAE: undefined,
       guardianFeedback: undefined,
       driveEffectsObserved: {},
+    };
+  }
+
+  /**
+   * Fetch and map model-state fields from the sidecar.
+   *
+   * Returns all three fields as undefined when the sidecar is unavailable,
+   * so the caller never needs to handle exceptions here.
+   *
+   * convergenceScore / globalModelConfidence: 1/(1+training_loss) — the inverse
+   * loss is the only scalar quality signal the sidecar exposes. Both fields use
+   * the same formula; they represent the same signal at different semantic
+   * levels (convergence-model health vs. overall model confidence).
+   *
+   * panelDivergenceScores: per-panel param ratio relative to the global model
+   * (panelParams / globalParams). This is the only per-panel numeric signal
+   * available in SidecarModelState; it represents relative model scale as a
+   * divergence proxy until the sidecar exposes per-panel loss.
+   */
+  private async fetchSidecarModelFields(): Promise<{
+    convergenceScore: number | undefined;
+    globalModelConfidence: number | undefined;
+    panelDivergenceScores: Record<string, number> | undefined;
+  }> {
+    if (!this.sidecarControl) {
+      return {
+        convergenceScore: undefined,
+        globalModelConfidence: undefined,
+        panelDivergenceScores: undefined,
+      };
+    }
+
+    const state = await this.sidecarControl.getModelState();
+    if (state === null) {
+      return {
+        convergenceScore: undefined,
+        globalModelConfidence: undefined,
+        panelDivergenceScores: undefined,
+      };
+    }
+
+    // Compute convergence score only when training_loss is a finite number.
+    const loss = state.training_loss;
+    const score =
+      typeof loss === 'number' && Number.isFinite(loss)
+        ? 1 / (1 + loss)
+        : undefined;
+
+    // Panel divergence: params for each panel as a fraction of global params.
+    // Falls back to an empty record when the global model has no params (guard
+    // against division-by-zero on an uninitialized sidecar).
+    const globalParams = state.models.global.params;
+    const panelDivergenceScores: Record<string, number> =
+      globalParams > 0
+        ? Object.fromEntries(
+            Object.entries(state.models.panels).map(([name, panel]) => [
+              name,
+              panel.params / globalParams,
+            ]),
+          )
+        : {};
+
+    return {
+      convergenceScore: score,
+      globalModelConfidence: score,
+      panelDivergenceScores,
     };
   }
 
