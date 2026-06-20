@@ -831,7 +831,7 @@ nodes:
     parent: EP-9
     title: "EP9-2 — Resolve subpath exports or confirm the cp-hack is correct"
     intent: "Act on the POC: delete the redundant cp workaround + add exports fields where live subpath consumers exist, or document the cp hack as intentional. No silent workaround."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/17"
     branch: "agent/tk-44-ep9-2-resolve-subpath-exports-or"
     priority: P2
