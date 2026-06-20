@@ -1436,7 +1436,7 @@ nodes:
     parent: EP-15
     title: "EP15.4 — Narration sidecar model-state enrichment"
     intent: "Inject SidecarControlService into NarrationBuilderService; populate convergenceScore (inverse training_loss), globalModelConfidence, panelDivergenceScores; undefined when the sidecar is down."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
