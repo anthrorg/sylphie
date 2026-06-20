@@ -1319,7 +1319,7 @@ nodes:
     parent: EP-14
     title: "EP14.7 — Unified MAE history store"
     intent: "Replace three independent Map<string,number[]> MAE windows (prediction, confidence-updater, type1-tracker) with one shared MaeHistoryStore so graduation/demotion/confidence read the same window."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
