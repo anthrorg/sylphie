@@ -62,7 +62,7 @@ import {
 } from './decision-making.tokens';
 import { MoodBleedMonitorService } from './monitoring/mood-bleed-monitor.service';
 import { ProcessInputService } from './process-input/process-input.service';
-import { ActionHandlerRegistryService, type ActionCycleContext } from './action-handlers/action-handler-registry.service';
+import { ActionHandlerRegistryService, HandlerNotFoundError, type ActionCycleContext } from './action-handlers/action-handler-registry.service';
 import { AttractorMonitorService } from './monitoring/attractor-monitor.service';
 import { TickSamplerService } from './inputs/sampling/tick-sampler';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
@@ -1088,6 +1088,19 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // detect the unavailability and emit an honest degraded-SHRUG instead.
           for (const step of procedureData.actionSequence) {
             const result = await this.actionHandlerRegistry.execute(step, cycleContext);
+            // EP14.5b (TK-90): handler not registered → build a typed cycleErrorContext
+            // and skip the step rather than swallowing it silently as null. The cycle
+            // still completes (no re-throw); the HANDLER_NOT_FOUND cause is carried
+            // onto the episode so post-hoc diagnostics can detect misconfigured procedures.
+            if (result instanceof HandlerNotFoundError) {
+              this.logger.warn(
+                `Procedure step ${step.index} (${step.stepType}) has no handler — ` +
+                  `recording HANDLER_NOT_FOUND and skipping step.`,
+              );
+              cycleError = { cause: 'HANDLER_NOT_FOUND', message: `No handler for step type: ${result.stepType}` };
+              executionResults.push(null);
+              continue;
+            }
             // CANON Standard 1: the procedure-handler path (e.g. LLM_GENERATE)
             // produces a fresh LLM response with NO knowledgeGrounding key, so
             // without this it would fall to the unconditional GROUNDED default.
@@ -1160,7 +1173,17 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 stepType: actionRequest.stepType,
                 params: { entity: actionRequest.target, query: actionRequest.target },
               };
-              const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              const actionResultRaw = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              // EP14.5b (TK-90): normalize HandlerNotFoundError to null for the side-effect
+              // action dispatch path — the verbal response is already set; the action
+              // was an optional side-effect (e.g. RESEARCH_ENTITY), so a missing handler
+              // does not block the response. Log it for diagnostics only.
+              if (actionResultRaw instanceof HandlerNotFoundError) {
+                this.logger.warn(
+                  `Deliberation action dispatch: no handler for "${actionResultRaw.stepType}" — side-effect skipped.`,
+                );
+              }
+              const actionResult = actionResultRaw instanceof HandlerNotFoundError ? null : actionResultRaw;
 
               executionResults.push({
                 content: actionRequest.verbalResponse,
@@ -1253,7 +1276,14 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 stepType: actionRequest.stepType,
                 params: { entity: actionRequest.target, query: actionRequest.target },
               };
-              const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              const actionResultRaw2 = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              // EP14.5b (TK-90): normalize HandlerNotFoundError to null for side-effect dispatch.
+              if (actionResultRaw2 instanceof HandlerNotFoundError) {
+                this.logger.warn(
+                  `SHRUG action dispatch: no handler for "${actionResultRaw2.stepType}" — side-effect skipped.`,
+                );
+              }
+              const actionResult = actionResultRaw2 instanceof HandlerNotFoundError ? null : actionResultRaw2;
               executionResults.push({
                 content: actionRequest.verbalResponse,
                 tokensUsed: deliberationResult.totalTokens,

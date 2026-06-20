@@ -24,6 +24,7 @@ import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
 import {
   type ActionCandidate,
   type ArbitrationResult,
+  type ContradictionScanResult,
   type DriveSnapshot,
   type ShrugDetail,
   CONFIDENCE_THRESHOLDS,
@@ -254,7 +255,27 @@ export class ArbitrationService implements IArbitrationService {
     if (bestType1 ) {
       // Step 5: Contradiction scan before committing TYPE_1.
       if (this.contradictionScanner ) {
-        const scanResult = await this.contradictionScanner.scan(bestType1, driveSnapshot);
+        let scanResult: ContradictionScanResult | null = null;
+        try {
+          scanResult = await this.contradictionScanner.scan(bestType1, driveSnapshot);
+        } catch (scanErr) {
+          // EP14.5b (TK-90): scanner threw unexpectedly. We cannot safely commit the
+          // Type 1 candidate without knowing whether it contradicts WKG beliefs, so
+          // degrade to SHRUG rather than re-throwing. The arbitrationError field
+          // distinguishes this infrastructure fault from a normal knowledge-gap SHRUG.
+          this.logger.error(
+            `Contradiction scan threw for "${bestType1.procedureData!.name}": ` +
+              `${scanErr instanceof Error ? scanErr.message : String(scanErr)}. Downgrading to SHRUG.`,
+          );
+          const result = this.buildShrug(
+            candidates,
+            driveSnapshot,
+            `Contradiction scan failed for Type 1 candidate "${bestType1.procedureData!.name}".`,
+            ['CONTRADICTION'],
+            threshold,
+          );
+          return { ...result, arbitrationError: 'CONTRADICTION_SCAN_FAILED' as const };
+        }
 
         if (scanResult.hasContradictions) {
           this.logger.warn(

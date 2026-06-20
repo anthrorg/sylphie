@@ -9,7 +9,7 @@
  *   - Maintain a map of stepType → handler functions
  *   - Register built-in handlers for the four core step types during initialization
  *   - Dispatch action steps to their registered handler at runtime
- *   - Warn and return null when no handler exists for a step type
+ *   - Warn and return HandlerNotFoundError when no handler exists for a step type
  *
  * Built-in handlers are fully wired to their dependent services:
  *   - LLM_GENERATE:    delegates to ILlmService.complete() (Communication module)
@@ -32,6 +32,30 @@ import { ConfigService } from '@nestjs/config';
 import { type ActionStep, type SensoryFrame, type CognitiveContext, LLM_SERVICE, type ILlmService } from '@sylphie/shared';
 import { WkgContextService } from '../wkg/wkg-context.service';
 import { capturePrompt } from '../deliberation/prompt-capture';
+
+// ---------------------------------------------------------------------------
+// HandlerNotFoundError — typed return from execute() when no handler is registered
+// ---------------------------------------------------------------------------
+
+/**
+ * EP14.5b (TK-90): Returned by execute() when no handler is registered for a
+ * step type. This replaces the silent `return null` so callers can distinguish
+ * "handler ran and produced no output" (null) from "handler not registered"
+ * (HandlerNotFoundError). The latter is always a configuration bug — surfacing
+ * it as a typed value instead of null lets the procedure loop build a
+ * HANDLER_NOT_FOUND cycleErrorContext rather than silently swallowing the gap.
+ *
+ * Note: this is a returned value, NOT a thrown exception, so the call site does
+ * not need a try/catch and the cycle completes normally.
+ */
+export class HandlerNotFoundError {
+  /** The step type string that had no registered handler. */
+  readonly stepType: string;
+
+  constructor(stepType: string) {
+    this.stepType = stepType;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Handler type
@@ -141,20 +165,23 @@ export class ActionHandlerRegistryService {
    *
    * @param actionStep   - The step to dispatch.
    * @param cycleContext  - Current cycle's sensory frame and cognitive context.
-   * @returns The handler's return value, or null if no handler was found.
+   * @returns The handler's return value, null if the handler produced no output,
+   *          or HandlerNotFoundError if no handler is registered for the step type.
    */
   async execute(
     actionStep: ActionStep,
     cycleContext: ActionCycleContext,
-  ): Promise<Record<string, unknown> | null> {
+  ): Promise<Record<string, unknown> | null | HandlerNotFoundError> {
     const handler = this.handlers.get(actionStep.stepType);
 
     if (!handler) {
       this.logger.warn(
         `No handler registered for step type: "${actionStep.stepType}" ` +
-          `(step index: ${actionStep.index}). Returning null.`,
+          `(step index: ${actionStep.index}). Returning HandlerNotFoundError.`,
       );
-      return null;
+      // EP14.5b (TK-90): typed return instead of null so the procedure loop can
+      // build a HANDLER_NOT_FOUND cycleErrorContext rather than silently dropping.
+      return new HandlerNotFoundError(actionStep.stepType);
     }
 
     return handler(actionStep, cycleContext);

@@ -126,8 +126,12 @@ export type EncodingDepth = 'DEEP' | 'NORMAL' | 'SHALLOW' | 'SKIP';
  *                           'AbortError'. The LLM was unreachable or too slow.
  * DELIBERATION_ERROR:       Any other error thrown from deliberation.deliberate().
  *                           Covers malformed responses, unexpected rejections, etc.
+ * HANDLER_NOT_FOUND:        EP14.5b (TK-90). The action handler registry had no
+ *                           handler registered for a step type in a procedure's
+ *                           actionSequence. The cycle completes without executing
+ *                           that step; the episode records this cause for diagnostics.
  */
-export type CycleErrorCause = 'LLM_TIMEOUT' | 'DELIBERATION_ERROR';
+export type CycleErrorCause = 'LLM_TIMEOUT' | 'DELIBERATION_ERROR' | 'HANDLER_NOT_FOUND';
 
 /**
  * Typed error context stamped onto an episode when the deliberation step throws
