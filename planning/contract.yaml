@@ -562,7 +562,7 @@ nodes:
     parent: EP-6
     title: "ACC.C — surprise -> SYSTEM_TRIGGER cycle + recall + drive signal (live)"
     intent: "Prove end-to-end that a scene/presence change with no text/audio fires a SYSTEM_TRIGGER cycle, the cycle retrieves a prior scene (P1.5), and the drive engine receives a presenceSurprise signal with no perception-side pre-computed delta (Std-6)."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/24"
     branch: "agent/tk-29-accc-surprise---systemtrigger-cycle"
     priority: P1
