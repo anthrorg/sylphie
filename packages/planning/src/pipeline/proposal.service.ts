@@ -10,7 +10,15 @@
  */
 
 import { Injectable, Inject, Optional, Logger } from '@nestjs/common';
-import { LLM_SERVICE, verboseFor, type ILlmService, type ActionStep } from '@sylphie/shared';
+import {
+  LLM_SERVICE,
+  verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
+  type ILlmService,
+  type ActionStep,
+  type LlmPricingRates,
+} from '@sylphie/shared';
 import type {
   IProposalService,
   PlanProposal,
@@ -29,10 +37,22 @@ const vlog = verboseFor('Planning');
 export class ProposalService implements IProposalService {
   private readonly logger = new Logger(ProposalService.name);
 
+  /** Resolved once at construction; same env vars as Supervisor CostTrackerService. */
+  private readonly pricingRates: LlmPricingRates;
+
   constructor(
     @Optional() @Inject(LLM_SERVICE)
     private readonly llm: ILlmService | null,
-  ) {}
+  ) {
+    this.pricingRates = resolveLlmPricingFromEnv();
+    // Log loudly when falling back to defaults — CANON theater prohibition: no silent $0.
+    if (this.pricingRates.usedDefault) {
+      this.logger.warn(
+        'LLM pricing env vars not fully configured — using DeepSeek defaults ' +
+          `($${this.pricingRates.inputPricePerM}/M in, $${this.pricingRates.outputPricePerM}/M out).`,
+      );
+    }
+  }
 
   async propose(
     opportunity: QueuedOpportunity,
@@ -163,6 +183,11 @@ export class ProposalService implements IProposalService {
         sessionId: 'planning-internal',
       },
     });
+
+    const np = response.tokensUsed.prompt;
+    const nc = response.tokensUsed.completion;
+    const costUsd = estimateLlmCostUsd(np, nc, this.pricingRates);
+    this.logger.log(`LLM cost [proposal]: $${costUsd.toFixed(6)} (${np}+${nc} tokens)`);
 
     return this.parseLlmProposal(response.content, best.actionCategory);
   }
