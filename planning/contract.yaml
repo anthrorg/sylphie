@@ -1455,7 +1455,7 @@ nodes:
     parent: EP-15
     title: "EP15.5 — VERIFY A2.1 latent-space hardening is live; close stub"
     intent: "Confirm commit 80128a4 landed the latent-space confidence ceiling + schema CHECK, then close the verify-before-listing item. (Decomposer found it already done.)"
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: mvp
