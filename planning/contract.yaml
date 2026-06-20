@@ -1224,7 +1224,7 @@ nodes:
     parent: EP-14
     title: "EP14.3 — Simulation sample-size-aware confidence + risk"
     intent: "Replace min(0.8,successRate)/(1-successRate) with shrinkage-prior confidence (k=10) and variance-aware risk, so one lucky outcome != 50 consistent ones."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
