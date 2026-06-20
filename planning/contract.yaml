@@ -930,7 +930,7 @@ nodes:
     branch: "agent/tk-49-ep111-other-instance-okg-decay-with"
     title: "EP11.1 — OTHER-instance (OKG) decay with guardian/identity exclusion"
     intent: "Decay confidence on non-identity OKG facts via the same ACT-R formula as WORLD, while guardian-confirmed identity facts never decay."
-    status: in_progress
+    status: done
     priority: P3
     estimate: L
     engineering_level: production
