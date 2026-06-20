@@ -36,6 +36,14 @@
  * groundable WKG nodes (see runConsolidationCycle — the result is consumed for
  * event logging/counts), so no `:Candidate` routing is required here; see the
  * C5 report for the no-op evidence.
+ *
+ * EP12.1a — LLM-assisted entity extraction (TK-87):
+ * When LLM_SERVICE is bound and available, consolidate() calls extractWithLlm()
+ * to replace the whitespace-split heuristic with multi-word NER. The heuristic
+ * (extractEntities) is the silent fallback when llm===null, !isAvailable(), or
+ * complete() throws / returns unparseable text. convertToSemantic() is unchanged
+ * (synchronous interface contract preserved); the LLM path lives entirely inside
+ * the async consolidate() method.
  */
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
@@ -49,7 +57,10 @@ import type {
   DriveSnapshot,
   ProvenanceSource,
   VisualContext,
+  ILlmService,
+  LlmRequest,
 } from '@sylphie/shared';
+import { LLM_SERVICE } from '@sylphie/shared';
 import type {
   IConsolidationService,
   IEpisodicMemoryService,
@@ -121,6 +132,10 @@ export class ConsolidationService implements IConsolidationService {
     @Optional()
     @Inject(DECISION_EVENT_LOGGER)
     private readonly eventLogger: IDecisionEventLogger | null,
+
+    @Optional()
+    @Inject(LLM_SERVICE)
+    private readonly llm: ILlmService | null = null,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -224,21 +239,30 @@ export class ConsolidationService implements IConsolidationService {
    */
   async consolidate(candidate: ConsolidationCandidate): Promise<ConsolidationResult> {
     try {
+      // Build the base conversion using the synchronous heuristic path, then
+      // upgrade entities with the LLM result when available. The heuristic
+      // entities are the lesion-safe floor; extractWithLlm() returns them on
+      // any fallback condition so the spread is always safe.
       const conversion = this.convertToSemantic(candidate.episode);
+      const entities = await this.extractWithLlm(
+        candidate.episode.inputSummary,
+        candidate.episode.actionTaken,
+      );
+      const finalConversion: SemanticConversion = { ...conversion, entities };
 
-      this.emitConsolidationAttempted(candidate, conversion);
+      this.emitConsolidationAttempted(candidate, finalConversion);
 
       this.logger.debug(
         `Consolidated episode ${candidate.episode.id}: ` +
-          `${conversion.entities.length} entities, ` +
-          `${conversion.relationships.length} relationships ` +
-          `(confidence=${conversion.confidence.toFixed(3)})`,
+          `${finalConversion.entities.length} entities, ` +
+          `${finalConversion.relationships.length} relationships ` +
+          `(confidence=${finalConversion.confidence.toFixed(3)})`,
       );
 
       return {
         episodeId: candidate.episode.id,
         success: true,
-        conversionsCreated: conversion.relationships.length,
+        conversionsCreated: finalConversion.relationships.length,
       };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -289,6 +313,75 @@ export class ConsolidationService implements IConsolidationService {
     );
 
     return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private — LLM-assisted entity extraction (EP12.1a / TK-87)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Attempt LLM-assisted entity extraction, silently falling back to the
+   * whitespace-split heuristic on any failure path.
+   *
+   * Fall-back triggers (lesion-safe by contract):
+   *   1. this.llm === null (LLM_SERVICE not bound)
+   *   2. this.llm.isAvailable() === false (lesion test / circuit-breaker)
+   *   3. this.llm.complete() throws
+   *   4. parseLlmExtractionResponse() returns an empty array (unparseable)
+   *
+   * On paths 1-2, the fall-back is silent (no log). On path 3, a warn is
+   * emitted so debugging is possible without flooding normal-operation logs.
+   * On path 4, the heuristic result is returned silently.
+   */
+  private async extractWithLlm(
+    inputSummary: string,
+    actionTaken: string,
+  ): Promise<readonly string[]> {
+    const heuristicEntities = extractEntities(inputSummary, actionTaken);
+
+    if (!this.llm || !this.llm.isAvailable()) {
+      return heuristicEntities;
+    }
+
+    const request: LlmRequest = {
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Extract named entities (people, organisations, locations, and ` +
+            `significant concepts) from the following text. Include multi-word ` +
+            `proper nouns as single entries. Include lowercase concepts that are ` +
+            `semantically significant. Exclude sentence-initial capitalisation ` +
+            `false positives.\n\n` +
+            `Input: ${inputSummary}\nAction: ${actionTaken}\n\n` +
+            `Respond with a JSON array of strings only, e.g. ["Alice", "Project X", "trust"].`,
+        },
+      ],
+      systemPrompt:
+        'You are a named-entity extraction assistant. ' +
+        'Return only a JSON array of entity strings. No explanation.',
+      maxTokens: 256,
+      temperature: 0.0,
+      tier: 'quick',
+      metadata: {
+        // Decision-making subsystem LLM calls use COMMUNICATION as the
+        // registered caller (matches ActionHandlerRegistryService and
+        // DeliberationService precedent in this package).
+        callerSubsystem: 'COMMUNICATION',
+        purpose: 'ENTITY_EXTRACTION',
+        sessionId: 'consolidation',
+      },
+    };
+
+    try {
+      const response = await this.llm.complete(request);
+      const parsed = parseLlmExtractionResponse(response.content);
+      // Fall back silently if the LLM returned something unparseable.
+      return parsed.length > 0 ? parsed : heuristicEntities;
+    } catch (err) {
+      this.logger.warn(`extractWithLlm: LLM call failed, using heuristic fallback: ${err}`);
+      return heuristicEntities;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -380,6 +473,51 @@ function extractEntities(inputSummary: string, actionTaken: string): readonly st
         seen.add(normalised);
         entities.push(clean);
       }
+    }
+  }
+
+  return entities;
+}
+
+/**
+ * Parse an LLM entity-extraction response into a deduplicated string array.
+ *
+ * Accepts two formats the model may produce:
+ *   1. A bare JSON array:   ["Alice", "Project X"]
+ *   2. A JSON array embedded in prose (e.g. markdown fences or leading text).
+ *      The first [...] balanced bracket pair is extracted and parsed.
+ *
+ * Returns an empty array on any parse failure so callers can detect the
+ * unparseable case and fall back to the heuristic silently.
+ *
+ * Deduplication is case-insensitive (first occurrence wins, original casing kept)
+ * to match the contract of extractEntities().
+ */
+export function parseLlmExtractionResponse(content: string): readonly string[] {
+  // Locate the first balanced [...] bracket pair in the response.
+  const start = content.indexOf('[');
+  if (start === -1) return [];
+  const end = content.lastIndexOf(']');
+  if (end === -1 || end <= start) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  // Deduplicate case-insensitively; keep original casing of first occurrence.
+  const seen = new Set<string>();
+  const entities: string[] = [];
+  for (const item of parsed) {
+    if (typeof item !== 'string' || item.trim() === '') continue;
+    const key = item.trim().toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      entities.push(item.trim());
     }
   }
 
