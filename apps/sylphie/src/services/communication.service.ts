@@ -31,7 +31,6 @@ import { randomUUID } from 'crypto';
 import {
   TimescaleService,
   DriveName,
-  DRIVE_INDEX_ORDER,
   LLM_SERVICE,
   verboseFor,
   type ILlmService,
@@ -41,12 +40,8 @@ import {
   type DriveSnapshot,
   type OpportunityCreatedPayload,
 } from '@sylphie/shared';
-import {
-  scoreAffect,
-  classifyMismatch,
-  type TextTheaterVerdict,
-} from './theater-affect-scorer';
 import { buildResponseGeneratedPayload } from './response-generated-payload';
+import { CycleOutcomeReporterService } from './cycle-outcome-reporter.service';
 
 const vlog = verboseFor('Communication');
 import {
@@ -151,6 +146,10 @@ export class CommunicationService implements OnModuleInit {
     // (`:Candidate → :Entity`). Provided by DecisionMakingModule + a module export,
     // resolved by NestJS DI (same path as metrics.controller's injection).
     private readonly wkgContext: WkgContextService,
+
+    // TK-35 (EP7-E): theater check + basic outcome report extracted to isolate
+    // CANON Std-1 audit logic from the delivery hot-path.
+    private readonly cycleOutcomeReporter: CycleOutcomeReporterService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -611,7 +610,9 @@ export class CommunicationService implements OnModuleInit {
 
     // Theater Prohibition check (CANON Standard 1). Audit + zero-reinforce on a
     // violation; delivery is NOT blocked — the response still reaches the guardian.
-    const theaterVerdict = this.checkTheaterProhibition(response);
+    // TK-35 (EP7-E): delegated to CycleOutcomeReporterService; verdict still
+    // needed here to set isGrounded on the DeliveryPayload.
+    const theaterVerdict = this.cycleOutcomeReporter.checkTheaterProhibition(response);
     const isGrounded = !theaterVerdict.isTheatrical;
 
     // Voice output: check voice latent space FIRST, fall back to TTS on miss.
@@ -736,7 +737,9 @@ export class CommunicationService implements OnModuleInit {
 
     // Report basic outcome to close the reinforcement loop. The theater verdict
     // threads through so reinforcement is zeroed on a Standard-1 violation.
-    await this.reportBasicOutcome(response, theaterVerdict);
+    // TK-35 (EP7-E): verdict was already computed above; pass it directly to
+    // avoid a second scorer run.
+    await this.cycleOutcomeReporter.reportBasicOutcome(response, theaterVerdict);
   }
 
   // ---------------------------------------------------------------------------
@@ -852,142 +855,6 @@ export class CommunicationService implements OnModuleInit {
       );
     }
     return result;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Theater Prohibition (CANON Standard 1)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Validate that the response text's tonal affect correlates with actual
-   * drive state (CANON Standard 1 — Theater Prohibition).
-   *
-   * Uses a deterministic lexical scorer (theater-affect-scorer.ts) — no LLM
-   * calls, no external dependencies. Catches gross tonal mismatches: effusive
-   * cheerfulness while Anxiety/Guilt/Sadness are elevated, or performed distress
-   * while Satisfaction is high and Anxiety is low.
-   *
-   * On violation: writes a THEATER_PROHIBITED audit event to TimescaleDB and
-   * returns isTheatrical=true so the caller zeros reinforcement. Delivery is NOT
-   * blocked — the response still reaches the guardian (this is an honesty audit,
-   * not a content filter). The returned verdict threads to reportBasicOutcome,
-   * which sets theaterValidated=false → drive-engine zero-reinforcement.
-   */
-  private checkTheaterProhibition(response: CycleResponse): TextTheaterVerdict {
-    const affectScore = scoreAffect(response.text ?? '');
-
-    if (!response.text) {
-      // SHRUG — no text, no tone, not theatrical.
-      return {
-        isTheatrical: false,
-        violationClass: null,
-        offendingDrive: null,
-        offendingDriveValue: null,
-        reason: 'No response text (SHRUG) — not theatrical',
-        affectScore,
-      };
-    }
-
-    const verdict = classifyMismatch(affectScore, response.driveSnapshot.pressureVector);
-
-    if (verdict.isTheatrical) {
-      this.logger.warn(
-        `[Theater Prohibition] VIOLATION — turn=${response.turnId}, ` +
-          `class=${verdict.violationClass}, drive=${verdict.offendingDrive}, ` +
-          `driveValue=${verdict.offendingDriveValue?.toFixed(2)}, reason="${verdict.reason}"`,
-      );
-
-      // Audit trail (CANON Standard 1). Fire-and-forget — never block delivery
-      // on the DB write. logEvent already routes to TimescaleDB.
-      this.logEvent(
-        'THEATER_PROHIBITED',
-        response.driveSnapshot.sessionId,
-        {
-          turnId: response.turnId,
-          actionId: response.actionId,
-          violationClass: verdict.violationClass,
-          offendingDrive: verdict.offendingDrive,
-          offendingDriveValue: verdict.offendingDriveValue,
-          affectValence: affectScore.valence,
-          affectMagnitude: affectScore.magnitude,
-          markerCount: affectScore.markerCount,
-          verdictReason: verdict.reason,
-          responseTextSnippet: response.text.substring(0, 100),
-          auditOnly: true,
-        },
-        // CANON Std-2: correlate this violation row with the action that
-        // produced the theatrical response, using the same `action:<id>`
-        // convention the drive engine uses for its DRIVE_EVENT rows.
-        response.actionId ? `action:${response.actionId}` : null,
-      );
-    } else {
-      this.logger.debug(
-        `[Theater Prohibition] OK — turn=${response.turnId}, ` +
-          `valence=${affectScore.valence.toFixed(2)}, magnitude=${affectScore.magnitude.toFixed(2)}`,
-      );
-    }
-
-    return verdict;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Outcome Reporting
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Report a basic outcome after response delivery.
-   *
-   * This closes the reinforcement loop for the current cycle without
-   * waiting for explicit guardian feedback. If guardian feedback arrives
-   * later via reportGuardianFeedback(), it will update the confidence again.
-   */
-  private async reportBasicOutcome(
-    response: CycleResponse,
-    theaterVerdict: TextTheaterVerdict,
-  ): Promise<void> {
-    // All responses that produced text should report outcomes to the drive
-    // engine so that communicating relieves drives (Social, Boredom, etc.).
-    // SHRUG and novel TYPE_2 responses lack a procedure node, so the
-    // decision-making service will skip confidence updates for them — but
-    // it must still forward drive effects to the Drive Engine.
-
-    try {
-      const postSnapshot = this.driveStateReader.getCurrentState();
-
-      // Compute observed drive effects as the delta between pre-execution
-      // and post-execution pressure vectors. Without this, predictions are
-      // always compared against an empty object and MAE drifts upward.
-      const observed: Partial<Record<DriveName, number>> = {};
-      if (response.preExecutionDriveSnapshot) {
-        for (const drive of DRIVE_INDEX_ORDER) {
-          const pre = response.preExecutionDriveSnapshot[drive] ?? 0;
-          const post = postSnapshot.pressureVector[drive] ?? 0;
-          const delta = post - pre;
-          if (Math.abs(delta) > 0.001) {
-            observed[drive] = delta;
-          }
-        }
-      }
-
-      await this.decisionMaking.reportOutcome(response.actionId, {
-        selectedAction: {
-          actionId: response.actionId,
-          arbitrationResult: response.arbitrationResult,
-          selectedAt: new Date(),
-          // CANON Standard 1: honest verdict from checkTheaterProhibition. A
-          // theatrical response sets this false → drive-engine zero-reinforcement
-          // (Sylphie is not rewarded for expressing affect she does not feel).
-          theaterValidated: !theaterVerdict.isTheatrical,
-        },
-        predictionAccurate: false, // Unknown until guardian feedback
-        predictionError: 0.5,      // Neutral — will be updated by feedback
-        driveEffectsObserved: observed,
-        anxietyAtExecution: postSnapshot.pressureVector[DriveName.Anxiety] ?? 0,
-        observedAt: new Date(),
-      });
-    } catch (err) {
-      this.logger.warn(`reportBasicOutcome failed: ${err}`);
-    }
   }
 
   // ---------------------------------------------------------------------------
