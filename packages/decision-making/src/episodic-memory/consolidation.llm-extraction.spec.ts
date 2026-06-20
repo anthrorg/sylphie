@@ -1,15 +1,29 @@
 /**
  * EP12.1a (TK-87) — ConsolidationService LLM-assisted entity extraction.
+ * EP12.1b (TK-88) — ConsolidationService LLM-assisted relationship extraction.
  *
- * Verifies the three acceptance criteria:
- *   AC1 — @Optional() ILlmService injection: service constructs with and
- *          without LLM_SERVICE bound; build does not break existing DI path.
- *   AC2 — LLM path: multi-word proper nouns extracted whole, lowercase
- *          concepts included, sentence-initial false positives excluded,
- *          parseLlmExtractionResponse() returns correct entities.
- *   AC3 — Fallback path: null llm, !isAvailable(), and complete() throw/
- *          return unparseable text all fall back to heuristic silently;
- *          consolidate() still returns success.
+ * Verifies the acceptance criteria:
+ *   AC1 (TK-87) — @Optional() ILlmService injection: service constructs with
+ *                  and without LLM_SERVICE bound; build does not break existing
+ *                  DI path.
+ *   AC2 (TK-87) — LLM entity path: multi-word proper nouns extracted whole,
+ *                  lowercase concepts included, sentence-initial false positives
+ *                  excluded, parseLlmExtractionResponse() returns correct
+ *                  entities.
+ *   AC3 (TK-87) — Entity fallback path: null llm, !isAvailable(), and
+ *                  complete() throw/return unparseable text all fall back to
+ *                  heuristic silently; consolidate() still returns success.
+ *   AC4 (TK-88) — LLM relationship path: parseLlmRelationshipResponse returns
+ *                  >=1 triple with a real (non-'observed_outcome') object,
+ *                  carrying {subject, predicate, object, confidence, provenance}.
+ *                  consolidate() with LLM bound produces relationships whose
+ *                  objects are NOT the literal 'observed_outcome'.
+ *   AC5 (TK-88) — Relationship fallback path: null llm, !isAvailable(),
+ *                  complete() throws, or zero parseable triples all fall back to
+ *                  the two-hardcoded-triple heuristic silently; the
+ *                  (inputSummary[:80] -> 'triggered' -> actionTaken) and
+ *                  (actionTaken -> 'produced' -> 'observed_outcome') triples are
+ *                  produced; consolidate() returns success.
  *
  * Uses Jest mocks only — no real LLM calls.
  */
@@ -21,8 +35,13 @@ import type {
   ILlmService,
   LlmResponse,
   EpisodeSource,
+  SemanticRelationship,
 } from '@sylphie/shared';
-import { ConsolidationService, parseLlmExtractionResponse } from './consolidation.service';
+import {
+  ConsolidationService,
+  parseLlmExtractionResponse,
+  parseLlmRelationshipResponse,
+} from './consolidation.service';
 import type { IEpisodicMemoryService } from '../interfaces/decision-making.interfaces';
 
 // ---------------------------------------------------------------------------
@@ -122,9 +141,10 @@ describe('AC2 — LLM path: multi-word NER via extractWithLlm()', () => {
     const episode = makeEpisode('James Bond infiltrated Project Nightfall last night');
     const result = await svc.consolidate(makeCandidate(episode));
 
-    // consolidate() must succeed
+    // consolidate() must succeed; complete() is called twice — once for entity
+    // extraction and once for relationship extraction (EP12.1b / TK-88).
     expect(result.success).toBe(true);
-    expect(llm.complete).toHaveBeenCalledTimes(1);
+    expect(llm.complete).toHaveBeenCalledTimes(2);
   });
 
   it('parseLlmExtractionResponse returns multi-word entries as single strings', () => {
@@ -240,5 +260,233 @@ describe('AC3 — Fallback to heuristic, no exception, consolidate() returns suc
     expect(conv.entities).toContain('Park');
     // 'ran', 'across', 'the' are not title-cased.
     expect(conv.entities).not.toContain('ran');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC4 (TK-88) — LLM relationship path: parseLlmRelationshipResponse and
+//               consolidate() with LLM bound produce real-object triples
+// ---------------------------------------------------------------------------
+
+describe('AC4 (TK-88) — LLM relationship path: real-object triples from LLM', () => {
+  /** A realistic relationship-extraction LLM response. */
+  const relationshipResponse = JSON.stringify([
+    { subject: 'Alice', predicate: 'requested', object: 'coffee' },
+    { subject: 'coffee', predicate: 'caused', object: 'alertness', confidence: 0.7 },
+  ]);
+
+  it('parseLlmRelationshipResponse returns >=1 triple with a non-"observed_outcome" object', () => {
+    const triples = parseLlmRelationshipResponse(relationshipResponse, 0.8, 'LLM_GENERATED');
+    expect(triples.length).toBeGreaterThanOrEqual(1);
+    for (const t of triples) {
+      expect(t.object).not.toBe('observed_outcome');
+    }
+  });
+
+  it('parseLlmRelationshipResponse shapes each triple with all required fields', () => {
+    const triples = parseLlmRelationshipResponse(relationshipResponse, 0.8, 'LLM_GENERATED');
+    for (const t of triples) {
+      expect(typeof t.subject).toBe('string');
+      expect(typeof t.predicate).toBe('string');
+      expect(typeof t.object).toBe('string');
+      expect(typeof t.confidence).toBe('number');
+      expect(t.provenance).toBe('LLM_GENERATED');
+    }
+  });
+
+  it('parseLlmRelationshipResponse uses supplied defaultConfidence when item has no confidence', () => {
+    const response = JSON.stringify([
+      { subject: 'Alice', predicate: 'met', object: 'Bob' },
+    ]);
+    const triples = parseLlmRelationshipResponse(response, 0.75, 'LLM_GENERATED');
+    expect(triples[0]!.confidence).toBe(0.75);
+  });
+
+  it('parseLlmRelationshipResponse clamps item confidence to [0,1]', () => {
+    const response = JSON.stringify([
+      { subject: 'A', predicate: 'b', object: 'C', confidence: 9.99 },
+      { subject: 'D', predicate: 'e', object: 'F', confidence: -5 },
+    ]);
+    const triples = parseLlmRelationshipResponse(response, 0.5, 'LLM_GENERATED');
+    expect(triples[0]!.confidence).toBe(1);
+    expect(triples[1]!.confidence).toBe(0);
+  });
+
+  it('parseLlmRelationshipResponse discards triples with object === "observed_outcome"', () => {
+    const response = JSON.stringify([
+      { subject: 'Alice', predicate: 'produced', object: 'observed_outcome' },
+      { subject: 'Alice', predicate: 'requested', object: 'coffee' },
+    ]);
+    const triples = parseLlmRelationshipResponse(response, 0.8, 'LLM_GENERATED');
+    expect(triples).toHaveLength(1);
+    expect(triples[0]!.object).toBe('coffee');
+  });
+
+  it('parseLlmRelationshipResponse handles array embedded in prose (markdown fence)', () => {
+    const prose =
+      'Here are the triples:\n```json\n' +
+      '[{"subject":"Alice","predicate":"met","object":"Bob"}]\n' +
+      '```\nDone.';
+    const triples = parseLlmRelationshipResponse(prose, 0.8, 'LLM_GENERATED');
+    expect(triples).toHaveLength(1);
+    expect(triples[0]!.subject).toBe('Alice');
+  });
+
+  it('consolidate() with LLM bound produces relationships whose objects are not "observed_outcome"', async () => {
+    // Provide a two-call mock: first call returns entity JSON array, second
+    // returns relationship JSON. Using mockResolvedValueOnce for sequencing.
+    const entityResponseContent = '["Alice", "coffee"]';
+    const llm = {
+      isAvailable: jest.fn().mockReturnValue(true),
+      complete: jest
+        .fn()
+        .mockResolvedValueOnce({
+          content: entityResponseContent,
+          tokensUsed: { prompt: 10, completion: 5 },
+          latencyMs: 50,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse)
+        .mockResolvedValueOnce({
+          content: relationshipResponse,
+          tokensUsed: { prompt: 20, completion: 10 },
+          latencyMs: 50,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse),
+      estimateCost: jest.fn(),
+      setUnavailable: jest.fn(),
+      clearUnavailable: jest.fn(),
+    } as unknown as ILlmService;
+
+    const svc = new ConsolidationService(episodicMemoryStub, null, llm);
+    const episode = makeEpisode('Alice requested coffee from the cafe', 'observe');
+    const result = await svc.consolidate(makeCandidate(episode));
+
+    expect(result.success).toBe(true);
+    // conversionsCreated reflects the LLM relationship count (2 triples above).
+    expect(result.conversionsCreated).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC5 (TK-88) — Relationship fallback path: heuristic two-triple logic when
+//               LLM unavailable or returns no usable triples
+// ---------------------------------------------------------------------------
+
+describe('AC5 (TK-88) — Relationship fallback to heuristic two-triple logic', () => {
+  it('falls back to heuristic when llm is null: produces the two standard triples', async () => {
+    const svc = new ConsolidationService(episodicMemoryStub, null);
+    const episode = makeEpisode('Alice spoke to the doctor', 'speak');
+    const conv = svc.convertToSemantic(episode);
+
+    // Heuristic triples: primary has object=actionTaken, secondary has object='observed_outcome'.
+    const rels = conv.relationships as SemanticRelationship[];
+    expect(rels).toHaveLength(2);
+    expect(rels[0]!.predicate).toBe('triggered');
+    expect(rels[0]!.object).toBe('speak'); // actionTaken
+    expect(rels[1]!.predicate).toBe('produced');
+    expect(rels[1]!.object).toBe('observed_outcome');
+  });
+
+  it('falls back to heuristic when isAvailable() is false', async () => {
+    const llm = makeLlmMock({ available: false });
+    const svc = new ConsolidationService(episodicMemoryStub, null, llm);
+    const episode = makeEpisode('Alice spoke to the doctor', 'speak');
+    const result = await svc.consolidate(makeCandidate(episode));
+
+    expect(result.success).toBe(true);
+    // No LLM calls at all — both entity and relationship paths skipped.
+    expect(llm.complete).not.toHaveBeenCalled();
+    // conversionsCreated = 2 (heuristic two triples).
+    expect(result.conversionsCreated).toBe(2);
+  });
+
+  it('falls back silently when LLM returns zero parseable relationship triples', async () => {
+    // Entity call returns valid data; relationship call returns an empty array.
+    const llm = {
+      isAvailable: jest.fn().mockReturnValue(true),
+      complete: jest
+        .fn()
+        .mockResolvedValueOnce({
+          content: '["Alice"]',
+          tokensUsed: { prompt: 5, completion: 2 },
+          latencyMs: 30,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse)
+        .mockResolvedValueOnce({
+          content: '[]',
+          tokensUsed: { prompt: 10, completion: 2 },
+          latencyMs: 30,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse),
+      estimateCost: jest.fn(),
+      setUnavailable: jest.fn(),
+      clearUnavailable: jest.fn(),
+    } as unknown as ILlmService;
+
+    const svc = new ConsolidationService(episodicMemoryStub, null, llm);
+    const episode = makeEpisode('Alice spoke to the doctor', 'speak');
+    const result = await svc.consolidate(makeCandidate(episode));
+
+    expect(result.success).toBe(true);
+    // Empty LLM relationship response → heuristic fallback → 2 triples.
+    expect(result.conversionsCreated).toBe(2);
+  });
+
+  it('falls back silently when LLM relationship response only has "observed_outcome" objects', async () => {
+    // All triples are discarded by parseLlmRelationshipResponse filter → [] → heuristic.
+    const allPlaceholder = JSON.stringify([
+      { subject: 'foo', predicate: 'produced', object: 'observed_outcome' },
+    ]);
+    const llm = {
+      isAvailable: jest.fn().mockReturnValue(true),
+      complete: jest
+        .fn()
+        .mockResolvedValueOnce({
+          content: '[]',
+          tokensUsed: { prompt: 5, completion: 1 },
+          latencyMs: 30,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse)
+        .mockResolvedValueOnce({
+          content: allPlaceholder,
+          tokensUsed: { prompt: 10, completion: 5 },
+          latencyMs: 30,
+          model: 'test-model',
+          cost: 0,
+        } satisfies LlmResponse),
+      estimateCost: jest.fn(),
+      setUnavailable: jest.fn(),
+      clearUnavailable: jest.fn(),
+    } as unknown as ILlmService;
+
+    const svc = new ConsolidationService(episodicMemoryStub, null, llm);
+    const episode = makeEpisode('Alice spoke to the doctor', 'speak');
+    const result = await svc.consolidate(makeCandidate(episode));
+
+    expect(result.success).toBe(true);
+    // All LLM relationship triples discarded → heuristic → 2 triples.
+    expect(result.conversionsCreated).toBe(2);
+  });
+
+  it('parseLlmRelationshipResponse returns [] for no JSON array in response', () => {
+    expect(parseLlmRelationshipResponse('no json here', 0.8, 'LLM_GENERATED')).toEqual([]);
+    expect(parseLlmRelationshipResponse('', 0.8, 'LLM_GENERATED')).toEqual([]);
+    expect(
+      parseLlmRelationshipResponse('{ "key": "value" }', 0.8, 'LLM_GENERATED'),
+    ).toEqual([]);
+  });
+
+  it('parseLlmRelationshipResponse returns [] when items lack required fields', () => {
+    const response = JSON.stringify([
+      { subject: 'Alice', predicate: 'met' }, // missing object
+      { predicate: 'met', object: 'Bob' }, // missing subject
+      { subject: 'Alice', object: 'Bob' }, // missing predicate
+    ]);
+    expect(parseLlmRelationshipResponse(response, 0.8, 'LLM_GENERATED')).toEqual([]);
   });
 });
