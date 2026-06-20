@@ -910,7 +910,7 @@ nodes:
     branch: "agent/tk-48-ep10-4-consolidate-ollamallmservice-cost"
     title: "EP10-4 — Consolidate OllamaLlmService cost to the shared utility"
     intent: "Replace the local hardcoded DeepSeek rate constants with estimateLlmCostUsd + resolveLlmPricingFromEnv so rate changes are one env-var, not two code edits."
-    status: in_progress
+    status: done
     priority: P2
     estimate: S
     engineering_level: mvp
