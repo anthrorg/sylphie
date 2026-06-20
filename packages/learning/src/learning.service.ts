@@ -541,11 +541,19 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       await this.updateWkg.markAsLearned(event.id);
       result.eventsProcessed++;
     } catch (err) {
-      this.logger.error(
-        `processEvent failed for event ${event.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.error(`processEvent failed for event ${event.id}: ${errorMessage}`);
+
+      // Determine the step name from the error context. Because the pipeline
+      // steps are sequential and we re-throw from within each awaited call,
+      // the step is encoded in the error message by convention (each service
+      // includes its class name). We fall back to 'unknown' when it cannot be
+      // inferred so the dead-letter row is always written.
+      const pipelineStep = inferPipelineStep(errorMessage);
+
+      // Record the failure so silent data loss becomes auditable.
+      await this.updateWkg.writeDeadLetter(event.id, pipelineStep, errorMessage);
+
       // Mark as learned anyway to prevent a broken event from blocking the cycle
       // on every subsequent run. A bad event should not stall the pipeline.
       try {
@@ -556,6 +564,36 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort: derive the pipeline step name from an error message string.
+ *
+ * Each pipeline service logs its class name (e.g. "UpsertEntitiesService") in
+ * thrown errors. We scan for known class name substrings so the dead-letter
+ * row carries the specific step that failed rather than a generic label.
+ * Falls back to 'unknown' so dead-letter rows are always written.
+ */
+function inferPipelineStep(errorMessage: string): string {
+  const STEP_MAP: Array<[string, string]> = [
+    ['UpsertEntities', 'upsertEntities'],
+    ['ExtractTypedEdges', 'extractTypedEdges'],
+    ['ExtractEdges', 'extractEdges'],
+    ['ConversationEntry', 'conversationEntry'],
+    ['CanProduceEdges', 'canProduceEdges'],
+    ['RefineEdges', 'refineEdges'],
+    ['DetectContradictions', 'detectContradictions'],
+    ['markAsLearned', 'markAsLearned'],
+  ];
+
+  for (const [token, step] of STEP_MAP) {
+    if (errorMessage.includes(token)) return step;
+  }
+  return 'unknown';
 }
 
 // ---------------------------------------------------------------------------

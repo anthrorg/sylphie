@@ -4,9 +4,11 @@
  * Responsibilities:
  *   1. Schema migration: add has_learned BOOLEAN DEFAULT false to the events
  *      table and create a partial index WHERE has_learned = false.
- *   2. Fetch up to N unlearned events from TimescaleDB (ordered ASC by timestamp
+ *   2. Ensure the failed_learning_events dead-letter hypertable exists.
+ *   3. Fetch up to N unlearned events from TimescaleDB (ordered ASC by timestamp
  *      so the oldest experience is processed first).
- *   3. Mark individual events as learned after the full pipeline completes.
+ *   4. Mark individual events as learned after the full pipeline completes.
+ *   5. Write dead-letter rows when a pipeline step throws.
  *
  * CANON §Subsystem 3 (Learning): "Max 5 learnable events per cycle." The caller
  * (LearningService) passes the limit; this service does not enforce the constant.
@@ -41,6 +43,7 @@ export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.ensureSchema();
+    await this.ensureDeadLetterSchema();
   }
 
   // ---------------------------------------------------------------------------
@@ -80,6 +83,53 @@ export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
       );
       // Do not rethrow — a migration failure should not prevent the app from starting.
       // The cycle will fail gracefully when TimescaleDB queries return errors.
+    }
+  }
+
+  /**
+   * Ensure the failed_learning_events dead-letter hypertable exists.
+   *
+   * TimescaleDB hypertables require the table to be created first, then
+   * create_hypertable() is called. The hypertable call is wrapped in a
+   * DO block so it is idempotent (raises no error on subsequent runs).
+   *
+   * retry_count defaults to 0; future retrying logic can increment it.
+   */
+  async ensureDeadLetterSchema(): Promise<void> {
+    try {
+      await this.timescale.query(`
+        CREATE TABLE IF NOT EXISTS failed_learning_events (
+          event_id       TEXT        NOT NULL,
+          pipeline_step  TEXT        NOT NULL,
+          error_message  TEXT        NOT NULL,
+          retry_count    INTEGER     NOT NULL DEFAULT 0,
+          failed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      // Make failed_at the hypertable dimension so dead-letter rows can be
+      // time-partitioned and queried efficiently alongside the events table.
+      await this.timescale.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM timescaledb_information.hypertables
+             WHERE hypertable_name = 'failed_learning_events'
+          ) THEN
+            PERFORM create_hypertable('failed_learning_events', 'failed_at');
+          END IF;
+        END
+        $$
+      `);
+
+      this.logger.log('Dead-letter schema migration complete (failed_learning_events hypertable)');
+    } catch (err) {
+      this.logger.error(
+        `Dead-letter schema migration failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // Do not rethrow — a migration failure must not prevent the app from starting.
     }
   }
 
@@ -134,6 +184,33 @@ export class UpdateWkgService implements IUpdateWkgService, OnModuleInit {
       const message = err instanceof Error ? err.message : String(err);
       vlog('markAsLearned error', { eventId, error: message });
       this.logger.error(`markAsLearned failed for event ${eventId}: ${message}`);
+    }
+  }
+
+  /**
+   * Record a failed pipeline event to the dead-letter table.
+   *
+   * Called from the processEvent() catch block so silent data loss becomes
+   * auditable. Errors are swallowed here — a dead-letter write failure must
+   * never cascade into a secondary failure or prevent markAsLearned().
+   */
+  async writeDeadLetter(
+    eventId: string,
+    pipelineStep: string,
+    errorMessage: string,
+  ): Promise<void> {
+    try {
+      await this.timescale.query(
+        `INSERT INTO failed_learning_events
+           (event_id, pipeline_step, error_message, retry_count, failed_at)
+         VALUES ($1, $2, $3, 0, NOW())`,
+        [eventId, pipelineStep, errorMessage],
+      );
+      vlog('dead-letter row written', { eventId, pipelineStep });
+    } catch (err) {
+      // Swallow: a dead-letter write failure must not block markAsLearned().
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`writeDeadLetter failed for event ${eventId}: ${message}`);
     }
   }
 }
