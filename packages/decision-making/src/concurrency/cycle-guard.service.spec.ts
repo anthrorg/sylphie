@@ -928,3 +928,176 @@ describe('Pre-fix — drainNext vs selfTickInFlight race', () => {
     guard.destroy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// TK-77 — EP14.10: Decision-cycle concurrency guard (overlap test)
+//
+// Acceptance criterion 1: given two cycle triggers arriving for the same
+// backend within one in-flight cycle, the second is queued or dropped — never
+// run concurrently.
+//
+// Acceptance criterion 2: CycleGuard is confirmed live.
+//   Guard location: cycle-guard.service.ts
+//   Mutex set:      :530  this.tickInFlight = true   (runCycle, "Acquire mutex")
+//   Mutex checked:  :475  if (this.tickInFlight) return  (drainNext)
+//   Mutex released: :550  this.tickInFlight = false  (runCycle finally block)
+//   Epoch fence:    :535  const myEpoch = ++this.cycleEpoch
+//   Epoch checked:  :555  if (myEpoch === this.cycleEpoch)
+// ---------------------------------------------------------------------------
+
+describe('TK-77 — Overlap guard: two triggers during one in-flight cycle', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('AC1: second trigger is queued while first cycle is in-flight; neither runs concurrently', async () => {
+    // Scenario: first cycle starts and holds the mutex (slow async work). A
+    // second trigger arrives immediately. The guard must never run both at once;
+    // it queues the second and runs it only after the first finishes.
+
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const startOrder: string[] = [];
+    const completionOrder: string[] = [];
+
+    // Latch: lets us confirm the first cycle is truly in-flight before we
+    // enqueue the second trigger (avoids a race where trigger-2 arrives before
+    // the first cycle even starts).
+    let firstCycleStartedResolve: (() => void) | null = null;
+    const firstCycleStarted = new Promise<void>(r => { firstCycleStartedResolve = r; });
+    let firstCycleReleaseResolve: (() => void) | null = null;
+    const firstCycleRelease = new Promise<void>(r => { firstCycleReleaseResolve = r; });
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'IDLE', forceIdle: jest.fn() };
+
+    guard.register(
+      async (turn, _epoch) => {
+        // Track concurrency — the maximum must never exceed 1.
+        concurrent++;
+        if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+        startOrder.push(turn.turnId);
+
+        if (turn.turnId === 'trigger-1') {
+          // Signal that the first cycle is now in-flight, then hold the mutex.
+          firstCycleStartedResolve?.();
+          await firstCycleRelease;
+        }
+        // Small yield for subsequent turns (ensures async ordering is real).
+        await Promise.resolve();
+
+        completionOrder.push(turn.turnId);
+        concurrent--;
+        return true;
+      },
+      () => {},
+      mockExecutor as any,
+    );
+
+    // Enqueue first trigger — starts running immediately.
+    const trigger1 = makeTurn({ turnId: 'trigger-1' });
+    guard.enqueue(trigger1);
+
+    // Wait until cycle 1 is confirmed in-flight (holds the mutex).
+    await firstCycleStarted;
+
+    // Confirm the mutex IS held before enqueuing the second trigger.
+    expect(guard.getQueueStats().tickInFlight).toBe(true);
+
+    // Enqueue the second trigger while the first is in-flight.
+    // The guard must queue this — not start a concurrent second cycle.
+    const trigger2 = makeTurn({ turnId: 'trigger-2' });
+    guard.enqueue(trigger2);
+
+    // Flush microtasks — drain must still be deferred (tickInFlight = true).
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // trigger-2 must not have started yet.
+    expect(startOrder).toEqual(['trigger-1']);
+    expect(maxConcurrent).toBe(1); // only 1 cycle ever in-flight so far
+
+    // Release the first cycle.
+    firstCycleReleaseResolve?.();
+
+    // Drain remaining.
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // Both triggers must complete; second is served after first, never concurrently.
+    expect(completionOrder).toEqual(['trigger-1', 'trigger-2']);
+    expect(maxConcurrent).toBe(1); // never exceeded 1 throughout
+
+    guard.destroy();
+  });
+
+  it('AC1 (overflow path): when queue is at capacity, an older waiting turn is evicted (honest decline) — new trigger is queued, never run concurrently', async () => {
+    // Variant: the waiting queue is already full when the second trigger arrives.
+    // Per the back-pressure policy the oldest non-head non-guardian waiting turn is
+    // evicted (honest BACKPRESSURE decline) and the new trigger is admitted.
+    // In either case — admitted or evicted — no concurrent cycle must ever fire.
+    let firstReleaseResolve: (() => void) | null = null;
+    const firstRelease = new Promise<void>(r => { firstReleaseResolve = r; });
+    let concurrent = 0;
+    let maxConcurrent = 0;
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'IDLE', forceIdle: jest.fn() };
+    const declines: string[] = [];
+
+    guard.register(
+      async (turn, _epoch) => {
+        concurrent++;
+        if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+
+        if (turn.turnId === 'inflight') {
+          // Hold the mutex until we are told to proceed.
+          await firstRelease;
+        }
+        await Promise.resolve();
+        concurrent--;
+        return true;
+      },
+      () => {},
+      mockExecutor as any,
+    );
+
+    guard.turnDeclined$.subscribe(e => declines.push(e.turnId));
+
+    // Enqueue first turn — starts running immediately, holds the mutex.
+    guard.enqueue(makeTurn({ turnId: 'inflight' }));
+    await Promise.resolve();
+
+    // Fill the waiting queue to capacity (12 slots).
+    for (let i = 0; i < 12; i++) {
+      guard.enqueue(makeTurn({ turnId: `filler-${i}` }));
+    }
+
+    // This 13th waiting turn overflows — per policy, the oldest non-head
+    // non-guardian waiting turn is evicted (filler-1, since filler-0 is
+    // head-of-line), and 'overflow' is admitted in its place.
+    guard.enqueue(makeTurn({ turnId: 'overflow' }));
+
+    // Exactly one decline must have fired (the evicted filler).
+    expect(declines).toHaveLength(1);
+    // Still only 1 cycle in-flight — no concurrent cycle was started.
+    expect(maxConcurrent).toBe(1);
+    // The queue is still at the depth cap (12), not 13.
+    expect(guard.getQueueStats().total).toBe(12);
+
+    // Release and drain.
+    firstReleaseResolve?.();
+    for (let i = 0; i < 50; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // Concurrent cycles never occurred throughout.
+    expect(maxConcurrent).toBe(1);
+
+    guard.destroy();
+  });
+});
