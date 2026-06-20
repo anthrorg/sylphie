@@ -12,7 +12,8 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.3",
     "@sylphie/shared": "0.0.1",
-    "@sylphie/decision-making": "0.0.1"
+    "@sylphie/decision-making": "0.0.1",
+    "@sylphie/drive-engine": "0.0.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
