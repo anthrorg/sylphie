@@ -1167,7 +1167,7 @@ nodes:
     parent: EP-13
     title: "EP13.5 — Configurable persistence-check weight profiles"
     intent: "Promote _NEW_WEIGHTS/_KNOWN_WEIGHTS/_NEW_THRESHOLD/_KNOWN_THRESHOLD into PersistenceCheckConfig (defaults = current values) with weight-sum validation."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
