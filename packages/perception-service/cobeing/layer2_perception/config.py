@@ -42,7 +42,7 @@ Usage::
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -203,6 +203,14 @@ class PersistenceCheckConfig(BaseModel):
     situation is considered ambiguous, and when a detection is flagged as
     surprising.
 
+    Weight profiles (``new_weights`` / ``known_weights``) override the
+    module-level defaults in ``persistence_check_service`` when provided.
+    Each dict must contain exactly the five signal keys (``"spatial"``,
+    ``"embedding"``, ``"color"``, ``"size"``, ``"label_raw"``) and their
+    values must sum to 1.0 (within 1e-6 tolerance). A Pydantic
+    ``ValidationError`` is raised at construction time if the sum constraint
+    is violated -- the service never starts with an incoherent weight profile.
+
     Attributes:
         similarity_threshold: Minimum embedding cosine similarity to consider
             two feature profiles as representing the same object. Range [0.0, 1.0].
@@ -224,6 +232,16 @@ class PersistenceCheckConfig(BaseModel):
             ``ambiguous_candidates``. Candidates in the range
             [``ambiguity_threshold``, ``match_threshold``) are ambiguous.
             Range [0.0, 1.0].
+        new_weights: Weight profile for new objects (confirmation_count <
+            ``new_threshold``). Defaults to the spatial-dominant profile.
+        known_weights: Weight profile for well-known objects
+            (confirmation_count >= ``known_threshold``). Defaults to the
+            embedding-dominant profile.
+        new_threshold: Confirmation count below which ``new_weights`` applies.
+            Default 5.
+        known_threshold: Confirmation count at or above which ``known_weights``
+            applies. Default 10. Counts between the two thresholds use linear
+            interpolation.
     """
 
     similarity_threshold: float = Field(
@@ -261,6 +279,67 @@ class PersistenceCheckConfig(BaseModel):
         le=1.0,
         description="Minimum confidence for a candidate to appear as ambiguous",
     )
+    new_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "spatial": 0.50,
+            "embedding": 0.25,
+            "color": 0.15,
+            "size": 0.05,
+            "label_raw": 0.05,
+        },
+        description=(
+            "Signal weights for new objects (confirmation_count < new_threshold). "
+            "Must sum to 1.0."
+        ),
+    )
+    known_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "embedding": 0.45,
+            "color": 0.25,
+            "spatial": 0.15,
+            "size": 0.10,
+            "label_raw": 0.05,
+        },
+        description=(
+            "Signal weights for well-known objects "
+            "(confirmation_count >= known_threshold). Must sum to 1.0."
+        ),
+    )
+    new_threshold: int = Field(
+        default=5,
+        ge=0,
+        description="Confirmation count below which new_weights applies",
+    )
+    known_threshold: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Confirmation count at or above which known_weights applies. "
+            "Counts between new_threshold and known_threshold use linear interpolation."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_weight_profiles(self) -> "PersistenceCheckConfig":
+        """Reject weight profiles that do not sum to 1.0, or incoherent thresholds."""
+        _TOLERANCE = 1e-6
+        for name, weights in (
+            ("new_weights", self.new_weights),
+            ("known_weights", self.known_weights),
+        ):
+            total = sum(weights.values())
+            if abs(total - 1.0) > _TOLERANCE:
+                raise ValueError(
+                    f"{name} must sum to 1.0 (got {total:.8f})"
+                )
+        # known_threshold must be strictly greater than new_threshold so the
+        # linear interpolation range is non-empty and we never divide by zero.
+        if self.known_threshold <= self.new_threshold:
+            raise ValueError(
+                f"known_threshold ({self.known_threshold}) must be greater than "
+                f"new_threshold ({self.new_threshold})"
+            )
+        return self
 
 
 class ValidationConfig(BaseModel):
