@@ -68,7 +68,7 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.service';
 import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
-import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse, applyOkgRecallGrounding, discriminateGroundedBy } from './deliberation/deliberation.service';
+import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse } from './deliberation/deliberation.service';
 import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, resolveRecallKey, type RecallRetrieval, type RecallKeyEncoder } from './deliberation/recall-retrieval';
 import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
@@ -594,12 +594,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         fingerprint: contextFingerprint.substring(0, 16),
       });
 
-      // ── WS3 Ticket T1: pre-arbitration grounded recall retrieval ──────────
+      // ── WS3 T1 / TK-84: pre-arbitration grounded recall retrieval ────────
       // Resolve the WKG/OKG fact node that grounds this turn ONCE, BEFORE the
-      // procedure-vs-deliberate arbitration, so BOTH paths observe the SAME
-      // provenance-carrying node. This replaces the post-hoc per-site regex
-      // re-derivation (applyOkgRecallGrounding at 3 call sites) with a single
-      // retrieval whose node id is recorded AT RETRIEVAL TIME. Single-hop only.
+      // procedure-vs-deliberate arbitration, so ALL paths observe the SAME
+      // provenance-carrying node. TK-84 proved subsumption and deleted the
+      // post-hoc fallback (applyOkgRecallGrounding). The four sites now call
+      // applyRecallGroundingFromRetrieval(recallRetrieval, ...) unconditionally;
+      // null retrieval is a passthrough. Single-hop only.
       //
       // Cheap guard inside computeRecallRetrieval(): a non-recall question exits
       // before any Neo4j round-trip. T2 will reinforce recallRetrieval.factNodeId;
@@ -972,11 +973,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           //
           // We demote (GROUNDED → UNKNOWN), we do NOT suppress: the cached reflex
           // still fires this turn (theater prohibition / no behavior cliff) — we
-          // only strip the BORROWED grounding. Crucially this runs BEFORE
-          // applyOkgRecallGrounding below, so if person B genuinely has the same
-          // fact in B's OWN OKG, the re-ground re-GROUNDs it honestly off B's facts
-          // and the demotion has cost nothing. The demotion only removes A's
-          // grounding that B was never entitled to hear.
+          // only strip the BORROWED grounding. The TK-84 collapsed re-ground step
+          // below (applyRecallGroundingFromRetrieval) then re-GROUNDs honestly off
+          // the CURRENT speaker's facts if they genuinely own the same fact, so the
+          // demotion costs nothing when the re-ground succeeds. The demotion only
+          // removes A's grounding that B was never entitled to hear.
           const currentPersonId =
             (frame.raw['person_model'] as { personId?: string } | null | undefined)?.personId ?? null;
           const patternGpid = latentMatch.pattern.groundingPersonId; // null = world-scoped
@@ -994,39 +995,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             );
           }
 
-          // Type-1 fact-recall attribution: the stored pattern may carry
-          // LLM_ASSISTED/UNKNOWN from when it was first written (e.g. the OKG
-          // hadn't ingested the teach yet, or a later corpus run matched a social
-          // pattern rather than the actual fact turn). A genuine recall hit is
-          // upgraded to GROUNDED even if the stored grounding was conservative.
-          //
-          // WS3 Ticket T1: prefer the cycle's PRE-ARBITRATION recall retrieval so
-          // the latent reflex carries the SAME once-resolved node id as the
-          // procedure/deliberate paths. Falls back to the legacy post-hoc helper
-          // when the turn isn't a resolvable recall (transitional — that helper
-          // only upgrades via OKG recall, now owned by the pre-arbitration step).
-          const latentPersonModel = frame.raw['person_model'] as
-            { personId?: string; knownFacts?: string[] } | null | undefined;
-          const latentInputText = (frame.raw['text'] as string | undefined) ?? inputSummary;
-          let latentGrounding: KnowledgeGrounding;
-          let latentProvenance: string | null;
-          if (recallRetrieval) {
-            const applied = applyRecallGroundingFromRetrieval(
-              recallRetrieval, latentMatch.pattern.responseText, latentBaseGrounding,
-            );
-            latentGrounding = applied.grounding;
-            latentProvenance = applied.provenance;
-          } else {
-            const legacy = applyOkgRecallGrounding(
-              latentPersonModel?.personId,
-              latentInputText,
-              latentMatch.pattern.responseText,
-              latentPersonModel?.knownFacts,
-              latentBaseGrounding,
-            );
-            latentGrounding = legacy.grounding;
-            latentProvenance = legacy.provenance;
-          }
+          // TK-84 — Type-1 latent recall attribution (collapsed).
+          // The §2.10 else-fallback (applyOkgRecallGrounding) is deleted.
+          // applyRecallGroundingFromRetrieval(null, ...) passes through unchanged
+          // for non-recall turns — identical to what the deleted fallback returned
+          // when the OKG missed (null provenance, base grounding unchanged).
+          const latentApplied = applyRecallGroundingFromRetrieval(
+            recallRetrieval, latentMatch.pattern.responseText, latentBaseGrounding,
+          );
+          const latentGrounding: KnowledgeGrounding = latentApplied.grounding;
+          const latentProvenance: string | null = latentApplied.provenance;
 
           executionResults.push({
             content: latentMatch.pattern.responseText,
@@ -1084,49 +1062,17 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
                 { personId?: string; knownFacts?: string[] } | null | undefined;
               const procedureRawText = (frame.raw['text'] as string | undefined) ?? inputSummary;
 
-              // ── WS3 Ticket T1 — apply the PRE-ARBITRATION recall retrieval ──
-              // This is THE structural close of the seed-greet bypass that forced
-              // C1's post-hoc regex: the procedure path now consumes the SAME
-              // node id the cycle resolved before arbitration (recallRetrieval),
-              // instead of independently re-running recallKeyForQuestion over the
-              // free-generated prose. The honesty guard (value must surface) lives
-              // in applyRecallGroundingFromRetrieval, so C2 stays honest.
-              let procedureGrounding: KnowledgeGrounding;
-              let procedureProvenance: string | null;
-              let procedureGroundedBy: 'OKG' | 'WKG' | null;
-              if (recallRetrieval) {
-                const applied = applyRecallGroundingFromRetrieval(
-                  recallRetrieval, procedureResponseText, baseGrounding,
-                );
-                procedureGrounding = applied.grounding;
-                procedureProvenance = applied.provenance;
-                procedureGroundedBy = applied.groundedBy;
-              } else {
-                // TRANSITIONAL FALLBACK (WS3 T1): non-recall procedure turns (and
-                // any recall the pre-arbitration step could not resolve) still use
-                // the legacy post-hoc helper. This path no longer carries recall
-                // provenance forward — it only ever reaches GROUNDED via OKG-recall,
-                // which the pre-arbitration step now owns — so in practice this is a
-                // no-op LLM_ASSISTED/UNKNOWN floor for non-recall procedure output.
-                const legacy = applyOkgRecallGrounding(
-                  procedurePersonModel?.personId,
-                  procedureRawText,
-                  procedureResponseText,
-                  procedurePersonModel?.knownFacts,
-                  baseGrounding,
-                );
-                procedureGrounding = legacy.grounding;
-                procedureProvenance = legacy.provenance;
-                // Empty WKG context here → discriminateGroundedBy can only return
-                // 'OKG' or null; a GROUNDED via legacy OKG recall is person-scoped.
-                procedureGroundedBy = discriminateGroundedBy(
-                  procedureGrounding,
-                  { entities: [], facts: [], relationships: [], procedures: [], summary: '' },
-                  procedureResponseText,
-                  procedurePersonModel?.knownFacts,
-                  procedureProvenance,
-                );
-              }
+              // ── TK-84 — procedure path: PRE-ARBITRATION recall retrieval (collapsed) ──
+              // The §2.10 else-fallback (applyOkgRecallGrounding) is deleted.
+              // applyRecallGroundingFromRetrieval(null, ...) is a passthrough for
+              // non-recall procedure turns — identical to what the deleted fallback
+              // returned when the OKG missed (null provenance, base grounding unchanged).
+              const procedureApplied = applyRecallGroundingFromRetrieval(
+                recallRetrieval, procedureResponseText, baseGrounding,
+              );
+              const procedureGrounding: KnowledgeGrounding = procedureApplied.grounding;
+              const procedureProvenance: string | null = procedureApplied.provenance;
+              const procedureGroundedBy: 'OKG' | 'WKG' | null = procedureApplied.groundedBy;
               result['knowledgeGrounding'] = procedureGrounding;
               if (procedureProvenance) result['groundingProvenance'] = procedureProvenance;
               result['groundedBy'] = procedureGroundedBy;
@@ -2727,8 +2673,8 @@ function groundingForCachedResponse(responseText: string): KnowledgeGrounding {
  *   would be inaccurate (L2: no LLM_ASSISTED under lesion). UNKNOWN is the
  *   honest conservative floor for "I have a cached response but no verified
  *   fact backing for this replay." The caller (latent cache path in processInput)
- *   then applies applyOkgRecallGrounding to upgrade to GROUNDED when the
- *   current session's OKG facts do confirm the response value.
+ *   The TK-84 collapsed re-ground step (applyRecallGroundingFromRetrieval)
+ *   then upgrades to GROUNDED when the current session's OKG facts confirm it.
  *
  * Stored knowledgeGrounding (primary path, Bug A + B fix): patterns written
  * after this field was added carry the honest grounding from the original

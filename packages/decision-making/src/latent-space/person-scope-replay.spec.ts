@@ -6,17 +6,27 @@
  * (null) pattern may replay GROUNDED to anyone; and if person B genuinely has
  * the same fact in B's OWN OKG, an honest re-ground re-GROUNDs it off B's facts.
  *
- * This exercises the exact composition the latent-replay path runs:
+ * TK-84 update: applyOkgRecallGrounding was the §2.10 post-hoc fallback and is
+ * now deleted. The latent-replay re-ground uses the same durable path as the
+ * four collapsed production sites:
  *   1. applyPersonScopeDemotion(baseGrounding, pattern.groundingPersonId, currentPersonId)
  *      — the single-source-of-truth privacy gate (latent-space.service.ts).
- *   2. applyOkgRecallGrounding(currentPersonId, input, response, currentFacts, demotedGrounding)
- *      — the honest re-ground off the CURRENT speaker's own facts.
+ *   2. retrieveRecallGrounding(currentPersonId, input, currentFacts, emptyWkg)
+ *      — resolve the current speaker's OKG fact node BEFORE applying the label.
+ *   3. applyRecallGroundingFromRetrieval(retrieval, response, demotedGrounding)
+ *      — upgrade to GROUNDED iff the retrieved value surfaces in the response.
  *
- * Both are the real production functions, not copies.
+ * The behaviour is identical to the deleted helper: when the current speaker
+ * has the fact and the value appears in the response, label = GROUNDED with the
+ * current speaker's node id; otherwise, label stays at the demoted floor.
  */
 
 import { applyPersonScopeDemotion } from './latent-space.service';
-import { applyOkgRecallGrounding, discriminateGroundedBy } from '../deliberation/deliberation.service';
+import { discriminateGroundedBy } from '../deliberation/deliberation.service';
+import {
+  retrieveRecallGrounding,
+  applyRecallGroundingFromRetrieval,
+} from '../deliberation/recall-retrieval';
 import type { WkgContext, WkgEntity } from '../wkg/wkg-context.service';
 import type { KnowledgeGrounding } from '@sylphie/shared';
 
@@ -26,10 +36,15 @@ jest.mock('@sylphie/shared', () => {
   return { ...actual, verboseFor: () => () => {} };
 });
 
+const EMPTY_WKG: WkgContext = {
+  entities: [], facts: [], relationships: [], procedures: [], summary: '',
+};
+
 /**
  * Replay a stored-GROUNDED, person-A-scoped pattern as `currentPersonId`, with
- * the current speaker's known OKG facts. Mirrors the real latent-replay flow:
- * demote first, then attempt an honest re-ground off the current speaker.
+ * the current speaker's known OKG facts. Mirrors the real latent-replay flow
+ * after TK-84 collapse: demote first, then resolve + apply the pre-arbitration
+ * recall retrieval off the CURRENT speaker's own facts.
  */
 function replay(opts: {
   groundingPersonId: string | null;
@@ -42,13 +57,14 @@ function replay(opts: {
   // (groundingForCachedPattern returns the stored verdict unchanged for GROUNDED).
   const base: KnowledgeGrounding = 'GROUNDED';
   const scope = applyPersonScopeDemotion(base, opts.groundingPersonId, opts.currentPersonId);
-  const reground = applyOkgRecallGrounding(
-    opts.currentPersonId ?? undefined,
+  // Resolve the CURRENT speaker's recall retrieval (durable path, TK-84).
+  const retrieval = retrieveRecallGrounding(
+    opts.currentPersonId,
     opts.input,
-    opts.response,
     opts.currentFacts,
-    scope.grounding,
+    EMPTY_WKG,
   );
+  const reground = applyRecallGroundingFromRetrieval(retrieval, opts.response, scope.grounding);
   return { grounding: reground.grounding, provenance: reground.provenance, demoted: scope.demoted };
 }
 
@@ -201,7 +217,7 @@ describe('WS4-T5 §3.1 — discriminateGroundedBy (write-time source)', () => {
     expect(source).toBe('OKG');
   });
 
-  it('GROUNDED via OKG provenance (applyOkgRecallGrounding upgrade) → OKG even with topical entity', () => {
+  it('GROUNDED via OKG provenance (pre-arbitration retrieval upgrade) → OKG even with topical entity', () => {
     const source = discriminateGroundedBy(
       'GROUNDED',
       wkg([entity('Kyoto', 'Entity')]),

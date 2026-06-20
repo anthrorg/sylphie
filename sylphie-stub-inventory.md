@@ -162,17 +162,13 @@ Separately, the **live** TS port `spreadActivation` (`packages/decision-making/s
 
 ---
 
-### 2.10 Post-hoc OKG recall regex retained as a transitional fallback (WS3 T1, 2026-06-13)
+### 2.10 Post-hoc OKG recall regex — CLOSED (TK-84, 2026-06-20)
 
-**Where:** `packages/decision-making/src/decision-making.service.ts` (procedure path ~:1183, Type-1 latent path ~:1126) and `packages/decision-making/src/deliberation/deliberation.service.ts` (short-circuit ~:361, novel ~:729) — the `else` branch of each grounding site, calling `applyOkgRecallGrounding` / `discriminateGroundedBy`.
+**Where:** `packages/decision-making/src/decision-making.service.ts` and `packages/decision-making/src/deliberation/deliberation.service.ts` — all four grounding sites.
 
-**What:** WS3 T1 introduced a **pre-arbitration recall retrieval** (`deliberation/recall-retrieval.ts`) that resolves the grounding fact node id ONCE before arbitration and threads it (`recallRetrieval`) into all four grounding sites via `applyRecallGroundingFromRetrieval`. This is the durable path and is the PRIMARY branch at every site. The legacy post-hoc `applyOkgRecallGrounding` regex is kept as the `else` fallback for turns where `computeRecallRetrieval` returned null.
+**What:** TK-84 confirmed the durable pre-arbitration path fully subsumes the §2.10 legacy fallback. The three deleted symbols (`okgRecallProvenance`, `applyOkgRecallGrounding`, private `getRecalledFact`) are removed from `deliberation-helpers.ts`. All four `else`-fallback branches are collapsed to the single `applyRecallGroundingFromRetrieval(recallRetrieval, ...)` call — a passthrough (null provenance, base grounding unchanged) for non-recall turns and a GROUNDED-upgrade for recall turns where the pre-arbitration node was resolved. The subsumption proof lives in `okg-recall-subsumption.spec.ts`.
 
-**Why it is NOT a silent stub / not a behavior gap:** `computeRecallRetrieval` returns non-null for exactly the set of inputs `recallKeyForQuestion` matches — i.e. every recall turn the legacy helper could have grounded. The legacy helper only ever upgrades grounding via that same OKG recall path. So for **recall** turns the pre-arbitration branch always fires and the fallback is unreached; for **non-recall** turns both branches are no-ops (LLM_ASSISTED/UNKNOWN floor). The fallback exists only to avoid regressing any non-recall path that historically depended on `applyOkgRecallGrounding` being called, and to degrade safely if the WKG lookup throws.
-
-**Residual to close (T1 follow-up / T2 prep):** once T2/T4 confirm nothing else reaches the `else` branch on a real recall turn, the legacy `applyOkgRecallGrounding` / `okgRecallProvenance` / post-hoc `getRecalledFact` can be deleted outright and the sites collapsed to the single pre-arbitration path. Until then both coexist (flagged in code comments at each site).
-
-**Fix complexity:** Low (deletion + collapse), gated on T2/T4 verification that the durable path fully subsumes the regex.
+**Status:** CLOSED — no residual.
 
 ---
 
