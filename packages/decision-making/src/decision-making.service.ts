@@ -69,6 +69,7 @@ import { SensoryStreamLoggerService } from './logging/sensory-stream-logger.serv
 import { LatentSpaceService, applyPersonScopeDemotion, type MultiModalLatentMatch, type LearnedPattern } from './latent-space/latent-space.service';
 import { WkgContextService } from './wkg/wkg-context.service';
 import { DeliberationService, type DeliberationResult, inferGrounding, isIgnoranceResponse } from './deliberation/deliberation.service';
+import { nudgeScoringWeights } from './deliberation/deliberation-helpers';
 import { retrieveRecallGrounding, applyRecallGroundingFromRetrieval, resolveRecallKey, type RecallRetrieval, type RecallKeyEncoder } from './deliberation/recall-retrieval';
 import { recallKeyForQuestion } from './deliberation/deliberation.service';
 import { ModalityRegistryService } from './inputs/registry/modality-registry.service';
@@ -178,6 +179,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     string,
     { turnId: string; sessionId: string; initiatedAt: number }
   >();
+
+  /**
+   * TK-70 (CANON Std-6 PERMITTED): maps cycle actionId → the winning candidate's
+   * factor labels from scoreCandidates(). Populated after deliberation completes;
+   * consumed by reportOutcome() to call nudgeScoringWeights() on reinforced outcomes.
+   * Shares the same LRU cap as the other pending maps. Empty for SHRUG/TYPE_1 cycles
+   * (no deliberation ran). Never persisted — in-memory tunable heuristic only.
+   */
+  private readonly pendingScoredFactors = new Map<string, readonly string[]>();
 
   constructor(
     @Inject(EXECUTOR_ENGINE)
@@ -928,6 +938,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // there is nothing to execute. TYPE_1 and TYPE_2 dispatch their step sequences.
       const executionResults: Array<Record<string, unknown> | null> = [];
 
+      // TK-70: collect the winning candidate's scoring factors so reportOutcome()
+      // can call nudgeScoringWeights() on reinforced outcomes. Populated at each
+      // deliberation call site below; assigned to pendingScoredFactors after
+      // actionId is established (mirrors the pendingLatentPatterns pattern).
+      let cycleWinningFactors: readonly string[] = [];
+
       // Set in the SHRUG branch below: true when arbitration SHRUG'd because of
       // genuine incomprehension (MISSING_CONTEXT / CONTRADICTION, not merely
       // LOW_CONFIDENCE). When true, any deliberation response is delivered (so
@@ -1032,6 +1048,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             `Latent match ${latentMatch.pattern.id.substring(0, 8)} has empty responseText — falling through to Type 2.`,
           );
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          cycleWinningFactors = deliberationResult.winningCandidateFactors;
           executionResults.push({
             content: deliberationResult.responseText,
             tokensUsed: deliberationResult.totalTokens,
@@ -1097,6 +1114,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           vlog('executing Type 2 deliberation (novel)', { inputSummary: inputSummary.substring(0, 80) });
           this.logger.debug('Type 2 novel: running deliberation pipeline');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          cycleWinningFactors = deliberationResult.winningCandidateFactors;
 
           // ── Action dispatch: if the LLM detected a COMMAND and requested
           // an action (e.g. RESEARCH_ENTITY), dispatch it to the handler
@@ -1188,6 +1206,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // Run the full deliberation pipeline.
           this.logger.debug('SHRUG with text input — running deliberation pipeline.');
           const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          cycleWinningFactors = deliberationResult.winningCandidateFactors;
 
           // Handle action requests from SHRUG+deliberation path too.
           if (deliberationResult.actionRequest) {
@@ -1633,6 +1652,21 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           if (oldest !== undefined) {
             this.pendingLatentPatterns.delete(oldest);
           }
+        }
+      }
+
+      // TK-70 — store winning candidate factors for EMA weight nudging.
+      // Only stored when deliberation actually ran (cycleWinningFactors non-empty)
+      // and the actionId is a real procedure id (not SHRUG). Epoch-fenced.
+      if (
+        actionId !== 'SHRUG' &&
+        cycleWinningFactors.length > 0 &&
+        (myEpoch === undefined || this.cycleGuard.isEpochCurrent(myEpoch))
+      ) {
+        this.pendingScoredFactors.set(actionId, cycleWinningFactors);
+        if (this.pendingScoredFactors.size > this.MAX_PENDING_LATENT) {
+          const oldest = this.pendingScoredFactors.keys().next().value;
+          if (oldest !== undefined) this.pendingScoredFactors.delete(oldest);
         }
       }
 
@@ -2192,6 +2226,22 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           newConfidence,
         });
       }
+    }
+
+    // ── TK-70: EMA scoring weight nudge (CANON Std-6 PERMITTED) ────────────
+    // Only fires on reinforced outcomes (positive feedback). Counter-indicated
+    // outcomes do not nudge weights — we only learn from successes, not from
+    // failures, to keep the heuristic conservative. Weights are in-memory only,
+    // logged not persisted. nudgeScoringWeights() is a no-op under the warmup floor.
+    if (isAccurate && hasProcedureNode) {
+      const winningFactors = this.pendingScoredFactors.get(actionId);
+      if (winningFactors && winningFactors.length > 0) {
+        nudgeScoringWeights(winningFactors, (msg) => this.logger.debug(msg));
+      }
+      this.pendingScoredFactors.delete(actionId);
+    } else {
+      // Always clean up the pending entry even when not nudging.
+      this.pendingScoredFactors.delete(actionId);
     }
   }
 

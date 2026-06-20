@@ -180,6 +180,15 @@ export interface DeliberationResult {
    * right now" text — CANON §The Lesion Test / §Shrug Imperative.
    */
   readonly degradedNoLlm: boolean;
+
+  /**
+   * TK-70 (CANON Std-6 PERMITTED): factor labels from the winning candidate's
+   * CandidateScore, e.g. ["grounded:+1.0", "entity:+0.15"]. Threaded out so
+   * DecisionMakingService.reportOutcome() can call nudgeScoringWeights() on a
+   * reinforced outcome without re-running scoring. Empty on the degraded
+   * no-LLM fallback (no scoring ran). Never persisted — in-memory only.
+   */
+  readonly winningCandidateFactors: readonly string[];
 }
 
 /** Complete trace of the deliberation for audit and introspection. */
@@ -838,6 +847,8 @@ export class DeliberationService {
       totalLatencyMs,
       actionRequest: null,
       degradedNoLlm: false,
+      // TK-70: pass winning candidate's factor labels for EMA weight nudging on reinforced outcomes.
+      winningCandidateFactors: scored.scores[scored.bestIndex]?.factors ?? [],
     };
 
     vlog('deliberation complete', {
@@ -924,6 +935,8 @@ export class DeliberationService {
       totalLatencyMs: 0,
       actionRequest: null,
       degradedNoLlm: degraded,
+      // No scoring ran on the fallback path — no factors to thread.
+      winningCandidateFactors: [],
     };
   }
 }
