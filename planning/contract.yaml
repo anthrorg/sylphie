@@ -676,7 +676,7 @@ nodes:
     parent: EP-7
     title: "EP7-E — Extract CycleOutcomeReporter from CommunicationService"
     intent: "Extract checkTheaterProhibition + reportBasicOutcome into a CycleOutcomeReporter (theater check gates the outcome report; shared deps)."
-    status: in_progress
+    status: done
     pr_url: "https://github.com/anthrorg/sylphie/pull/22"
     branch: "agent/tk-35-ep7-e-extract-cycleoutcomereporter-from-"
     priority: P2
