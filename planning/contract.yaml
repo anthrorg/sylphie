@@ -1536,7 +1536,8 @@ nodes:
     parent: EP-17
     title: "DEC-8 — wire /transcribe to Deepgram REST; delete the empty-200 theater stub"
     intent: "voice.controller.ts:32-36 returns a fake {text:'',confidence:0} at HTTP 200 (theater-prohibition violation). Wire real Deepgram REST transcription and delete the stub; press-to-talk UI stays."
-    status: in_progress
+    status: done
+    verification_note: "Deepgram REST wired (stt.service), empty-200 theater stub deleted, main.ts express.raw audio body; build clean + scoped-jest 18/18 (voice+drives controller specs). Jim's call: replaced hardcoded jest.config.js + deleted tsconfig.spec.json with a clean scoped jest config (testMatch *.controller.spec.ts). Residual: live Deepgram path (real key+audio) verified at integration."
     priority: P3
     estimate: M
     engineering_level: production
