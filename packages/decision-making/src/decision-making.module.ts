@@ -94,6 +94,7 @@ import { DeliberationService } from './deliberation/deliberation.service';
 import { ContextWindowService } from './deliberation/context-window.service';
 import { ToolRegistryService } from './deliberation/tools/tool-registry';
 import { WorkingMemoryService } from './working-memory/working-memory.service';
+import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
 
 // ---------------------------------------------------------------------------
 // Sensory pipeline services
@@ -224,6 +225,10 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // ── EP7-A (TK-31): Tick engine — timer loop, self-tick mutex, event wiring ─
     DecisionTickEngineService,
+
+    // ── EP7-B (TK-32): Sensory prediction router — routes sensory/scene
+    // prediction errors to drives. Extracted from DecisionMakingService. ────
+    SensoryPredictionRouterService,
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────
     SensoryStreamLoggerService,
