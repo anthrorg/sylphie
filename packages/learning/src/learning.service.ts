@@ -61,6 +61,7 @@ import type {
   ISelfModelWriterService,
   ILearningEventLogger,
   UnlearnedEvent,
+  RegroundResult,
 } from './interfaces/learning.interfaces';
 import {
   UPDATE_WKG_SERVICE,
@@ -336,7 +337,20 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
 
     this.synthesisInFlight = true;
     try {
-      return await this.crossSessionSynthesis.runSynthesisCycle();
+      const result = await this.crossSessionSynthesis.runSynthesisCycle();
+
+      // Re-grounding sweep runs after synthesis so newly-added entities can
+      // resolve previously-ungrounded insights in the same cycle.
+      const regroundResult: RegroundResult =
+        await this.conversationReflection.regroundUngroundedInsights();
+      if (!regroundResult.wasNoop) {
+        this.logger.log(
+          `Re-grounding sweep: ${regroundResult.insightsExamined} examined, ` +
+            `${regroundResult.insightsUpdated} updated, ${regroundResult.edgesCreated} new edges`,
+        );
+      }
+
+      return result;
     } finally {
       this.synthesisInFlight = false;
     }
