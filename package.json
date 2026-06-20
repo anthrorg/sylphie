@@ -32,7 +32,8 @@
     "gate:lesion": "npx tsx test/gate/gate.ts --mode=lesion",
     "gate:update-baseline": "npx tsx test/gate/gate.ts --mode=update-baseline",
     "reset:dry-run": "npx tsx scripts/reset-data.ts",
-    "reset:confirm": "npx tsx scripts/reset-data.ts --confirm"
+    "reset:confirm": "npx tsx scripts/reset-data.ts --confirm",
+    "test:vision:a": "npx tsx test/e2e/vision/accept-A.e2e.ts"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0"
