@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
-    "test": "npx tsx src/pipeline/constraint-checks.spec.ts && npx tsx src/queue/opportunity-queue.service.spec.ts && npx tsx --tsconfig tsconfig.json src/pipeline/proposal.service.spec.ts && npx tsx src/queue/opportunity-queue-backoff.spec.ts && npx tsx src/pipeline/simulation.spec.ts && npx tsx src/pipeline/constraint-validation.service.spec.ts"
+    "test": "npx tsx src/pipeline/constraint-checks.spec.ts && npx tsx src/queue/opportunity-queue.service.spec.ts && npx tsx --tsconfig tsconfig.json src/pipeline/proposal.service.spec.ts && npx tsx src/queue/opportunity-queue-backoff.spec.ts && npx tsx src/pipeline/simulation.spec.ts && npx tsx src/pipeline/constraint-validation.service.spec.ts && npx tsx src/pipeline/simulation-scoring.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

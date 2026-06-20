@@ -47,6 +47,71 @@ const MAX_OUTCOMES_PER_CATEGORY = 50;
 /** Lookback window for historical outcomes. */
 const LOOKBACK_DAYS = 14;
 
+/**
+ * Shrinkage prior pseudo-count: pulls confidence toward 0 when sample size is
+ * small, so one lucky success doesn't score the same as 50 consistent successes.
+ */
+const CONFIDENCE_PRIOR_K = 10;
+
+// ---------------------------------------------------------------------------
+// Pure scoring helpers (exported for unit testing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Shrinkage-prior confidence estimate.
+ *
+ * Returns successCount / (totalCount + k).  With k=10:
+ *   - count=0  → 0     (no evidence, no confidence)
+ *   - count=1, all success → ~0.09  (single lucky win ≠ high confidence)
+ *   - count=50, all success → ~0.83 (50 consistent wins → high confidence)
+ */
+export function computeConfidence(
+  successCount: number,
+  totalCount: number,
+  k: number = CONFIDENCE_PRIOR_K,
+): number {
+  if (totalCount === 0) return 0;
+  return successCount / (totalCount + k);
+}
+
+/**
+ * Variance-aware risk score in [0, 1].
+ *
+ * Risk combines two signals:
+ *   - badRate:  fraction of observed effects that were non-negative (drive not
+ *               relieved — an effect ≥ 0 means no benefit or harm).
+ *   - stdDev:   standard deviation of effect values; high spread = unpredictable.
+ *
+ * riskScore = clamp(badRate + stdDev, 0, 1)
+ *
+ * With no observations (empty array) the outcome is fully unknown → risk = 1.
+ *
+ * Accepts an optional parallel weights array (same length as effects) for
+ * weighted statistics when observations are repeated. Unweighted when omitted.
+ */
+export function computeRisk(
+  effects: readonly number[],
+  weights?: readonly number[],
+): number {
+  if (effects.length === 0) return 1.0;
+
+  const n = effects.length;
+  const w = weights ?? effects.map(() => 1);
+  const totalWeight = w.reduce((s, wi) => s + wi, 0);
+
+  // Weighted bad-rate: proportion of weight on effects that gave no drive relief.
+  const badWeight = effects.reduce((s, e, i) => s + (e >= 0 ? w[i] : 0), 0);
+  const badRate = badWeight / totalWeight;
+
+  // Weighted mean and variance.
+  const mean = effects.reduce((s, e, i) => s + e * w[i], 0) / totalWeight;
+  const variance =
+    effects.reduce((s, e, i) => s + w[i] * (e - mean) ** 2, 0) / totalWeight;
+  const stdDev = Math.sqrt(variance);
+
+  return Math.min(1.0, badRate + stdDev);
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -175,13 +240,13 @@ export class SimulationService implements ISimulationService {
     );
 
     if (result.rows.length === 0) {
-      // No historical data for this category. Generate a conservative estimate.
+      // No historical data: zero observations → confidence=0, risk=1.
       return {
         description: `New ${category} behavior (no historical data)`,
         actionCategory: category,
         estimatedDriveEffect: { [affectedDrive]: -0.02 } as Partial<Record<DriveName, number>>,
-        confidenceEstimate: 0.2,
-        riskScore: 0.5,
+        confidenceEstimate: computeConfidence(0, 0),
+        riskScore: computeRisk([]),
       };
     }
 
@@ -191,6 +256,9 @@ export class SimulationService implements ISimulationService {
     const totalEffects = new Map<string, number>();
     let successCount = 0;
     let totalCount = 0;
+    // Distinct effect values and their observation counts for weighted variance.
+    const effectValues: number[] = [];
+    const effectCounts: number[] = [];
 
     for (const row of result.rows) {
       const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
@@ -202,6 +270,13 @@ export class SimulationService implements ISimulationService {
         for (const [drive, effect] of Object.entries(driveEffects)) {
           if (typeof effect === 'number') {
             totalEffects.set(drive, (totalEffects.get(drive) ?? 0) + effect * count);
+            // TK-64: capture per-observation values for the affected drive so
+            // computeRisk can use variance-aware risk (alongside TK-63's
+            // cross-drive aggregation into totalEffects).
+            if (drive === affectedDrive) {
+              effectValues.push(effect);
+              effectCounts.push(count);
+            }
           }
         }
       }
@@ -211,7 +286,7 @@ export class SimulationService implements ISimulationService {
       }
     }
 
-    // Convert accumulated sums to per-drive averages.
+    // Convert accumulated sums to per-drive averages (TK-63 cross-drive aggregation).
     const estimatedDriveEffect: Partial<Record<DriveName, number>> = {};
     for (const [drive, total] of totalEffects.entries()) {
       (estimatedDriveEffect as Record<string, number>)[drive] =
@@ -223,14 +298,12 @@ export class SimulationService implements ISimulationService {
       estimatedDriveEffect[affectedDrive] = 0;
     }
 
-    const successRate = totalCount > 0 ? successCount / totalCount : 0;
-
     return {
       description: `${category} based on ${totalCount} historical outcomes`,
       actionCategory: category,
       estimatedDriveEffect,
-      confidenceEstimate: Math.min(0.8, successRate),
-      riskScore: 1.0 - successRate,
+      confidenceEstimate: computeConfidence(successCount, totalCount),
+      riskScore: computeRisk(effectValues, effectCounts),
     };
   }
 }
