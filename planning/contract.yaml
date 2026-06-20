@@ -1110,7 +1110,7 @@ nodes:
     parent: EP-13
     title: "EP13.2 — ProcedureExecutor syntactic step types (matcher delegation)"
     intent: "Dispatch syntactic step types (match_root/edge/optional, extract_role, match_property) to SyntacticTemplateMatcher; descriptive NotImplementedError when the matcher is absent."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
