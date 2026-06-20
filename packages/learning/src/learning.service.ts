@@ -345,7 +345,7 @@ export class LearningService implements ILearningService, OnModuleInit, OnModule
   async runDecayCycle(): Promise<DecayCycleResult> {
     if (this.decayInFlight) {
       this.logger.debug('Decay cycle already in flight — skipping');
-      return { nodesDecayed: 0, edgesDecayed: 0, nodesPruned: 0, wasNoop: true };
+      return { nodesDecayed: 0, edgesDecayed: 0, nodesPruned: 0, okgNodesDecayed: 0, okgNodesPruned: 0, wasNoop: true };
     }
 
     this.decayInFlight = true;

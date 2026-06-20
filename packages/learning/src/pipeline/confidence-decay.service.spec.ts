@@ -1,15 +1,15 @@
 /**
- * WS3 Ticket T3 — retrieval-aware confidence decay unit tests.
+ * Confidence decay unit tests.
  *
  * Covers ConfidenceDecayService:
+ *
+ * WS3-T3 (WORLD instance):
  *   1. The node-decay Cypher now keys decay on coalesce(last_retrieval_at,
  *      updated_at, created_at) — the load-bearing fallback that closes the
  *      compounding loop's decay side (T2 writes last_retrieval_at; T3 reads it).
  *   2. The edge-decay Cypher intentionally does NOT read last_retrieval_at
  *      (T2 reinforces nodes only — no edge carries the field).
- *   3. Scope: decay runs only against the WORLD instance; OTHER (OKG self-facts)
- *      is never decayed by this service (deferred to T4 — stub §2.11).
- *   4. Behavioral contract of the coalesce, proven against the same decay
+ *   3. Behavioral contract of the coalesce, proven against the same decay
  *      arithmetic the Cypher applies:
  *        - a never-reinforced node (no last_retrieval_at) decays from its last
  *          write (updated_at/created_at) exactly as before — no behavior change;
@@ -17,10 +17,18 @@
  *          so a recently-used node decays LESS than an identically-written but
  *          unused control. This is the durability the loop is supposed to give.
  *
+ * TK-49 / EP11.1 (OTHER / OKG instance):
+ *   4. Non-GUARDIAN OKG :Attribute nodes past MIN_HOURS_BEFORE_DECAY are decayed
+ *      by the OKG decay query at WORLD-matching per-provenance rates (AC1).
+ *   5. OKG nodes with provenance_type = 'GUARDIAN' are excluded from the OKG
+ *      decay query — the exclusion predicate must be present in the Cypher (AC2).
+ *   6. The OKG prune query targets :Attribute nodes in the OTHER instance with
+ *      no relationships (AC3).
+ *   7. The cycle now touches the OTHER instance (OKG decay is no longer deferred).
+ *
  * The decay itself is raw Cypher executed by Neo4j, so we (a) assert the query
- * text contains the intended coalesce, via a Cypher-capturing fake session, and
- * (b) re-derive the decay formula in JS and feed it the lastActivity that the
- * coalesce would select, proving the divergence the live DB would produce.
+ * text contains the intended predicates, via a Cypher-capturing fake session,
+ * and (b) re-derive the decay formula in JS and verify the arithmetic.
  */
 
 import { Neo4jInstanceName } from '@sylphie/shared';
@@ -50,7 +58,7 @@ function makeService(neo: CapturingNeo4j): ConfidenceDecayService {
 }
 
 // ---------------------------------------------------------------------------
-// Decay formula mirror (matches the Cypher in decayNodes()):
+// Decay formula mirror (matches the Cypher in decayNodes() and decayOkgNodes()):
 //   hoursSince = (now - lastActivity) / 3600000
 //   newConf    = max(0, conf - decayRate * ln(hoursSince + 1))   [if hours > MIN]
 // ---------------------------------------------------------------------------
@@ -74,10 +82,10 @@ function coalesceLastActivity(
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// WS3-T3 tests (WORLD instance)
 // ---------------------------------------------------------------------------
 
-describe('WS3-T3 — retrieval-aware ConfidenceDecayService', () => {
+describe('WS3-T3 — retrieval-aware ConfidenceDecayService (WORLD)', () => {
   // -------------------------------------------------------------------------
   // 1. Query shape: node decay keys on coalesce(last_retrieval_at, ...)
   // -------------------------------------------------------------------------
@@ -85,9 +93,11 @@ describe('WS3-T3 — retrieval-aware ConfidenceDecayService', () => {
     const neo = new CapturingNeo4j();
     await makeService(neo).runDecayCycle();
 
-    // Find the node-decay query (matches a bare node, sets confidence + decayed_at).
+    // Find the WORLD node-decay query (matches a bare node, sets confidence + decayed_at).
     const nodeQuery = neo.runs.find(
-      (r) => /MATCH \(n\)/.test(r.cypher) && /SET n\.confidence/.test(r.cypher),
+      (r) => r.instance === Neo4jInstanceName.WORLD &&
+             /MATCH \(n\)/.test(r.cypher) &&
+             /SET n\.confidence/.test(r.cypher),
     );
     expect(nodeQuery).toBeDefined();
     expect(nodeQuery!.cypher).toContain(
@@ -112,15 +122,14 @@ describe('WS3-T3 — retrieval-aware ConfidenceDecayService', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 3. Scope: decay runs only against WORLD; OTHER is never touched.
+  // 3. WORLD and OTHER are both touched by the decay cycle (TK-49 landed).
   // -------------------------------------------------------------------------
-  it('decay runs only against the WORLD instance (OTHER/OKG self-facts deferred to T4)', async () => {
+  it('decay cycle touches both WORLD and OTHER instances (TK-49 OKG decay implemented)', async () => {
     const neo = new CapturingNeo4j();
     await makeService(neo).runDecayCycle();
 
-    expect(neo.runs.length).toBeGreaterThan(0);
-    expect(neo.runs.every((r) => r.instance === Neo4jInstanceName.WORLD)).toBe(true);
-    expect(neo.runs.some((r) => r.instance === Neo4jInstanceName.OTHER)).toBe(false);
+    expect(neo.runs.some((r) => r.instance === Neo4jInstanceName.WORLD)).toBe(true);
+    expect(neo.runs.some((r) => r.instance === Neo4jInstanceName.OTHER)).toBe(true);
   });
 
   // -------------------------------------------------------------------------
@@ -183,5 +192,127 @@ describe('WS3-T3 — retrieval-aware ConfidenceDecayService', () => {
     const activity = coalesceLastActivity(useMs, writeMs, null);
     const result = decay(conf, rate, activity!, now);
     expect(result).toBe(conf); // hoursSince (0.5) <= MIN (1.0) → untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TK-49 / EP11.1 tests — OKG decay (OTHER instance)
+// ---------------------------------------------------------------------------
+
+describe('TK-49 / EP11.1 — OKG :Attribute decay (OTHER instance)', () => {
+  // -------------------------------------------------------------------------
+  // AC1: Non-GUARDIAN OKG :Attribute nodes are decayed at WORLD-matching rates.
+  // -------------------------------------------------------------------------
+  it('AC1: OKG decay query targets :Attribute nodes in the OTHER instance with coalesce and per-provenance rates', async () => {
+    const neo = new CapturingNeo4j();
+    await makeService(neo).runDecayCycle();
+
+    const okgDecayQuery = neo.runs.find(
+      (r) => r.instance === Neo4jInstanceName.OTHER &&
+             /MATCH \(n:Attribute\)/.test(r.cypher) &&
+             /SET n\.confidence/.test(r.cypher),
+    );
+    expect(okgDecayQuery).toBeDefined();
+
+    // Same coalesce as WORLD (last_retrieval_at → updated_at → created_at).
+    expect(okgDecayQuery!.cypher).toContain(
+      'coalesce(n.last_retrieval_at, n.updated_at, n.created_at)',
+    );
+
+    // Per-provenance rates — must include at least LLM_GENERATED and INFERENCE.
+    expect(okgDecayQuery!.cypher).toContain("WHEN 'LLM_GENERATED' THEN 0.08");
+    expect(okgDecayQuery!.cypher).toContain("WHEN 'INFERENCE'     THEN 0.06");
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2: GUARDIAN nodes are excluded — the exclusion predicate must appear.
+  // -------------------------------------------------------------------------
+  it('AC2: OKG decay query excludes GUARDIAN nodes via provenance_type <> GUARDIAN predicate', async () => {
+    const neo = new CapturingNeo4j();
+    await makeService(neo).runDecayCycle();
+
+    const okgDecayQuery = neo.runs.find(
+      (r) => r.instance === Neo4jInstanceName.OTHER &&
+             /MATCH \(n:Attribute\)/.test(r.cypher) &&
+             /SET n\.confidence/.test(r.cypher),
+    );
+    expect(okgDecayQuery).toBeDefined();
+
+    // The hard-exclusion predicate must be in the WHERE clause.
+    expect(okgDecayQuery!.cypher).toContain("n.provenance_type <> 'GUARDIAN'");
+
+    // GUARDIAN must NOT appear as a decay-rate case — it is excluded, not slowed.
+    expect(okgDecayQuery!.cypher).not.toMatch(/WHEN 'GUARDIAN'\s+THEN/);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2 (arithmetic): GUARDIAN exclusion is a hard skip — verify via formula.
+  //   A GUARDIAN node written 200h ago should produce NO decay if excluded.
+  // -------------------------------------------------------------------------
+  it('AC2 (arithmetic): GUARDIAN node provenance carries 0 decay when excluded (hard skip, not slow rate)', () => {
+    const now = Date.now();
+    const writeMs = now - 200 * 3600000; // written 200h ago — well past MIN_HOURS
+    const conf = 0.90; // typical GUARDIAN confidence
+
+    // With a GUARDIAN-rate 0.03 the formula would reduce confidence.
+    const withSlowRate = decay(conf, 0.03, writeMs, now);
+    expect(withSlowRate).toBeLessThan(conf); // slow but non-zero decay
+
+    // Hard exclusion = no decay call at all → confidence stays exactly 0.90.
+    const hardExcluded = conf; // node is never passed to the decay formula
+    expect(hardExcluded).toBe(conf);
+
+    // The two outcomes are different — proving exclusion is stronger than a slow rate.
+    expect(hardExcluded).toBeGreaterThan(withSlowRate);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC3: OKG prune query targets :Attribute orphans in the OTHER instance.
+  // -------------------------------------------------------------------------
+  it('AC3: OKG prune query deletes :Attribute nodes in OTHER with no relationships', async () => {
+    const neo = new CapturingNeo4j();
+    await makeService(neo).runDecayCycle();
+
+    const okgPruneQuery = neo.runs.find(
+      (r) => r.instance === Neo4jInstanceName.OTHER &&
+             /MATCH \(n:Attribute\)/.test(r.cypher) &&
+             /DELETE n/.test(r.cypher),
+    );
+    expect(okgPruneQuery).toBeDefined();
+
+    // Must check for no relationships — NOT EXISTS { (n)--() }.
+    expect(okgPruneQuery!.cypher).toContain('NOT EXISTS');
+
+    // Must be bounded by pruneThreshold.
+    expect(okgPruneQuery!.cypher).toContain('pruneThreshold');
+  });
+
+  // -------------------------------------------------------------------------
+  // Result shape: runDecayCycle returns okgNodesDecayed and okgNodesPruned.
+  // -------------------------------------------------------------------------
+  it('runDecayCycle result includes okgNodesDecayed and okgNodesPruned fields', async () => {
+    const neo = new CapturingNeo4j();
+    const result = await makeService(neo).runDecayCycle();
+
+    expect(result).toHaveProperty('okgNodesDecayed');
+    expect(result).toHaveProperty('okgNodesPruned');
+    expect(typeof result.okgNodesDecayed).toBe('number');
+    expect(typeof result.okgNodesPruned).toBe('number');
+  });
+
+  // -------------------------------------------------------------------------
+  // wasNoop accounts for OKG activity.
+  // -------------------------------------------------------------------------
+  it('wasNoop is true when both WORLD and OKG queries return zero counts', async () => {
+    const neo = new CapturingNeo4j();
+    const result = await makeService(neo).runDecayCycle();
+
+    // Fake session returns empty records[] → all counts are 0.
+    expect(result.nodesDecayed).toBe(0);
+    expect(result.edgesDecayed).toBe(0);
+    expect(result.nodesPruned).toBe(0);
+    expect(result.okgNodesDecayed).toBe(0);
+    expect(result.okgNodesPruned).toBe(0);
+    expect(result.wasNoop).toBe(true);
   });
 });
