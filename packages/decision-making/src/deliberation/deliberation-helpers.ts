@@ -52,6 +52,143 @@ export interface ScoredSelection {
 }
 
 // ---------------------------------------------------------------------------
+// EMA scoring-weight updater (TK-70 — CANON Std-6 gate: PERMITTED)
+//
+// CANON Std-6 verdict: PERMITTED. These weights tune which CANDIDATE is selected
+// for future responses (a selection heuristic), NOT how past outcomes are evaluated.
+// They do not touch confidence formulas, prediction error computation, drive relief
+// assignment, or any evaluation function. The weights are in-memory only, never
+// persisted, and reset on process restart — they are tunable heuristics, not
+// learned evaluators. Only fires after >=100 scored selections (warmup floor).
+// ---------------------------------------------------------------------------
+
+/** EMA learning rate — small nudge per reinforced outcome. */
+const EMA_ALPHA = 0.05;
+
+/** Minimum scored selections before any weight update is applied (warmup floor). */
+const EMA_WARMUP_FLOOR = 100;
+
+/**
+ * Factor keys that scoreCandidates can emit as the first colon-delimited segment
+ * of a factor string (e.g. "grounded:+1.0" → key "grounded"). Only keys in this
+ * set are tracked; unknown keys are ignored so new factors added later don't silently
+ * corrupt the weight state.
+ */
+const KNOWN_FACTOR_KEYS = new Set([
+  'grounded',
+  'assisted',
+  'unknown-conv',
+  'unknown-factual',
+  'untagged',
+  'chatbot',
+  'idk-conv',
+  'ends-?',
+  'entity',
+  'verbose',
+]);
+
+/**
+ * In-memory EMA weight state. Module-level singleton — intentionally NOT a class
+ * so it cannot be injected or persisted. Reset on process restart.
+ *
+ * `selectionCount`: total scoreCandidates() calls since process start.
+ * `adjustments`: per-factor additive adjustment on top of the hardcoded base weight.
+ *   Starts at 0 for every key; nudged by EMA toward ±EMA_ALPHA on each reinforced outcome.
+ */
+interface EmaWeightState {
+  selectionCount: number;
+  adjustments: Record<string, number>;
+}
+
+const emaState: EmaWeightState = {
+  selectionCount: 0,
+  adjustments: {},
+};
+
+/**
+ * Read-only snapshot of the current EMA weight state.
+ * Exported for logging and testing; callers MUST NOT mutate the returned object.
+ */
+export function getEmaWeightState(): Readonly<EmaWeightState> {
+  return emaState;
+}
+
+/** Reset EMA state (test isolation only — never called in production paths). */
+export function resetEmaWeights(): void {
+  emaState.selectionCount = 0;
+  for (const key of Object.keys(emaState.adjustments)) {
+    delete emaState.adjustments[key];
+  }
+}
+
+/**
+ * Nudge EMA scoring weights based on the winning candidate's factors.
+ *
+ * Called from DecisionMakingService.reportOutcome() on a 'reinforced' outcome
+ * ONLY after the warmup floor (≥100 selections) has been crossed.
+ *
+ * The nudge rule: every factor present on the winning candidate nudges its
+ * adjustment TOWARD +1. Presence on a winner is a positive signal regardless of
+ * whether the factor is a bonus or a penalty — if the candidate that had the
+ * chatbot penalty (for example) still won AND was reinforced, the system saw
+ * that penalty as over-cautious in that context and moderately relaxes it.
+ * For bonus factors (+), moving the adjustment toward +1 amplifies the bonus.
+ * For penalty factors (−), the adjustment subtracts from the penalty
+ * (`score -= base - adjustment`), so a positive adjustment reduces the magnitude.
+ *
+ * After all nudges, the adjustment vector is L1-normalised to [−1, +1] so no
+ * single factor can dominate via compounding drift. The result is logged (never
+ * persisted). Under the warmup floor, this function is a no-op.
+ *
+ * @param winningFactors - `factors` array from the winning CandidateScore.
+ * @param log - optional logger for the weight change line (Logger.debug signature).
+ */
+export function nudgeScoringWeights(
+  winningFactors: readonly string[],
+  log?: (msg: string) => void,
+): void {
+  // Guard: under the warmup floor, no update.
+  if (emaState.selectionCount < EMA_WARMUP_FLOOR) return;
+
+  let changed = false;
+
+  for (const factor of winningFactors) {
+    const colonIdx = factor.indexOf(':');
+    if (colonIdx <= 0) continue;
+
+    const key = factor.substring(0, colonIdx);
+    if (!KNOWN_FACTOR_KEYS.has(key)) continue;
+
+    const current = emaState.adjustments[key] ?? 0;
+    // All winning factors nudge toward +1 (presence on a winner is always positive).
+    emaState.adjustments[key] = current + EMA_ALPHA * (1 - current);
+    changed = true;
+  }
+
+  if (!changed) return;
+
+  // L1-normalise adjustments to prevent compounding drift. Only normalise when
+  // the sum of absolute values exceeds 1.0 so small early adjustments are not
+  // artificially scaled up before meaningful data accumulates.
+  const absSum = Object.values(emaState.adjustments).reduce((s, v) => s + Math.abs(v), 0);
+  if (absSum > 1.0) {
+    for (const key of Object.keys(emaState.adjustments)) {
+      emaState.adjustments[key] = (emaState.adjustments[key] ?? 0) / absSum;
+    }
+  }
+
+  if (log) {
+    const snapshot = Object.entries(emaState.adjustments)
+      .filter(([, v]) => Math.abs(v) > 1e-6)
+      .map(([k, v]) => `${k}:${v >= 0 ? '+' : ''}${v.toFixed(4)}`)
+      .join(', ');
+    log(
+      `EMA scoring weight update after ${emaState.selectionCount} selections: ${snapshot || '(no change)'}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -84,12 +221,23 @@ export function parseCandidates(text: string): Array<{ text: string; reasoning: 
  *   - Penalize chatbot/assistant language
  *   - Bonus for referencing known WKG entities
  *   - Prefer concise responses
+ *
+ * After ≥100 calls an additive EMA adjustment (TK-70, CANON Std-6 PERMITTED) is
+ * applied on top of the hardcoded base weights. The adjustment is a tunable nudge
+ * that influences FUTURE candidate selection; it does not touch any evaluation
+ * function or outcome-measurement path.
  */
 export function scoreCandidates(
   candidates: ReadonlyArray<{ text: string; reasoning: string }>,
   intent: MonologueClassification['intent'],
   wkg: WkgContext,
 ): ScoredSelection {
+  // Increment the global selection counter every time scoring runs.
+  emaState.selectionCount += 1;
+
+  // Snapshot the current EMA adjustments once so all candidates see the same values.
+  const adjustments = emaState.adjustments;
+
   const isConversational = intent === 'GREETING' || intent === 'EMOTION' || intent === 'FACT';
 
   const scores: CandidateScore[] = candidates.map((candidate) => {
@@ -99,34 +247,35 @@ export function scoreCandidates(
 
     // ── Grounding weight ──────────────────────────────────────────────
     if (grounding === 'GROUNDED') {
-      score += 1.0;
+      score += 1.0 + (adjustments['grounded'] ?? 0);
       factors.push('grounded:+1.0');
     } else if (grounding === 'LLM_ASSISTED') {
-      score += 0.5;
+      score += 0.5 + (adjustments['assisted'] ?? 0);
       factors.push('assisted:+0.5');
     } else if (grounding === 'UNKNOWN') {
-      score += isConversational ? 0.1 : 0.7;
+      const key = isConversational ? 'unknown-conv' : 'unknown-factual';
+      score += (isConversational ? 0.1 : 0.7) + (adjustments[key] ?? 0);
       factors.push(isConversational ? 'unknown-conv:+0.1' : 'unknown-factual:+0.7');
     } else {
-      score += 0.5;
+      score += 0.5 + (adjustments['untagged'] ?? 0);
       factors.push('untagged:+0.5');
     }
 
     // ── Chatbot language penalty ──────────────────────────────────────
     if (CHATBOT_RE.test(candidate.text)) {
-      score -= 0.5;
+      score -= 0.5 - (adjustments['chatbot'] ?? 0);
       factors.push('chatbot:-0.5');
     }
 
     // ── "I don't know" penalty in conversational context ──────────────
     if (isConversational && IDK_RE.test(candidate.text)) {
-      score -= 0.7;
+      score -= 0.7 - (adjustments['idk-conv'] ?? 0);
       factors.push('idk-conv:-0.7');
     }
 
     // ── Question-ending penalty (candidates should not ask questions) ─
     if (candidate.text.trimEnd().endsWith('?')) {
-      score -= 0.15;
+      score -= 0.15 - (adjustments['ends-?'] ?? 0);
       factors.push('ends-?:-0.15');
     }
 
@@ -137,14 +286,14 @@ export function scoreCandidates(
         lower.includes(e.label.toLowerCase()),
       );
       if (mentionsKnown) {
-        score += 0.15;
+        score += 0.15 + (adjustments['entity'] ?? 0);
         factors.push('entity:+0.15');
       }
     }
 
     // ── Verbosity penalty ─────────────────────────────────────────────
     if (candidate.text.split(/\s+/).length > 50) {
-      score -= 0.1;
+      score -= 0.1 - (adjustments['verbose'] ?? 0);
       factors.push('verbose:-0.1');
     }
 
