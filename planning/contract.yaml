@@ -1552,7 +1552,7 @@ nodes:
     parent: EP-17
     title: "DEC-9 — remove decorative drives-controller UI affordances that can only 501"
     intent: "Keep the honest-501 backend (CANON drive isolation, RLS-enforced) and remove the frontend override/drift/reset controls that can only ever 501. Do NOT route via guardian-feedback (separate design)."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
