@@ -185,8 +185,10 @@ export class SimulationService implements ISimulationService {
       };
     }
 
-    // Aggregate drive effects from historical outcomes.
-    let totalEffect = 0;
+    // Aggregate drive effects from historical outcomes across ALL drives seen,
+    // not just affectedDrive — collateral harm/benefit must be visible to the
+    // planner. totalEffects accumulates count-weighted sums per drive name.
+    const totalEffects = new Map<string, number>();
     let successCount = 0;
     let totalCount = 0;
 
@@ -197,9 +199,10 @@ export class SimulationService implements ISimulationService {
 
       const driveEffects = payload['driveEffects'];
       if (driveEffects && typeof driveEffects === 'object') {
-        const effect = driveEffects[affectedDrive];
-        if (typeof effect === 'number') {
-          totalEffect += effect * count;
+        for (const [drive, effect] of Object.entries(driveEffects)) {
+          if (typeof effect === 'number') {
+            totalEffects.set(drive, (totalEffects.get(drive) ?? 0) + effect * count);
+          }
         }
       }
 
@@ -208,13 +211,24 @@ export class SimulationService implements ISimulationService {
       }
     }
 
-    const avgEffect = totalCount > 0 ? totalEffect / totalCount : 0;
+    // Convert accumulated sums to per-drive averages.
+    const estimatedDriveEffect: Partial<Record<DriveName, number>> = {};
+    for (const [drive, total] of totalEffects.entries()) {
+      (estimatedDriveEffect as Record<string, number>)[drive] =
+        totalCount > 0 ? total / totalCount : 0;
+    }
+    // Ensure affectedDrive is always present (mirrors conservative-estimate
+    // behaviour and keeps the viable-outcome filter stable).
+    if (!(affectedDrive in estimatedDriveEffect)) {
+      estimatedDriveEffect[affectedDrive] = 0;
+    }
+
     const successRate = totalCount > 0 ? successCount / totalCount : 0;
 
     return {
       description: `${category} based on ${totalCount} historical outcomes`,
       actionCategory: category,
-      estimatedDriveEffect: { [affectedDrive]: avgEffect } as Partial<Record<DriveName, number>>,
+      estimatedDriveEffect,
       confidenceEstimate: Math.min(0.8, successRate),
       riskScore: 1.0 - successRate,
     };
