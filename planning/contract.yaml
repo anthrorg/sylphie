@@ -5623,6 +5623,12 @@ governance:
       decision: "Add hostilityMagnitude: z.number().min(0).max(1).optional() to the metadata sub-schema. The non-goal meant 'no actionType enum', NOT a frozen metadata object — it is reworded in TK-86. Add packages/drive-engine/src/ipc-channel/ipc-message-validator.ts to TK-86 files_in_scope. Reusing an existing metadata field rejected (semantic collision).",
       consequences: "TK-86 gains the validator file in scope + an additive metadata field; the non-goal is reworded so the schema change is in-scope and bounded.",
       canon: "no tension — additive optional field; the top-level .strict() isolation boundary is untouched." }
+  - { id: DEC-10, type: decision, status: accepted, scope: TK-50,
+      title: "SearXNG — wire confirmed live, stub §3.2 closed",
+      context: "TK-50 verification: ToolRegistryService.executeGoogleSearch (tool-registry.ts) and the RESEARCH_ENTITY handler (action-handler-registry.service.ts) both issue real HTTP fetches to ${ollama.searxngUrl}/search?format=json with AbortController timeouts, HTTP-status checks, and catch-all fallbacks that warn and return empty results. The docker-compose.yml searxng service (image: searxng/searxng:latest, port 8888→8080) is present with a matching infra/searxng/settings.yml that enables JSON format. The deliberation web_search tool and RESEARCH_ENTITY step are fully wired. Stub §3.2 was stale: it cited only packages/learning/src/services/research.service.ts; the decision-making package had the live wire all along. TK-50 added a DEBUG log in the RESEARCH_ENTITY SearXNG fetch loop so successful /search responses are observable.",
+      decision: "Keep SearXNG container and both deliberation search paths as-is. No docker-compose change. No code removal. Stub §3.2 is closed: wiring is confirmed live in the decision-making package.",
+      consequences: "The packages/learning/src/services/research.service.ts TimescaleDB-only path remains a separate open stub (outside TK-50 scope). The searxng container remains sentinel-owned in docker-compose.yml.",
+      canon: "no tension — graceful fallback on error satisfies Theater Prohibition; low-trust provenance labels (low_trust_consensus_signal) satisfy Std-1 provenance-required." }
 
 changelog:
   - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
