@@ -1697,7 +1697,8 @@ nodes:
     parent: EP-16
     pr_url: "https://github.com/anthrorg/sylphie/pull/30"
     branch: "agent/tk-85-ws555-face---type-1-reflex"
-    status: in_progress
+    status: done
+    verification_note: "POC done: PersonScopedFaceIndex structural isolation proven (13/13 spec incl. Person-A-face-invisible-to-Person-B); faces never enter shared hotLayer, dropped-with-warning when no groundingPersonId. Residual: in-memory only (prototype); DB persistence is a follow-on ticket."
     priority: P2
     estimate: L
     engineering_level: prototype
