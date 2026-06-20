@@ -77,6 +77,7 @@ import { SensoryPredictionService } from './prediction/sensory-prediction.servic
 import { ScenePredictionService, type ScenePredictionResult } from './prediction/scene-prediction.service';
 import type { SceneSnapshot, EpisodeSource, VisualContext } from '@sylphie/shared';
 import { DecisionTickEngineService } from './tick-engine/decision-tick-engine.service';
+import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -261,6 +262,10 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // EP7-A (TK-31): Tick engine — timer loop, self-tick mutex, and event wiring.
     // Extracted into a focused service; DecisionMakingService wires the callbacks.
     private readonly tickEngine: DecisionTickEngineService,
+
+    // EP7-B (TK-32): Sensory prediction router — routes sensory/scene prediction
+    // errors to the Drive Engine. Extracted from the two former private methods.
+    private readonly sensoryPredictionRouter: SensoryPredictionRouterService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -1900,7 +1905,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       }
 
       // ── Route sensory prediction errors to drives ─────────────────────────
-      this.routeSensoryPredictionErrors(sensoryErrors, driveSnapshot);
+      this.sensoryPredictionRouter.routeSensoryPredictionErrors(sensoryErrors, driveSnapshot);
 
       // ── Route scene-level prediction errors (per-object) to drives ──────
       // WS5 T1.0: consume the comparison cached EARLY this cycle (sceneComparison
@@ -1914,7 +1919,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         // epoch-gated (a zombie cycle must not write drives). The predictor advance
         // + familiarity/ring bookkeeping already happened EARLY this cycle (right
         // after the compare, ~:873) so it survives a late zombie — see note there.
-        this.routeScenePredictionErrors(sceneComparison, driveSnapshot);
+        this.sensoryPredictionRouter.routeScenePredictionErrors(sceneComparison, driveSnapshot);
       }
 
       // CANON Std-2 (correlationId origin): anchor these tick-scoped pressure
@@ -2392,91 +2397,12 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     };
   }
 
-  /**
-   * Route per-modality sensory prediction errors to drives.
-   *
-   * Text changes → curiosity (novel information to process).
-   * Audio changes → curiosity + focus (unexpected sound demands attention).
-   * Video changes → anxiety + focus (environment shifted).
-   */
-  private routeSensoryPredictionErrors(
-    errors: Record<string, number>,
-    snapshot: DriveSnapshot,
-  ): void {
-    const totalError = Object.values(errors).reduce((sum, e) => sum + e, 0);
-    if (totalError < 0.05) return; // negligible
-
-    if (this.actionOutcomeReporter) {
-      try {
-        this.actionOutcomeReporter.reportOutcome({
-          actionId: 'sensory-prediction',
-          actionType: 'SensoryPrediction',
-          success: totalError < 0.3,
-          metadata: { sensoryPredictionError: totalError },
-          feedbackSource: 'INFERENCE',
-          theaterCheck: {
-            expressionType: 'none',
-            correspondingDrive: null,
-            driveValue: null,
-            isTheatrical: false,
-          },
-        });
-      } catch (err) {
-        this.logger.warn(`Sensory prediction error routing failed: ${err}`);
-      }
-    }
-  }
-
-  /**
-   * Route per-object scene prediction errors to drives.
-   *
-   * Novel person → curiosity + social.
-   * Person left → mild anxiety.
-   * Unknown face → curiosity + focus.
-   * Known face identified → social (slight).
-   * General scene instability → curiosity.
-   *
-   * WS5 T1.0: takes the ALREADY-COMPUTED comparison (cached early this cycle),
-   * NOT a snapshot to recompute. The caller advances predictions exactly once
-   * after this returns. This is the only place scene surprise reaches drives
-   * (Curiosity/Anxiety) — the encode-attention saliency term (T1.0) deliberately
-   * does NOT, so the perception→drive loop is broken, not relocated (ashby).
-   */
-  private routeScenePredictionErrors(
-    result: ScenePredictionResult,
-    _snapshot: DriveSnapshot,
-  ): void {
-    if (result.totalSurprise < 0.05) return;
-
-    if (this.actionOutcomeReporter) {
-      try {
-        this.actionOutcomeReporter.reportOutcome({
-          actionId: 'scene-prediction',
-          actionType: 'ScenePrediction',
-          success: result.totalSurprise < 0.2,
-          metadata: { sceneSurprise: result.totalSurprise },
-          feedbackSource: 'INFERENCE',
-          theaterCheck: {
-            expressionType: 'none',
-            correspondingDrive: null,
-            driveValue: null,
-            isTheatrical: false,
-          },
-        });
-        // WS5 P1a gate seam: record the routed outcome so the gate can assert on
-        // the CAUSAL drive effect (computedEffects.curiosity>0, anxiety>0) without
-        // polling the noisy net drive-vector delta. Called AFTER reportOutcome so
-        // the seam reflects what was actually sent, not a speculative pre-call.
-        this.scenePrediction.recordOutcomeRouted(result.totalSurprise);
-      } catch (err) {
-        this.logger.warn(`Scene prediction error routing failed: ${err}`);
-      }
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Autonomous research target selection
   // ---------------------------------------------------------------------------
+  // NOTE: routeSensoryPredictionErrors and routeScenePredictionErrors were
+  // extracted to SensoryPredictionRouterService (EP7-B, TK-32). Calls are
+  // now delegated through this.sensoryPredictionRouter.
 
   /**
    * Pick a low-confidence Entity from the WKG that would benefit from research.

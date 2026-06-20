@@ -1,7 +1,7 @@
 /**
  * TK-22 (P4.3) — the ScenePrediction DRIVE SIGNAL contract.
  *
- * routeScenePredictionErrors (decision-making.service.ts) is the SOLE place
+ * routeScenePredictionErrors (SensoryPredictionRouterService) is the SOLE place
  * scene surprise reaches the drive engine. This spec pins that emit path as a
  * SIGNAL that is independent of the gateway's cycle TRIGGER (the cooldown seam
  * exercised in perception-scene-nudge.gateway.spec.ts):
@@ -23,14 +23,13 @@
  * AD-0004: no new IPC, no new field — these assertions are made against the
  * EXISTING reportOutcome payload, not a new seam.
  *
- * Strategy mirrors social-comment-initiated.spec.ts: a generic auto-stub Proxy
- * satisfies the constructor deps routeScenePredictionErrors does not touch; a
- * recording fake captures the actionOutcomeReporter payload, and a REAL
- * ScenePredictionService is supplied so recordOutcomeRouted() runs honestly.
+ * EP7-B (TK-32): routeScenePredictionErrors was extracted from DecisionMakingService
+ * into SensoryPredictionRouterService. The test now constructs the router directly —
+ * two meaningful params (actionOutcomeReporter + scenePrediction), no auto-stub noise.
  */
 
 import { z } from 'zod';
-import { DecisionMakingService } from '../decision-making.service';
+import { SensoryPredictionRouterService } from '../sensory/sensory-prediction-router.service';
 import { ScenePredictionService } from './scene-prediction.service';
 import type { ScenePredictionResult } from './scene-prediction.service';
 import type { ActionOutcomePayload } from '@sylphie/shared';
@@ -39,26 +38,15 @@ import type { ActionOutcomePayload } from '@sylphie/shared';
 // Harness
 // ---------------------------------------------------------------------------
 
-/** Any property access returns a no-op function — satisfies the deps the routing
- *  path never calls (executor, arbitration, latentSpace, …). */
-function autoStub(): never {
-  return new Proxy(
-    {},
-    { get: () => () => undefined },
-  ) as unknown as never;
-}
-
 interface Captured {
   payloads: ActionOutcomePayload[];
 }
 
 /**
- * Construct DecisionMakingService positionally. Only the actionOutcomeReporter
- * (index 11, recording) and scenePrediction (index 22, REAL) are meaningful for
- * routeScenePredictionErrors; everything else is an auto-stub. The positional
- * order is pinned against the constructor at decision-making.service.ts:180.
+ * Construct SensoryPredictionRouterService with a recording actionOutcomeReporter
+ * and a real ScenePredictionService so recordOutcomeRouted() runs honestly.
  */
-function makeService(): { service: DecisionMakingService; captured: Captured } {
+function makeService(): { service: SensoryPredictionRouterService; captured: Captured } {
   const captured: Captured = { payloads: [] };
   const actionOutcomeReporter = {
     reportOutcome: (p: ActionOutcomePayload) => {
@@ -67,44 +55,17 @@ function makeService(): { service: DecisionMakingService; captured: Captured } {
   };
   const scenePrediction = new ScenePredictionService();
 
-  const service = new DecisionMakingService(
-    autoStub(), // 0  executorEngine
-    autoStub(), // 1  actionRetriever
-    autoStub(), // 2  predictionService
-    autoStub(), // 3  arbitrationService
-    autoStub(), // 4  episodicMemory
-    autoStub(), // 5  confidenceUpdater
-    autoStub(), // 6  consolidationService
-    autoStub(), // 7  eventLogger
-    autoStub(), // 8  processInputService
-    autoStub(), // 9  actionHandlerRegistry
-    autoStub(), // 10 driveStateReader
-    actionOutcomeReporter as unknown as never, // 11 actionOutcomeReporter
-    autoStub(), // 12 tensorInference
-    autoStub(), // 13 llm
-    autoStub(), // 14 attractorMonitor
-    autoStub(), // 15 moodBleedMonitor
-    autoStub(), // 16 tickSampler
-    autoStub(), // 17 streamLogger
-    autoStub(), // 18 latentSpace
-    autoStub(), // 19 wkgContext
-    autoStub(), // 20 deliberation
-    autoStub(), // 21 sensoryPrediction
-    scenePrediction as unknown as never, // 22 scenePrediction (REAL)
-    autoStub(), // 23 modalityRegistry
-    autoStub(), // 24 cycleGuard
+  const service = new SensoryPredictionRouterService(
+    actionOutcomeReporter as unknown as never,
+    scenePrediction,
   );
 
   return { service, captured };
 }
 
-/** Invoke the private routeScenePredictionErrors with a result + dummy snapshot. */
-function route(service: DecisionMakingService, result: ScenePredictionResult): void {
-  (
-    service as unknown as {
-      routeScenePredictionErrors: (r: ScenePredictionResult, s: unknown) => void;
-    }
-  ).routeScenePredictionErrors(result, { sessionId: 's', pressureVector: {} });
+/** Invoke routeScenePredictionErrors with a result + dummy snapshot. */
+function route(service: SensoryPredictionRouterService, result: ScenePredictionResult): void {
+  service.routeScenePredictionErrors(result, { sessionId: 's', pressureVector: {} } as never);
 }
 
 /** A ScenePredictionResult carrying a given aggregate surprise. */
@@ -223,25 +184,56 @@ describe('routeScenePredictionErrors — signal is independent of the cycle trig
   });
 });
 
-/** Variant of makeService that injects a caller-owned predictor + capture array. */
+// ---------------------------------------------------------------------------
+// AC2 — sensory prediction errors (routeSensoryPredictionErrors)
+// ---------------------------------------------------------------------------
+
+describe('routeSensoryPredictionErrors — SensoryPrediction signal emit (AC2)', () => {
+  it('emits exactly one SensoryPrediction ActionOutcome when total error >= 0.05', () => {
+    const { service, captured } = makeService();
+    service.routeSensoryPredictionErrors(
+      { text: 0.3, audio: 0.1 },
+      { sessionId: 's', pressureVector: {} } as never,
+    );
+    expect(captured.payloads).toHaveLength(1);
+    const p = captured.payloads[0];
+    expect(p.actionType).toBe('SensoryPrediction');
+    expect(p.metadata?.sensoryPredictionError).toBeCloseTo(0.4);
+  });
+
+  it('does NOT emit when total error is below 0.05', () => {
+    const { service, captured } = makeService();
+    service.routeSensoryPredictionErrors(
+      { text: 0.02, audio: 0.02 },
+      { sessionId: 's', pressureVector: {} } as never,
+    );
+    expect(captured.payloads).toHaveLength(0);
+  });
+
+  it('marks success=true when total error < 0.3, false otherwise', () => {
+    const { service, captured } = makeService();
+
+    service.routeSensoryPredictionErrors({ text: 0.1 }, { sessionId: 's', pressureVector: {} } as never);
+    expect(captured.payloads[0].success).toBe(true);
+
+    captured.payloads.length = 0;
+    service.routeSensoryPredictionErrors({ text: 0.5 }, { sessionId: 's', pressureVector: {} } as never);
+    expect(captured.payloads[0].success).toBe(false);
+  });
+});
+
+/** Construct router with caller-owned predictor + capture array. */
 function makeServiceWith(
   scenePrediction: ScenePredictionService,
   captured: ActionOutcomePayload[],
-): DecisionMakingService {
+): SensoryPredictionRouterService {
   const actionOutcomeReporter = {
     reportOutcome: (p: ActionOutcomePayload) => {
       captured.push(p);
     },
   };
-  return new DecisionMakingService(
-    autoStub(), autoStub(), autoStub(), autoStub(), autoStub(),
-    autoStub(), autoStub(), autoStub(), autoStub(), autoStub(),
-    autoStub(),
-    actionOutcomeReporter as unknown as never, // 11 actionOutcomeReporter
-    autoStub(), autoStub(), autoStub(), autoStub(), autoStub(),
-    autoStub(), autoStub(), autoStub(), autoStub(), autoStub(),
-    scenePrediction as unknown as never, // 22 scenePrediction (REAL)
-    autoStub(), // 23
-    autoStub(), // 24
+  return new SensoryPredictionRouterService(
+    actionOutcomeReporter as unknown as never,
+    scenePrediction,
   );
 }
