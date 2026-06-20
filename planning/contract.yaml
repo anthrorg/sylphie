@@ -1063,7 +1063,7 @@ nodes:
     parent: EP-12
     title: "EP12.5 — Learning cycle pressure trigger (Cognitive Awareness drive)"
     intent: "LearningService calls forceCycle() when Cognitive Awareness pressure exceeds a threshold (push DRIVE_TICK), with the timer demoted to a safety floor."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
