@@ -1129,7 +1129,7 @@ nodes:
     parent: EP-13
     title: "EP13.3 — semantic_teaching_handler default sense-tag (replace 'noun_1')"
     intent: "Apply a coarse POS heuristic ('-ing'->verb_1, '-ly'->adv_1, else 'unknown_1') instead of unconditional 'noun_1'; guardian callers may override with an explicit sense_tag."
-    status: in_progress
+    status: done
     priority: P3
     estimate: S
     engineering_level: production
