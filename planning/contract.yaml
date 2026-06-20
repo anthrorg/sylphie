@@ -487,7 +487,9 @@ nodes:
     parent: EP-5
     title: "P5.1b — delete OnnxEmbeddingExtractor + orphaned init state (keep DominantColorExtractor)"
     intent: "Remove the dead EfficientNet backbone + its orphaned state so grep efficientnet/OnnxEmbeddingExtractor returns zero, preserving DominantColorExtractor, the EmbeddingExtractor protocol, and MockEmbeddingExtractor."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/20"
+    branch: "agent/tk-25-p51b-delete-onnxembeddingextractor-orpha"
     priority: P2
     estimate: S
     engineering_level: production
@@ -524,7 +526,9 @@ nodes:
     parent: EP-6
     title: "ACC.A — embeddings flow end-to-end (live)"
     intent: "Prove tracked_objects[].embedding is non-null, 768-D, and distinguishes mug-vs-book in the fused latent by a measurable cosine gap."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/19"
+    branch: "agent/tk-27-acca-embeddings-flow-end-to-end-live"
     priority: P1
     estimate: M
     engineering_level: production
@@ -540,7 +544,9 @@ nodes:
     parent: EP-6
     title: "ACC.B — durable cross-session re-bind (live)"
     intent: "Prove a power-cycled NestJS app re-binds a previously-seen object to the SAME :VisualObject node with sighting_count incrementing, centroid drift, and bbox round-tripping."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/23"
+    branch: "agent/tk-28-accb-durable-cross-session-re-bind-live"
     priority: P1
     estimate: M
     engineering_level: production
@@ -556,7 +562,9 @@ nodes:
     parent: EP-6
     title: "ACC.C — surprise -> SYSTEM_TRIGGER cycle + recall + drive signal (live)"
     intent: "Prove end-to-end that a scene/presence change with no text/audio fires a SYSTEM_TRIGGER cycle, the cycle retrieves a prior scene (P1.5), and the drive engine receives a presenceSurprise signal with no perception-side pre-computed delta (Std-6)."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/24"
+    branch: "agent/tk-29-accc-surprise---systemtrigger-cycle"
     priority: P1
     estimate: M
     engineering_level: production
@@ -612,7 +620,9 @@ nodes:
     parent: EP-7
     title: "EP7-B — Extract SensoryPredictionRouter service"
     intent: "Extract routeSensoryPredictionErrors + routeScenePredictionErrors into a SensoryPredictionRouter (stateless modulo the injected reporter)."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/25"
+    branch: "agent/tk-32-ep7-b-extract-sensorypredictionrouter-se"
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -666,7 +676,9 @@ nodes:
     parent: EP-7
     title: "EP7-E — Extract CycleOutcomeReporter from CommunicationService"
     intent: "Extract checkTheaterProhibition + reportBasicOutcome into a CycleOutcomeReporter (theater check gates the outcome report; shared deps)."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/22"
+    branch: "agent/tk-35-ep7-e-extract-cycleoutcomereporter-from-"
     priority: P2
     estimate: M
     engineering_level: mvp
@@ -771,7 +783,9 @@ nodes:
     parent: EP-8
     title: "EP8-4 — use_learned graduation criterion in ConvergenceModel"
     intent: "Flip use_learned=True when convergence_sample_count>=1000 AND accuracy>=0.80; persist across restart; expose in /cognition/bootstrap."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/18"
+    branch: "agent/tk-41-ep8-4-uselearned-graduation-criterion-in"
     priority: P2
     estimate: M
     engineering_level: mvp
@@ -798,7 +812,9 @@ nodes:
     parent: EP-9
     title: "EP9-1 — Add Docker HEALTHCHECK to the production image"
     intent: "Add a HEALTHCHECK to the production stage hitting the existing GET /metrics/health so Railway can detect app-level readiness."
-    status: todo
+    status: done
+    pr_url: "https://github.com/anthrorg/sylphie/pull/16"
+    branch: "agent/tk-43-ep9-1-add-docker-healthcheck-to"
     priority: P2
     estimate: S
     engineering_level: production
@@ -815,7 +831,9 @@ nodes:
     parent: EP-9
     title: "EP9-2 — Resolve subpath exports or confirm the cp-hack is correct"
     intent: "Act on the POC: delete the redundant cp workaround + add exports fields where live subpath consumers exist, or document the cp hack as intentional. No silent workaround."
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/17"
+    branch: "agent/tk-44-ep9-2-resolve-subpath-exports-or"
     priority: P2
     estimate: S
     engineering_level: production
@@ -831,9 +849,11 @@ nodes:
   - id: TK-45
     kind: ticket
     parent: EP-10
+    pr_url: "https://github.com/anthrorg/sylphie/pull/29"
+    branch: "agent/tk-45-ep10-1-wire-llm-cost-to"
     title: "EP10-1 — Wire LLM cost to CycleResponse + DeliveryPayload"
     intent: "Replace the hardcoded costUsd:0 on DeliveryPayload with the real estimated cost (from DeliberationResult / estimateLlmCostUsd) so every response has an honest dollar figure."
-    status: todo
+    status: in_progress
     priority: P2
     estimate: M
     engineering_level: mvp
@@ -848,9 +868,11 @@ nodes:
   - id: TK-46
     kind: ticket
     parent: EP-10
+    pr_url: "https://github.com/anthrorg/sylphie/pull/35"
+    branch: "agent/tk-46-ep10-2-cost-logging-on-learning"
     title: "EP10-2 — Cost logging on learning LLM call sites"
     intent: "Log token counts + USD estimate after each LLM call in conversation-reflection, cross-session-synthesis, refine-edges (observability only)."
-    status: todo
+    status: in_progress
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -865,9 +887,11 @@ nodes:
   - id: TK-47
     kind: ticket
     parent: EP-10
+    pr_url: "https://github.com/anthrorg/sylphie/pull/32"
+    branch: "agent/tk-47-ep10-3-cost-logging-on-the"
     title: "EP10-3 — Cost logging on the planning LLM call site"
     intent: "Log token counts + USD estimate after the proposal.service LLM call (observability only)."
-    status: todo
+    status: in_progress
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -882,9 +906,11 @@ nodes:
   - id: TK-48
     kind: ticket
     parent: EP-10
+    pr_url: "https://github.com/anthrorg/sylphie/pull/26"
+    branch: "agent/tk-48-ep10-4-consolidate-ollamallmservice-cost"
     title: "EP10-4 — Consolidate OllamaLlmService cost to the shared utility"
     intent: "Replace the local hardcoded DeepSeek rate constants with estimateLlmCostUsd + resolveLlmPricingFromEnv so rate changes are one env-var, not two code edits."
-    status: todo
+    status: in_progress
     priority: P2
     estimate: S
     engineering_level: mvp
@@ -900,9 +926,11 @@ nodes:
   - id: TK-49
     kind: ticket
     parent: EP-11
+    pr_url: "https://github.com/anthrorg/sylphie/pull/34"
+    branch: "agent/tk-49-ep111-other-instance-okg-decay-with"
     title: "EP11.1 — OTHER-instance (OKG) decay with guardian/identity exclusion"
     intent: "Decay confidence on non-identity OKG facts via the same ACT-R formula as WORLD, while guardian-confirmed identity facts never decay."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: L
     engineering_level: production
@@ -918,9 +946,11 @@ nodes:
   - id: TK-50
     kind: ticket
     parent: EP-11
+    pr_url: "https://github.com/anthrorg/sylphie/pull/31"
+    branch: "agent/tk-50-ep112-searxng-verify-wire-status"
     title: "EP11.2 — SearXNG: verify wire status, then validate or remove"
     intent: "Confirm whether SearXNG is genuinely reachable in the live web_search/RESEARCH_ENTITY paths; validate with a live smoke or remove the container + dead code."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -937,7 +967,7 @@ nodes:
     parent: EP-12
     title: "EP12.1a — Consolidation entity extraction LLM path + ILlmService injection"
     intent: "Inject @Optional() ILlmService into ConsolidationService and replace the whitespace-split entity heuristic (extractEntities at consolidation.service.ts:364-387) with LLM-assisted entity extraction; lesion-fallback to the existing heuristic silently when LLM is null or unavailable. This is the injection-bearing half of the split — it stands up extractWithLlm(), the structured-response parser, and the consolidate() wiring; TK-88 reuses the injected llm for relationships."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -949,6 +979,8 @@ nodes:
       - { given: "this.llm === null OR this.llm.isAvailable()===false OR LLM complete() throws/returns unparseable text", when: "extractWithLlm() runs", then: "it falls back to the existing extractEntities() heuristic at :364-387 silently (no exception, logger.warn only on the throw branch); consolidate() still returns success; build + existing consolidation specs green" }
     files_in_scope: ["packages/decision-making/src/episodic-memory/consolidation.service.ts", "packages/decision-making/src/episodic-memory/consolidation.llm-extraction.spec.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/60"
+    branch: "agent/tk-87-ep121a-consolidation-entity-extraction-l"
 
   - id: TK-88
     kind: ticket
@@ -972,7 +1004,7 @@ nodes:
     parent: EP-12
     title: "EP12.2 — Reflection windowed sampling for long sessions"
     intent: "Replace head-only truncation in buildReflectionPrompt with head+tail+sampled-middle within the existing MAX_CONVERSATION_CHARS budget."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -983,13 +1015,15 @@ nodes:
       - { given: "a session within budget, and the two-event trivial case", when: "assembled", then: "unchanged (all events); no index-out-of-bounds" }
     files_in_scope: ["packages/learning/src/pipeline/conversation-reflection.service.ts", "packages/learning/src/pipeline/conversation-reflection.service.spec.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/43"
+    branch: "agent/tk-52-ep122-reflection-windowed-sampling-for"
 
   - id: TK-53
     kind: ticket
     parent: EP-12
     title: "EP12.3 — Ungrounded insight re-grounding sweep"
     intent: "Periodically re-ground Insight nodes (grounded:false) against entities added since creation, so insight quality is order-independent; runs on the 30-min synthesis cadence."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1001,13 +1035,15 @@ nodes:
       - { given: "pre-existing grounded:false Insights created BEFORE this ticket that lack referenced_entities (so the IS NOT NULL sweep predicate would skip them forever)", when: "the one-time idempotent Cypher backfill runs (DEC-16)", then: "they are brought into the sweep's reach (referenced_entities populated); the backfill is idempotent (re-run is a no-op); the recurring sweep then maintains them — eliminating the order-dependent blind spot" }
     files_in_scope: ["packages/learning/src/pipeline/conversation-reflection.service.ts", "packages/learning/src/learning.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/42"
+    branch: "agent/tk-53-ep123-ungrounded-insight-re-grounding-sw"
 
   - id: TK-54
     kind: ticket
     parent: EP-12
     title: "EP12.4 — Learning pipeline dead-letter tracking"
     intent: "Record every event that fails in processEvent() to a failed_learning_events table so silent data loss is auditable; still mark-learned to unblock the queue."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1018,13 +1054,15 @@ nodes:
       - { given: "the table DDL on a fresh DB", when: "applied", then: "created as a hypertable on failed_at; a simulated UpsertEntities throw yields one dead-letter row with the right step/error" }
     files_in_scope: ["packages/learning/src/learning.service.ts", "packages/shared/src/storage/timescale.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/44"
+    branch: "agent/tk-54-ep124-learning-pipeline-dead-letter-trac"
 
   - id: TK-55
     kind: ticket
     parent: EP-12
     title: "EP12.5 — Learning cycle pressure trigger (Cognitive Awareness drive)"
     intent: "LearningService calls forceCycle() when Cognitive Awareness pressure exceeds a threshold (push DRIVE_TICK), with the timer demoted to a safety floor."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1035,6 +1073,8 @@ nodes:
       - { given: "pressure <= threshold, or a timer tick while a pressure cycle is in flight", when: "received", then: "no trigger / tick dropped silently (existing guard)" }
     files_in_scope: ["packages/learning/src/learning.service.ts", "packages/learning/src/learning.module.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/45"
+    branch: "agent/tk-55-ep125-learning-cycle-pressure-trigger"
 
   - { id: TK-56, kind: ticket, parent: EP-13, status: done, priority: P3, estimate: S, engineering_level: prototype,
       title: "EP13-POC — MorphologyExecutor 'call' step: string<->ValueNode bridge feasibility",
@@ -1050,7 +1090,7 @@ nodes:
     parent: EP-13
     title: "EP13.1 — MorphologyExecutor 'call' step type (string-value delegation)"
     intent: "Implement the 'call' branch in _execute_string_ast so morphological procedures compose; reuse ProcedureExecutor's recursion-depth + cycle detection."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1061,13 +1101,15 @@ nodes:
       - { given: "a 'call' to a missing procedure, or a circular chain past MAX_RECURSION_DEPTH", when: "executed", then: "a descriptive ValueError / a RecursionError before stack overflow (not NotImplementedError); the old NotImplementedError test is replaced by a passing test" }
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/morphology_executor.py"]
     depends_on: ["TK-56"]
+    pr_url: "https://github.com/anthrorg/sylphie/pull/39"
+    branch: "agent/tk-57-ep131-morphologyexecutor-call-step-type"
 
   - id: TK-58
     kind: ticket
     parent: EP-13
     title: "EP13.2 — ProcedureExecutor syntactic step types (matcher delegation)"
     intent: "Dispatch syntactic step types (match_root/edge/optional, extract_role, match_property) to SyntacticTemplateMatcher; descriptive NotImplementedError when the matcher is absent."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1078,13 +1120,15 @@ nodes:
       - { given: "the matcher is None", when: "a syntactic step is hit", then: "NotImplementedError with a descriptive message (not a bare raise); non-syntactic steps unchanged" }
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/procedure_executor.py"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/38"
+    branch: "agent/tk-58-ep132-procedureexecutor-syntactic-step-t"
 
   - id: TK-59
     kind: ticket
     parent: EP-13
     title: "EP13.3 — semantic_teaching_handler default sense-tag (replace 'noun_1')"
     intent: "Apply a coarse POS heuristic ('-ing'->verb_1, '-ly'->adv_1, else 'unknown_1') instead of unconditional 'noun_1'; guardian callers may override with an explicit sense_tag."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1095,13 +1139,15 @@ nodes:
       - { given: "an explicit sense_tag='adj_1'", when: "resolved", then: "the provided tag is used (no heuristic override)" }
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/semantic_teaching_handler.py"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/36"
+    branch: "agent/tk-59-ep133-semanticteachinghandler-default-se"
 
   - id: TK-60
     kind: ticket
     parent: EP-13
     title: "EP13.4 — Inference depth-4+ advancement criteria"
     intent: "Define real unlock predicates for depths 4 and 5 (mirroring depth-2/3), gating depth-4 on the E5 prerequisite + success metrics; replace the LOCKED_UNTIL_E5 short-circuit."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1112,13 +1158,15 @@ nodes:
       - { given: "depth 4, depth-5 criteria met", when: "advancement runs", then: "depth advances to 5" }
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/inference_query.py"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/40"
+    branch: "agent/tk-60-ep134-inference-depth-4-advancement-crit"
 
   - id: TK-61
     kind: ticket
     parent: EP-13
     title: "EP13.5 — Configurable persistence-check weight profiles"
     intent: "Promote _NEW_WEIGHTS/_KNOWN_WEIGHTS/_NEW_THRESHOLD/_KNOWN_THRESHOLD into PersistenceCheckConfig (defaults = current values) with weight-sum validation."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1129,13 +1177,15 @@ nodes:
       - { given: "weights not summing to 1.0 / no-arg config", when: "constructed", then: "Pydantic ValidationError / identical-to-current behavior respectively" }
     files_in_scope: ["packages/perception-service/cobeing/layer2_perception/persistence_check_service.py", "packages/perception-service/cobeing/layer2_perception/config.py"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/37"
+    branch: "agent/tk-61-ep135-configurable-persistence-check-wei"
 
   - id: TK-62
     kind: ticket
     parent: EP-14
     title: "EP14.1 — Planning requeue exponential backoff on deferral"
     intent: "Attach a retryAfter to a deferred opportunity that grows exponentially with deferralCount, so it isn't re-tried every 30s cycle."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1146,13 +1196,15 @@ nodes:
       - { given: "an item at MAX_DEFERRALS before/after retryAfter expires", when: "dequeued", then: "skipped / returned-and-processed respectively" }
     files_in_scope: ["packages/planning/src/queue/opportunity-queue.service.ts", "packages/planning/src/planning.service.ts", "packages/planning/src/interfaces/planning.interfaces.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/41"
+    branch: "agent/tk-62-ep141-planning-requeue-exponential-backo"
 
   - id: TK-63
     kind: ticket
     parent: EP-14
     title: "EP14.2 — Simulation cross-drive effect aggregation"
     intent: "Aggregate ALL drives from the driveEffects history (not only affectedDrive) into estimatedDriveEffect so collateral harm/benefit is visible."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1163,13 +1215,15 @@ nodes:
       - { given: "history where only affectedDrive has effects", when: "run", then: "behavior identical (single-entry map)" }
     files_in_scope: ["packages/planning/src/pipeline/simulation.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/46"
+    branch: "agent/tk-63-ep142-simulation-cross-drive-effect-aggr"
 
   - id: TK-64
     kind: ticket
     parent: EP-14
     title: "EP14.3 — Simulation sample-size-aware confidence + risk"
     intent: "Replace min(0.8,successRate)/(1-successRate) with shrinkage-prior confidence (k=10) and variance-aware risk, so one lucky outcome != 50 consistent ones."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1180,13 +1234,15 @@ nodes:
       - { given: "effects [-0.9,+0.3,-0.3] high-variance / [-0.3,-0.3,-0.3] low-variance", when: "risk computed", then: "risk>0.5 / <0.3 respectively" }
     files_in_scope: ["packages/planning/src/pipeline/simulation.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/50"
+    branch: "agent/tk-64-ep143-simulation-sample-size-aware-confi"
 
   - id: TK-65
     kind: ticket
     parent: EP-14
     title: "EP14.4 — Constraint-validation trigger-context wiring (verify + test)"
     intent: "Confirm fetchExistingTriggerContexts() is live (it runs a real Cypher now) and constraint-3 duplicate-trigger detection fires; add the missing integration test."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1197,13 +1253,15 @@ nodes:
       - { given: "no ActionProcedure nodes / Neo4j unreachable", when: "validate() runs", then: "empty set, no false positives / fail-closed defer (existing path)" }
     files_in_scope: ["packages/planning/src/pipeline/constraint-validation.service.ts", "packages/planning/src/pipeline/constraint-validation.service.spec.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/48"
+    branch: "agent/tk-65-ep144-constraint-validation-trigger-cont"
 
   - id: TK-89
     kind: ticket
     parent: EP-14
     title: "EP14.5a — CycleErrorContext type + LLM_TIMEOUT classification threaded to episode encode"
     intent: "Define the typed CycleErrorContext (cause union: LLM_TIMEOUT | CONTRADICTION_SCAN_FAILED | HANDLER_NOT_FOUND | DELIBERATION_ERROR), make it an additive optional field on EpisodeInput/Episode, catch LLM-timeout/deliberation errors at the four deliberation call sites in processInput, and thread the classified context through EpisodicMemoryService.encode() onto the stored episode so failures are distinguishable in the ring buffer. This is the type-and-threading half of the split; TK-90 adds the arbitration/handler typed returns that also feed this context."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1215,6 +1273,8 @@ nodes:
       - { given: "a cycle that set cycleError, reaching episodicMemory.encode() (~:1629) and the EpisodicMemoryService.encode() episode-literal builder", when: "encode runs", then: "the stored Episode carries cycleErrorContext.cause==='LLM_TIMEOUT' (additive spread, present only when set); Learning receives the error-tagged episode; no confidence-formula change" }
     files_in_scope: ["packages/shared/src/types/decision-making.types.ts", "packages/shared/src/index.ts", "packages/decision-making/src/decision-making.service.ts", "packages/decision-making/src/episodic-memory/episodic-memory.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/63"
+    branch: "agent/tk-89-ep145a-cycleerrorcontext-type-llmtimeout"
 
   - id: TK-90
     kind: ticket
@@ -1239,7 +1299,7 @@ nodes:
     parent: EP-14
     title: "EP14.6 — ConfidenceUpdater deferred event emission (DriveSnapshot threading)"
     intent: "Emit the currently-suppressed CONFIDENCE_UPDATED / TYPE_1_GRADUATION / TYPE_1_DEMOTION events by buffering during update() and flushing with a DriveSnapshot from the executor after the cycle."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1250,13 +1310,15 @@ nodes:
       - { given: "flushEvents on an empty buffer / a batch decay", when: "called", then: "no writes & no error / one row per action (no aggregation)" }
     files_in_scope: ["packages/decision-making/src/confidence/confidence-updater.service.ts", "packages/decision-making/src/executor/executor-engine.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/51"
+    branch: "agent/tk-67-ep146-confidenceupdater-deferred-event-e"
 
   - id: TK-68
     kind: ticket
     parent: EP-14
     title: "EP14.7 — Unified MAE history store"
     intent: "Replace three independent Map<string,number[]> MAE windows (prediction, confidence-updater, type1-tracker) with one shared MaeHistoryStore so graduation/demotion/confidence read the same window."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1267,13 +1329,15 @@ nodes:
       - { given: "a window at MAX_MAE_WINDOW=10", when: "an 11th value is appended", then: "oldest evicted (FIFO, unchanged)" }
     files_in_scope: ["packages/decision-making/src/confidence/confidence-updater.service.ts", "packages/decision-making/src/graduation/type1-tracker.service.ts", "packages/decision-making/src/prediction/prediction.service.ts", "packages/decision-making/src/decision-making.module.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/52"
+    branch: "agent/tk-68-ep147-unified-mae-history-store"
 
   - id: TK-69
     kind: ticket
     parent: EP-14
     title: "EP14.8 — VERIFY mood-congruent episodic retrieval is live; close stub"
     intent: "Confirm WS5 T2.5 mood-congruent retrieval (driveCosineSimilarity blend in queryByContext) is live + gate-provable, then close the stub-inventory entry. (Decomposer found it already done.)"
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -1284,13 +1348,15 @@ nodes:
       - { given: "the confirmation", when: "complete", then: "the stub entry is closed with a file+line evidence reference" }
     files_in_scope: ["packages/decision-making/src/episodic-memory/episodic-memory.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/49"
+    branch: "agent/tk-69-ep148-verify-mood-congruent-episodic-ret"
 
   - id: TK-70
     kind: ticket
     parent: EP-14
     title: "EP14.9 — Adaptive candidate scoring weights (CANON gate first)"
     intent: "Decide whether EMA weight-learning for scoreCandidates is CANON Std-6 safe; if cleared, implement an EMA-on-outcome updater; if not, raise an open_question instead of building."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: L
     engineering_level: production
@@ -1301,13 +1367,15 @@ nodes:
       - { given: "task-1 verdict=PERMITTED + >=100 scored selections", when: "an outcome is reinforced", then: "the correlated weight is nudged by EMA (alpha=0.05), the vector is normalised, weights logged not persisted; under the floor, no update. decision-making.service.ts is touched ONLY here and ONLY because task-1 cleared (conditional scope per DEC-15)" }
     files_in_scope: ["packages/decision-making/src/deliberation/deliberation.service.ts", "packages/decision-making/src/confidence/confidence-updater.service.ts", "packages/decision-making/src/decision-making.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/55"
+    branch: "agent/tk-70-ep149-adaptive-candidate-scoring-weights"
 
   - id: TK-71
     kind: ticket
     parent: EP-15
     title: "EP15.1 — Scope-aware CALLS-edge resolution in codebase-pkg"
     intent: "Eliminate phantom cross-service CALLS edges by constraining callee matches to the correct module via the caller's IMPORTS graph (two-pass: sync Functions, then resolve CALLS). External @sylphie-labs/codebase-pkg package."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1318,13 +1386,15 @@ nodes:
       - { given: "a local same-file call not imported", when: "resolved", then: "the CALLS edge is still created (local-call rule)" }
     files_in_scope: ["mutation-builder.ts (codebase-pkg external package)", "ast-parser.ts (codebase-pkg external package)"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/54"
+    branch: "agent/tk-71-ep151-scope-aware-calls-edge-resolution-"
 
   - id: TK-72
     kind: ticket
     parent: EP-15
     title: "EP15.2 — PKG tools 'did you mean?' + fuzzy-fallback transparency"
     intent: "getFunctionDetail/getDataFlow surface a 'MATCH MODE: suffix-fallback' notice when fuzzy and top-3 near-miss suggestions on a total miss. External codebase-pkg package."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1335,13 +1405,15 @@ nodes:
       - { given: "getFunctionDetail('tick') (suffix fallback) / an exact unique match", when: "resolved", then: "a leading 'MATCH MODE: suffix-fallback' field + all matches / no change" }
     files_in_scope: ["getFunctionDetail.ts (codebase-pkg external package)", "getDataFlow.ts (codebase-pkg external package)"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/53"
+    branch: "agent/tk-72-ep152-pkg-tools-did-you"
 
   - id: TK-73
     kind: ticket
     parent: EP-15
     title: "EP15.3 — Skill installer cycle detection (DFS)"
     intent: "Three-colour DFS cycle detection in skill-package dependency resolution (skill_installer.py:275 TODO); abort with the cycle path."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1352,13 +1424,15 @@ nodes:
       - { given: "A->B->C (no cycle) / a single package", when: "resolved", then: "success, no false positive" }
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/skill_installer.py"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/47"
+    branch: "agent/tk-73-ep153-skill-installer-cycle-detection"
 
   - id: TK-74
     kind: ticket
     parent: EP-15
     title: "EP15.4 — Narration sidecar model-state enrichment"
     intent: "Inject SidecarControlService into NarrationBuilderService; populate convergenceScore (inverse training_loss), globalModelConfidence, panelDivergenceScores; undefined when the sidecar is down."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1369,13 +1443,15 @@ nodes:
       - { given: "the sidecar returns null", when: "buildNarration runs", then: "all three fields undefined; no exception" }
     files_in_scope: ["packages/supervisor/src/narration-builder.service.ts", "packages/supervisor/src/supervisor.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/62"
+    branch: "agent/tk-74-ep154-narration-sidecar-model-state-enri"
 
   - id: TK-75
     kind: ticket
     parent: EP-15
     title: "EP15.5 — VERIFY A2.1 latent-space hardening is live; close stub"
     intent: "Confirm commit 80128a4 landed the latent-space confidence ceiling + schema CHECK, then close the verify-before-listing item. (Decomposer found it already done.)"
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -1386,13 +1462,15 @@ nodes:
       - { given: "the confirmation", when: "complete", then: "the stub §A2.1 entry is closed with the commit sha + file reference" }
     files_in_scope: ["packages/decision-making/src/latent-space/latent-space.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/56"
+    branch: "agent/tk-75-ep155-verify-a21-latent-space-hardening"
 
   - id: TK-76
     kind: ticket
     parent: EP-15
     title: "EP15.6 — research-report.md: archive or promote remaining ideas"
     intent: "Triage the 46 April research-report ideas: each is already-ticketed (annotate), a genuine gap (promote to open_question), or stale (mark ARCHIVED); then archive the report."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -1403,13 +1481,15 @@ nodes:
       - { given: "no genuine-gap items remain unfiled", when: "triage completes", then: "research-report.md is moved to wiki/ideas/archive/ with a closure-date header" }
     files_in_scope: ["wiki/ideas/research-report.md", "planning/contract.yaml"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/59"
+    branch: "agent/tk-76-ep156-research-reportmd-archive-or-promo"
 
   - id: TK-77
     kind: ticket
     parent: EP-14
     title: "EP14.10 — Decision-cycle concurrency guard (verify or wire)"
     intent: "Close the WS4 residual: confirm the decision cycle has a re-entrancy/overlap guard preventing two cycles running concurrently for the same backend; if absent, add it. Distinct from TK-89/TK-90 typed error recovery (formerly TK-66)."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1419,6 +1499,8 @@ nodes:
       - { given: "two cycle triggers arriving for the same backend within one in-flight cycle", when: "processed", then: "the second is queued or dropped per the guard — never run concurrently; a test exercises the overlap" }
       - { given: "CycleGuard as it exists today", when: "inspected", then: "either the guard is confirmed live (close with file:line evidence) or the gap is named and the guard added" }
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/57"
+    branch: "agent/tk-77-ep1410-decision-cycle-concurrency-guard-"
 
   # ===== EP-17  Tier-6 resolved -> build (DEC-7/8/9) =====
   - { id: EP-17, kind: epic, parent: FEAT-2, status: todo, priority: P3,
@@ -1429,7 +1511,7 @@ nodes:
     parent: EP-17
     title: "DEC-7 — one-shot legacy world-row -> guardian provenance migration (293 rows)"
     intent: "Re-attribute the 293 legacy world-scoped rows to guardian provenance, closing the standing gap vs Wave-3 three-graph isolation. Idempotent, reversible, backed up."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1441,12 +1523,14 @@ nodes:
       - { given: "the migration applied after a successful backup", when: "completed", then: "exactly N rows (the dry-run count) carry guardian provenance; a re-run is a no-op (idempotent); a documented reverse step restores the prior state" }
     files_in_scope: ["packages/decision-making/src/wkg/", "infra/migrations/"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/61"
+    branch: "agent/tk-78-dec-7-one-shot-legacy-world-row--"
   - id: TK-79
     kind: ticket
     parent: EP-17
     title: "DEC-8 — wire /transcribe to Deepgram REST; delete the empty-200 theater stub"
     intent: "voice.controller.ts:32-36 returns a fake {text:'',confidence:0} at HTTP 200 (theater-prohibition violation). Wire real Deepgram REST transcription and delete the stub; press-to-talk UI stays."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: M
     engineering_level: production
@@ -1457,12 +1541,14 @@ nodes:
       - { given: "a transcription failure", when: "it occurs", then: "an honest error status is returned (NOT a fake {text:'',confidence:0} 200); the empty-200 stub is gone" }
     files_in_scope: ["apps/sylphie/src/controllers/voice.controller.ts", "apps/sylphie/src/services/stt.service.ts"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/64"
+    branch: "agent/tk-79-dec-8-wire-transcribe-to-deepgram"
   - id: TK-80
     kind: ticket
     parent: EP-17
     title: "DEC-9 — remove decorative drives-controller UI affordances that can only 501"
     intent: "Keep the honest-501 backend (CANON drive isolation, RLS-enforced) and remove the frontend override/drift/reset controls that can only ever 501. Do NOT route via guardian-feedback (separate design)."
-    status: todo
+    status: in_progress
     priority: P3
     estimate: S
     engineering_level: production
@@ -1473,6 +1559,8 @@ nodes:
       - { given: "drives-controller backend", when: "inspected", then: "unchanged — still refuses app->drive mutation with 501 (CANON drive isolation preserved)" }
     files_in_scope: ["frontend/src/components/Drives/"]
     depends_on: []
+    pr_url: "https://github.com/anthrorg/sylphie/pull/58"
+    branch: "agent/tk-80-dec-9-remove-decorative-drives-controlle"
 
 
   # ---------------- EP-16  Tier 4a — World-fact / three-graph cluster (WS5.5) ----------------
@@ -1528,7 +1616,9 @@ nodes:
   - id: TK-82
     kind: ticket
     parent: EP-16
-    status: todo
+    status: in_progress
+    pr_url: "https://github.com/anthrorg/sylphie/pull/21"
+    branch: "agent/tk-82-ws552-verify-guardian-gated-candidate--"
     priority: P1
     estimate: S
     engineering_level: production
@@ -1555,7 +1645,9 @@ nodes:
   - id: TK-83
     kind: ticket
     parent: EP-16
-    status: todo
+    pr_url: "https://github.com/anthrorg/sylphie/pull/27"
+    branch: "agent/tk-83-ws553-verify-consolidation-carries-visua"
+    status: in_progress
     priority: P2
     estimate: S
     engineering_level: production
@@ -1577,7 +1669,9 @@ nodes:
   - id: TK-84
     kind: ticket
     parent: EP-16
-    status: todo
+    pr_url: "https://github.com/anthrorg/sylphie/pull/28"
+    branch: "agent/tk-84-ws554-confirm-durable-okg-recall-path"
+    status: in_progress
     priority: P2
     estimate: M
     engineering_level: production
@@ -1600,7 +1694,9 @@ nodes:
   - id: TK-85
     kind: ticket
     parent: EP-16
-    status: todo
+    pr_url: "https://github.com/anthrorg/sylphie/pull/30"
+    branch: "agent/tk-85-ws555-face---type-1-reflex"
+    status: in_progress
     priority: P2
     estimate: L
     engineering_level: prototype
@@ -1630,7 +1726,9 @@ nodes:
   - id: TK-86
     kind: ticket
     parent: EP-16
-    status: todo
+    pr_url: "https://github.com/anthrorg/sylphie/pull/33"
+    branch: "agent/tk-86-ws556-drive-hostility-appraisal-inboundh"
+    status: in_progress
     priority: P2
     estimate: M
     engineering_level: production
