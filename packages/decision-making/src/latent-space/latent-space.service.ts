@@ -293,11 +293,14 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
    * Exposed as `readonly` so tests and callers can introspect or search
    * without the service needing to own the full face-reflex API.
    */
-  readonly personScopedFaceIndex = new PersonScopedFaceIndex();
+  // TK-91: timescale is passed so the face index can persist to DB.
+  readonly personScopedFaceIndex: PersonScopedFaceIndex;
 
   constructor(
     private readonly timescale: TimescaleService,
-  ) {}
+  ) {
+    this.personScopedFaceIndex = new PersonScopedFaceIndex(timescale ?? null);
+  }
 
   /**
    * Flush all pending warm-layer writes on shutdown.
@@ -326,6 +329,8 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
     if (this.schemaReady) {
       await this.hydrate();
     }
+    // TK-91: create person_face_embeddings table alongside learned_patterns.
+    await this.personScopedFaceIndex.ensureSchema();
   }
 
   // ---------------------------------------------------------------------------
@@ -664,7 +669,7 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       if (modality === 'faces') {
         const personId = opts.groundingPersonId ?? null;
         if (personId) {
-          const faceId = this.personScopedFaceIndex.writeFace(personId, embedding);
+          const faceId = await this.personScopedFaceIndex.writeFace(personId, embedding);
           if (faceId) ids.push(faceId);
         } else {
           // No person scope — drop and audit (Wave 3 C6 preserved).
