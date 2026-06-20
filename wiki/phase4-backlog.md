@@ -70,7 +70,7 @@ Tier-1 CANON hazards + Tier-2 quick wins. 5 commits (`a5d6648`, `e82c9e8`, `4122
 - §3.3 drives-controller UI — remove the affordances or route via guardian-feedback?
 
 ## Verify-before-listing (status uncertain)
-- A2.1 latent-space production hardening — commit `80128a4` suggests it landed; confirm.
+- A2.1 latent-space production hardening — CLOSED (commit 80128a4 "fix(decision-making): latent-space production hardening (WS1 #3)"). WRITE_TIME_CONFIDENCE_CEILING=0.6 at packages/decision-making/src/latent-space/latent-space.service.ts:239; enforced in write():557 and updateConfidence():726-728; schema CHECK constraint present in ensureSchema():924-928.
 - `mood-congruent-episodic-retrieval` — CLOSED (TK-69, 2026-06-20). Live in `episodic-memory.service.ts`: `MOOD_CONGRUENT_ALPHA=0.20` (:126), `driveCosineSimilarity` (:876) called from `queryByContent` (:537-541), rumination breaker window (:195, :688-727). Note: mood blend lives in `queryByContent`, NOT `queryByContext` (which is a SHA-fingerprint alias at :425).
 - `research-report.md` (46 ideas, April) — stale vs the June cluster; mine for any not-yet-ticketed gems, otherwise archive.
 
