@@ -73,6 +73,8 @@ export * from './action.types';
 
 // Decision-making types
 export {
+  type CycleErrorCause,
+  type CycleErrorContext,
   type EncodingDepth,
   type EpisodeInput,
   type Episode,

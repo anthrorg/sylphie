@@ -17,4 +17,7 @@ module.exports = {
     '^@sylphie/shared$': '<rootDir>/../shared/src/index.ts',
     '^@sylphie/drive-engine$': '<rootDir>/../drive-engine/src/index.ts',
   },
+  // Resolve peer deps (e.g. @nestjs/common) from the monorepo root's node_modules
+  // so worktree runs (which have no local node_modules) can find them.
+  modulePaths: ['C:/Users/Jim/OneDrive/desktop/Code/sylphie/node_modules'],
 };

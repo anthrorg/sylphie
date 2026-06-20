@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, computeInformationGain, type InformationGainResult, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, type CycleErrorContext, computeInformationGain, type InformationGainResult, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -951,6 +951,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       // CANON Standard 4 (Shrug Imperative). See the SHRUG branch for rationale.
       let isGenuineIncomprehensionShrug = false;
 
+      // EP14.5a (TK-89): classified error from a deliberation.deliberate() throw.
+      // Absent on all normal (non-error) cycles. Set by the inline try/catch that
+      // wraps each deliberate() call site; the catch degrades the cycle rather than
+      // re-throwing, so encode() still runs and carries this context onto the
+      // stored episode for post-hoc diagnostics.
+      let cycleError: CycleErrorContext | undefined = undefined;
+
       if (arbitrationResult.type !== 'SHRUG') {
         const { candidate } = arbitrationResult;
         const procedureData = candidate.procedureData;
@@ -1047,21 +1054,31 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.warn(
             `Latent match ${latentMatch.pattern.id.substring(0, 8)} has empty responseText — falling through to Type 2.`,
           );
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
-          cycleWinningFactors = deliberationResult.winningCandidateFactors;
-          executionResults.push({
-            content: deliberationResult.responseText,
-            tokensUsed: deliberationResult.totalTokens,
-            latencyMs: deliberationResult.totalLatencyMs,
-            model: 'deliberation-pipeline',
-            deliberationTrace: deliberationResult.trace,
-            confidence: deliberationResult.confidence,
-            knowledgeGrounding: deliberationResult.knowledgeGrounding,
-            intent: deliberationResult.intent,
-            groundingProvenance: deliberationResult.groundingProvenance ?? null,
-            groundedBy: deliberationResult.groundedBy ?? null,
-            degradedNoLlm: deliberationResult.degradedNoLlm,
-          });
+          // EP14.5a (TK-89): catch deliberation errors so the cycle degrades to
+          // an empty response rather than re-throwing to the outer catch (:397-401).
+          let deliberationResult: DeliberationResult | null = null;
+          try {
+            deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          } catch (delErr) {
+            cycleError = classifyDeliberationError(delErr);
+            this.logger.warn(`Deliberation failed (latent fallthrough): ${delErr} [classified: ${cycleError.cause}]`);
+          }
+          if (deliberationResult !== null) {
+            cycleWinningFactors = deliberationResult.winningCandidateFactors;
+            executionResults.push({
+              content: deliberationResult.responseText,
+              tokensUsed: deliberationResult.totalTokens,
+              latencyMs: deliberationResult.totalLatencyMs,
+              model: 'deliberation-pipeline',
+              deliberationTrace: deliberationResult.trace,
+              confidence: deliberationResult.confidence,
+              knowledgeGrounding: deliberationResult.knowledgeGrounding,
+              intent: deliberationResult.intent,
+              groundingProvenance: deliberationResult.groundingProvenance ?? null,
+              groundedBy: deliberationResult.groundedBy ?? null,
+              degradedNoLlm: deliberationResult.degradedNoLlm,
+            });
+          }
         } else if (procedureData !== null && (this.llm === null || this.llm.isAvailable())) {
           // Guard: skip procedure execution when the LLM is unavailable.
           // Procedure steps (e.g. LLM_GENERATE, RESEARCH_ENTITY) require the LLM.
@@ -1113,56 +1130,66 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           // debate (conditional) → arbiter → commit.
           vlog('executing Type 2 deliberation (novel)', { inputSummary: inputSummary.substring(0, 80) });
           this.logger.debug('Type 2 novel: running deliberation pipeline');
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
-          cycleWinningFactors = deliberationResult.winningCandidateFactors;
+          // EP14.5a (TK-89): catch deliberation errors so the cycle degrades to
+          // an empty response rather than re-throwing to the outer catch (:397-401).
+          let deliberationResult: DeliberationResult | null = null;
+          try {
+            deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          } catch (delErr) {
+            cycleError = classifyDeliberationError(delErr);
+            this.logger.warn(`Deliberation failed (Type 2 novel): ${delErr} [classified: ${cycleError.cause}]`);
+          }
 
-          // ── Action dispatch: if the LLM detected a COMMAND and requested
-          // an action (e.g. RESEARCH_ENTITY), dispatch it to the handler
-          // registry. The verbal response is used as the response text.
-          if (deliberationResult.actionRequest) {
-            const { actionRequest } = deliberationResult;
-            vlog('dispatching action request from deliberation', {
-              stepType: actionRequest.stepType,
-              target: actionRequest.target,
-            });
-            this.logger.log(
-              `Action request: ${actionRequest.stepType} on "${actionRequest.target}"`,
-            );
+          if (deliberationResult !== null) {
+            cycleWinningFactors = deliberationResult.winningCandidateFactors;
+            // ── Action dispatch: if the LLM detected a COMMAND and requested
+            // an action (e.g. RESEARCH_ENTITY), dispatch it to the handler
+            // registry. The verbal response is used as the response text.
+            if (deliberationResult.actionRequest) {
+              const { actionRequest } = deliberationResult;
+              vlog('dispatching action request from deliberation', {
+                stepType: actionRequest.stepType,
+                target: actionRequest.target,
+              });
+              this.logger.log(
+                `Action request: ${actionRequest.stepType} on "${actionRequest.target}"`,
+              );
 
-            const actionStep = {
-              index: 0,
-              stepType: actionRequest.stepType,
-              params: { entity: actionRequest.target, query: actionRequest.target },
-            };
-            const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              const actionStep = {
+                index: 0,
+                stepType: actionRequest.stepType,
+                params: { entity: actionRequest.target, query: actionRequest.target },
+              };
+              const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
 
-            executionResults.push({
-              content: actionRequest.verbalResponse,
-              tokensUsed: deliberationResult.totalTokens,
-              latencyMs: deliberationResult.totalLatencyMs,
-              model: 'deliberation-pipeline+action',
-              deliberationTrace: deliberationResult.trace,
-              confidence: deliberationResult.confidence,
-              knowledgeGrounding: deliberationResult.knowledgeGrounding,
-              intent: deliberationResult.intent,
-              groundingProvenance: deliberationResult.groundingProvenance ?? null,
-              groundedBy: deliberationResult.groundedBy ?? null,
-              actionResult,
-            });
-          } else {
-            executionResults.push({
-              content: deliberationResult.responseText,
-              tokensUsed: deliberationResult.totalTokens,
-              latencyMs: deliberationResult.totalLatencyMs,
-              model: 'deliberation-pipeline',
-              deliberationTrace: deliberationResult.trace,
-              confidence: deliberationResult.confidence,
-              knowledgeGrounding: deliberationResult.knowledgeGrounding,
-              intent: deliberationResult.intent,
-              groundingProvenance: deliberationResult.groundingProvenance ?? null,
-              groundedBy: deliberationResult.groundedBy ?? null,
-              degradedNoLlm: deliberationResult.degradedNoLlm,
-            });
+              executionResults.push({
+                content: actionRequest.verbalResponse,
+                tokensUsed: deliberationResult.totalTokens,
+                latencyMs: deliberationResult.totalLatencyMs,
+                model: 'deliberation-pipeline+action',
+                deliberationTrace: deliberationResult.trace,
+                confidence: deliberationResult.confidence,
+                knowledgeGrounding: deliberationResult.knowledgeGrounding,
+                intent: deliberationResult.intent,
+                groundingProvenance: deliberationResult.groundingProvenance ?? null,
+                groundedBy: deliberationResult.groundedBy ?? null,
+                actionResult,
+              });
+            } else {
+              executionResults.push({
+                content: deliberationResult.responseText,
+                tokensUsed: deliberationResult.totalTokens,
+                latencyMs: deliberationResult.totalLatencyMs,
+                model: 'deliberation-pipeline',
+                deliberationTrace: deliberationResult.trace,
+                confidence: deliberationResult.confidence,
+                knowledgeGrounding: deliberationResult.knowledgeGrounding,
+                intent: deliberationResult.intent,
+                groundingProvenance: deliberationResult.groundingProvenance ?? null,
+                groundedBy: deliberationResult.groundedBy ?? null,
+                degradedNoLlm: deliberationResult.degradedNoLlm,
+              });
+            }
           }
         }
       } else {
@@ -1205,46 +1232,56 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         if (rawText && rawText.length > 0) {
           // Run the full deliberation pipeline.
           this.logger.debug('SHRUG with text input — running deliberation pipeline.');
-          const deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
-          cycleWinningFactors = deliberationResult.winningCandidateFactors;
+          // EP14.5a (TK-89): catch deliberation errors so the cycle degrades to
+          // an empty response rather than re-throwing to the outer catch (:397-401).
+          let deliberationResult: DeliberationResult | null = null;
+          try {
+            deliberationResult = await this.deliberation.deliberate(frame, contextForPrediction, recallRetrieval);
+          } catch (delErr) {
+            cycleError = classifyDeliberationError(delErr);
+            this.logger.warn(`Deliberation failed (SHRUG branch): ${delErr} [classified: ${cycleError.cause}]`);
+          }
 
-          // Handle action requests from SHRUG+deliberation path too.
-          if (deliberationResult.actionRequest) {
-            const { actionRequest } = deliberationResult;
-            this.logger.log(`SHRUG action request: ${actionRequest.stepType} on "${actionRequest.target}"`);
-            const actionStep = {
-              index: 0,
-              stepType: actionRequest.stepType,
-              params: { entity: actionRequest.target, query: actionRequest.target },
-            };
-            const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
-            executionResults.push({
-              content: actionRequest.verbalResponse,
-              tokensUsed: deliberationResult.totalTokens,
-              latencyMs: deliberationResult.totalLatencyMs,
-              model: 'deliberation-pipeline+action',
-              deliberationTrace: deliberationResult.trace,
-              knowledgeGrounding: deliberationResult.knowledgeGrounding,
-              intent: deliberationResult.intent,
-              groundingProvenance: deliberationResult.groundingProvenance ?? null,
-              groundedBy: deliberationResult.groundedBy ?? null,
-              confidence: deliberationResult.confidence,
-              actionResult,
-            });
-          } else {
-            executionResults.push({
-              content: deliberationResult.responseText,
-              tokensUsed: deliberationResult.totalTokens,
-              latencyMs: deliberationResult.totalLatencyMs,
-              model: 'deliberation-pipeline',
-              deliberationTrace: deliberationResult.trace,
-              knowledgeGrounding: deliberationResult.knowledgeGrounding,
-              intent: deliberationResult.intent,
-              groundingProvenance: deliberationResult.groundingProvenance ?? null,
-              groundedBy: deliberationResult.groundedBy ?? null,
-              confidence: deliberationResult.confidence,
-              degradedNoLlm: deliberationResult.degradedNoLlm,
-            });
+          if (deliberationResult !== null) {
+            cycleWinningFactors = deliberationResult.winningCandidateFactors;
+            // Handle action requests from SHRUG+deliberation path too.
+            if (deliberationResult.actionRequest) {
+              const { actionRequest } = deliberationResult;
+              this.logger.log(`SHRUG action request: ${actionRequest.stepType} on "${actionRequest.target}"`);
+              const actionStep = {
+                index: 0,
+                stepType: actionRequest.stepType,
+                params: { entity: actionRequest.target, query: actionRequest.target },
+              };
+              const actionResult = await this.actionHandlerRegistry.execute(actionStep, cycleContext);
+              executionResults.push({
+                content: actionRequest.verbalResponse,
+                tokensUsed: deliberationResult.totalTokens,
+                latencyMs: deliberationResult.totalLatencyMs,
+                model: 'deliberation-pipeline+action',
+                deliberationTrace: deliberationResult.trace,
+                knowledgeGrounding: deliberationResult.knowledgeGrounding,
+                intent: deliberationResult.intent,
+                groundingProvenance: deliberationResult.groundingProvenance ?? null,
+                groundedBy: deliberationResult.groundedBy ?? null,
+                confidence: deliberationResult.confidence,
+                actionResult,
+              });
+            } else {
+              executionResults.push({
+                content: deliberationResult.responseText,
+                tokensUsed: deliberationResult.totalTokens,
+                latencyMs: deliberationResult.totalLatencyMs,
+                model: 'deliberation-pipeline',
+                deliberationTrace: deliberationResult.trace,
+                knowledgeGrounding: deliberationResult.knowledgeGrounding,
+                intent: deliberationResult.intent,
+                groundingProvenance: deliberationResult.groundingProvenance ?? null,
+                groundedBy: deliberationResult.groundedBy ?? null,
+                confidence: deliberationResult.confidence,
+                degradedNoLlm: deliberationResult.degradedNoLlm,
+              });
+            }
           }
         } else {
           this.logger.debug(
@@ -1334,6 +1371,9 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
             speakerId: this.currentTurnContext.originator.userId,
             speakerIsGuardian: this.currentTurnContext.originator.isGuardian,
           } : {}),
+          // EP14.5a (TK-89): additive spread — only present when deliberation threw.
+          // Absent on all normal (non-error) episodes; never set to undefined.
+          ...(cycleError !== undefined ? { cycleErrorContext: cycleError } : {}),
         },
         encodingDepth,
       );
@@ -2693,4 +2733,33 @@ function groundingForCachedPattern(pattern: LearnedPattern): KnowledgeGrounding 
   // LLM_ASSISTED → UNKNOWN mapping applies here too.
   if (pattern.entityIds.length === 0) return 'UNKNOWN';
   return 'GROUNDED'; // non-empty entityIds = some WKG backing (legacy behavior)
+}
+
+// ---------------------------------------------------------------------------
+// EP14.5a (TK-89) — Deliberation error classifier
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify a thrown error from deliberation.deliberate() into a CycleErrorCause.
+ *
+ * LLM_TIMEOUT is produced when the error indicates the LLM was unreachable or
+ * exceeded a timeout budget. Everything else is DELIBERATION_ERROR.
+ *
+ * Criteria for LLM_TIMEOUT (mirrors the abort/timeout patterns Ollama and fetch
+ * emit in practice):
+ *   - error.name === 'AbortError'  (fetch AbortController timeout)
+ *   - error.message includes 'timeout' (case-insensitive)
+ *   - error.message includes 'ECONNRESET' (TCP reset mid-stream)
+ */
+function classifyDeliberationError(err: unknown): CycleErrorContext {
+  const error = err instanceof Error ? err : new Error(String(err));
+  const msg = error.message ?? '';
+  const isTimeout =
+    error.name === 'AbortError' ||
+    msg.toLowerCase().includes('timeout') ||
+    msg.includes('ECONNRESET');
+  return {
+    cause: isTimeout ? 'LLM_TIMEOUT' : 'DELIBERATION_ERROR',
+    message: msg,
+  };
 }
