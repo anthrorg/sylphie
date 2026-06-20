@@ -1376,7 +1376,8 @@ nodes:
     parent: EP-15
     title: "EP15.1 — Scope-aware CALLS-edge resolution in codebase-pkg"
     intent: "Eliminate phantom cross-service CALLS edges by constraining callee matches to the correct module via the caller's IMPORTS graph (two-pass: sync Functions, then resolve CALLS). External @sylphie-labs/codebase-pkg package."
-    status: in_progress
+    status: done
+    verification_note: "PATCH STAGED, NOT YET LIVE. Fix (two-branch CALLS resolution: imported->cross-file, else same-file-only) staged in docs/codebase-pkg-patches/tk-71/ (PR #54 merged), 55/55 in isolation. RESIDUAL: NOT yet upstreamed to the external @sylphie-labs/codebase-pkg repo (no external commit, unlike TK-72/7d59ce6); behavioral ACs (zero phantom edges in live graph) provable only after upstream + re-sync. Action for Jim: upstream the patch."
     priority: P3
     estimate: M
     engineering_level: production
