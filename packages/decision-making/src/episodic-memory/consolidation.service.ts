@@ -44,6 +44,14 @@
  * complete() throws / returns unparseable text. convertToSemantic() is unchanged
  * (synchronous interface contract preserved); the LLM path lives entirely inside
  * the async consolidate() method.
+ *
+ * EP12.1b — LLM-assisted relationship extraction (TK-88):
+ * When LLM_SERVICE is bound and available, consolidate() calls
+ * extractRelationshipsWithLlm() to replace the two-hardcoded-triple heuristic
+ * (extractRelationships) with LLM-derived subject-predicate-object triples whose
+ * object is a real input-derived value, not the literal 'observed_outcome'. The
+ * heuristic is the silent lesion-fallback when llm===null, !isAvailable(),
+ * complete() throws, or parseLlmRelationshipResponse() returns zero triples.
  */
 
 import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
@@ -240,15 +248,19 @@ export class ConsolidationService implements IConsolidationService {
   async consolidate(candidate: ConsolidationCandidate): Promise<ConsolidationResult> {
     try {
       // Build the base conversion using the synchronous heuristic path, then
-      // upgrade entities with the LLM result when available. The heuristic
-      // entities are the lesion-safe floor; extractWithLlm() returns them on
-      // any fallback condition so the spread is always safe.
+      // upgrade entities and relationships with LLM results when available. The
+      // heuristic values are the lesion-safe floor; both extract*WithLlm()
+      // methods return the heuristic on any fallback condition so the spread is
+      // always safe.
       const conversion = this.convertToSemantic(candidate.episode);
-      const entities = await this.extractWithLlm(
-        candidate.episode.inputSummary,
-        candidate.episode.actionTaken,
-      );
-      const finalConversion: SemanticConversion = { ...conversion, entities };
+      const [entities, relationships] = await Promise.all([
+        this.extractWithLlm(
+          candidate.episode.inputSummary,
+          candidate.episode.actionTaken,
+        ),
+        this.extractRelationshipsWithLlm(candidate.episode, conversion),
+      ]);
+      const finalConversion: SemanticConversion = { ...conversion, entities, relationships };
 
       this.emitConsolidationAttempted(candidate, finalConversion);
 
@@ -381,6 +393,82 @@ export class ConsolidationService implements IConsolidationService {
     } catch (err) {
       this.logger.warn(`extractWithLlm: LLM call failed, using heuristic fallback: ${err}`);
       return heuristicEntities;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private — LLM-assisted relationship extraction (EP12.1b / TK-88)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Attempt LLM-assisted relationship extraction, silently falling back to the
+   * two-hardcoded-triple heuristic on any failure path.
+   *
+   * Fall-back triggers (lesion-safe by contract):
+   *   1. this.llm === null (LLM_SERVICE not bound)
+   *   2. this.llm.isAvailable() === false (lesion test / circuit-breaker)
+   *   3. this.llm.complete() throws
+   *   4. parseLlmRelationshipResponse() returns zero triples (unparseable)
+   *
+   * On paths 1-2, the fall-back is silent (no log). On path 3, a warn is
+   * emitted. On path 4, the heuristic result is returned silently.
+   *
+   * The heuristic result is pre-computed from the base SemanticConversion so
+   * this method does not recompute provenance or confidence.
+   */
+  private async extractRelationshipsWithLlm(
+    episode: Episode,
+    baseConversion: SemanticConversion,
+  ): Promise<readonly SemanticRelationship[]> {
+    const heuristicRelationships = baseConversion.relationships;
+
+    if (!this.llm || !this.llm.isAvailable()) {
+      return heuristicRelationships;
+    }
+
+    const request: LlmRequest = {
+      messages: [
+        {
+          role: 'user',
+          content:
+            `Extract subject-predicate-object relationship triples from the ` +
+            `following episode. Each triple must have a real, specific object ` +
+            `derived from the input — not a placeholder like 'observed_outcome'.\n\n` +
+            `Input summary: ${episode.inputSummary}\n` +
+            `Action taken: ${episode.actionTaken}\n\n` +
+            `Respond with a JSON array of objects, e.g.:\n` +
+            `[{"subject":"Alice","predicate":"requested","object":"coffee"},` +
+            `{"subject":"coffee","predicate":"caused","object":"alertness"}]`,
+        },
+      ],
+      systemPrompt:
+        'You are a relationship extraction assistant. ' +
+        'Return only a JSON array of {subject, predicate, object} objects. No explanation.',
+      maxTokens: 512,
+      temperature: 0.0,
+      tier: 'quick',
+      metadata: {
+        // Matches callerSubsystem convention used throughout this package.
+        callerSubsystem: 'COMMUNICATION',
+        purpose: 'RELATIONSHIP_EXTRACTION',
+        sessionId: 'consolidation',
+      },
+    };
+
+    try {
+      const response = await this.llm.complete(request);
+      const parsed = parseLlmRelationshipResponse(
+        response.content,
+        baseConversion.confidence,
+        baseConversion.provenance,
+      );
+      // Fall back silently if the LLM returned zero usable triples.
+      return parsed.length > 0 ? parsed : heuristicRelationships;
+    } catch (err) {
+      this.logger.warn(
+        `extractRelationshipsWithLlm: LLM call failed, using heuristic fallback: ${err}`,
+      );
+      return heuristicRelationships;
     }
   }
 
@@ -532,6 +620,9 @@ export function parseLlmExtractionResponse(content: string): readonly string[] {
  *   2. actionTaken -> "produced" -> "observed_outcome"
  *
  * Confidence is the episode's estimated confidence (passed in).
+ *
+ * This is the lesion-safe heuristic fallback used when LLM extraction is
+ * unavailable or returns no usable triples (EP12.1b / TK-88).
  */
 function extractRelationships(
   episode: Episode,
@@ -559,4 +650,67 @@ function extractRelationships(
   };
 
   return [primary, secondary];
+}
+
+/**
+ * Parse an LLM relationship-extraction response into SemanticRelationship[].
+ *
+ * Expects the model to return a JSON array of objects with at least
+ * {subject, predicate, object} string fields. An optional numeric `confidence`
+ * field is accepted; when absent the supplied `defaultConfidence` is used.
+ * Triples whose object is the literal 'observed_outcome' are discarded (they
+ * indicate the model reverted to the heuristic placeholder rather than
+ * producing a real extraction).
+ *
+ * Accepts two formats:
+ *   1. A bare JSON array:   [{...}, {...}]
+ *   2. A JSON array embedded in prose (markdown fences, leading text).
+ *      The first [...] balanced bracket pair is extracted and parsed.
+ *
+ * Returns an empty array on any parse failure or when no valid triples survive
+ * filtering, so callers can fall back to the heuristic silently (EP12.1b).
+ */
+export function parseLlmRelationshipResponse(
+  content: string,
+  defaultConfidence: number,
+  provenance: ProvenanceSource,
+): readonly SemanticRelationship[] {
+  // Locate the first balanced [...] bracket pair.
+  const start = content.indexOf('[');
+  if (start === -1) return [];
+  const end = content.lastIndexOf(']');
+  if (end === -1 || end <= start) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  const triples: SemanticRelationship[] = [];
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) continue;
+
+    const subject = typeof item['subject'] === 'string' ? item['subject'].trim() : '';
+    const predicate = typeof item['predicate'] === 'string' ? item['predicate'].trim() : '';
+    const object = typeof item['object'] === 'string' ? item['object'].trim() : '';
+
+    if (!subject || !predicate || !object) continue;
+
+    // Discard triples where the LLM echoed the heuristic placeholder instead
+    // of extracting a real object from the episode text.
+    if (object === 'observed_outcome') continue;
+
+    const confidence =
+      typeof item['confidence'] === 'number' && isFinite(item['confidence'])
+        ? Math.max(0, Math.min(1, item['confidence']))
+        : defaultConfidence;
+
+    triples.push({ subject, predicate, object, confidence, provenance });
+  }
+
+  return triples;
 }
