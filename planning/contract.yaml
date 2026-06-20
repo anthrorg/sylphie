@@ -1395,7 +1395,8 @@ nodes:
     parent: EP-15
     title: "EP15.2 — PKG tools 'did you mean?' + fuzzy-fallback transparency"
     intent: "getFunctionDetail/getDataFlow surface a 'MATCH MODE: suffix-fallback' notice when fuzzy and top-3 near-miss suggestions on a total miss. External codebase-pkg package."
-    status: in_progress
+    status: done
+    verification_note: "Implemented in the EXTERNAL @sylphie-labs/codebase-pkg repo (not this repo). Orchestrator confirmed commit 7d59ce6 exists ('feat(tk-72): add did-you-mean suggestions and suffix-fallback transparency'); suite 51/51 per PR #53. PR #53 (agent contract-only edit) closed; recorded here by orchestrator. External-repo deep verification out of this merge pass's scope."
     priority: P3
     estimate: S
     engineering_level: production
