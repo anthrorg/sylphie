@@ -582,6 +582,12 @@ async def phase_transition(req: PhaseTransitionRequest):
         )
         if calibration:
             try:
+                # TK-37 POC confirmed: this is the live active path — real
+                # empirical Fisher (squared per-chunk gradients) is computed and
+                # returned as fisher_computed=true when the buffer is non-empty.
+                # _compute_uniform_fisher() is only the first-call seed inside
+                # set_reference() (above), not the running estimator.  No wiring
+                # change needed (TK-39 Branch A).
                 trainer.ewc.compute_fisher(trainer, calibration)
                 fisher_computed = True
                 calibration_n = len(calibration)
@@ -898,30 +904,52 @@ async def freeze_model(model_name: str = "all"):
 
     Sets the trainer freeze flag (weights held fixed, thread kept alive) rather
     than tearing down the training thread, so unfreeze resumes instantly.
+
+    Args (query param):
+        model_name: "all" freezes every model; a name from
+            Trainer.VALID_MODEL_NAMES freezes only that model.
+            Unknown names are rejected with accepted=false.
     """
     if not _state.trainer:
         return {"accepted": False, "error": "Trainer not initialized"}
 
-    if model_name == "all":
-        _state.trainer.freeze()
-        logger.info("All models frozen (weight updates suspended)")
-    else:
-        # Per-model freeze not yet implemented — requires trainer refactor
-        logger.info("Model freeze requested for '%s' (per-model freeze not yet implemented)", model_name)
+    if model_name != "all" and model_name not in Trainer.VALID_MODEL_NAMES:
+        logger.warning("freeze_model: unknown model_name '%s'", model_name)
+        return {
+            "accepted": False,
+            "model": model_name,
+            "error": f"Unknown model '{model_name}'. Valid names: all, "
+                     + ", ".join(sorted(Trainer.VALID_MODEL_NAMES)),
+        }
 
+    _state.trainer.freeze(model_name)
+    logger.info("Model freeze applied: model_name='%s'", model_name)
     return {"accepted": True, "model": model_name, "frozen": True}
 
 
 @app.post("/cognition/control/unfreeze")
 async def unfreeze_model(model_name: str = "all"):
-    """Unfreeze model weights — resume training updates."""
+    """Unfreeze model weights — resume training updates.
+
+    Args (query param):
+        model_name: "all" unfreezes every model; a name from
+            Trainer.VALID_MODEL_NAMES unfreezes only that model.
+            Unknown names are rejected with accepted=false.
+    """
     if not _state.trainer:
         return {"accepted": False, "error": "Trainer not initialized"}
 
-    if model_name == "all":
-        _state.trainer.unfreeze()
-        logger.info("All models unfrozen (weight updates resumed)")
+    if model_name != "all" and model_name not in Trainer.VALID_MODEL_NAMES:
+        logger.warning("unfreeze_model: unknown model_name '%s'", model_name)
+        return {
+            "accepted": False,
+            "model": model_name,
+            "error": f"Unknown model '{model_name}'. Valid names: all, "
+                     + ", ".join(sorted(Trainer.VALID_MODEL_NAMES)),
+        }
 
+    _state.trainer.unfreeze(model_name)
+    logger.info("Model unfreeze applied: model_name='%s'", model_name)
     return {"accepted": True, "model": model_name, "frozen": False}
 
 

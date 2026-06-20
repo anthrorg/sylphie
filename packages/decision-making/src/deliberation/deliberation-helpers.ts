@@ -1,0 +1,615 @@
+/**
+ * deliberation-helpers.ts — Pure helper functions extracted from deliberation.service.ts.
+ *
+ * All functions here are stateless and have no NestJS or class dependencies.
+ * They are exported here and re-imported by DeliberationService so existing
+ * callers of the public symbols (isIgnoranceResponse, recallKeyForQuestion, etc.)
+ * continue to work after re-export through the package barrel.
+ */
+
+import {
+  type KnowledgeGrounding,
+  type CognitiveContext,
+  type DriveSnapshot,
+} from '@sylphie/shared';
+import { type WkgContext } from '../wkg/wkg-context.service';
+import { valueSurfacesAsWord } from './recall-retrieval';
+
+// ---------------------------------------------------------------------------
+// Re-exported types used by DeliberationService and external callers
+// ---------------------------------------------------------------------------
+
+/** Parsed result of the inner monologue's structured classification. */
+export interface MonologueClassification {
+  readonly intent: 'GREETING' | 'EMOTION' | 'QUESTION' | 'FACT' | 'COMMAND' | 'UNKNOWN';
+  readonly entity: string | null;
+  readonly thought: string | null;
+  readonly response: string | null;
+  readonly needsDeliberation: boolean;
+  /** For COMMAND intents: the action type requested (e.g., 'RESEARCH_ENTITY'). */
+  readonly actionType: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic candidate scoring
+// ---------------------------------------------------------------------------
+
+/** Chatbot/assistant phrases that should be penalized. */
+const CHATBOT_RE = /\b(as an AI|I'?m here to help|how can I assist|how may I help|I don'?t have feelings|I'?m just a|language model|I'?m an? (?:AI|artificial)|I cannot feel|I am not able to)\b/i;
+
+/** "I don't know" hedging patterns. */
+const IDK_RE = /\bI don'?t (?:really )?know\b/i;
+
+export interface CandidateScore {
+  readonly score: number;
+  readonly factors: string[];
+}
+
+export interface ScoredSelection {
+  readonly bestIndex: number;
+  readonly scores: readonly CandidateScore[];
+  readonly rationale: string;
+}
+
+// ---------------------------------------------------------------------------
+// Parsing helpers
+// ---------------------------------------------------------------------------
+
+/** Parse numbered candidate list from LLM output. */
+export function parseCandidates(text: string): Array<{ text: string; reasoning: string }> {
+  const candidates: Array<{ text: string; reasoning: string }> = [];
+  const lines = text.split('\n').filter((l) => l.trim().length > 0);
+
+  for (const line of lines) {
+    // Match patterns like "1. response text — reasoning" or "1) response"
+    const match = line.match(/^\d+[\.\)]\s*(.+?)(?:\s*[-—–]\s*(.+))?$/);
+    if (match) {
+      candidates.push({
+        text: match[1].trim().replace(/^["']|["']$/g, ''),
+        reasoning: match[2]?.trim() ?? '',
+      });
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Score each candidate deterministically and pick the best one.
+ *
+ * Replaces the Step 3 LLM call. The rules encoded here mirror the selection
+ * prompt that was previously sent to the LLM:
+ *   - Prefer GROUNDED candidates for conversational input
+ *   - Penalize "I don't know" for greetings/emotion/facts
+ *   - Penalize chatbot/assistant language
+ *   - Bonus for referencing known WKG entities
+ *   - Prefer concise responses
+ */
+export function scoreCandidates(
+  candidates: ReadonlyArray<{ text: string; reasoning: string }>,
+  intent: MonologueClassification['intent'],
+  wkg: WkgContext,
+): ScoredSelection {
+  const isConversational = intent === 'GREETING' || intent === 'EMOTION' || intent === 'FACT';
+
+  const scores: CandidateScore[] = candidates.map((candidate) => {
+    let score = 0;
+    const factors: string[] = [];
+    const { grounding } = parseGroundingTag(candidate.text);
+
+    // ── Grounding weight ──────────────────────────────────────────────
+    if (grounding === 'GROUNDED') {
+      score += 1.0;
+      factors.push('grounded:+1.0');
+    } else if (grounding === 'LLM_ASSISTED') {
+      score += 0.5;
+      factors.push('assisted:+0.5');
+    } else if (grounding === 'UNKNOWN') {
+      score += isConversational ? 0.1 : 0.7;
+      factors.push(isConversational ? 'unknown-conv:+0.1' : 'unknown-factual:+0.7');
+    } else {
+      score += 0.5;
+      factors.push('untagged:+0.5');
+    }
+
+    // ── Chatbot language penalty ──────────────────────────────────────
+    if (CHATBOT_RE.test(candidate.text)) {
+      score -= 0.5;
+      factors.push('chatbot:-0.5');
+    }
+
+    // ── "I don't know" penalty in conversational context ──────────────
+    if (isConversational && IDK_RE.test(candidate.text)) {
+      score -= 0.7;
+      factors.push('idk-conv:-0.7');
+    }
+
+    // ── Question-ending penalty (candidates should not ask questions) ─
+    if (candidate.text.trimEnd().endsWith('?')) {
+      score -= 0.15;
+      factors.push('ends-?:-0.15');
+    }
+
+    // ── WKG entity mention bonus ──────────────────────────────────────
+    if (wkg.entities.length > 0) {
+      const lower = candidate.text.toLowerCase();
+      const mentionsKnown = wkg.entities.some((e) =>
+        lower.includes(e.label.toLowerCase()),
+      );
+      if (mentionsKnown) {
+        score += 0.15;
+        factors.push('entity:+0.15');
+      }
+    }
+
+    // ── Verbosity penalty ─────────────────────────────────────────────
+    if (candidate.text.split(/\s+/).length > 50) {
+      score -= 0.1;
+      factors.push('verbose:-0.1');
+    }
+
+    return { score, factors };
+  });
+
+  // Pick the highest-scoring candidate. On ties, prefer the first (position bias).
+  let bestIndex = 0;
+  let bestScore = scores[0].score;
+  for (let i = 1; i < scores.length; i++) {
+    if (scores[i].score > bestScore) {
+      bestScore = scores[i].score;
+      bestIndex = i;
+    }
+  }
+
+  const rationale =
+    `Scored selection: candidate ${bestIndex + 1} (${bestScore.toFixed(2)}) — ` +
+    scores[bestIndex].factors.join(', ');
+
+  return { bestIndex, scores, rationale };
+}
+
+/** Parse the arbiter's decision. */
+export function parseArbiterDecision(
+  text: string,
+  originalText: string,
+): { text: string; confidence: number; rationale: string; action: string } {
+  const lower = text.toLowerCase();
+  let action = 'APPROVE';
+  let responseText = originalText;
+  let confidence = 0.6;
+
+  if (lower.startsWith('reject')) {
+    action = 'REJECT';
+    confidence = 0.3;
+    // Try to extract alternative response from "REJECT — alternative" or "REJECT: alternative"
+    const rejectMatch = text.match(/reject\s*[:\-—–]+\s*["']?(.+?)["']?\s*(?:confidence|rating|$)/is);
+    if (rejectMatch && rejectMatch[1].trim().length > 5) {
+      responseText = rejectMatch[1].trim();
+      confidence = 0.4; // Slightly higher since we have an alternative
+    }
+    // If no alternative extracted, keep original but lower confidence
+  } else if (lower.startsWith('modify')) {
+    action = 'MODIFY';
+    confidence = 0.5;
+    // Try to extract modified text
+    const modMatch = text.match(/modify\s*[:\-—–]?\s*["']?(.+?)["']?\s*(?:confidence|rating|$)/is);
+    if (modMatch && modMatch[1].trim().length > 3) {
+      responseText = modMatch[1].trim();
+    }
+  } else {
+    action = 'APPROVE';
+    confidence = 0.7;
+  }
+
+  // Try to extract confidence score (0-10)
+  const confMatch = text.match(/(?:confidence|rating)[:\s]*(\d+)/i);
+  if (confMatch) {
+    confidence = Math.min(1.0, parseInt(confMatch[1], 10) / 10);
+  }
+
+  return { text: responseText, confidence, rationale: text.trim(), action };
+}
+
+/**
+ * Parse a [GROUNDED], [ASSISTED], or [UNKNOWN] tag from candidate text.
+ * Returns the cleaned text and the parsed grounding (or null if no tag found).
+ * Also strips any other bracket-wrapped prefixes that leak from the LLM.
+ */
+export function parseGroundingTag(text: string): { text: string; grounding: KnowledgeGrounding | null } {
+  let cleaned = text;
+  let grounding: KnowledgeGrounding | null = null;
+
+  // Strip leading grounding tags: [GROUNDED], [ASSISTED], [UNKNOWN]
+  const groundingMatch = cleaned.match(/^\[?(GROUNDED|ASSISTED|UNKNOWN)\]?\s*/i);
+  if (groundingMatch) {
+    const tag = groundingMatch[1].toUpperCase();
+    cleaned = cleaned.substring(groundingMatch[0].length).trim();
+    grounding =
+      tag === 'GROUNDED' ? 'GROUNDED'
+        : tag === 'ASSISTED' ? 'LLM_ASSISTED'
+          : 'UNKNOWN';
+  }
+
+  // Strip any remaining bracket-wrapped text at the start (e.g., "[Hi there!...]")
+  // that looks like leaky formatting from the LLM
+  if (cleaned.startsWith('[') && !cleaned.startsWith('[...')) {
+    const bracketEnd = cleaned.indexOf(']');
+    if (bracketEnd > 0 && bracketEnd < cleaned.length - 1) {
+      // There's text after the bracket — extract what's inside as the response
+      const inside = cleaned.substring(1, bracketEnd).trim();
+      const after = cleaned.substring(bracketEnd + 1).trim();
+      // Use the content that looks more like a natural response
+      cleaned = after.length > 3 ? after : inside;
+    } else if (bracketEnd === cleaned.length - 1) {
+      // The whole response is wrapped in brackets — unwrap it
+      cleaned = cleaned.substring(1, bracketEnd).trim();
+    }
+  }
+
+  // Strip trailing artifacts: lone brackets, grounding tags at end
+  cleaned = cleaned.replace(/\s*\[(?:GROUNDED|ASSISTED|UNKNOWN)\]\s*$/i, '').trim();
+
+  return { text: cleaned, grounding };
+}
+
+/**
+ * Parse the structured classification from the inner monologue output.
+ *
+ * Expects format:
+ *   [INTENT: GREETING]
+ *   [ENTITY: none]
+ *   [THOUGHT: This is a simple greeting]
+ *   [RESPONSE: Hey there!]
+ *
+ * Falls back gracefully — if structured parsing fails, attempts to extract
+ * a usable response from free-form text (common with smaller local models).
+ */
+export function parseMonologueClassification(text: string): MonologueClassification {
+  const intentMatch = text.match(/\[INTENT:\s*(GREETING|EMOTION|QUESTION|FACT|COMMAND|UNKNOWN)\s*\]/i);
+  const entityMatch = text.match(/\[ENTITY:\s*(.+?)\s*\]/i);
+  const thoughtMatch = text.match(/\[THOUGHT:\s*(.+?)\s*\]/i);
+  const responseMatch = text.match(/\[RESPONSE:\s*([\s\S]+?)(?:\]|$)/i);
+  const actionMatch = text.match(/\[ACTION:\s*(\w+)\s*\]/i);
+
+  let intent = (intentMatch?.[1]?.toUpperCase() ?? 'UNKNOWN') as MonologueClassification['intent'];
+  const entity = entityMatch?.[1]?.trim() ?? null;
+  const thought = thoughtMatch?.[1]?.trim() ?? null;
+  let response = responseMatch?.[1]?.trim() ?? null;
+  const actionType = actionMatch?.[1]?.toUpperCase() ?? null;
+
+  // Clean up the response — strip trailing bracket if captured
+  if (response) {
+    response = response.replace(/\]$/, '').trim();
+    if (response.toUpperCase() === 'NEEDS_DELIBERATION') {
+      response = null;
+    }
+  }
+
+  // ── Fallback: if the model didn't follow structured format, try to ──
+  // ── infer intent and extract a response from free-form text.       ──
+  if (!intentMatch && !responseMatch) {
+    // Infer intent from free-form text
+    if (/\b(hello|hi |hey |greet|nice to meet|welcome)\b/i.test(text)) {
+      intent = 'GREETING';
+    } else if (/\b(feel|emotion|happy|sad|anxious|excited)\b/i.test(text)) {
+      intent = 'EMOTION';
+    } else if (/\b(introducing|told me|my name is|their name|fact|stating)\b/i.test(text)) {
+      intent = 'FACT';
+    } else if (/\b(asking|question|want to know|curious about)\b/i.test(text)) {
+      intent = 'QUESTION';
+    }
+
+    // For simple conversational intents, extract the first sentence-like
+    // segment as a usable response. The model often writes something like
+    // "Hello Jim! It's nice to meet you. Since we're just getting started..."
+    // — the first part IS a good response.
+    if (intent === 'GREETING' || intent === 'EMOTION' || intent === 'FACT') {
+      // Look for a natural response within the free-form text.
+      // Take up to 2 sentences that sound like a direct response.
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      const responseParts: string[] = [];
+      for (const s of sentences) {
+        const trimmed = s.trim();
+        // Skip meta-commentary about the conversation
+        if (/\b(since we|just getting started|don't have any|without specific|hypothetical)\b/i.test(trimmed)) {
+          break;
+        }
+        if (trimmed.length > 3) {
+          responseParts.push(trimmed);
+        }
+        if (responseParts.length >= 2) break;
+      }
+      if (responseParts.length > 0) {
+        response = responseParts.join(' ');
+      }
+    }
+  }
+
+  // Check if the monologue signaled it needs further deliberation.
+  //
+  // Short-circuit is valid for:
+  //   GREETING, EMOTION, FACT — no reasoning required, direct response is fine.
+  //
+  // QUESTION and COMMAND always proceed to full deliberation. COMMAND needs
+  // the tool-calling step to invoke real actions (research_entity, etc.).
+  const needsDeliberation = !response
+    || response.toUpperCase().includes('NEEDS_DELIBERATION')
+    || intent === 'UNKNOWN'
+    || intent === 'COMMAND'
+    || intent === 'QUESTION';
+
+  return { intent, entity, thought, response, needsDeliberation, actionType };
+}
+
+// ---------------------------------------------------------------------------
+// Grounding helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the response text is an honest admission of ignorance.
+ * An ignorance response is NEVER GROUNDED — the WKG state is irrelevant.
+ *
+ * Matches first-person denials: "I don't know", "I'm not sure", "I have no
+ * idea", "I don't have access to", "I can't recall", etc.
+ */
+export function isIgnoranceResponse(text: string): boolean {
+  return /\b(i\s+don'?t\s+know|i\s+have\s+no\s+(idea|information|knowledge|record|way\s+to\s+know)|i\s+'?m\s+not\s+sure|i\s+can'?t\s+(recall|remember|tell|say)|i\s+do\s+not\s+know|no\s+information\s+about)\b/i.test(text);
+}
+
+/**
+ * Map a recall question to the specific person-fact KEY it is asking about.
+ *
+ * Pure, synchronous. Returns the OKG fact key the question targets, or null when
+ * the question does not map to a known fact dimension (e.g. unknowables like
+ * "what did I have for breakfast"). The corpus teach facts are name / location /
+ * dog / favorite_color; occupation is included for the standard "what do I do
+ * for work" recall. A null return means this turn cannot be grounded by OKG
+ * recall and falls through to the honest WKG/LLM_ASSISTED ladder (C2 safety).
+ */
+export function recallKeyForQuestion(inputText: string): string | null {
+  const t = inputText.toLowerCase();
+  // Exclude middle/last/surname/maiden — those are unknowable variants, not the taught first name.
+  if (/\b(name|called)\b/.test(t) && !/dog|pet|animal|middle|last|surname|maiden/.test(t)) return 'name';
+  // Exclude childhood/birth location — "grow up / grew up / born" ≠ current city.
+  // Also removed 'town' which is ambiguous ("what town did I grow up in?" was colliding).
+  if (/\b(live|city|location|where)\b/.test(t) && !/grow|grew|born|childhood|raised/.test(t)) return 'location';
+  if (/\b(dog|pet|animal|named|called)\b/.test(t)) return 'dog';
+  // Exclude other "favorite X" categories — only map when the question is specifically about color.
+  if (/\b(color|colour|favourite|favorite)\b/.test(t) && !/food|drink|movie|book|song|music|sport|meal|dish/.test(t)) return 'favorite_color';
+  if (/\b(work|job|occupation|profession)\b/.test(t)) return 'occupation';
+  return null;
+}
+
+/**
+ * Retrieve a person fact by key from the fused-stream person model, returning
+ * its value and the deterministic provenance id PersonModelService.writeFact
+ * computes (`attr-${personId}-${key}`). Mirrors PersonModelService.getFactByKey
+ * over the knownFacts the OKG already loaded into the frame — the decision-making
+ * package cannot import PersonModelService (it lives in the app), but the
+ * provenance id is deterministic and the value comes from the same OKG-loaded
+ * facts, so this is a real fact-node retrieval, not LLM text inference.
+ *
+ * knownFacts arrive as "key: value" strings (getPersonModel builds them as
+ * `${key}: ${value}`). Returns null when the key is absent → unknowables and
+ * un-taught dimensions stay LLM_ASSISTED/UNKNOWN (C2 safety by construction).
+ */
+function getRecalledFact(
+  personId: string,
+  key: string,
+  knownFacts: readonly string[] | undefined,
+): { key: string; value: string; attrId: string } | null {
+  if (!knownFacts?.length) return null;
+  for (const kf of knownFacts) {
+    const colonIdx = kf.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const k = kf.substring(0, colonIdx).trim();
+    if (k !== key) continue;
+    const value = kf.substring(colonIdx + 1).trim();
+    if (!value) return null;
+    return { key, value, attrId: `attr-${personId}-${key}` };
+  }
+  return null;
+}
+
+/**
+ * WS3 T1 — exported alias of the OKG fact retrieval used by the pre-arbitration
+ * recall retrieval step (recall-retrieval.ts). Same deterministic-id lookup over
+ * the frame's knownFacts; exported so the single pre-arbitration retrieval can
+ * reuse it rather than re-deriving the key→value→provenance mapping.
+ */
+export function getRecalledFactForRecall(
+  personId: string,
+  key: string,
+  knownFacts: readonly string[] | undefined,
+): { key: string; value: string; attrId: string } | null {
+  return getRecalledFact(personId, key, knownFacts);
+}
+
+/**
+ * Deterministic OKG recall grounding (CANON Standard 1 provenance-required +
+ * Standard 4 theater-prohibition). Returns the provenance id when, and only
+ * when, the question maps to a fact key, that fact node exists in the OKG, AND
+ * the fact value appears verbatim in the response. Returns null otherwise — so
+ * the LLM can never self-assert grounding and unknowables can never falsely read
+ * GROUNDED. The caller upgrades knowledgeGrounding to GROUNDED on a non-null.
+ */
+export function okgRecallProvenance(
+  personId: string | undefined,
+  inputText: string,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+): string | null {
+  if (!personId) return null;
+  const key = recallKeyForQuestion(inputText);
+  if (!key) return null;
+  const fact = getRecalledFact(personId, key, knownFacts);
+  if (!fact) return null;
+  const valueLower = fact.value.toLowerCase();
+  if (valueLower.length < 2) return null;
+  return responseText.toLowerCase().includes(valueLower) ? fact.attrId : null;
+}
+
+/**
+ * Shared helper: upgrade grounding to GROUNDED if OKG recall provenance is
+ * available. Called from both the deliberation pipeline and the procedure-handler
+ * path so the same logic covers TYPE_2 NOVEL and TYPE_2 PROCEDURE recall turns.
+ * Returns current grounding unchanged when already GROUNDED or no provenance.
+ */
+export function applyOkgRecallGrounding(
+  personId: string | undefined,
+  inputText: string,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+  currentGrounding: KnowledgeGrounding,
+): { grounding: KnowledgeGrounding; provenance: string | null } {
+  if (currentGrounding === 'GROUNDED') return { grounding: currentGrounding, provenance: null };
+  const provenance = okgRecallProvenance(personId, inputText, responseText, knownFacts);
+  return provenance
+    ? { grounding: 'GROUNDED', provenance }
+    : { grounding: currentGrounding, provenance: null };
+}
+
+/**
+ * True iff a taught person-model (OKG) fact VALUE surfaces in the response text.
+ *
+ * `knownFacts` come as "key: value" strings (person-model.service.ts builds them
+ * as `${key}: ${value}`). We match on the VALUE side so that genuine recall of a
+ * taught fact ("Your name is Jim" ⟵ "name: Jim") counts as GROUNDED-by-recall,
+ * while an unknowable asked while OTHER facts are known ("my shoe size", with
+ * knownFacts = {name, city}) does NOT falsely read GROUNDED — its value never
+ * appears in the reply. A miss degrades to the WKG/LLM_ASSISTED ladder: honest,
+ * and structurally incapable of producing a false GROUNDED. This is the OKG half
+ * of grounding that the old WKG-only check missed (Standard-1 provenance).
+ */
+export function personFactRecalled(
+  knownFacts: readonly string[] | undefined,
+  responseText: string,
+): boolean {
+  if (!knownFacts?.length) return false;
+  return knownFacts.some((kf) => {
+    // Value side of "key: value" (re-join in case the value itself has a colon).
+    const value = kf.split(':').slice(1).join(':').trim();
+    // C8.1 (Std-1 honesty): WHOLE-WORD surface match, not a bare substring. A
+    // value like "Max" must NOT match inside "Maxford"; this is the same class of
+    // false-GROUNDED that let the live PRIV.3 probe ground off the guardian's
+    // legacy dog=Max fact. Word-boundary is necessary but not sufficient for the
+    // semantic false-positive (Defect 1) — that is handled in the resolver's
+    // unknowable guard; here we only fix the substring-honesty leak.
+    return valueSurfacesAsWord(value, responseText);
+  });
+}
+
+/**
+ * True iff the WKG context carries a REAL topical entity, as opposed to the
+ * Drive/CoBeing base-context that getContextForFrame() returns for any input
+ * without a proper-noun match. Base-context entities must not, on their own,
+ * count as GROUNDED — otherwise every nounless question (including unknowables)
+ * reads grounded off the always-present self/drive nodes (Trap A).
+ */
+export function hasTopicalEntity(wkg: WkgContext): boolean {
+  return wkg.entities.some((e) => e.nodeType !== 'Drive' && e.nodeType !== 'CoBeing');
+}
+
+/**
+ * Infer knowledge grounding from the response text, OKG person-facts, and WKG
+ * context. GROUNDED means the SYSTEM verified provenance backs the response —
+ * never that the LLM asserted it.
+ *
+ * Rules (in priority order):
+ *   1. Honest admission of ignorance → UNKNOWN (the response is ground truth).
+ *   2. A taught person-model fact value surfaced in the reply → GROUNDED (OKG recall).
+ *   3. Real topical WKG backing — facts, or a non-base-context entity → GROUNDED.
+ *   4. Otherwise → LLM_ASSISTED (general LLM knowledge, no self-knowledge backing).
+ */
+export function inferGrounding(
+  wkg: WkgContext,
+  responseText: string,
+  knownFacts?: readonly string[],
+): KnowledgeGrounding {
+  if (isIgnoranceResponse(responseText)) {
+    return 'UNKNOWN';
+  }
+  if (personFactRecalled(knownFacts, responseText)) {
+    return 'GROUNDED';
+  }
+  if (wkg.facts.length > 0 || hasTopicalEntity(wkg)) {
+    return 'GROUNDED';
+  }
+  return 'LLM_ASSISTED';
+}
+
+/**
+ * WS4 Ticket 5 (§3.1) — discriminate WHICH knowledge source grounded a verdict.
+ *
+ * This mirrors the EXACT priority cascade `inferGrounding`/the short-circuit
+ * path use (OKG person-fact recall wins over topical WKG), so the source is
+ * read off the SAME rule that produced the GROUNDED verdict — not re-derived
+ * from ambient context. That is the whole point: a verdict can be
+ * GROUNDED-because-of-OKG while the WKG context independently contains an
+ * unrelated topical entity. Re-deriving "is there a topical entity?" would
+ * mislabel that OKG fact as WKG-backed and world-scope a private fact (the bug
+ * mythos live-verified). Discriminating by rule precedence cannot.
+ *
+ * Priority (highest first), matching the grounding cascade:
+ *   1. `okgProvenance` non-null (applyOkgRecallGrounding upgraded it) → 'OKG'.
+ *   2. `personFactRecalled` (a taught fact VALUE surfaced in the reply) → 'OKG'.
+ *   3. real WKG fact or topical (non-base) entity → 'WKG'.
+ *   4. anything else GROUNDED (e.g. LLM tag we couldn't attribute) → null
+ *      → the write site person-scopes (conservative-when-ambiguous).
+ *
+ * Returns null when grounding !== 'GROUNDED'.
+ */
+export function discriminateGroundedBy(
+  grounding: KnowledgeGrounding,
+  wkg: WkgContext,
+  responseText: string,
+  knownFacts: readonly string[] | undefined,
+  okgProvenance: string | null,
+): 'OKG' | 'WKG' | null {
+  if (grounding !== 'GROUNDED') return null;
+  // Rule 1 + 2 — OKG person-fact recall (private self-knowledge).
+  if (okgProvenance) return 'OKG';
+  if (personFactRecalled(knownFacts, responseText)) return 'OKG';
+  // Rule 3 — shared world-knowledge backing.
+  if (wkg.facts.length > 0 || hasTopicalEntity(wkg)) return 'WKG';
+  // Rule 4 — GROUNDED but source unattributable (e.g. an LLM grounding tag the
+  // arbiter attached that survived re-verification). Ambiguous → person-scope.
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Context builders (used by buildFlatContext in the service)
+// ---------------------------------------------------------------------------
+
+export function buildDriveSummary(snapshot: DriveSnapshot): string {
+  const drives = snapshot.pressureVector;
+  const active = Object.entries(drives)
+    .filter(([, v]) => (v as number) > 0.2)
+    .map(([name, v]) => `${name}: ${(v as number).toFixed(2)}`)
+    .join(', ');
+  return active || 'calm (all drives low)';
+}
+
+export function buildEpisodeSummary(context: CognitiveContext): string {
+  return context.recentEpisodes
+    .slice(0, 5)
+    .map((ep) => ep.inputSummary)
+    .filter((s) => s.length > 0)
+    .join('\n') || '';
+}
+
+/** Find entity names in the response that aren't already in the WKG. */
+export function extractNewEntities(text: string, wkg: WkgContext): string[] {
+  const knownLabels = new Set(wkg.entities.map((e) => e.label.toLowerCase()));
+  const words = text.split(/\s+/);
+  const newEntities: string[] = [];
+
+  for (const word of words) {
+    const clean = word.replace(/[.,!?;:'"]/g, '');
+    if (clean.length > 2 && /^[A-Z]/.test(clean) && !knownLabels.has(clean.toLowerCase())) {
+      newEntities.push(clean);
+    }
+  }
+
+  return [...new Set(newEntities)];
+}

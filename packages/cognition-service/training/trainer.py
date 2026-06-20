@@ -464,6 +464,12 @@ class Trainer:
     _BATCH_SIZE = 32
     _LOG_INTERVAL = 100   # log metrics every N steps
 
+    # Canonical model names accepted by freeze/unfreeze. "all" is handled
+    # separately (special-cased in the endpoint, not stored here).
+    VALID_MODEL_NAMES: frozenset[str] = frozenset(
+        {"global", "panel_0", "panel_1", "panel_2", "panel_3"}
+    )
+
     def __init__(self, cycle: CognitiveCycle, buffer: DataBuffer) -> None:
         self._cycle = cycle
         self._buffer = buffer
@@ -488,6 +494,12 @@ class Trainer:
         # can resume instantly on unfreeze (distinct from stop(), which kills
         # the thread). Flipped by the /cognition/control/freeze endpoints.
         self._training_frozen: bool = False
+
+        # Per-model freeze set. Populated by freeze(model_name=...) for named
+        # models other than "all". "global" blocks _train_step(); "panel_N"
+        # blocks save_panel_checkpoint(). The all-freeze (_training_frozen) is
+        # the coarse gate; this is the fine-grained one.
+        self._frozen_models: set[str] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -559,7 +571,7 @@ class Trainer:
 
     @property
     def is_frozen(self) -> bool:
-        """True when supervisor freeze is active (weights held fixed)."""
+        """True when the global (all-model) supervisor freeze is active."""
         return self._training_frozen
 
     # ------------------------------------------------------------------
@@ -585,20 +597,98 @@ class Trainer:
     # Supervisor freeze control
     # ------------------------------------------------------------------
 
-    def freeze(self) -> None:
+    def freeze(self, model_name: str = "all") -> None:
         """Freeze weight updates without stopping the training thread.
 
-        The loop keeps spinning but _train_step() returns early. Resume with
-        unfreeze(). This is intentionally distinct from stop(), which tears the
-        thread down entirely.
-        """
-        self._training_frozen = True
-        logger.info("Trainer frozen — weight updates suspended")
+        Args:
+            model_name: "all" (default) freezes every model via the coarse
+                global flag. A specific name from VALID_MODEL_NAMES adds that
+                model to the per-model frozen set instead.
 
-    def unfreeze(self) -> None:
-        """Resume weight updates after a freeze()."""
-        self._training_frozen = False
-        logger.info("Trainer unfrozen — weight updates resumed")
+        The loop keeps spinning but _train_step() returns early when the
+        global freeze is set, or when "global" is in _frozen_models. Panel
+        freezes gate save_panel_checkpoint(). Resume with unfreeze().
+        This is intentionally distinct from stop(), which tears the thread
+        down entirely.
+        """
+        if model_name == "all":
+            self._training_frozen = True
+            logger.info("Trainer frozen — weight updates suspended (all models)")
+        else:
+            self._frozen_models.add(model_name)
+            logger.info("Model '%s' frozen — weight updates suspended", model_name)
+
+    def unfreeze(self, model_name: str = "all") -> None:
+        """Resume weight updates after a freeze().
+
+        Args:
+            model_name: "all" (default) clears the global freeze flag and
+                empties the per-model frozen set. A specific name removes only
+                that model from the frozen set.
+        """
+        if model_name == "all":
+            self._training_frozen = False
+            self._frozen_models.clear()
+            logger.info("Trainer unfrozen — weight updates resumed (all models)")
+        else:
+            self._frozen_models.discard(model_name)
+            logger.info("Model '%s' unfrozen — weight updates resumed", model_name)
+
+    def is_model_frozen(self, model_name: str) -> bool:
+        """Return True if the named model's weights are currently held fixed.
+
+        A model is frozen when either the global freeze is active or the model
+        appears in the per-model frozen set.
+
+        Args:
+            model_name: A value from VALID_MODEL_NAMES (e.g. "global",
+                "panel_0") or "all" (always True when global freeze is set).
+        """
+        if self._training_frozen:
+            return True
+        return model_name in self._frozen_models
+
+    def save_panel_checkpoint(self, model_name: str) -> bool:
+        """Save a panel model's weights to its on-disk NPZ, unless frozen.
+
+        Used by a targeted training pass to commit updated panel weights to
+        disk. The freeze check here is what AC-1 and AC-2 exercise: when the
+        panel is frozen the NPZ is not written; when unfrozen it is written
+        (and weight changes become permanent on disk).
+
+        Args:
+            model_name: One of "panel_0".."panel_3" corresponding to the
+                panel index in CognitiveCycle.panel_models.panels.
+
+        Returns:
+            True if the checkpoint was written; False if the panel was frozen
+            or the model_name did not map to a valid panel.
+        """
+        if self.is_model_frozen(model_name):
+            logger.info(
+                "save_panel_checkpoint('%s') skipped — model is frozen", model_name
+            )
+            return False
+
+        # Map "panel_N" → panels[N]
+        try:
+            idx = int(model_name.split("_")[1])
+        except (IndexError, ValueError):
+            logger.warning("save_panel_checkpoint: unrecognised model_name '%s'", model_name)
+            return False
+
+        panels = self._cycle.panel_models.panels
+        if idx < 0 or idx >= len(panels):
+            logger.warning(
+                "save_panel_checkpoint: index %d out of range (have %d panels)",
+                idx, len(panels),
+            )
+            return False
+
+        panel = panels[idx]
+        panel.save(config.WEIGHTS_DIR + "/panels")
+        logger.info("Panel '%s' checkpoint saved -> %s/panels", panel.name, config.WEIGHTS_DIR)
+        return True
 
     def zero_pending_for_category(self, category: str) -> None:
         """Hook for cancelling pending gradient updates toward a category.
@@ -735,7 +825,8 @@ class Trainer:
             Cross-entropy loss scalar for this batch.
         """
         # Supervisor freeze: hold weights fixed but keep the thread alive.
-        if self._training_frozen:
+        # Checks both the coarse all-freeze and the fine-grained "global" freeze.
+        if self._training_frozen or "global" in self._frozen_models:
             # Return the last known loss (or 0.0) without touching weights.
             return self._last_loss if self._last_loss is not None else 0.0
 

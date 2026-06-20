@@ -85,6 +85,17 @@ export { SensoryFusionService } from './inputs/fusion/sensory-fusion';
 export { TickSamplerService } from './inputs/sampling/tick-sampler';
 
 // ---------------------------------------------------------------------------
+// TK-36 — deliberation pure-helper re-exports (isIgnoranceResponse,
+// recallKeyForQuestion). These live in deliberation-helpers.ts but are
+// re-exported here so any caller that previously imported directly from the
+// service file continues to work if they ever switch to the barrel import.
+// ---------------------------------------------------------------------------
+export {
+  isIgnoranceResponse,
+  recallKeyForQuestion,
+} from './deliberation/deliberation-helpers';
+
+// ---------------------------------------------------------------------------
 // WS3 Ticket T1 — pre-arbitration grounded recall retrieval
 // ---------------------------------------------------------------------------
 // The durable replacement for the post-hoc OKG grounding regex: a single

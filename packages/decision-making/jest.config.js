@@ -9,7 +9,8 @@ module.exports = {
   testMatch: ['**/*.spec.ts'],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
-      tsconfig: '<rootDir>/tsconfig.spec.json',
+      tsconfig: '<rootDir>/tsconfig.json',
+      diagnostics: false,
     }],
   },
   moduleNameMapper: {

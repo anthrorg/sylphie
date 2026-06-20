@@ -185,11 +185,12 @@ def _get_or_init_embedding_extractor() -> Any | None:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 # P3.1 — DINOv2-base object-track embedder (separate from the face path above)
 #
-# The /crop-face FACE path keeps OnnxEmbeddingExtractor (ArcFace is its own
-# ticket, P3.2, M0-blocked). Only the OBJECT-TRACK embedder swaps to DINOv2-base
-# (768-D CLS token). It gets its OWN double-checked lazy-init + failed-flag so
-# its degrade behaviour is independent of the face path and identical in shape
-# to _get_or_init_embedding_extractor (degrade-not-crash, no retry storm).
+# The /crop-face FACE path uses ArcFaceEmbedder (P3.2 landed; OnnxEmbeddingExtractor
+# is dead code on the face path — confirmed TK-24). Only the OBJECT-TRACK embedder
+# uses DINOv2-base (768-D CLS token). It gets its OWN double-checked lazy-init +
+# failed-flag so its degrade behaviour is independent of the face path and
+# identical in shape to _get_or_init_embedding_extractor (degrade-not-crash, no
+# retry storm).
 # ---------------------------------------------------------------------------
 
 _object_embedding_init_lock = threading.Lock()
@@ -1182,8 +1183,8 @@ def _extract_track_embedding(frame: Any, detection: Any) -> list[float] | None: 
     DINOv2-specific ``_object_embedding_init_failed`` latch), and the
     degrade-not-crash ``except -> None`` discipline.
 
-    The /crop-face FACE path still uses ``OnnxEmbeddingExtractor`` (ArcFace is its
-    own ticket); only this object-track path is DINOv2.
+    The /crop-face FACE path uses ``ArcFaceEmbedder`` (P3.2 landed — confirmed
+    TK-24); only this object-track path is DINOv2.
 
     Returns None if extraction fails or the extractor cannot be initialised.
     """
@@ -1422,10 +1423,20 @@ async def status() -> JSONResponse:
 
     Returns:
         {
-          "active": bool,        -- True while the pipeline task is running
-          "tracked_objects": int, -- count of currently active tracks (non-DELETED)
-          "fps": float           -- configured processing fps (from PerceptionConfig)
+          "active": bool,               -- True while the pipeline task is running
+          "tracked_objects": int,       -- count of currently active tracks (non-DELETED)
+          "fps": float,                 -- configured processing fps (from PerceptionConfig)
+          "model_loaded": bool,         -- True if YOLO detector loaded at startup
+          "face_model_loaded": bool,    -- True if MediaPipe face detector loaded at startup
+          "embedding_init_failed": bool -- True if OnnxEmbeddingExtractor failed to init
         }
+
+    model_loaded and face_model_loaded mirror the same fields in /perception/health
+    and are exposed here so acceptance preflights have a single status endpoint to
+    probe for M0 substrate readiness without calling two endpoints.
+
+    embedding_init_failed is the module-level latch set by
+    _get_or_init_embedding_extractor on first failure; once True it stays True.
 
     tracked_objects reflects the tracker's current state. When the pipeline is
     not active it reports 0.
@@ -1451,4 +1462,10 @@ async def status() -> JSONResponse:
         "active": _state.pipeline_active,
         "tracked_objects": tracked_count,
         "fps": fps,
+        "model_loaded": _state.model_loaded,
+        "face_model_loaded": _state.face_model_loaded,
+        # _embedding_init_failed is a module-level bool (not on _state) because
+        # it is set by _get_or_init_embedding_extractor which runs on OS threads;
+        # read it directly here — it is only ever written once (latch).
+        "embedding_init_failed": _embedding_init_failed,
     })
