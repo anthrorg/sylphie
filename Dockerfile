@@ -120,5 +120,10 @@ RUN chmod +x ./docker-entrypoint.sh
 
 EXPOSE 3000
 
-# Railway sets PORT; the app reads process.env.PORT || process.env.APP_PORT || 3000
+# Railway sets PORT at runtime; mirror the same fallback chain the app uses
+# (process.env.PORT || process.env.APP_PORT || 3000) so the healthcheck always
+# hits the port the app is actually listening on, even in local docker runs.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:${PORT:-3000}/api/metrics/health || exit 1
+
 CMD ["./docker-entrypoint.sh"]
