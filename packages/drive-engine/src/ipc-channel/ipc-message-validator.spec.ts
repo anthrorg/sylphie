@@ -211,3 +211,46 @@ describe('ipc-message-validator — injected driveEffects is rejected (CANON Std
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 3. TK-86 / DEC-24: metadata.hostilityMagnitude survives validation (AC-1)
+// ---------------------------------------------------------------------------
+
+describe('ipc-message-validator — hostilityMagnitude survives validation (AC-1 / DEC-24)', () => {
+  // hostilityMagnitude is additive inside z.object() metadata (not .strict()),
+  // so it must pass through validation and not be stripped or hard-rejected.
+
+  it('accepts a payload with hostilityMagnitude in [0, 1]', () => {
+    const payload = makePayload({ hostilityMagnitude: 0.7 }, 'InboundHostility');
+    const result = safeValidateMessage(makeInbound(payload), 'inbound');
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects hostilityMagnitude > 1', () => {
+    const payload = makePayload({ hostilityMagnitude: 1.5 }, 'InboundHostility');
+    const result = safeValidateMessage(makeInbound(payload), 'inbound');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('hostilityMagnitude');
+    }
+  });
+
+  it('rejects hostilityMagnitude < 0', () => {
+    const payload = makePayload({ hostilityMagnitude: -0.1 }, 'InboundHostility');
+    const result = safeValidateMessage(makeInbound(payload), 'inbound');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('hostilityMagnitude');
+    }
+  });
+
+  it('hostilityMagnitude is preserved after validation (not stripped)', () => {
+    const payload = makePayload({ hostilityMagnitude: 0.8 }, 'InboundHostility');
+    const envelope = makeInbound(payload);
+    const result = safeValidateMessage(envelope, 'inbound');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.payload.metadata.hostilityMagnitude).toBe(0.8);
+    }
+  });
+});

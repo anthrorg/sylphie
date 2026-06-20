@@ -125,3 +125,74 @@ describe('rules — ScenePrediction relief invariant', () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// TK-86: InboundHostility action type — AC-1 and AC-2
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal ACTION_OUTCOME payload for an InboundHostility signal.
+ * hostilityMagnitude in [0,1] — the lexical affect magnitude of the hostile turn.
+ */
+function inboundHostility(hostilityMagnitude: number): ActionOutcomePayload {
+  return {
+    actionId: 'test-inbound-hostility',
+    actionType: 'InboundHostility',
+    outcome: 'negative',
+    metadata: { hostilityMagnitude },
+    feedbackSource: 'algorithmic',
+    theaterCheck: {
+      expressionType: 'none',
+      driveValueAtExpression: 0,
+      drive: DriveName.Anxiety,
+      isTheatrical: false,
+    },
+    anxietyAtExecution: 0,
+  };
+}
+
+describe('rules — InboundHostility metadata scaling (AC-1, AC-2)', () => {
+  // Goldens pinned by running computeDefaultAffect:
+  //   m=0   -> { anxiety: 0,     social: 0    }
+  //   m=0.5 -> { anxiety: 0.075, social: 0.05 }
+  //   m=1.0 -> { anxiety: 0.15,  social: 0.10 }
+  const cases: ReadonlyArray<readonly [number, number, number]> = [
+    [0,   0,     0    ],
+    [0.5, 0.075, 0.05 ],
+    [1.0, 0.15,  0.10 ],
+  ];
+
+  it.each(cases)(
+    'scales Anxiety=0.15*m and Social=0.10*m for hostilityMagnitude=%p',
+    (m, expectedAnxiety, expectedSocial) => {
+      const effects = computeDefaultAffect(inboundHostility(m));
+      // Use closeTo for floating-point arithmetic (0.15 * 0.5 = 0.075000…0001)
+      expect(effects[DriveName.Anxiety]).toBeCloseTo(expectedAnxiety, 10);
+      expect(effects[DriveName.Social]).toBeCloseTo(expectedSocial, 10);
+      // Only Anxiety and Social are touched (algorithmic feedback adds nothing).
+      expect(new Set(Object.keys(effects))).toEqual(
+        new Set([DriveName.Anxiety, DriveName.Social]),
+      );
+    },
+  );
+});
+
+describe('rules — InboundHostility METADATA_SCALED_ACTION_TYPES membership (AC-1)', () => {
+  it("'InboundHostility' is registered as a metadata-scaled action type", () => {
+    expect(METADATA_SCALED_ACTION_TYPES.has('InboundHostility')).toBe(true);
+  });
+});
+
+describe('rules — InboundHostility relief invariant (AC-2: no relief on any axis)', () => {
+  // Sample across the full [0, 1] magnitude range.
+  it.each([0, 0.1, 0.25, 0.5, 0.75, 1.0])(
+    'never produces a relief (negative) delta on any axis at hostilityMagnitude=%p',
+    (m) => {
+      const effects = computeDefaultAffect(inboundHostility(m));
+      for (const delta of Object.values(effects)) {
+        // AC-2: assert zero relief — no axis may go negative (pressure-only signal)
+        expect(delta as number).toBeGreaterThanOrEqual(0);
+      }
+    },
+  );
+});

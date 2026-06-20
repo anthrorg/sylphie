@@ -48,6 +48,10 @@ const ActionOutcomePayloadSchema = z.object({
     sensoryPredictionError: z.number().min(0).max(1).optional(),
     sceneSurprise: z.number().min(0).max(1).optional(),
     guardianTeachingDrive: DriveNameSchema.optional(),
+    // TK-86 / DEC-24: additive field — survives the strict top-level schema
+    // because metadata is its own z.object() (not strict), so extra keys inside
+    // metadata are accepted while unknown TOP-LEVEL fields are still rejected.
+    hostilityMagnitude: z.number().min(0).max(1).optional(),
   }).optional(),
   feedbackSource: z.enum([
     'guardian_confirmation',

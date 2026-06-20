@@ -169,6 +169,12 @@ export interface ActionOutcomePayload {
     readonly sceneSurprise?: number;
     /** Drive affected by guardian teaching instruction. */
     readonly guardianTeachingDrive?: DriveName;
+    /**
+     * Hostility magnitude of an inbound message [0.0, 1.0].
+     * Carried by InboundHostility action outcomes (TK-86 / DEC-24).
+     * Scaled by computeDefaultAffect to apply Anxiety + Social PRESSURE.
+     */
+    readonly hostilityMagnitude?: number;
   };
 
   /**
