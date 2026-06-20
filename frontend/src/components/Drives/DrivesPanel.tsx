@@ -1,22 +1,13 @@
-import React, { useState } from 'react'
+import React from 'react'
 import {
   Box,
-  Button,
-  Collapse,
   Divider,
-  IconButton,
-  Slider,
-  Switch,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import SignalWifiOffIcon from '@mui/icons-material/SignalWifiOff'
 import SignalWifi4BarIcon from '@mui/icons-material/SignalWifi4Bar'
-import RestartAltIcon from '@mui/icons-material/RestartAlt'
-import TuneIcon from '@mui/icons-material/Tune'
 import { useAppStore } from '../../store'
-import { useDriveOverrides } from '../../hooks/useDriveOverrides'
 import { usePressureStatus } from '../../hooks/usePressureStatus'
 import { TelemetryPressure } from '../../types'
 
@@ -69,10 +60,9 @@ const getDriveColor = (value: number): string => {
 interface DriveRowProps {
   label: string
   value: number
-  overrideActive?: boolean
 }
 
-const DriveRow: React.FC<DriveRowProps> = ({ label, value, overrideActive }) => {
+const DriveRow: React.FC<DriveRowProps> = ({ label, value }) => {
   const color = getDriveColor(value)
 
   // Bidirectional bar spanning the full CANON range [-10.0, 1.0].
@@ -97,16 +87,14 @@ const DriveRow: React.FC<DriveRowProps> = ({ label, value, overrideActive }) => 
           width: 110,
           minWidth: 110,
           fontSize: '0.68rem',
-          color: overrideActive ? '#1976d2' : 'text.secondary',
+          color: 'text.secondary',
           fontFamily: 'monospace',
           textAlign: 'right',
           pr: 0.5,
           lineHeight: 1.2,
-          fontWeight: overrideActive ? 600 : 400,
+          fontWeight: 400,
         }}
       >
-        {/* Blue dot prefix indicates override is active */}
-        {overrideActive ? '\u25CF ' : ''}
         {label}
       </Typography>
 
@@ -142,7 +130,7 @@ const DriveRow: React.FC<DriveRowProps> = ({ label, value, overrideActive }) => 
             right: `${fillRight}%`,
             top: 0,
             bottom: 0,
-            bgcolor: overrideActive ? '#1976d2' : color,
+            bgcolor: color,
             borderRadius: 1,
           }}
         />
@@ -167,140 +155,6 @@ const DriveRow: React.FC<DriveRowProps> = ({ label, value, overrideActive }) => 
 }
 
 /* ------------------------------------------------------------------ */
-/*  DriveControlRow (editable — shown in controls section)             */
-/* ------------------------------------------------------------------ */
-
-interface DriveControlRowProps {
-  driveKey: string
-  label: string
-  value: number
-  driftRate: number
-  overrideEnabled: boolean
-  onOverrideToggle: (key: string, enabled: boolean) => void
-  onOverrideValue: (key: string, value: number) => void
-  onDriftChange: (key: string, rate: number) => void
-}
-
-const DriveControlRow: React.FC<DriveControlRowProps> = ({
-  driveKey,
-  label,
-  value,
-  driftRate,
-  overrideEnabled,
-  onOverrideToggle,
-  onOverrideValue,
-  onDriftChange,
-}) => {
-  const color = getDriveColor(value)
-
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.25, minHeight: 28 }}>
-      {/* Label */}
-      <Typography
-        variant="caption"
-        sx={{
-          width: 90,
-          minWidth: 90,
-          fontSize: '0.62rem',
-          color: overrideEnabled ? '#1976d2' : 'text.secondary',
-          fontFamily: 'monospace',
-          textAlign: 'right',
-          pr: 0.5,
-          lineHeight: 1.2,
-        }}
-      >
-        {label}
-      </Typography>
-
-      {/* Override toggle */}
-      <Tooltip title={overrideEnabled ? 'Override ON' : 'Override OFF'} placement="top" arrow>
-        <Switch
-          size="small"
-          checked={overrideEnabled}
-          onChange={(_e, checked) => onOverrideToggle(driveKey, checked)}
-          sx={{
-            width: 32,
-            height: 18,
-            p: 0,
-            '& .MuiSwitch-switchBase': {
-              p: '2px',
-              '&.Mui-checked': {
-                transform: 'translateX(14px)',
-                color: '#fff',
-                '& + .MuiSwitch-track': {
-                  bgcolor: '#1976d2',
-                  opacity: 1,
-                },
-              },
-            },
-            '& .MuiSwitch-thumb': { width: 14, height: 14 },
-            '& .MuiSwitch-track': {
-              borderRadius: 9,
-              bgcolor: 'rgba(0,0,0,0.2)',
-              opacity: 1,
-            },
-          }}
-        />
-      </Tooltip>
-
-      {/* Slider (only interactive when override is on) -- full CANON range [-10, 1] */}
-      <Box sx={{ flex: 1, minWidth: 50 }}>
-        <Slider
-          size="small"
-          min={-10}
-          max={1}
-          step={0.01}
-          value={value}
-          disabled={!overrideEnabled}
-          onChange={(_e, v) => onOverrideValue(driveKey, v as number)}
-          sx={{
-            py: 0,
-            color: overrideEnabled ? '#1976d2' : color,
-            '& .MuiSlider-thumb': { width: 12, height: 12 },
-            '& .MuiSlider-rail': { opacity: 0.3 },
-          }}
-        />
-      </Box>
-
-      {/* Drift rate: continuous per-second change applied to the drive (for simulating pressure ramps) */}
-      <Tooltip title="Drift rate / sec" placement="top" arrow>
-        <TextField
-          size="small"
-          type="number"
-          value={driftRate}
-          onChange={(e) => {
-            const raw = parseFloat(e.target.value)
-            if (!isNaN(raw)) {
-              onDriftChange(driveKey, raw)
-            }
-          }}
-          inputProps={{
-            min: -0.1,
-            max: 0.1,
-            step: 0.001,
-            style: {
-              fontSize: '0.6rem',
-              fontFamily: 'monospace',
-              padding: '2px 4px',
-              width: 48,
-              textAlign: 'right',
-            },
-          }}
-          sx={{
-            '& .MuiOutlinedInput-root': {
-              height: 22,
-            },
-            '& .MuiOutlinedInput-notchedOutline': {
-              borderColor: 'rgba(0,0,0,0.12)',
-            },
-          }}
-        />
-      </Tooltip>
-    </Box>
-  )
-}
-
-/* ------------------------------------------------------------------ */
 /*  DrivesPanel                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -308,18 +162,7 @@ export const DrivesPanel: React.FC = () => {
   const pressure = useAppStore((state) => state.pressure)
   const dynamicThreshold = useAppStore((state) => state.dynamicThreshold)
 
-  const [showControls, setShowControls] = useState<boolean>(false)
-
   const { isConnected, isStale } = usePressureStatus()
-  const {
-    overrides,
-    overrideValues,
-    driftRates,
-    handleOverrideToggle,
-    handleOverrideValue,
-    handleDriftChange,
-    handleResetAll,
-  } = useDriveOverrides()
 
   const renderDriveRows = (drives: Array<{ key: keyof TelemetryPressure; label: string }>) =>
     drives.map((drive) => (
@@ -327,28 +170,12 @@ export const DrivesPanel: React.FC = () => {
         key={drive.key}
         label={drive.label}
         value={pressure[drive.key] ?? 0}
-        overrideActive={overrides[drive.key] ?? false}
-      />
-    ))
-
-  const renderControlRows = (drives: Array<{ key: keyof TelemetryPressure; label: string }>) =>
-    drives.map((drive) => (
-      <DriveControlRow
-        key={drive.key}
-        driveKey={drive.key}
-        label={drive.label}
-        value={overrideValues[drive.key] ?? pressure[drive.key] ?? 0}
-        driftRate={driftRates[drive.key] ?? 0}
-        overrideEnabled={overrides[drive.key] ?? false}
-        onOverrideToggle={handleOverrideToggle}
-        onOverrideValue={handleOverrideValue}
-        onDriftChange={handleDriftChange}
       />
     ))
 
   return (
     <Box sx={{ px: 1.5, py: 1 }}>
-      {/* Header row: title + connection status + threshold + controls toggle */}
+      {/* Header row: title + connection status + threshold */}
       <Box
         sx={{
           display: 'flex',
@@ -398,31 +225,13 @@ export const DrivesPanel: React.FC = () => {
           </Tooltip>
         </Box>
 
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <Typography
-            variant="caption"
-            sx={{ fontSize: '0.6rem', fontFamily: 'monospace', color: 'text.disabled' }}
-          >
-            {/* Dynamic threshold adapts based on overall pressure; drives above it trigger actions */}
-            threshold: {(dynamicThreshold ?? 0).toFixed(2)}
-          </Typography>
-          <Tooltip
-            title={showControls ? 'Hide controls' : 'Show drive controls'}
-            placement="top"
-            arrow
-          >
-            <IconButton
-              size="small"
-              onClick={() => setShowControls((prev) => !prev)}
-              sx={{
-                p: 0.3,
-                color: showControls ? '#1976d2' : 'text.disabled',
-              }}
-            >
-              <TuneIcon sx={{ fontSize: '1rem' }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
+        <Typography
+          variant="caption"
+          sx={{ fontSize: '0.6rem', fontFamily: 'monospace', color: 'text.disabled' }}
+        >
+          {/* Dynamic threshold adapts based on overall pressure; drives above it trigger actions */}
+          threshold: {(dynamicThreshold ?? 0).toFixed(2)}
+        </Typography>
       </Box>
 
       {/* Core drives (read-only telemetry) */}
@@ -450,82 +259,6 @@ export const DrivesPanel: React.FC = () => {
 
       {/* Complement drives (read-only telemetry) */}
       <Box sx={{ px: 1, py: 0.5 }}>{renderDriveRows(COMPLEMENT_DRIVES)}</Box>
-
-      {/* Collapsible controls section */}
-      <Collapse in={showControls}>
-        <Divider sx={{ my: 0.75 }} />
-
-        {/* Controls header with reset button */}
-        <Box
-          sx={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            mb: 0.5,
-          }}
-        >
-          <Typography
-            variant="overline"
-            sx={{ fontSize: '0.65rem', fontWeight: 700, color: '#1976d2', letterSpacing: 1 }}
-          >
-            Drive Controls
-          </Typography>
-          <Tooltip title="Reset all overrides and drift rates" placement="left" arrow>
-            <Button
-              size="small"
-              variant="outlined"
-              color="warning"
-              onClick={handleResetAll}
-              disabled={false}
-              startIcon={<RestartAltIcon sx={{ fontSize: '0.85rem !important' }} />}
-              sx={{
-                fontSize: '0.6rem',
-                minWidth: 'auto',
-                py: 0,
-                px: 0.75,
-                height: 22,
-                textTransform: 'none',
-                lineHeight: 1,
-              }}
-            >
-              Reset
-            </Button>
-          </Tooltip>
-        </Box>
-
-        {/* Control rows: core drives */}
-        <Box
-          sx={{
-            bgcolor: 'rgba(25, 118, 210, 0.04)',
-            borderRadius: 1,
-            px: 0.5,
-            py: 0.5,
-            border: '1px solid rgba(25, 118, 210, 0.15)',
-            mb: 0.5,
-          }}
-        >
-          <Typography
-            variant="caption"
-            sx={{ fontSize: '0.55rem', color: 'text.disabled', fontFamily: 'monospace', pl: 0.5 }}
-          >
-            override | slider | drift/s
-          </Typography>
-          {renderControlRows(CORE_DRIVES)}
-        </Box>
-
-        {/* Control rows: complement drives */}
-        <Box
-          sx={{
-            bgcolor: 'rgba(25, 118, 210, 0.04)',
-            borderRadius: 1,
-            px: 0.5,
-            py: 0.5,
-            border: '1px solid rgba(25, 118, 210, 0.15)',
-          }}
-        >
-          {renderControlRows(COMPLEMENT_DRIVES)}
-        </Box>
-      </Collapse>
     </Box>
   )
 }
