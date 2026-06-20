@@ -1024,7 +1024,7 @@ nodes:
     parent: EP-12
     title: "EP12.3 — Ungrounded insight re-grounding sweep"
     intent: "Periodically re-ground Insight nodes (grounded:false) against entities added since creation, so insight quality is order-independent; runs on the 30-min synthesis cadence."
-    status: in_progress
+    status: done
     priority: P3
     estimate: M
     engineering_level: production
