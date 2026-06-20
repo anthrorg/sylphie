@@ -32,7 +32,6 @@ Public API::
         DominantColorExtractor,
         EmbeddingExtractor,
         MockEmbeddingExtractor,
-        OnnxEmbeddingExtractor,
         # Tracker
         IoUTracker,
         # Frame buffer and session management
@@ -80,7 +79,6 @@ from .feature_extraction import (
     DominantColorExtractor,
     EmbeddingExtractor,
     MockEmbeddingExtractor,
-    OnnxEmbeddingExtractor,
 )
 from .frame_buffer import (
     FrameBuffer,
@@ -147,7 +145,6 @@ __all__ = [
     "DominantColorExtractor",
     "EmbeddingExtractor",
     "MockEmbeddingExtractor",
-    "OnnxEmbeddingExtractor",
     # Tracker
     "IoUTracker",
     # Frame buffer and session management
