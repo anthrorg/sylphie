@@ -1392,7 +1392,7 @@ nodes:
     parent: EP-15
     title: "EP15.6 — research-report.md: archive or promote remaining ideas"
     intent: "Triage the 46 April research-report ideas: each is already-ticketed (annotate), a genuine gap (promote to open_question), or stale (mark ARCHIVED); then archive the report."
-    status: todo
+    status: done
     priority: P3
     estimate: S
     engineering_level: mvp
@@ -1401,7 +1401,7 @@ nodes:
     acceptance_criteria:
       - { given: "all 46 ideas", when: "cross-checked vs contract + stub-inventory", then: "each is annotated already-ticketed / promoted as an open_question / marked ARCHIVED with reason" }
       - { given: "no genuine-gap items remain unfiled", when: "triage completes", then: "research-report.md is moved to wiki/ideas/archive/ with a closure-date header" }
-    files_in_scope: ["wiki/ideas/research-report.md", "planning/contract.yaml"]
+    files_in_scope: ["wiki/ideas/research-report.md", "wiki/ideas/archive/research-report.md", "planning/contract.yaml"]
     depends_on: []
 
   - id: TK-77
@@ -5623,6 +5623,39 @@ governance:
       decision: "Add hostilityMagnitude: z.number().min(0).max(1).optional() to the metadata sub-schema. The non-goal meant 'no actionType enum', NOT a frozen metadata object — it is reworded in TK-86. Add packages/drive-engine/src/ipc-channel/ipc-message-validator.ts to TK-86 files_in_scope. Reusing an existing metadata field rejected (semantic collision).",
       consequences: "TK-86 gains the validator file in scope + an additive metadata field; the non-goal is reworded so the schema change is in-scope and bounded.",
       canon: "no tension — additive optional field; the top-level .strict() isolation boundary is untouched." }
+  - id: Q-25
+    type: open_question
+    status: open
+    scope: EP-14
+    date_raised: "2026-06-20"
+    title: "TK-76 flag: Guilt Repair dead path — ticket the detectBehavioralChange bug under EP-14 or EP-16?"
+    description: >
+      TK-76 triage (research-report Idea 41) confirmed a correctness bug in
+      packages/drive-engine/src/drive-process/behavioral-contingencies/contingency-coordinator.ts
+      lines 100-108: outcome.actionType is passed for BOTH the current and previous error action
+      type arguments, so detectBehavioralChange always returns false. The 0.15 (behavioral change
+      only) and 0.30 (acknowledgment + behavioral change) guilt relief paths are permanently
+      unreachable; only the 0.10 acknowledgment relief can fire. Not yet covered by any contract
+      ticket. Determine: (a) whether to add a ticket under EP-14 (drive residuals) or EP-16
+      (behavioral contingencies), and (b) the priority relative to the existing P3 backlog.
+    resolution: null
+  - id: Q-26
+    type: open_question
+    status: open
+    scope: EP-12
+    date_raised: "2026-06-20"
+    title: "TK-76 flag: ageWeight freeze bug — ticket live episodic decay under EP-12 or EP-14?"
+    description: >
+      TK-76 triage (research-report Idea 42) confirmed a correctness bug in
+      packages/decision-making/src/episodic-memory/episodic-memory.service.ts line 200:
+      ageWeight is assigned attention at encode time and never recalculated. The docstring
+      claims the formula should be attention * exp(-0.1 * hoursSinceEncoding) but the
+      exponential term is never applied. Consolidation candidates and retrieval ordering use
+      the frozen weight, so a 3-hour-old high-attention episode retains weight 0.70 instead
+      of the expected ~0.23. Not yet covered by any contract ticket. Determine whether to add
+      a ticket under EP-12 (learning/consolidation) or EP-14 (decision-making residuals), and
+      the priority relative to the existing P3 backlog.
+    resolution: null
 
 changelog:
   - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
@@ -5645,3 +5678,4 @@ changelog:
   - { date: "2026-06-19", version: "1.3", change: "worktree-agents run #1 (5 tickets) + POC closeout. Round-1 build agents opened PRs for the EP-4 vision chain: TK-19 (PR#1), TK-20 (PR#2), TK-21 (PR#3), TK-22 (PR#4), TK-23 (PR#5) — all OPEN, awaiting Blubagoo review before merge; they stay in_progress (the schema has no pr_open status — a ticket with an open unmerged PR is not done) with pr_url/branch recorded. Backfilled pr_url/branch on TK-19 + TK-22 (round-1 close-step was blocked by the status enum and left them without PR metadata). Closed two verification-only POCs as DONE on recorded live evidence: TK-37 (EP8-POC — empirical Fisher IS the live phase-transition path, fisher_computed=true on loaded buffer; uniform path is first-call seed only; one-boundary Online-EWC lag noted for TK-39) and TK-42 (EP9-POC — Dockerfile cp-dist hack is DELETABLE; only live subpath consumer is apps/drive-server->@sylphie/drive-engine which already has exports; image built+booted clean with cp removed). Unblocks TK-38/39/41 (on TK-37) and TK-44 (on TK-42). TK-85/86 left todo — their poc blocks answer design questions but their write-path/code ACs are unbuilt.", by: "blubagoo" }
   - { date: "2026-06-19", version: "1.4", change: "Merged 14 approved PRs to main and reconciled status in_progress->done: TK-19/20/21/22/23 (EP-4 vision chain, PR#1-5), TK-24 (PR#7), TK-26 (PR#9), TK-30 (PR#11), TK-31 (PR#13), TK-34 (PR#12), TK-36 (PR#14), TK-38 (PR#10), TK-39 (PR#6), TK-40 (PR#8). Built by worktree-agents run#1 (5, sequential) + run#2 (10, parallel 10-wide, Sonnet workers/Opus orchestrator, deterministic pick_ready.py readiness). TK-81 (PR#15) remains in_progress — open, not yet approved. Contract validates (411 nodes).", by: "blubagoo" }
   - { date: "2026-06-19", version: "1.5", change: "TK-81 (PR#15, WS5.5.1 two-person WKG isolation regression) reviewed, fixed, and merged -> done. Review found a CANON/no-hardcoded-paths violation: the PR added packages/{decision-making,learning}/tsconfig.spec.json pinning absolute machine paths (C:/Users/... typeRoots) and repointed both jest.config.js at them. Fixed in-PR: resolved the jest.config conflict toward main (tsconfig.json + diagnostics:false), deleted both tsconfig.spec.json (unnecessary — ts-jest runs with diagnostics off / existing tsconfig). Verified both new suites green: decision-making candidate-grounding-exclusion 15/15, learning upsert-entities.candidate 10/10 — tests are substantive (assert every Person-B read-path excludes Person-A's :Candidate; per-speaker scoping), not theater. NOTE (separate, pre-existing since f5e3b62, NOT this PR): both jest.config.js hardcode the ts-jest path to an npx cache (C:/Users/Jim/AppData/.../_npx/.../ts-jest) because ts-jest is not a node_modules dep — repo-wide test-toolchain issue worth a dedicated ticket. All 15 round-1+round-2 PRs now merged; zero tickets in_progress.", by: "blubagoo" }
+  - { date: "2026-06-20", version: "1.6", change: "TK-76 DONE (EP15.6 research-report.md triage). All 46 April research-report ideas cross-checked against contract.yaml and sylphie-stub-inventory.md. Disposition: 15 ALREADY-TICKETED (TK-52/53/54/57/61/62/63/65/69/70/71/77/87/88 + TK-24+25 for idea 40), 2 ALREADY-DONE (ideas 14 and 17), 29 ARCHIVED with reasons (dormant Python pipeline, superseded, low-priority). Two genuine correctness bugs promoted as open questions: Q-25 (Guilt Repair dead path, contingency-coordinator.ts:100-108, detectBehavioralChange always false) and Q-26 (ageWeight freeze, episodic-memory.service.ts:200, exponential decay never applied). research-report.md moved to wiki/ideas/archive/research-report.md with closure-date header. TK-76 status todo->done.", by: "agent/tk-76" }
