@@ -33,6 +33,9 @@ import {
   DriveName,
   LLM_SERVICE,
   verboseFor,
+  estimateLlmCostUsd,
+  resolveLlmPricingFromEnv,
+  type LlmPricingRates,
   type ILlmService,
   type CycleResponse,
   type DeliveryPayload,
@@ -107,6 +110,13 @@ export class CommunicationService implements OnModuleInit {
   /** Maximum pending turns to retain (prevent unbounded growth). */
   private readonly MAX_PENDING_TURNS = 50;
 
+  /**
+   * DeepSeek pricing rates for costUsd computation on TYPE_2 deliveries.
+   * Resolved once at construction from env vars (same source as CostTrackerService)
+   * so delivery cost and supervisor cost can never drift.
+   */
+  private readonly pricingRates: LlmPricingRates;
+
   constructor(
     @Inject(DECISION_MAKING_SERVICE)
     private readonly decisionMaking: IDecisionMakingService,
@@ -150,7 +160,9 @@ export class CommunicationService implements OnModuleInit {
     // TK-35 (EP7-E): theater check + basic outcome report extracted to isolate
     // CANON Std-1 audit logic from the delivery hot-path.
     private readonly cycleOutcomeReporter: CycleOutcomeReporterService,
-  ) {}
+  ) {
+    this.pricingRates = resolveLlmPricingFromEnv();
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -676,7 +688,7 @@ export class CommunicationService implements OnModuleInit {
       arbitrationType: response.arbitrationType,
       latencyMs: response.latencyMs,
       llmCalled: response.arbitrationType === 'TYPE_2',
-      costUsd: 0, // Local Ollama
+      costUsd: computeDeliveryCost(response, this.pricingRates),
       knowledgeGrounding: response.knowledgeGrounding,
       // WS3 T5: forward the grounding provenance node id + its source so a
       // consumer (the Provability Gate, the frontend badge) can verify the id
@@ -699,7 +711,16 @@ export class CommunicationService implements OnModuleInit {
       hasAudio: !!audioBase64,
       textLen: response.text.length,
       latencyMs: response.latencyMs,
+      costUsd: delivery.costUsd ?? 0,
     });
+
+    if (delivery.costUsd && delivery.costUsd > 0) {
+      this.logger.debug(
+        `Delivery cost: $${delivery.costUsd.toFixed(6)} ` +
+          `(${response.tokensUsed?.prompt ?? 0}+${response.tokensUsed?.completion ?? 0} tokens, ` +
+          `model=${response.model ?? 'unknown'})`,
+      );
+    }
 
     this.deliverySubject.next(delivery);
 
@@ -973,6 +994,38 @@ export class CommunicationService implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Compute the USD cost for a DeliveryPayload.
+ *
+ * Returns the real estimated cost when the cycle called the DeepSeek API
+ * (identified by model name containing "deepseek"). Returns 0 for TYPE_1
+ * reflexes, Ollama-local TYPE_2 cycles, and any cycle without token data.
+ *
+ * Uses the same estimateLlmCostUsd function as CostTrackerService so the
+ * per-delivery cost figure is always in lockstep with the supervisor's budget
+ * accounting — no separate rate table, no drift.
+ */
+function computeDeliveryCost(
+  response: CycleResponse,
+  rates: LlmPricingRates,
+): number {
+  // Only TYPE_2 cycles that called the LLM can have a non-zero cost.
+  if (
+    response.arbitrationType !== 'TYPE_2' ||
+    !response.tokensUsed ||
+    // Guard: model must be present and identify DeepSeek.
+    // Local Ollama cycles are free; charging for them would be dishonest.
+    !response.model?.toLowerCase().includes('deepseek')
+  ) {
+    return 0;
+  }
+  return estimateLlmCostUsd(
+    response.tokensUsed.prompt,
+    response.tokensUsed.completion,
+    rates,
+  );
+}
 
 /**
  * Sanitize response text before delivery. Strips LLM formatting artifacts
