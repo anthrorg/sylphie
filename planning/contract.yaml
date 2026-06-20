@@ -1708,7 +1708,10 @@ nodes:
   - id: TK-91
     kind: ticket
     parent: EP-16
-    status: todo
+    pr_url: "https://github.com/anthrorg/sylphie/pull/68"
+    branch: "agent/tk-91-ep16-persist-personscopedfaceindex-to-db"
+    status: done
+    verification_note: "DB-backed PersonScopedFaceIndex (person_face_embeddings table); every read/write WHERE person_id=$1, searchFace+writeFace async w/ lazy per-person load; §2.8 isolation preserved at DB layer (reviewed + 20/20 spec incl. Person-A-not-returnable-for-B). Graceful no-DB fallback (timescale??null). Residual (test phase): live TimescaleDB persist→restart round-trip + optional RLS hardening (separate ticket per non-goals)."
     priority: P2
     estimate: M
     engineering_level: production
