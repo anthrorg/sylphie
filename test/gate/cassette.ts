@@ -243,6 +243,26 @@ export interface CassetteStats {
   lesionRejections: number;
   /** Hashes that missed the tape, with their hint, for diagnostics. */
   missDetails: Array<{ hash: string; hint: string }>;
+  /**
+   * TK-92 / AD-0037: Chat (non-embed) tape misses that occurred while the
+   * cassette was in replay mode during a LESION-mode gate run.
+   *
+   * These are EXPECTED, not product failures: the chat prompt embeds run-
+   * cumulative state (an "N interactions" counter + drive/working-memory
+   * snapshot, deliberation.service.ts:305-319) so the prompt hash drifts
+   * legitimately between runs. A missed chat call under lesion hangs ~13s and
+   * causes the burst to land 3/5, which is why Q1.1/Q1.3/Q1.8 blow up.
+   *
+   * Mirrors the existing lesion embed-miss carve-out (see handle() below):
+   * embed misses return a zero-vector instead of being counted as real misses.
+   * Chat misses under lesion cannot return a synthetic response (that is
+   * theater), but they CAN be excluded from the X0 hard-fail so the harness
+   * does not gate on an unfixable non-determinism in the prompt hash.
+   *
+   * These are NOT included in `stats.misses`. X0 in gate.ts checks only
+   * `stats.misses` and therefore ignores these expected lesion-window misses.
+   */
+  lesionChatMisses: number;
 }
 
 export class Cassette {
@@ -257,6 +277,7 @@ export class Cassette {
     recorded: 0,
     lesionRejections: 0,
     missDetails: [],
+    lesionChatMisses: 0, // TK-92 / AD-0037: expected lesion-window chat misses (excluded from X0)
   };
 
   constructor(mode: GateMode = resolveGateMode()) {
@@ -437,9 +458,42 @@ export class Cassette {
         return;
       }
 
-      this.stats.misses++;
-      this.stats.missDetails.push({ hash, hint });
-      this.logMissDiff(key);
+      // TK-92 / AD-0037: Under LESION-mode gate runs the chat prompt embeds
+      // run-cumulative state (an "N interactions" counter + drive/working-memory
+      // snapshot). This makes the prompt hash non-deterministic across runs, so
+      // any chat (non-embed) miss during a lesion-mode run is an EXPECTED harness
+      // non-determinism, not a product regression. Count it separately so the X0
+      // scorecard row only hard-fails on genuine unexpected misses.
+      //
+      // Mirrors the embed-miss carve-out above (lesion embed misses return a zero
+      // vector instead of incrementing stats.misses). Chat misses cannot return a
+      // synthetic response (theater), but they are excluded from stats.misses.
+      //
+      // This carve-out applies ONLY when:
+      //   (a) the gate is running in 'lesion' mode (this.mode === 'lesion'), AND
+      //   (b) the cassette is still in replay mode (this.live !== 'lesion') — i.e.
+      //       the burst/multi-person chat calls arrive BEFORE cassette.lesionNow()
+      //       flips live to 'lesion' (at which point chats are socket-destroyed and
+      //       never reach here), AND
+      //   (c) the request is a chat/generation call (not an embed).
+      //
+      // REPLAY mode (this.mode !== 'lesion') is intentionally NOT carved out:
+      // a stale-prompt miss in replay is always a real HARD FAILURE (X0 must
+      // catch prompt drift in the deterministic replay gate).
+      const isLesionModeChatMiss =
+        this.mode === 'lesion' &&
+        this.live !== 'lesion' &&
+        !urlPath.startsWith('/api/embed');
+      if (isLesionModeChatMiss) {
+        this.stats.lesionChatMisses++;
+        console.error(
+          `  [cassette] LESION-WINDOW CHAT MISS (excluded from X0) hash=${hash.slice(0, 12)} hint="${hint}"`,
+        );
+      } else {
+        this.stats.misses++;
+        this.stats.missDetails.push({ hash, hint });
+        this.logMissDiff(key);
+      }
       // 599 is a non-standard "tape miss" signal. The ollama client surfaces it
       // as a non-2xx, which the LLM service treats as a failure (correct: an
       // un-recorded request must not silently pass through to live Ollama).

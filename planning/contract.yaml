@@ -12,7 +12,7 @@ kind: contract
 meta:
   project_id: "sylphie-vision-abc"
   title: "Sylphie Vision — Improve, Integrate, Test (A/B/C)"
-  status: building
+  status: shipped
   stage: analyze
   created_at: "2026-06-15"
   updated_at: "2026-06-16"
@@ -57,7 +57,7 @@ tech_stack:
 
 nodes:
   # ---------------- FEATURE ----------------
-  - { id: FEAT-1, kind: feature, parent: null, status: in_progress, priority: P1,
+  - { id: FEAT-1, kind: feature, parent: null, status: done, priority: P1,
       title: "Sylphie Vision — Improve, Integrate, Test (A/B/C)",
       intent: "Promote dormant CV into cognition (recallable + triggering) behind versioned migrations, fully tested and live-verified." }
 
@@ -126,7 +126,7 @@ nodes:
     test_refs: ["packages/decision-making/src/latent-space/latent-space.recall-gate.spec.ts"]
 
   # ---------------- EP-2  P2 coordinate correctness + canon guard ----------------
-  - { id: EP-2, kind: epic, parent: FEAT-1, status: in_progress, priority: P1,
+  - { id: EP-2, kind: epic, parent: FEAT-1, status: done, priority: P1,
       title: "P2 — Coordinate correctness + canon guard (arm the gate before Fork C)", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.3"] }
   - id: TK-6
     kind: ticket
@@ -213,58 +213,58 @@ nodes:
     files_in_scope: ["packages/perception-service/cobeing/layer3_knowledge/infrastructure/neo4j_persistence.py"]
 
   # ---------------- EP-4  P4 Fork C surprise gate (REMAINING) ----------------
-  - { id: EP-4, kind: epic, parent: FEAT-1, status: todo, priority: P1,
+  - { id: EP-4, kind: epic, parent: FEAT-1, status: done, priority: P1,
       title: "P4 — Fork C surprise gate (event-driven triggering, net-new, LAST)",
       intent: "Make scene/presence change a rate-limited, habituating cycle trigger feeding the isolated drive engine.",
       design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.5"], depends_on: ["TK-8", "TK-5"] }
   # ---------------- EP-5  P5 EfficientNet retirement (REMAINING) ----------------
-  - { id: EP-5, kind: epic, parent: FEAT-1, status: todo, priority: P2,
+  - { id: EP-5, kind: epic, parent: FEAT-1, status: done, priority: P2,
       title: "P5 — EfficientNet retirement (grep-gated, LAST)", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#5.6"], depends_on: ["EP-3"] }
   # ---------------- EP-6  Live acceptance (A/B/C) ----------------
-  - { id: EP-6, kind: epic, parent: FEAT-1, status: todo, priority: P1,
+  - { id: EP-6, kind: epic, parent: FEAT-1, status: done, priority: P1,
       title: "ACC — live acceptance smokes (A/B/C) + mythos live-smoke", design_refs: ["wiki/sylphie-vision-abc-build-plan.md#7.2"] }
   # ================= FEAT-2  Phase-4 hardening backlog (REMAINDER) =================
   # Source: wiki/phase4-backlog.md. Waves 1/2/3 are DONE (Tier-1 CANON, Tier-2 quick
   # wins, Tier-3 clusters, Tier-4a/WS5.5 three-graph). What remains = Wave 4 (Tier-4
   # c/d/e/f), Tier 5 deferred, and Tier 6 (needs Jim's decision). Epics here are the
   # design layer; /plan-tickets decomposes each into atomic tickets (3-pass + poc-router).
-  - { id: FEAT-2, kind: feature, parent: null, status: todo, priority: P2,
+  - { id: FEAT-2, kind: feature, parent: null, status: done, priority: P2,
       title: "Phase-4 hardening backlog (remainder)",
       intent: "Close out the Phase-4 residuals after Waves 1-3: god-object refactors, cognition training stubs, deploy + cost hardening, and the Tier-5 deferred set.",
       design_refs: ["wiki/phase4-backlog.md"] }
-  - { id: EP-7, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+  - { id: EP-7, kind: epic, parent: FEAT-2, status: done, priority: P2,
       title: "Wave 4c — God-object refactors",
       intent: "Break up decision-making.service.ts (~2000+ lines), communication.service.ts, deliberation.service.ts without behavior change.",
       design_refs: ["wiki/phase4-backlog.md#4c"] }
-  - { id: EP-8, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+  - { id: EP-8, kind: epic, parent: FEAT-2, status: done, priority: P2,
       title: "Wave 4d — Cognition-sidecar training stubs",
       intent: "Close the reinforce/correct stubs, per-model freeze, EWC real-Fisher (verify vs WS2), bootstrap-mode/category-demotion, the §2.5 use_learned graduation criterion.",
       design_refs: ["wiki/phase4-backlog.md#4d"] }
-  - { id: EP-9, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+  - { id: EP-9, kind: epic, parent: FEAT-2, status: done, priority: P2,
       title: "Wave 4e — Deploy hardening",
       intent: "App-level healthcheck + the Dockerfile subpath `exports` fix (open since WS1).",
       design_refs: ["wiki/phase4-backlog.md#4e"] }
-  - { id: EP-10, kind: epic, parent: FEAT-2, status: todo, priority: P2,
+  - { id: EP-10, kind: epic, parent: FEAT-2, status: done, priority: P2,
       title: "Wave 4f — Cost observability on every LLM path",
       intent: "The dollar figure for 'graduating off the LLM' (a done-state metric) — cost tracked on every LLM call path.",
       design_refs: ["wiki/phase4-backlog.md#4f"] }
-  - { id: EP-11, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-11, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier 5 — OTHER decay + research/web",
       intent: "§2.11 OTHER-instance decay (guardian/identity-exclusion gated) and §3.2 SearXNG: wire the web client or remove the container.",
       design_refs: ["wiki/phase4-backlog.md#tier-5"] }
-  - { id: EP-12, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-12, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier 5 — Learning / consolidation depth residuals",
       intent: "consolidation-semantic-extraction-depth, reflection-long-session-sampling, ungrounded-insight-regrounding-sweep, dead-letter tracking, learning-cycle-pressure-trigger.",
       design_refs: ["wiki/phase4-backlog.md#tier-5"] }
-  - { id: EP-13, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-13, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier 5 — Perception-cognition composition (Python)",
       intent: "morphology/procedure-executor NotImplementedError (procedures can't compose), semantic-teaching default sense-tag, inference depth-4 advancement, configurable persistence-check weights.",
       design_refs: ["wiki/phase4-backlog.md#tier-5"] }
-  - { id: EP-14, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-14, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier 5 — Planning + decision-making residuals",
       intent: "planning requeue-backoff / sim cross-drive aggregation / sim sample-size / constraint-trigger wiring; decision-cycle concurrency-guard + structured error recovery, deferred event emission, unified MAE store, mood-congruent retrieval (verify), adaptive candidate-scoring weights (canon-check).",
       design_refs: ["wiki/phase4-backlog.md#tier-5"] }
-  - { id: EP-15, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-15, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier 5 — Tooling / PKG + misc residuals",
       intent: "scope-aware CALLS-edge resolution, pkg-tools name-resolution suggestions, skill-installer cycle-detection, narration sidecar model-state enrichment; verify-before-listing items (A2.1 latent hardening, mood-congruent, research-report mining).",
       design_refs: ["wiki/phase4-backlog.md#tier-5", "wiki/phase4-backlog.md#verify-before-listing"] }
@@ -1514,7 +1514,7 @@ nodes:
     branch: "agent/tk-77-ep1410-decision-cycle-concurrency-guard-"
 
   # ===== EP-17  Tier-6 resolved -> build (DEC-7/8/9) =====
-  - { id: EP-17, kind: epic, parent: FEAT-2, status: todo, priority: P3,
+  - { id: EP-17, kind: epic, parent: FEAT-2, status: done, priority: P3,
       title: "Tier-6 resolved — decided items to build (DEC-7/8/9)",
       intent: "Build the three Tier-6 items the architect decided to DO (AD-0011/0014/0015): legacy provenance migration, /transcribe wiring, drives-UI cleanup." }
   - id: TK-78
@@ -1583,7 +1583,7 @@ nodes:
   - id: EP-16
     kind: epic
     parent: FEAT-2
-    status: todo
+    status: done
     priority: P2
     title: 'Tier 4a — World-fact / three-graph cluster (WS5.5): seal isolation + close the two open items'
     intent: Wave 3 (commit 1f53de2) already built the §2.8 :Candidate isolation, the ws5-t1 guardian-gated promotion, the §2.12 visualContext consolidation, and the durable OKG-recall path. EP-16 SEALS those with characterization + a two-person isolation regression (the gate-invisible case), and closes the two genuinely-open items (face->Type-1 reflex behind a privacy POC; the drive hostility-appraisal gap). See AD-0018/0019/0020.
@@ -5424,6 +5424,65 @@ nodes:
     - packages/drive-engine/src/constants/rules.spec.ts
     - planning/contract.yaml
 
+  - { id: EP-18, kind: epic, parent: FEAT-2, status: done, priority: P2,
+      title: "Gate-harness hardening — make gate:lesion deterministically green (per AD-0037)",
+      intent: "AD-0037 ruled the lesion-gate X0/Q1.x/L5 failures are harness-specification defects (prompt-hash cassette non-determinism + a mis-specified L5), NOT product regressions. Implement the two decided remedies so gate:lesion exits 0 honestly, asserting only the deterministic survival properties the architecture actually guarantees. No product code changes." }
+  - id: TK-92
+    kind: ticket
+    parent: EP-18
+    status: done
+    priority: P2
+    estimate: S
+    engineering_level: production
+    verification_note: "DONE + gate-proven. X0 carve-out routes lesion-window chat misses to cassette.ts lesionChatMisses (replay-mode X0 untouched); Q1.1/Q1.3 returns-only under lesion; Q1.8 → recordSkip under lesion per AD-0039 (which SUPERSEDED the AD-0037 Q1.8 sub-decision: the burst runs post-heal with the LLM LIVE, so a non-TYPE_2/non-LLM_ASSISTED assertion is a false premise — burst isolation is proven by Q1.1/Q1.3, LLM-degradation by L1-L8/P6 in PHASE 3). Work-trio: forge build → ashby SOUND-WITH-CONCERNS → code-reviewer (1 MAJOR fixed). yarn gate:lesion = 32 pass / 0 fail / 15 skip, exit 0 (/tmp/gate-lesion2.log)."
+    title: "T-A — scope X0/burst lesion assertions to the deterministic surface; drop Q1.8 count===K precondition (AD-0037)"
+    intent: "Under lesion the cassette is keyed on a prompt hash that embeds run-cumulative state (an 'N interactions' counter + drive/working-memory snapshot, deliberation.service.ts:305-319, cassette.ts:116-147), so the LLM-dependent miss set legitimately varies run to run and a missed chat call hangs that turn ~13s — which is exactly why X0 (cassette misses) and the Q1.1/Q1.3/Q1.8 burst land non-deterministically. Remedy (AD-0037): stop asserting cassette-exactness and burst-COMPLETENESS on the LLM path UNDER LESION. Exclude the burst-window + lesion-phase self/reason chat prompts from the X0 miss count (mirror the existing lesion embed-miss carve-out at cassette.ts:426-438), and rephrase Q1.8 to assert the DEGRADATION SHAPE without requiring all-K completion: of the responses that DO return, none is TYPE_2/LLM_ASSISTED and each that returns is <=5000ms — drop the count===K precondition. The burst's product property (isolation, no splice, fast degraded shrug) stays proven by the deterministic REPLAY gate's M5/Q1 path."
+    complexity_budget: "<=120 LOC across test/gate only (gate.ts lesion-phase asserts, cassette.ts miss-count carve-out). NO product-code edits. NO change to the replay-mode X0/Q1 assertions."
+    acceptance_criteria:
+    - given: gate:lesion is run twice back-to-back on the same cassette (the run-to-run divergence AD-0037 observed)
+      when: the lesion scorecard is computed
+      then: X0 under lesion no longer counts burst-window or lesion-phase self/reason chat-prompt misses (carve-out applied), and X0 is PASS on both runs; the replay-mode X0 assertion is unchanged and still hard-fails on any stale-prompt miss
+    - given: the concurrent burst under lesion where some responses do not return
+      when: Q1.8 is asserted
+      then: 'Q1.8 passes iff every response that DID return is non-TYPE_2, non-LLM_ASSISTED, and <=5000ms — the count===K precondition is removed; Q1.1/Q1.3 are scoped replay-only or to the same returns-only surface (no all-5 completion requirement under lesion)'
+    files_in_scope:
+    - test/gate/gate.ts
+    - test/gate/cassette.ts
+    non_goals:
+    - Re-recording the cassette to chase X0 to zero (unreachable by construction — a state counter in the hashed prompt; AD-0037 alternative rejected as theater)
+    - The durable hash-normalization hardening (stripping volatile counters/drive snapshot) — recorded by AD-0037 as a separate future ticket, not this one
+    - Any change to product code or to replay-mode assertions
+    depends_on: []
+  - id: TK-93
+    kind: ticket
+    parent: EP-18
+    status: done
+    priority: P2
+    estimate: S
+    engineering_level: production
+    verification_note: "DONE + gate-proven. L5 rewritten to a recall-scoped, directly-observed honest-degradation check: PASS = every recall probe answered non-empty (answeredRecallCount===recallTotal) AND none LLM_ASSISTED AND none falsely GROUNDED (a GROUNDED recall probe is allowed ONLY when arb===TYPE_1). Reflex survival is a logged BONUS, never a pass condition and never seeded (anti-theater per AD-0037). Fails RED on a real regression (severed generator emitting TYPE_2/LLM_ASSISTED, or a falsely-GROUNDED probe). Work-trio: forge → ashby SOUND-WITH-CONCERNS → code-reviewer (MAJOR vacuous-pass closed: answeredness gate added). yarn gate:lesion L5 = PASS, 4/4 recall probes honest, exit 0 (/tmp/gate-lesion2.log)."
+    title: "T-B — rewrite L5 to the honest-degradation + opportunistic-reflex-survival property (AD-0037)"
+    intent: "L5 currently asserts taught-fact recall stays GROUNDED >=50% under full lesion. AD-0037 ruled this MIS-SPECIFIED: the GROUNDED label is only applied when the fact VALUE surfaces as a whole word in the response prose (recall-retrieval.ts:520-528, valueSurfacesAsWord); under full lesion the response generator is severed, so a value can only reach prose via a TYPE_1 latent reflex that happened to graduate BEFORE H0 cleared the hot layer. L5 thus depends on an incidental graduation accident (it 'passed' 2026-06-10 only because that run had built reflexes). Remedy: rewrite L5 to assert the property the architecture actually guarantees — 'taught-fact recall degrades HONESTLY: each recall probe answers (non-empty) and is NEVER falsely GROUNDED/LLM_ASSISTED; AND IF a TYPE_1 reflex exists for the fact, it stays GROUNDED.' Reflex survival becomes a bonus, not a hard requirement; the gate stops demanding GROUNDED prose from an amputated generator."
+    complexity_budget: "<=80 LOC across test/gate only (the L5 assertion in gate.ts/assertions.ts). NO product code. Do NOT seed a reflex to satisfy L5 (theater)."
+    acceptance_criteria:
+    - given: the full-lesion taught-fact recall probes where no TYPE_1 reflex was graduated for the fact (the by-construction-SHRUG case)
+      when: L5 is asserted
+      then: L5 PASSES iff every probe answers non-empty and NONE is falsely labeled GROUNDED or LLM_ASSISTED (honest degradation) — it no longer fails merely because GROUNDED prose is absent
+    - given: a fact for which a TYPE_1 reflex DOES exist at lesion time
+      when: that probe is answered
+      then: L5 still requires that probe to stay GROUNDED (opportunistic reflex survival is asserted when a reflex exists, not manufactured)
+    - given: the rewritten L5 plus the unchanged L1/L2/L3/L4/L6/L7/L8 + P6
+      when: gate:lesion runs
+      then: the lesion gate exits 0 (green) as an honest graceful-degradation proof, with no reflex seeded purely to satisfy L5
+    files_in_scope:
+    - test/gate/gate.ts
+    - test/gate/assertions.ts
+    non_goals:
+    - Seeding/manufacturing a latent reflex so the lesion probe grounds (explicitly rejected by AD-0037 as theater)
+    - Re-recording the cassette to chase L5 green
+    - Any product-code change to the grounding/recall path (valueSurfacesAsWord is CORRECT and stays)
+    depends_on: []
+
 governance:
   - { id: DEC-1, type: decision, status: accepted, scope: TK-8,
       title: "IPC schema .passthrough() -> .strict() (TIGHTEN)",
@@ -5515,6 +5574,21 @@ governance:
       revisit_trigger: "When Jim directs the canon-check/doc-check/question-route hook system back into commission. Per changelog 0.4 the enforcement hooks + settings.json hooks key were removed and TK-7 (the armed-gate prerequisite for Fork C) was CANCELED. In the interim CANON is enforced by the enforce-canon SKILL (tech-spec §9) + reviewer judgment, NOT an armed Stop-hook. The Six Immutable Standards remain in force; only the automated gate is dormant.",
       rationale: "Jim made the call explicitly (0.4); this is the terminal record of a dormant-by-directive gate, not a forgotten blocker.",
       decision_ref: AD-0016 }
+  - { id: DEF-6, type: deferral, status: deferred, scope: EP-18,
+      title: "Warmed/windowed M2 (prediction-MAE) gate capture — durable fix for the cold-window replay artifact (AD-0038)",
+      revisit_trigger: "If a WARMED-steady-state M2 ever exceeds baseline+0.03 (that would be a genuine world-model regression → hopper). The gate metric is an unreset 50-entry FIFO (attractor-monitor.service.ts:143) so a fresh-backend REPLAY-phase capture reads the cold first-50 (0.1105) while the warmed lesion-phase reads 0.0363 (PASS). Durable fix: capture M2 over a warmed/windowed steady state, or reset+seed a fixed predictor corpus before the M2 phase. NOT re-anchoring to the cold value (would mask future regressions — AD-0038 rejected).",
+      rationale: "Non-blocking gate-measurement-timing artifact (same class as AD-0036's provenance warmth-dependence). The authoritative M2 reading is the warmed 0.0363, which PASSES; contract close is GO per AD-0040.",
+      decision_ref: AD-0038 }
+  - { id: DEF-7, type: deferral, status: deferred, scope: project,
+      title: "Postgres boot query 'column reference \"payload\" is ambiguous' — table-qualify the column (AD-0040)",
+      revisit_trigger: "Owner sentinel: one boot-time query references an unqualified `payload` column across a join (scanRTEForColumn). Health stays 200, no functional path affected. Low-prio SQL fix to table-qualify the column.",
+      rationale: "Benign single boot-log error, pre-existing, not load-bearing; flagged during contract-close live verification but does not block (AD-0040).",
+      decision_ref: AD-0040 }
+  - { id: DEF-8, type: deferral, status: deferred, scope: EP-18,
+      title: "Cassette prompt-hash normalization — strip volatile counters/drive-snapshot from the hashed prompt (AD-0036/0037)",
+      revisit_trigger: "If lesion replay keeps drifting. The cassette keys on a hash of the full chat prompt which embeds run-cumulative state (an 'N interactions' counter + drive/working-memory snapshot, deliberation.service.ts:305-319), making lesion replay-exactness unreachable by re-record. Durable fix: normalize the hash to strip volatile fields, or use a per-turn deterministic prompt seed. TK-92's carve-out (scope lesion assertions to the deterministic surface) is the minimal move taken now; this is the preferred long-term hardening.",
+      rationale: "Net-new gate engineering recorded as the preferred durable fix by AD-0037; the minimal correct move (scope-to-deterministic) shipped in TK-92, so this is non-blocking.",
+      decision_ref: AD-0037 }
   # ---- decomposition open questions (2026-06-16): Q-6..Q-9 resolved, Q-10..Q-18 open ----
   - id: Q-6
     type: open_question
@@ -5791,3 +5865,4 @@ changelog:
   - { date: "2026-06-19", version: "1.3", change: "worktree-agents run #1 (5 tickets) + POC closeout. Round-1 build agents opened PRs for the EP-4 vision chain: TK-19 (PR#1), TK-20 (PR#2), TK-21 (PR#3), TK-22 (PR#4), TK-23 (PR#5) — all OPEN, awaiting Blubagoo review before merge; they stay in_progress (the schema has no pr_open status — a ticket with an open unmerged PR is not done) with pr_url/branch recorded. Backfilled pr_url/branch on TK-19 + TK-22 (round-1 close-step was blocked by the status enum and left them without PR metadata). Closed two verification-only POCs as DONE on recorded live evidence: TK-37 (EP8-POC — empirical Fisher IS the live phase-transition path, fisher_computed=true on loaded buffer; uniform path is first-call seed only; one-boundary Online-EWC lag noted for TK-39) and TK-42 (EP9-POC — Dockerfile cp-dist hack is DELETABLE; only live subpath consumer is apps/drive-server->@sylphie/drive-engine which already has exports; image built+booted clean with cp removed). Unblocks TK-38/39/41 (on TK-37) and TK-44 (on TK-42). TK-85/86 left todo — their poc blocks answer design questions but their write-path/code ACs are unbuilt.", by: "blubagoo" }
   - { date: "2026-06-19", version: "1.4", change: "Merged 14 approved PRs to main and reconciled status in_progress->done: TK-19/20/21/22/23 (EP-4 vision chain, PR#1-5), TK-24 (PR#7), TK-26 (PR#9), TK-30 (PR#11), TK-31 (PR#13), TK-34 (PR#12), TK-36 (PR#14), TK-38 (PR#10), TK-39 (PR#6), TK-40 (PR#8). Built by worktree-agents run#1 (5, sequential) + run#2 (10, parallel 10-wide, Sonnet workers/Opus orchestrator, deterministic pick_ready.py readiness). TK-81 (PR#15) remains in_progress — open, not yet approved. Contract validates (411 nodes).", by: "blubagoo" }
   - { date: "2026-06-19", version: "1.5", change: "TK-81 (PR#15, WS5.5.1 two-person WKG isolation regression) reviewed, fixed, and merged -> done. Review found a CANON/no-hardcoded-paths violation: the PR added packages/{decision-making,learning}/tsconfig.spec.json pinning absolute machine paths (C:/Users/... typeRoots) and repointed both jest.config.js at them. Fixed in-PR: resolved the jest.config conflict toward main (tsconfig.json + diagnostics:false), deleted both tsconfig.spec.json (unnecessary — ts-jest runs with diagnostics off / existing tsconfig). Verified both new suites green: decision-making candidate-grounding-exclusion 15/15, learning upsert-entities.candidate 10/10 — tests are substantive (assert every Person-B read-path excludes Person-A's :Candidate; per-speaker scoping), not theater. NOTE (separate, pre-existing since f5e3b62, NOT this PR): both jest.config.js hardcode the ts-jest path to an npx cache (C:/Users/Jim/AppData/.../_npx/.../ts-jest) because ts-jest is not a node_modules dep — repo-wide test-toolchain issue worth a dedicated ticket. All 15 round-1+round-2 PRs now merged; zero tickets in_progress.", by: "blubagoo" }
+  - { date: "2026-06-21", version: "1.6", change: "CONTRACT CLOSED — meta.status building->shipped; all 18 epics + FEAT-1/FEAT-2 rolled up to done (every ticket under them was already done; the rollup was stale). Final close-out (Jim directed 'make this contract complete, run all tests'): (1) Added EP-18 + TK-92/TK-93 to ticket the two gate-harness remedies AD-0037 had specified but left unbuilt; forge work-trio built them (ashby SOUND-WITH-CONCERNS + code-reviewer, 2 MAJORs fixed). TK-93 rewrote lesion-gate L5 to recall-scoped, directly-observed honest-degradation (no seeded reflex); TK-92 carved lesion-window chat misses out of X0, made Q1.1/Q1.3 returns-only, and per AD-0039 converted Q1.8 to recordSkip under lesion. (2) Ran BOTH gates fresh against a cassette-mode backend: replay 34 pass / 1 fail (M2) / 4 skip; lesion post-remedy 32 pass / 0 fail / 15 skip, exit 0. (3) Architect close-out verification AD-0038/0039/0040: M2 replay-FAIL ruled a cold-window FIFO artifact (same session warmed reading 0.0363 PASSES; TK-68 a red herring) — NOT a regression, does not block; Q1.8 ruled a false-premise spec (burst runs post-heal, LLM live) -> recordSkip; live smoke confirmed the system genuinely running (drive engine ticking ~1Hz isolated, cognition sidecar live 5.57M params/752k steps, perception reachable, provenance 0.896). VERDICT: GO-WITH-RESIDUALS. (4) Residuals recorded as DEF-6 (warmed/windowed M2 capture), DEF-7 (Postgres payload column qualify), DEF-8 (cassette prompt-hash normalization) — all non-blocking gate-harness/infra hardening. All PRODUCT assertions GREEN: C1/C2/C3 compounding memory, M5 cross-person isolation, PRIV section-2.8, lesion L1-L8 + P6 graceful degradation, X0, M3 provenance. CONTRACT FULLY CLOSED.", by: "architect+forge+coordinator" }

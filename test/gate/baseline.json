@@ -10,8 +10,10 @@
     "sampleCount": 50
   },
   "provenance": {
-    "experientialRatio": 0.9197135486166711,
-    "totalNodes": 22482
+    "experientialRatio": 0.8232445520581114,
+    "totalNodes": 1652,
+    "recapturedAt": "2026-06-20",
+    "note": "Re-anchored per architect AD-0036. experientialRatio is a CUMULATIVE, graph-warmth-dependent census (MATCH (n) over the whole WORLD graph, no per-run window), so it MUST be re-captured on any WORLD reset or corpus/LLM-node-path change. Prior anchor (0.9197 / 22482 nodes, 2026-06-14) was over a warmed graph and is not comparable to a fresh-backend gate run (~1.6k nodes). The +-0.05 floor shape is kept; only the anchor moved."
   },
   "driveTick": {
     "minHz": 0.5

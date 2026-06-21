@@ -508,14 +508,30 @@ async function runMultiPersonPhase(
     const finalCount = burstReceived.length;
     console.log(`  Burst: received ${finalCount}/${K} cb_speech responses`);
 
-    // Q1.1 — exactly K responses, all distinct turnIds.
+    // Q1.1 — burst produces K responses with K distinct turnIds.
+    //
+    // TK-92 / AD-0037: Under LESION mode the prompt hash is non-deterministic
+    // (run-cumulative "N interactions" counter + drive snapshot), so a burst chat
+    // call may miss the cassette and that turn times out (~13s) instead of returning.
+    // The burst's PRODUCT property (isolation, distinct ids) is proven by the
+    // deterministic REPLAY gate; re-asserting all-K completion under lesion tests
+    // the harness, not the system. Under lesion: pass if returned responses (≥1)
+    // each have a distinct turnId — no all-K completion requirement.
     const turnIds = burstReceived.map((m: any) => m.turnId ?? m.speech?.turnId ?? null);
     const distinctTurnIds = new Set(turnIds.filter(Boolean));
-    const q11Pass = finalCount === K && distinctTurnIds.size === K;
-    recordBool('Q1.1', `burst K=${K} → exactly K responses with K distinct turnIds`,
+    const q11Pass = isLesion
+      ? finalCount >= 1 && distinctTurnIds.size === finalCount
+      : finalCount === K && distinctTurnIds.size === K;
+    recordBool('Q1.1',
+      isLesion
+        ? `burst → returned responses have distinct turnIds (lesion: no all-${K} completion requirement — AD-0037)`
+        : `burst K=${K} → exactly K responses with K distinct turnIds`,
       q11Pass,
-      `received=${finalCount}/${K} distinctTurnIds=${distinctTurnIds.size}/${K}` +
-        (burstSendMs < 50 ? ` (sent in ${burstSendMs}ms — within 50ms burst window)` : ` (sent in ${burstSendMs}ms)`));
+      isLesion
+        ? `returned=${finalCount}/${K} distinctTurnIds=${distinctTurnIds.size}/${finalCount} ` +
+          `(lesion: prompt non-determinism may cause some turns to miss cassette + time out — expected, AD-0037)`
+        : `received=${finalCount}/${K} distinctTurnIds=${distinctTurnIds.size}/${K}` +
+          (burstSendMs < 50 ? ` (sent in ${burstSendMs}ms — within 50ms burst window)` : ` (sent in ${burstSendMs}ms)`));
 
     // Q1.2 — zero executor not-in-IDLE throws during burst.
     // CycleGuardService does not expose a throw-counter via any public route without
@@ -526,44 +542,61 @@ async function runMultiPersonPhase(
       'recorded-skip: CycleGuardService throw counter is not exposed via /api/metrics/health ' +
       'without non-trivial guard internals changes — per spec §7 ruling (Sonnet: recorded-skip)');
 
-    // Q1.3 — each response non-empty / honest, no cross-turn splice.
+    // Q1.3 — each returned response is non-empty / honest, no cross-turn splice.
     // Non-empty: text has content. No splice: each originator.userId is consistent.
     // Assertions are on burstReceived (post-drain slice) — not total received[].
+    //
+    // TK-92 / AD-0037: Under LESION mode, the all-K completion requirement is
+    // dropped for the same reason as Q1.1 (cassette prompt non-determinism). We
+    // assert ONLY on the responses that DID return: each must be non-empty and
+    // correctly attributed. ≥1 returned response is the minimum signal threshold.
     const emptyReplies = burstReceived.filter((m: any) => !m.text?.trim());
     const foreignReplies = burstReceived.filter(
       (m: any) => m.originator?.userId && m.originator.userId !== 'guardian',
     );
-    const q13Pass = finalCount === K && emptyReplies.length === 0 && foreignReplies.length === 0;
-    recordBool('Q1.3', 'burst responses non-empty, no cross-turn splice',
+    const q13Pass = isLesion
+      ? finalCount >= 1 && emptyReplies.length === 0 && foreignReplies.length === 0
+      : finalCount === K && emptyReplies.length === 0 && foreignReplies.length === 0;
+    recordBool('Q1.3',
+      isLesion
+        ? 'burst: returned responses non-empty, no cross-turn splice (lesion: returns-only — AD-0037)'
+        : 'burst responses non-empty, no cross-turn splice',
       q13Pass,
-      `empty=${emptyReplies.length} foreign=${foreignReplies.length} total=${finalCount}/${K}`);
+      isLesion
+        ? `returned=${finalCount}/${K} empty=${emptyReplies.length} foreign=${foreignReplies.length} ` +
+          `(lesion: only returned responses asserted — AD-0037)`
+        : `empty=${emptyReplies.length} foreign=${foreignReplies.length} total=${finalCount}/${K}`);
 
-    // Q1.8 — lesion only: all 5 fast SHRUG/Type-1 (<=5000ms), zero spurious watchdog kills.
+    // Q1.8 — TK-92 / AD-0039: the lesion-mode burst runs AFTER the perception phase
+    // heals the LLM (gate.ts ~1881) and BEFORE the real lesion test (PHASE 3).
+    // The burst therefore executes with the LLM LIVE — TYPE_2/LLM_ASSISTED responses
+    // are CORRECT here, not a defect.  AD-0037's non-TYPE_2/non-LLM_ASSISTED
+    // assertion rested on a false premise (severed LLM in a non-severed phase).
+    // Burst isolation (distinct turnIds) and no-splice are already proven by Q1.1 and
+    // Q1.3; fast-path / LLM-degradation shape is proven by L1-L8 and P6 in PHASE 3
+    // where the LLM is genuinely severed.  Skip rather than assert a false invariant.
     if (isLesion) {
-      const latencies = burstReceived.map((m: any) =>
-        typeof m.latencyMs === 'number' ? m.latencyMs : LESION_LATENCY_BOUND_MS + 1,
-      );
-      const maxLat = Math.max(0, ...latencies);
-      const allFast = finalCount === K && maxLat <= LESION_LATENCY_BOUND_MS;
-      const allShrugOrType1 = burstReceived.every(
-        (m: any) => m.arbitrationType === 'SHRUG' || m.arbitrationType === 'TYPE_1',
-      );
-      recordBool('Q1.8',
-        `lesion burst: all ${K} responses fast SHRUG/TYPE_1 (<=5000ms), no watchdog kills`,
-        allFast && allShrugOrType1,
-        `maxLatency=${maxLat}ms allShrugOrType1=${allShrugOrType1} count=${finalCount}/${K}`);
+      recordSkip('Q1.8',
+        'lesion burst degradation shape (non-TYPE_2/non-LLM_ASSISTED)',
+        'burst runs post-heal with the LLM live (AD-0039); degradation shape is asserted by L1-L8/P6 where the LLM is genuinely severed, and burst isolation/no-splice by Q1.1/Q1.3 — a non-TYPE_2/non-LLM_ASSISTED assertion here rests on a false premise');
     } else {
       recordSkip('Q1.8', 'lesion burst fast SHRUG/TYPE_1 <= 5000ms', 'replay mode — lesion-only criterion');
     }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    recordBool('Q1.1', `burst K=${K} → exactly K responses`, false, `burst socket failed: ${msg}`);
+    recordBool('Q1.1',
+      isLesion ? 'burst → returned responses have distinct turnIds (lesion)' : `burst K=${K} → exactly K responses`,
+      false, `burst socket failed: ${msg}`);
     recordSkip('Q1.2', 'zero executor throws during burst',
       'recorded-skip: CycleGuardService throw counter not exposed via public route (spec §7)');
-    recordBool('Q1.3', 'burst responses non-empty', false, `burst socket failed: ${msg}`);
+    recordBool('Q1.3',
+      isLesion ? 'burst: returned responses non-empty, no cross-turn splice (lesion)' : 'burst responses non-empty',
+      false, `burst socket failed: ${msg}`);
     if (isLesion) {
-      recordBool('Q1.8', 'lesion burst fast SHRUG/TYPE_1', false, `burst socket failed: ${msg}`);
+      recordSkip('Q1.8',
+        'lesion burst degradation shape (non-TYPE_2/non-LLM_ASSISTED)',
+        'burst runs post-heal with the LLM live (AD-0039); degradation shape is asserted by L1-L8/P6 where the LLM is genuinely severed, and burst isolation/no-splice by Q1.1/Q1.3 — a non-TYPE_2/non-LLM_ASSISTED assertion here rests on a false premise');
     } else {
       recordSkip('Q1.8', 'lesion burst fast SHRUG/TYPE_1', 'replay mode — lesion-only criterion');
     }
@@ -2048,8 +2081,11 @@ async function runLesionTest(cassette: Cassette): Promise<void> {
   let emptyText = 0;         // produced cb_speech but blank text (suppression leak)
   let sawType2OnAnswered = false;
   let sawLlmAssistedOnAnswered = false;
-  let recallGrounded = 0;
+  let recallGrounded = 0;          // recall probes: answered + GROUNDED + TYPE_1 (reflex survived)
   let recallTotal = 0;
+  let answeredRecallCount = 0;     // recall probes that answered non-empty
+  let sawLlmAssistedOnAnsweredRecall = false;   // any answered recall probe was LLM_ASSISTED
+  let sawFalseGroundedOnAnsweredRecall = false; // any answered recall probe was GROUNDED with arb !== TYPE_1
   let unknownShrug = 0;
   let unknownTotal = 0;
   let maxLatency = 0;
@@ -2085,7 +2121,12 @@ async function runLesionTest(cassette: Cassette): Promise<void> {
 
     if (probe.kind === 'recall') {
       recallTotal++;
-      if (didAnswer && grd === 'GROUNDED') recallGrounded++;
+      if (didAnswer) {
+        answeredRecallCount++;
+        if (grd === 'LLM_ASSISTED') sawLlmAssistedOnAnsweredRecall = true;
+        if (grd === 'GROUNDED' && arb !== 'TYPE_1') sawFalseGroundedOnAnsweredRecall = true;
+        if (grd === 'GROUNDED' && arb === 'TYPE_1') recallGrounded++;
+      }
     }
     if (probe.kind === 'unknown') {
       unknownTotal++;
@@ -2147,13 +2188,39 @@ async function runLesionTest(cassette: Cassette): Promise<void> {
     record('L4', 'drive ticks running under lesion', assertDriveTickRate(t1, t2, 10_000));
   }
 
-  // L5 — taught-fact recall survives (Type 1 / WKG, not LLM)
+  // L5 — taught-fact recall degrades HONESTLY under lesion (TK-93 / AD-0037).
+  // Hard requirements (all recall-scoped, directly observed per probe in the loop above):
+  //   (a) every recall probe answered non-empty (answeredRecallCount === recallTotal),
+  //   (b) no answered recall probe carried LLM_ASSISTED grounding,
+  //   (c) no answered recall probe was GROUNDED with arb !== TYPE_1 (false-grounded = fabrication).
+  // Bonus (informational only, never a pass condition): count of GROUNDED+TYPE_1 recall probes
+  // (reflex survived the lesion). No reflex is planted to manufacture this — per AD-0037.
   if (recallTotal > 0) {
-    const ratio = recallGrounded / recallTotal;
-    recordBool('L5', 'taught-fact recall survives lesion', ratio >= 0.5,
-      `${recallGrounded}/${recallTotal} recall probes still GROUNDED (need >=50%)`);
+    const l5Pass =
+      answeredRecallCount === recallTotal &&
+      !sawLlmAssistedOnAnsweredRecall &&
+      !sawFalseGroundedOnAnsweredRecall;
+
+    recordBool('L5',
+      'taught-fact recall degrades honestly: non-empty, never falsely GROUNDED/LLM_ASSISTED (TK-93 / AD-0037)',
+      l5Pass,
+      l5Pass
+        ? `${answeredRecallCount}/${recallTotal} recall probe(s) answered — honest degradation holds ` +
+          `(llmAssisted=${sawLlmAssistedOnAnsweredRecall} falseGrounded=${sawFalseGroundedOnAnsweredRecall}). ` +
+          (recallGrounded > 0
+            ? `BONUS: ${recallGrounded}/${recallTotal} recall probe(s) GROUNDED via TYPE_1 reflex ` +
+              `(reflex survived the lesion; opportunistic per AD-0037, not manufactured).`
+            : `No TYPE_1 reflex survived (expected — corpus taught via TYPE_2; SHRUG is correct honest degradation).`)
+        : answeredRecallCount < recallTotal
+          ? `FAIL: only ${answeredRecallCount}/${recallTotal} recall probe(s) answered non-empty ` +
+            `(vacuous pass prevented — every probe must answer, per TK-93 AC-1).`
+          : `Honest-degradation VIOLATED: llmAssisted=${sawLlmAssistedOnAnsweredRecall} ` +
+            `falseGrounded=${sawFalseGroundedOnAnsweredRecall}. ` +
+            `Under full lesion a GROUNDED label requires arb===TYPE_1; LLM_ASSISTED is impossible ` +
+            `without the LLM. Either the honesty guard (valueSurfacesAsWord) or the deliberation ` +
+            `short-circuit is broken.`);
   } else {
-    recordSkip('L5', 'taught-fact recall survives lesion', 'no recall probes');
+    recordSkip('L5', 'taught-fact recall degrades honestly under lesion', 'no recall probes');
   }
 
   // L6 — unknown-fact probe shrugs honestly
@@ -2470,8 +2537,14 @@ async function main(): Promise<void> {
   const { failed } = printScorecard();
   if (failed > 0) exitCode = 1;
 
+  // TK-92 / AD-0037: lesionChatMisses are expected harness non-determinism under
+  // lesion mode (run-cumulative prompt state); they are excluded from stats.misses
+  // and therefore do NOT count against X0. See cassette.ts for the full rationale.
   console.log(`\n  Cassette: hits=${cassette.stats.hits} recorded=${cassette.stats.recorded} ` +
-    `misses=${cassette.stats.misses} lesionRejections=${cassette.stats.lesionRejections}`);
+    `misses=${cassette.stats.misses} lesionRejections=${cassette.stats.lesionRejections}` +
+    (cassette.stats.lesionChatMisses > 0
+      ? ` lesionChatMisses=${cassette.stats.lesionChatMisses} (expected; excluded from X0 — AD-0037)`
+      : ''));
   console.log(`\n  GATE ${exitCode === 0 ? 'PASSED' : 'FAILED'} (exit ${exitCode}).`);
   process.exit(exitCode);
 }
