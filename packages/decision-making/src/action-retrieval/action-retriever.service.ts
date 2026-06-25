@@ -104,6 +104,20 @@ const W_CONTEXT = 0.30;
 const W_DRIVE = 0.20;
 
 /**
+ * TK-104: Maximum effective confidence for SYSTEM_BOOTSTRAP procedures when
+ * real (learned) procedures are present in the WKG.
+ *
+ * Set just below the graduation threshold (0.80) so bootstrap seeds can never
+ * fire as TYPE_1 reflexes when real content exists, but remain above the
+ * retrieval threshold (0.50) as TYPE_2 fallback options. This breaks the
+ * runaway reinforcement loop where seed-greet wins every self-initiated cycle
+ * at conf~0.81, crowding out genuinely learned content.
+ *
+ * Only applied at retrieval time — the stored Neo4j confidence is unchanged.
+ */
+const BOOTSTRAP_CONFIDENCE_CAP = 0.75;
+
+/**
  * Minimal LRU cache backed by a Map.
  *
  * Map insertion order is used to approximate LRU: on each hit the key is
@@ -360,30 +374,78 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
         })
         .sort((a, b) => this.compositeScore(b) - this.compositeScore(a));
 
-      const topCandidate = candidates.length > 0 ? candidates[0] : null;
+      // TK-104: Bootstrap seed-greet attenuation.
+      //
+      // When real (non-SYSTEM_BOOTSTRAP) procedures exist, attenuate the
+      // effective confidence of SYSTEM_BOOTSTRAP candidates so they cannot win
+      // arbitration over genuinely learned content.
+      //
+      // Rationale: bootstrap seeds are seeded at BASE_CONFIDENCE=0.60 and get
+      // reinforced by ACT-R dynamics every time they fire — which is every
+      // self-initiated cycle since they win by default before real procedures
+      // exist. By the time real procedures accumulate, seed-greet may be at
+      // conf~0.81 (above graduation threshold 0.80), crowding out real content.
+      //
+      // The attenuation is applied AT RETRIEVAL TIME as a virtual confidence
+      // cap: bootstrap candidates are reported with confidence floored below
+      // the graduation threshold (0.80), so they can still fire as TYPE_2
+      // deliberation hints but never as TYPE_1 reflexes. The stored Neo4j
+      // confidence is NOT modified — this is an in-memory retrieval-time
+      // adjustment only, keyed on provenance === 'SYSTEM_BOOTSTRAP'.
+      //
+      // We only attenuate when real procedures exist: if the WKG has no
+      // learned procedures yet, bootstrap candidates must stay at full
+      // confidence or the system has nothing to offer at all.
+      const hasRealProcedures = candidates.some(
+        (c) => c.procedureData?.provenance !== 'SYSTEM_BOOTSTRAP',
+      );
+      const attenuatedCandidates: ActionCandidate[] = hasRealProcedures
+        ? candidates.map((c) => {
+            if (c.procedureData?.provenance !== 'SYSTEM_BOOTSTRAP') {
+              return c; // real procedure — untouched
+            }
+            // Cap bootstrap candidate confidence below the graduation threshold
+            // (0.80) so it can never fire as a TYPE_1 reflex when real content
+            // exists. Leave it above the retrieval threshold (0.50) so it still
+            // participates in TYPE_2 deliberation as a fallback option.
+            const attenuatedConfidence = Math.min(c.confidence, BOOTSTRAP_CONFIDENCE_CAP);
+            return {
+              ...c,
+              confidence: attenuatedConfidence,
+              procedureData: c.procedureData
+                ? { ...c.procedureData, confidence: attenuatedConfidence }
+                : null,
+            };
+          })
+          .sort((a, b) => this.compositeScore(b) - this.compositeScore(a))
+        : candidates;
+
+      const topCandidate = attenuatedCandidates.length > 0 ? attenuatedCandidates[0] : null;
       vlog('action retriever WKG query', {
         fingerprint: contextFingerprint.substring(0, 16),
-        candidates: candidates.length,
+        candidates: attenuatedCandidates.length,
         topConfidence: topCandidate ? +topCandidate.confidence.toFixed(3) : null,
         topContextMatch: topCandidate ? +topCandidate.contextMatchScore.toFixed(3) : null,
         topDriveRelevance: topCandidate?.driveRelevanceScore != null
           ? +topCandidate.driveRelevanceScore.toFixed(3) : null,
         topComposite: topCandidate ? +this.compositeScore(topCandidate).toFixed(3) : null,
         motivatingDrive,
+        hasRealProcedures,
         cacheSize: this.cache.size,
       });
 
       this.logger.debug(
-        `ActionRetriever: retrieved ${candidates.length} candidates from WKG ` +
+        `ActionRetriever: retrieved ${attenuatedCandidates.length} candidates from WKG ` +
           `(motivatingDrive: ${motivatingDrive}` +
           (topCandidate
             ? `, top composite: ${this.compositeScore(topCandidate).toFixed(3)}`
             : '') +
+          (hasRealProcedures ? ', bootstrap attenuated' : '') +
           `)`,
       );
 
-      this.cache.set(contextFingerprint, candidates);
-      return candidates;
+      this.cache.set(contextFingerprint, attenuatedCandidates);
+      return attenuatedCandidates;
     } catch (err) {
       this.logger.warn(`ActionRetriever: WKG query failed: ${err}. Returning empty candidates.`);
       return [];

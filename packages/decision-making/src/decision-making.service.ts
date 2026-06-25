@@ -81,6 +81,7 @@ import { DecisionTickEngineService } from './tick-engine/decision-tick-engine.se
 import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
 import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
 import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
+import { WorthSayingGate } from './monitoring/worth-saying-gate';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -190,6 +191,15 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * (no deliberation ran). Never persisted — in-memory tunable heuristic only.
    */
   private readonly pendingScoredFactors = new Map<string, readonly string[]>();
+
+  /**
+   * TK-104: Worth-saying gate for self-initiated cycles.
+   *
+   * Tracks recent self-initiated utterances (content dedup) and evaluates
+   * whether a self-initiated cycle has something genuinely new to say before
+   * allowing it to emit. Guardian-prompted cycles bypass this gate entirely.
+   */
+  private readonly worthSayingGate = new WorthSayingGate();
 
   constructor(
     @Inject(EXECUTOR_ENGINE)
@@ -1791,6 +1801,59 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       }
 
       if (responseText.trim().length > 0) {
+        // WS4 Ticket 3 — use the atomic turn context (turnId + originator).
+        // currentTurnContext carries both atomically so a zombie cannot emit
+        // the successor's originator. Self-initiated ticks have no context and
+        // generate a fresh UUID; originator is absent.
+        const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
+        const emitOriginator = this.currentTurnContext?.originator;
+
+        // ── TK-104: Worth-saying gate for self-initiated cycles ───────────────
+        // Self-initiated cycles (no originator, no frame turn_id) must pass the
+        // gate before they are allowed to emit. The gate checks two things:
+        //   (a) CONTENT-DEDUP — the response is not identical to a recent
+        //       self-initiated utterance (the "same canned line" pathology).
+        //   (b) NOVELTY — the cycle either observed a salient scene event
+        //       (cachedSceneSurprise >= SCENE_NOVELTY_THRESHOLD) OR produced
+        //       new GROUNDED content. A static context with no new grounding
+        //       yields nothing worth saying → no emit this cycle.
+        // Guardian-prompted cycles (emitOriginator !== undefined) bypass the gate.
+        // Degraded SHRUGs bypass the gate (already suppressed by responseDegradedNoLlm).
+        const isSelfInitiatedCycle =
+          emitOriginator === undefined &&
+          (frame.raw['turn_id'] as string | undefined) == null;
+
+        // worthSayingBlocked: true when the gate suppresses this self-initiated
+        // emit. Used as a flag below to skip responseSubject.next() while still
+        // running the tail work (tensor training, sensory prediction routing, etc.)
+        // that follows the emit block. Those tail tasks are independent of whether
+        // we actually emitted — they MUST run to keep prediction/drive state sound.
+        let worthSayingBlocked = false;
+        if (isSelfInitiatedCycle && !responseDegradedNoLlm) {
+          const gateResult = this.worthSayingGate.evaluate(
+            responseText,
+            cachedSceneSurprise,
+            responseGrounding,
+          );
+          vlog('worth-saying gate', {
+            worthSaying: gateResult.worthSaying,
+            reason: gateResult.reason,
+            cachedSceneSurprise: +cachedSceneSurprise.toFixed(3),
+            responseGrounding,
+            trackedCount: this.worthSayingGate.trackedCount,
+          });
+          if (!gateResult.worthSaying) {
+            this.logger.debug(
+              `Worth-saying gate SUPPRESSED self-initiated emit: ${gateResult.reason}`,
+            );
+            worthSayingBlocked = true;
+          } else {
+            // Gate passed — record the emission for future dedup.
+            this.worthSayingGate.recordEmission(responseText);
+          }
+        }
+
+        if (!worthSayingBlocked) {
         vlog('emitting CycleResponse', {
           arbitrationType: emittedArbitrationType,
           degradedNoLlm: responseDegradedNoLlm,
@@ -1802,13 +1865,6 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           knowledgeGrounding: responseGrounding,
           ...(responseTokens ? { tokens: responseTokens } : {}),
         });
-        // WS4 Ticket 3 — use the atomic turn context (turnId + originator).
-        // currentTurnContext carries both atomically so a zombie cannot emit
-        // the successor's originator. Self-initiated ticks have no context and
-        // generate a fresh UUID; originator is absent.
-        const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
-        const emitOriginator = this.currentTurnContext?.originator;
-
         // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
         // social_interaction (Std-1) denominator = self-initiated comments only.
         // Proactive ⟺ this cycle had NO inbound guardian turn: no
@@ -1877,6 +1933,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           } : {}),
           inputCategory: processInputResult.inputCategory,
         });
+        } // end if (!worthSayingBlocked)
       } else {
         this.logger.debug(
           `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
