@@ -1,20 +1,32 @@
 /**
- * Deterministic lexical affect scorer for Theater Prohibition validation.
+ * Deterministic lexical affect scorer and capability-claim detector for
+ * Theater Prohibition validation.
  *
- * CANON Standard 1 (Theater Prohibition): response tone must correlate with
- * actual drive state — Sylphie must not express affect she does not feel
- * (cheerful while Anxiety/Guilt/Sadness are elevated; performed distress while
- * Satisfaction is high and Anxiety is low).
+ * CANON Standard 1 (Theater Prohibition): Sylphie must not express affect she
+ * does not feel AND must not claim capabilities she does not possess.
  *
- * This scorer extracts valence/magnitude from response text using a hand-built
- * lexicon — NO LLM calls, NO external dependencies. That is deliberate: the
- * project thesis is graduating OFF the LLM, so a CANON honesty check must not
- * depend on one (and a per-turn LLM call would add cost + latency). The lexicon
- * is intentionally narrow: it targets gross LLM tonal defaults, not every shade
- * of emotion. Precision over recall.
+ * Two detection paths (TK-101):
+ *
+ *   1. Affect mismatch (existing): cheerful while anxious/guilty/sad, or
+ *      performed distress while content. Scores valence/magnitude from a
+ *      hand-built positive/negative lexicon.
+ *
+ *   2. Capability claim (new): fabricated sensory or analytical capabilities
+ *      ("my optical sensors", "I ran audio analysis", "visual feed") and
+ *      false-continuity claims ("I have always been here", "I have been
+ *      waiting for you"). Detected by phrase-level scanning — NOT lexicon
+ *      word matching — so negations like "I do not have a camera" and "I
+ *      cannot do audio analysis" are correctly exempted.
+ *
+ * No LLM calls, no external dependencies. Precision over recall: only
+ * unambiguous claims that Sylphie demonstrably cannot make are blocked.
  */
 
 import { DriveName, type PressureVector } from '@sylphie/shared';
+// TK-101: capability-claim and false-continuity detectors live in a zero-dependency
+// module so they can be unit-tested without the full NestJS monorepo. Re-exported
+// here so callers only need to import from theater-affect-scorer.
+export { detectCapabilityClaim, detectFalseContinuity } from './theater-capability-detector';
 
 // ---------------------------------------------------------------------------
 // Affect score
@@ -81,8 +93,28 @@ export const ANXIETY_EXEMPTION = 0.3;
 export interface TextTheaterVerdict {
   /** Whether the response text is theatrical given the drive state. */
   readonly isTheatrical: boolean;
-  /** Which violation class fired, or null if no violation. */
-  readonly violationClass: 'CHEERFUL_THEATER' | 'DISTRESS_THEATER' | null;
+  /**
+   * Which violation class fired, or null if no violation.
+   *
+   * CHEERFUL_THEATER / DISTRESS_THEATER — affect-mismatch violations
+   *   (checked by classifyMismatch against drive pressures).
+   *
+   * CAPABILITY_CLAIM — response claims a sensory or analytical capability
+   *   Sylphie does not possess (e.g. "my optical sensors picked up...").
+   *
+   * FALSE_CONTINUITY — response implies continuous existence or memory
+   *   across sessions ("I have always been here", "I have been waiting").
+   *
+   * CAPABILITY_CLAIM and FALSE_CONTINUITY are blocking violations (TK-101):
+   *   the response is withheld from delivery when either fires. Affect
+   *   violations only suppress reinforcement (existing behaviour).
+   */
+  readonly violationClass:
+    | 'CHEERFUL_THEATER'
+    | 'DISTRESS_THEATER'
+    | 'CAPABILITY_CLAIM'
+    | 'FALSE_CONTINUITY'
+    | null;
   /** The primary drive involved in the violation, or null. */
   readonly offendingDrive: DriveName | null;
   /** The drive value at expression time, or null. */
@@ -91,6 +123,19 @@ export interface TextTheaterVerdict {
   readonly reason: string;
   /** The computed affect score. */
   readonly affectScore: AffectScore;
+  /**
+   * Whether this violation should BLOCK delivery (TK-101).
+   *
+   * true  — CAPABILITY_CLAIM or FALSE_CONTINUITY: response must NOT be
+   *         delivered; caller emits a THEATER_BLOCKED event instead.
+   *
+   * false — affect-mismatch (CHEERFUL_THEATER / DISTRESS_THEATER) or no
+   *         violation: delivery proceeds, but reinforcement is zeroed on
+   *         isTheatrical=true.
+   *
+   * Always false when isTheatrical=false.
+   */
+  readonly shouldBlock: boolean;
 }
 
 const NON_THEATRICAL = (
@@ -103,6 +148,7 @@ const NON_THEATRICAL = (
   offendingDriveValue: null,
   reason,
   affectScore,
+  shouldBlock: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -201,6 +247,9 @@ export function classifyMismatch(
           `magnitude=${affectScore.magnitude.toFixed(2)}, but ` +
           `${offendingDrive}=${offendingDriveValue.toFixed(2)} > ${DISTRESS_DRIVE_THRESHOLD}`,
         affectScore,
+        // Affect mismatch suppresses reinforcement but does not block delivery —
+        // the guardian needs to see the response to correct the pattern.
+        shouldBlock: false,
       };
     }
   }
@@ -219,6 +268,7 @@ export function classifyMismatch(
           `satisfaction=${satisfaction.toFixed(2)} > ${CONTENTMENT_DRIVE_THRESHOLD} ` +
           `and anxiety=${anxiety.toFixed(2)} < ${ANXIETY_EXEMPTION}`,
         affectScore,
+        shouldBlock: false,
       };
     }
   }

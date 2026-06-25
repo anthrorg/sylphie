@@ -632,12 +632,27 @@ export class CommunicationService implements OnModuleInit {
     // gated metric (CANON Std-1).
     this.logEvent('RESPONSE_GENERATED', sessionId, buildResponseGeneratedPayload(response));
 
-    // Theater Prohibition check (CANON Standard 1). Audit + zero-reinforce on a
-    // violation; delivery is NOT blocked — the response still reaches the guardian.
-    // TK-35 (EP7-E): delegated to CycleOutcomeReporterService; verdict still
-    // needed here to set isGrounded on the DeliveryPayload.
+    // Theater Prohibition check (CANON Standard 1). TK-101: now checks BOTH
+    // affect mismatch AND capability claims / false-continuity fabrications.
+    // TK-35 (EP7-E): delegated to CycleOutcomeReporterService.
+    // Returns shouldBlock=true when a capability claim or false-continuity claim
+    // fires — those must NEVER reach the user (see below).
     const theaterVerdict = this.cycleOutcomeReporter.checkTheaterProhibition(response);
     const isGrounded = !theaterVerdict.isTheatrical;
+
+    // TK-101 BLOCK: fabricated capability claims and false-continuity claims are
+    // withheld from delivery. Reinforcement is still reported (with
+    // theaterValidated=false) so the LEARN path fires and confidence trends down.
+    if (theaterVerdict.shouldBlock) {
+      this.logger.warn(
+        `[Theater Prohibition] BLOCKED — turn=${response.turnId}, ` +
+          `class=${theaterVerdict.violationClass}, reason="${theaterVerdict.reason}"`,
+      );
+      // Still close the reinforcement loop so confidence drops (LEARN path).
+      // Do NOT add to conversation history, do NOT emit to deliverySubject.
+      await this.cycleOutcomeReporter.reportBasicOutcome(response, theaterVerdict);
+      return;
+    }
 
     // Voice output: check voice latent space FIRST, fall back to TTS on miss.
     // Every TTS-generated utterance is captured and stored so the same text

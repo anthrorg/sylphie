@@ -2151,9 +2151,24 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       }
 
       isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate;
-      const confidenceOutcome: 'reinforced' | 'counter_indicated' = isAccurate
-        ? 'reinforced'
-        : 'counter_indicated';
+
+      // TK-101 LEARN: a theater violation overrides prediction accuracy for the
+      // confidence path. The procedure produced a fabricated line — regardless of
+      // whether the prediction was otherwise accurate, the outcome is
+      // counter_indicated so the fabricating action's confidence trends DOWN over
+      // repeated detections (extinction). This is NOT self-modification of the
+      // evaluation function — it uses the same counter_indicated path any bad
+      // outcome uses (CANON no-self-modification-of-evaluation standard).
+      const theaterViolation = !outcome.selectedAction.theaterValidated;
+      const confidenceOutcome: 'reinforced' | 'counter_indicated' =
+        theaterViolation || !isAccurate ? 'counter_indicated' : 'reinforced';
+
+      if (theaterViolation) {
+        this.logger.warn(
+          `[Theater Prohibition] LEARN — action=${actionId}: applying counter_indicated ` +
+            `confidence update (theater-detected, theaterValidated=false)`,
+        );
+      }
 
       // Note: recordPredictionMAE() is NOT called here. PredictionService.evaluatePrediction()
       // already wrote the MAE to MaeHistoryStore (the shared window) when it ran above.

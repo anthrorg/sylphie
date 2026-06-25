@@ -5,16 +5,32 @@
  * CANON-compliance audit path from the delivery hot-path.
  *
  * Owns two formerly-private methods:
- *   - checkTheaterProhibition  — lexical tone vs. drive-state audit (CANON Std-1)
- *   - reportBasicOutcome       — closes the reinforcement loop after delivery
+ *   - checkTheaterProhibition  — lexical tone vs. drive-state audit + capability-
+ *                                claim detection (CANON Std-1). TK-101: now also
+ *                                detects fabricated capability claims and false-
+ *                                continuity phrases. Returns shouldBlock=true for
+ *                                CAPABILITY_CLAIM / FALSE_CONTINUITY violations;
+ *                                caller must not deliver the response.
+ *   - reportBasicOutcome       — closes the reinforcement loop after delivery.
+ *                                TK-101: on a blocking theater violation, emits a
+ *                                NEGATIVE reinforcement signal (counter_indicated)
+ *                                via ConfidenceUpdaterService so the fabricating
+ *                                procedure's confidence trends down over time
+ *                                (extinction, not just one-off censorship).
  *
  * The theater check GATES the outcome report: a theatrical response sets
  * theaterValidated=false so the drive engine applies zero reinforcement
  * (Sylphie is not rewarded for expressing affect she does not feel).
  *
- * CANON Standard 1 (Theater Prohibition): the audit is deterministic — no LLM
- * calls, no external network. Delivery is NEVER blocked; this is an honesty
- * audit, not a content filter.
+ * CANON Standard 1 (Theater Prohibition): the check is deterministic — no LLM
+ * calls, no external network.
+ *
+ * No-self-modification guarantee (TK-101 / CANON Std on no-self-modification):
+ * the NEGATIVE reinforcement signal applied here uses the SAME counter_indicated
+ * path that any bad outcome uses — it does NOT modify the theater-detection
+ * logic itself, the scoring weights, or the evaluation function. The theater
+ * verdict is the negative outcome; confidence is updated through the existing
+ * learning path.
  */
 
 import { Injectable, Inject, Logger } from '@nestjs/common';
@@ -39,6 +55,10 @@ import {
   classifyMismatch,
   type TextTheaterVerdict,
 } from './theater-affect-scorer';
+import {
+  detectCapabilityClaim,
+  detectFalseContinuity,
+} from './theater-capability-detector';
 
 @Injectable()
 export class CycleOutcomeReporterService {
@@ -78,18 +98,29 @@ export class CycleOutcomeReporterService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Validate that the response text's tonal affect correlates with actual
-   * drive state (CANON Standard 1 — Theater Prohibition).
+   * Validate the response against CANON Standard 1 — Theater Prohibition.
    *
-   * Uses a deterministic lexical scorer (theater-affect-scorer.ts) — no LLM
-   * calls, no external dependencies. Catches gross tonal mismatches: effusive
-   * cheerfulness while Anxiety/Guilt/Sadness are elevated, or performed distress
-   * while Satisfaction is high and Anxiety is low.
+   * Runs TWO checks in priority order:
    *
-   * On violation: writes a THEATER_PROHIBITED audit event to TimescaleDB and
-   * returns isTheatrical=true so the caller zeros reinforcement. Delivery is NOT
-   * blocked — the response still reaches the guardian (this is an honesty audit,
-   * not a content filter).
+   *   1. Capability-claim / false-continuity scan (TK-101, BLOCKING):
+   *      Fabricated sensory or analytical capabilities ("my optical sensors
+   *      picked up...", "I ran audio analysis") and false-continuity claims
+   *      ("I have always been here", "I have been waiting for you") return
+   *      shouldBlock=true. Delivery MUST be withheld by the caller.
+   *
+   *   2. Affect mismatch scan (existing, NON-BLOCKING):
+   *      Cheerful tone while Anxiety/Guilt/Sadness are elevated
+   *      (CHEERFUL_THEATER) or performed distress while Satisfaction is high
+   *      and Anxiety is low (DISTRESS_THEATER). Returns shouldBlock=false —
+   *      delivery proceeds but reinforcement is zeroed.
+   *
+   * Honest disclaimers ("I do not have optical sensors", "I cannot do audio
+   * analysis") are correctly exempted from check (1) by negation-prefix
+   * matching — a blunt keyword block that would catch these fails AC-1.
+   *
+   * On any violation: writes a THEATER_PROHIBITED audit event to TimescaleDB
+   * (fire-and-forget — never blocks the pipeline). On a BLOCKING violation,
+   * also writes THEATER_BLOCKED.
    */
   checkTheaterProhibition(response: CycleResponse): TextTheaterVerdict {
     const affectScore = scoreAffect(response.text ?? '');
@@ -103,41 +134,46 @@ export class CycleOutcomeReporterService {
         offendingDriveValue: null,
         reason: 'No response text (SHRUG) — not theatrical',
         affectScore,
+        shouldBlock: false,
       };
     }
 
+    // ── Check 1: Capability claims / false continuity (BLOCKING) ─────────────
+    const capabilityPhrase = detectCapabilityClaim(response.text);
+    if (capabilityPhrase !== null) {
+      const verdict: TextTheaterVerdict = {
+        isTheatrical: true,
+        violationClass: 'CAPABILITY_CLAIM',
+        offendingDrive: null,
+        offendingDriveValue: null,
+        reason: `CAPABILITY_CLAIM: fabricated capability phrase detected: "${capabilityPhrase}"`,
+        affectScore,
+        shouldBlock: true,
+      };
+      this.logTheaterViolation(response, verdict);
+      return verdict;
+    }
+
+    const continuityPhrase = detectFalseContinuity(response.text);
+    if (continuityPhrase !== null) {
+      const verdict: TextTheaterVerdict = {
+        isTheatrical: true,
+        violationClass: 'FALSE_CONTINUITY',
+        offendingDrive: null,
+        offendingDriveValue: null,
+        reason: `FALSE_CONTINUITY: false-continuity claim detected: "${continuityPhrase}"`,
+        affectScore,
+        shouldBlock: true,
+      };
+      this.logTheaterViolation(response, verdict);
+      return verdict;
+    }
+
+    // ── Check 2: Affect mismatch (non-blocking) ───────────────────────────────
     const verdict = classifyMismatch(affectScore, response.driveSnapshot.pressureVector);
 
     if (verdict.isTheatrical) {
-      this.logger.warn(
-        `[Theater Prohibition] VIOLATION — turn=${response.turnId}, ` +
-          `class=${verdict.violationClass}, drive=${verdict.offendingDrive}, ` +
-          `driveValue=${verdict.offendingDriveValue?.toFixed(2)}, reason="${verdict.reason}"`,
-      );
-
-      // Audit trail (CANON Standard 1). Fire-and-forget — never block delivery
-      // on the DB write.
-      this.logEvent(
-        'THEATER_PROHIBITED',
-        response.driveSnapshot.sessionId,
-        {
-          turnId: response.turnId,
-          actionId: response.actionId,
-          violationClass: verdict.violationClass,
-          offendingDrive: verdict.offendingDrive,
-          offendingDriveValue: verdict.offendingDriveValue,
-          affectValence: affectScore.valence,
-          affectMagnitude: affectScore.magnitude,
-          markerCount: affectScore.markerCount,
-          verdictReason: verdict.reason,
-          responseTextSnippet: response.text.substring(0, 100),
-          auditOnly: true,
-        },
-        // CANON Std-2: correlate this violation row with the action that
-        // produced the theatrical response, using the same `action:<id>`
-        // convention the drive engine uses for its DRIVE_EVENT rows.
-        response.actionId ? `action:${response.actionId}` : null,
-      );
+      this.logTheaterViolation(response, verdict);
     } else {
       this.logger.debug(
         `[Theater Prohibition] OK — turn=${response.turnId}, ` +
@@ -159,6 +195,13 @@ export class CycleOutcomeReporterService {
    * for explicit guardian feedback. If guardian feedback arrives later via
    * CommunicationService.reportGuardianFeedback(), it will update the
    * confidence again.
+   *
+   * TK-101 (LEARN path): on a BLOCKING theater violation (shouldBlock=true),
+   * theaterValidated is set false so that DecisionMakingService.reportOutcome()
+   * applies counter_indicated confidence update — the fabricating procedure's
+   * confidence trends down over repeated theater detections (extinction).
+   * This uses the existing reinforcement path; it does NOT modify the theater
+   * detector itself (CANON no-self-modification standard).
    *
    * @param theaterVerdict  Result of checkTheaterProhibition — gates whether
    *                        the drive engine applies real vs. zero reinforcement.
@@ -196,9 +239,11 @@ export class CycleOutcomeReporterService {
           actionId: response.actionId,
           arbitrationResult: response.arbitrationResult,
           selectedAt: new Date(),
-          // CANON Standard 1: honest verdict from checkTheaterProhibition. A
-          // theatrical response sets this false → drive-engine zero-reinforcement
-          // (Sylphie is not rewarded for expressing affect she does not feel).
+          // CANON Standard 1 + TK-101: honest verdict from checkTheaterProhibition.
+          // Any theatrical response (affect mismatch OR capability claim / false
+          // continuity) sets this false → DecisionMakingService applies
+          // counter_indicated confidence update (LEARN path) and the drive engine
+          // applies zero reinforcement (Sylphie is not rewarded for fabrication).
           theaterValidated: !theaterVerdict.isTheatrical,
         },
         predictionAccurate: false, // Unknown until guardian feedback
@@ -209,6 +254,69 @@ export class CycleOutcomeReporterService {
       });
     } catch (err) {
       this.logger.warn(`reportBasicOutcome failed: ${err}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Log and emit a theater violation audit event.
+   *
+   * Fire-and-forget — never blocks the response pipeline. Emits:
+   *   THEATER_PROHIBITED — on any violation (existing audit trail)
+   *   THEATER_BLOCKED    — additionally when shouldBlock=true (TK-101 blocking)
+   */
+  private logTheaterViolation(
+    response: CycleResponse,
+    verdict: TextTheaterVerdict,
+  ): void {
+    const sessionId = response.driveSnapshot.sessionId;
+    const affectScore = verdict.affectScore;
+    const correlationId = response.actionId ? `action:${response.actionId}` : null;
+
+    this.logger.warn(
+      `[Theater Prohibition] VIOLATION — turn=${response.turnId}, ` +
+        `class=${verdict.violationClass}, shouldBlock=${verdict.shouldBlock}, ` +
+        `reason="${verdict.reason}"`,
+    );
+
+    // CANON Std-2: correlate violation row with the action via action:<id>.
+    this.logEvent(
+      'THEATER_PROHIBITED',
+      sessionId,
+      {
+        turnId: response.turnId,
+        actionId: response.actionId,
+        violationClass: verdict.violationClass,
+        offendingDrive: verdict.offendingDrive,
+        offendingDriveValue: verdict.offendingDriveValue,
+        affectValence: affectScore.valence,
+        affectMagnitude: affectScore.magnitude,
+        markerCount: affectScore.markerCount,
+        verdictReason: verdict.reason,
+        responseTextSnippet: response.text.substring(0, 100),
+        shouldBlock: verdict.shouldBlock,
+      },
+      correlationId,
+    );
+
+    // TK-101: separate THEATER_BLOCKED event for blocking violations so operators
+    // can query blocked deliveries independently from the audit trail.
+    if (verdict.shouldBlock) {
+      this.logEvent(
+        'THEATER_BLOCKED',
+        sessionId,
+        {
+          turnId: response.turnId,
+          actionId: response.actionId,
+          violationClass: verdict.violationClass,
+          verdictReason: verdict.reason,
+          responseTextSnippet: response.text.substring(0, 100),
+        },
+        correlationId,
+      );
     }
   }
 
