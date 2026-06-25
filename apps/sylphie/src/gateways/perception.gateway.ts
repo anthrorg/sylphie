@@ -116,6 +116,14 @@ export class PerceptionGateway
 
   handleDisconnect() {
     this.logger.log('Perception client disconnected');
+    // TK-102 — when the feed disconnects, immediately evict all stale VWM
+    // entities and zero the tick-sampler perception counts.  Without this, any
+    // confirmed tracks retained in VWM continue generating
+    // UndiscoveredObjectPressure / UnknownPersonPressure on every cognitive cycle
+    // even though the camera feed has stopped (AD-0041).
+    this.vwm.evictStaleEntities();
+    this.tickSampler.updateUndiscoveredCount(0);
+    this.tickSampler.updateUnknownPersonCount(0);
   }
 
   private async handleFrame(client: WebSocket, jpegData: Buffer) {

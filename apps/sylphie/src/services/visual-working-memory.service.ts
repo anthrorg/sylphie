@@ -38,6 +38,18 @@ const GONE_RATIO = 0.0;     // Must be completely absent to become 'gone'
 const LEAVING_TIMEOUT_MS = 2000;
 
 /**
+ * TK-102 — Max time (ms) a non-gone entity may go unseen before it is
+ * forcibly evicted as stale. This bounds the in-memory retained state so a
+ * halted feed (frames stop arriving) cannot keep tracks — and therefore the
+ * UndiscoveredObjectPressure / UnknownPersonPressure they generate — pinned
+ * indefinitely. 10 s is deliberately longer than the normal leaving path
+ * (LEAVING_TIMEOUT_MS=2 s) so routine flicker is handled by the rolling-window
+ * path; only genuinely stale tracks (feed stopped, track lost without frames
+ * to drive the ratio down) are caught here.
+ */
+const STALE_TRACK_TIMEOUT_MS = 10_000;
+
+/**
  * How many nearest candidates to fetch for the multi-signal BindingService (#1).
  * The match / ambiguity thresholds now live in BindingConfig (this replaces the
  * old single-signal `OBJECT_MATCH_THRESHOLD = 0.75` cosine cutoff).
@@ -266,6 +278,40 @@ export class VisualWorkingMemoryService implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------------------
+  // Stale-track eviction (TK-102)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Evict any non-gone entity that has not been seen within STALE_TRACK_TIMEOUT_MS.
+   *
+   * Called automatically at the top of every `updateScene` call so stale tracks
+   * are drained even when a feed is running but an entity simply stopped appearing
+   * (e.g. person walked out of frame but no frame ever drove the ratio to zero).
+   * Also called explicitly from `PerceptionGateway.handleDisconnect` so that a
+   * halted feed drains immediately rather than waiting for the next `updateScene`.
+   *
+   * Returns the number of entities evicted (useful for logging / assertions).
+   */
+  evictStaleEntities(now = Date.now()): number {
+    let evicted = 0;
+    for (const [, entity] of this.entities) {
+      if (entity.state === 'gone') continue;
+      if (now - entity.lastSeenAt >= STALE_TRACK_TIMEOUT_MS) {
+        entity.state = 'gone';
+        for (const tid of entity.trackIds) {
+          this.trackToEntity.delete(tid);
+        }
+        evicted++;
+        this.logger.log(
+          `VWM: stale eviction → gone: ${entity.displayName ?? entity.label} ` +
+          `(entity=${entity.id}, unseen=${now - entity.lastSeenAt}ms)`,
+        );
+      }
+    }
+    return evicted;
+  }
+
+  // ---------------------------------------------------------------------------
   // Main update — called each frame from PerceptionGateway
   // ---------------------------------------------------------------------------
 
@@ -286,6 +332,9 @@ export class VisualWorkingMemoryService implements OnModuleInit {
    */
   updateScene(snapshot: SceneSnapshot): void {
     const now = Date.now();
+    // TK-102 — evict entities that have been absent longer than STALE_TRACK_TIMEOUT_MS
+    // so stale confirmed tracks don't generate sustained pressure on a slow feed.
+    this.evictStaleEntities(now);
     const confirmedTracks = snapshot.objects.filter(o => o.state === 'confirmed');
     const confirmedTrackIds = new Set(confirmedTracks.map(o => o.trackId));
 

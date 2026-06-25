@@ -6,10 +6,16 @@ const TSJEST = require.resolve(
 module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  // Scoped to *.controller.spec.ts (jest-style) so the tsx-run service specs
-  // (theater-affect-scorer, cycle-outcome-reporter, communication.cost) — which
-  // are NOT jest-compatible — are never picked up by this jest config.
-  testMatch: ['**/*.controller.spec.ts'],
+  // Scoped to *.controller.spec.ts (jest-style) and the explicit VWM service
+  // specs (which are jest-compatible and require @nestjs/common via NODE_PATH).
+  // The tsx-run service specs (theater-affect-scorer, cycle-outcome-reporter,
+  // communication.cost) — which are NOT jest-compatible — are excluded by not
+  // matching their filenames here.
+  testMatch: [
+    '**/*.controller.spec.ts',
+    // TK-102 stale-track eviction (VWM service, jest-compatible)
+    '**/visual-working-memory.stale-eviction.spec.ts',
+  ],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {
       tsconfig: '<rootDir>/tsconfig.json',
