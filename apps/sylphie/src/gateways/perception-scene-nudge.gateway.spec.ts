@@ -43,6 +43,8 @@ class FakeTickSampler {
   updateSceneDescription = jest.fn();
   updateUndiscoveredCount = jest.fn();
   updateUnknownPersonCount = jest.fn();
+  updateUndiscoveredIds = jest.fn();
+  updateUnknownPersonIds = jest.fn();
   nudgeSceneChange = jest.fn();
 }
 

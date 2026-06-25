@@ -79,6 +79,13 @@ export type { IEpisodicMemoryService } from './interfaces/decision-making.interf
 /** Scene prediction — per-object prediction errors for attention and drive routing. */
 export { ScenePredictionService, type ScenePredictionResult, type SceneObjectError, type ScenePredictionState, type SurpriseObservation, type LastScenePredictionOutcome } from './prediction/scene-prediction.service';
 
+/**
+ * TK-97 — Visual-presence habituation service.
+ * Exported so MetricsController can inject it for session-reset and state
+ * inspection (gate seam: /metrics/visual-presence-habituation-state).
+ */
+export { VisualPresenceHabituatorService } from './habituation/visual-presence-habituator';
+
 // ---------------------------------------------------------------------------
 // Sensory Pipeline (re-exported for backward compatibility)
 // ---------------------------------------------------------------------------

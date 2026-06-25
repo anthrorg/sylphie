@@ -255,6 +255,25 @@ export class TickSamplerService {
     this.latestValues.set('unknown_person_count', count);
   }
 
+  /**
+   * TK-97 — store the stable VWM entity IDs for undiscovered objects alongside
+   * the raw count.  The decision-making cycle reads these via frame.raw so the
+   * VisualPresenceHabituatorService can apply per-identity attenuation before
+   * forwarding to the drive engine.  Stored separately from the count so callers
+   * that only care about the number are unaffected.
+   */
+  updateUndiscoveredIds(ids: readonly string[]): void {
+    this.latestValues.set('undiscovered_ids', ids);
+  }
+
+  /**
+   * TK-97 — store the stable VWM entity IDs for unknown persons alongside the
+   * raw count.  Mirror of updateUndiscoveredIds for the social-pressure path.
+   */
+  updateUnknownPersonIds(ids: readonly string[]): void {
+    this.latestValues.set('unknown_person_ids', ids);
+  }
+
   // ── Tick sampling ───────────────────────────────────────────────
 
   /**

@@ -9,6 +9,7 @@ import {
   LatentSpaceService,
   ModalityRegistryService,
   ScenePredictionService,
+  VisualPresenceHabituatorService,
   WkgContextService,
   isDocumentEncoder,
   getLastCapturedPrompt,
@@ -123,6 +124,9 @@ export class MetricsController {
     // stub can await frame completion between injected frames (no GATE_MODE
     // branch in the gateway — this is an accessor, not a test-only code path).
     private readonly perceptionGateway: PerceptionGateway,
+
+    // TK-97 — per-identity visual-presence habituation state (gate seam).
+    private readonly visualPresenceHabituator: VisualPresenceHabituatorService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -487,6 +491,42 @@ export class MetricsController {
   @Get('last-scene-outcome')
   lastSceneOutcome(): { lastRoutedOutcome: ReturnType<ScenePredictionService['getState']>['lastRoutedOutcome'] } {
     return { lastRoutedOutcome: this.scenePrediction.getState().lastRoutedOutcome };
+  }
+
+  // ---------------------------------------------------------------------------
+  // TK-97 — Visual-presence habituation gate seam
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /metrics/visual-presence-habituation-state
+   *
+   * TK-97 gate seam — read-only snapshot of the per-identity exposure counts
+   * maintained by VisualPresenceHabituatorService.  Returns:
+   *   exposureCounts  — map of entityId → number of cycles seen (object or person)
+   *
+   * Tests assert that:
+   *   AC2: a static scene's exposure counts rise monotonically per-cycle and the
+   *        attenuated count (1/(1+0.6*n)) decreases toward 0 over time.
+   *   AC3: a NEW identity (absent from exposureCounts) starts at count=0 (factor=1.0).
+   */
+  @Get('visual-presence-habituation-state')
+  visualPresenceHabituationState(): { exposureCounts: Record<string, number> } {
+    return { exposureCounts: this.visualPresenceHabituator.getExposureCounts() };
+  }
+
+  /**
+   * POST /metrics/visual-presence-habituation-reset
+   *
+   * TK-97 gate seam — reset all per-identity exposure counts so a fresh gate run
+   * starts with full novelty pressure (factor=1.0 for every identity).
+   * Mirrors /metrics/scene-predictor-reset for the same hermeticity guarantee.
+   */
+  @Post('visual-presence-habituation-reset')
+  @HttpCode(200)
+  visualPresenceHabituationReset(): { ok: true; clearedAt: string } {
+    this.visualPresenceHabituator.reset();
+    this.logger.warn('VisualPresenceHabituator reset for gate hermeticity (TK-97).');
+    return { ok: true, clearedAt: new Date().toISOString() };
   }
 
   /**
