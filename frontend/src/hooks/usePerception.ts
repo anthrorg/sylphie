@@ -9,6 +9,16 @@ const JPEG_QUALITY = 0.6
 const CAPTURE_WIDTH = 640
 const CAPTURE_HEIGHT = 480
 
+// Overlay render budget: cap canvas redraws to match the detection frame rate.
+// Drawing at 60fps with 478 landmark points + polygon paths causes progressive
+// slowdown over long sessions — the work per frame never decreases but piles up.
+const RENDER_INTERVAL_MS = 1000 / CAPTURE_FPS  // ~66ms → ≈15fps
+
+// Hard cap on scene-event and caption data held in refs so an abnormally large
+// server payload cannot pin arbitrarily much memory between frames.
+const MAX_SCENE_EVENTS = 64
+const MAX_VLM_CAPTION_LEN = 512
+
 interface Detection {
   label_raw: string
   confidence: number
@@ -113,6 +123,8 @@ export function usePerception(): UsePerceptionReturn {
   const recentTrackIdsRef = useRef<Set<number>>(new Set())
   const rafRef = useRef<number | null>(null)
   const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
+  // Tracks when the last overlay frame was rendered; used to throttle rAF to RENDER_INTERVAL_MS.
+  const lastRenderRef = useRef<number>(0)
 
   const [active, setActive] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -210,9 +222,13 @@ export function usePerception(): UsePerceptionReturn {
             if (data.face_oval?.length > 0) {
               faceOvalRef.current = data.face_oval
             }
-            // Tracked objects and scene events from SceneEventDetector
+            // Tracked objects and scene events from SceneEventDetector.
+            // Cap scene events so an abnormally large server batch can't pin memory.
             trackedObjectsRef.current = data.tracked_objects ?? []
-            sceneEventsRef.current = data.scene_events ?? []
+            const rawEvents: SceneEvent[] = data.scene_events ?? []
+            sceneEventsRef.current = rawEvents.length > MAX_SCENE_EVENTS
+              ? rawEvents.slice(-MAX_SCENE_EVENTS)
+              : rawEvents
 
             // Build set of novel track IDs from scene events
             const novelIds = new Set<number>()
@@ -226,9 +242,13 @@ export function usePerception(): UsePerceptionReturn {
             // Store VWM entities for overlay rendering
             vwmEntitiesRef.current = (data.vwm_entities ?? []) as VwmEntity[]
 
-            // Store VLM caption for overlay
+            // Store VLM caption for overlay; truncate so word-wrap never iterates
+            // over an arbitrarily long string on every rendered frame.
             if (data.vlm_caption) {
-              vlmCaptionRef.current = data.vlm_caption
+              const raw: string = data.vlm_caption
+              vlmCaptionRef.current = raw.length > MAX_VLM_CAPTION_LEN
+                ? raw.slice(0, MAX_VLM_CAPTION_LEN)
+                : raw
             }
 
             // Build recognized items from VWM entities (stabilized, WKG-resolved)
@@ -291,6 +311,14 @@ export function usePerception(): UsePerceptionReturn {
           if (intervalRef.current !== null) { clearInterval(intervalRef.current); intervalRef.current = null }
           detectionsRef.current = []
           faceDetectionsRef.current = []
+          // Clear connection-scoped topology refs so stale mesh data from a prior
+          // session doesn't render on top of a fresh reconnect's first frames.
+          faceConnectionsRef.current = []
+          faceOvalRef.current = []
+          trackedObjectsRef.current = []
+          sceneEventsRef.current = []
+          vwmEntitiesRef.current = []
+          vlmCaptionRef.current = ''
           setRecognizedItems([])
           setCameraState({ feedMode: 'local' })
         }
@@ -308,7 +336,15 @@ export function usePerception(): UsePerceptionReturn {
     }
 
     function startRenderLoop(video: HTMLVideoElement) {
-      function draw() {
+      function draw(now: DOMHighResTimeStamp) {
+        // Throttle: only repaint when enough time has passed since the last frame.
+        // Prevents 60fps canvas thrashing when detections arrive at ≤15fps.
+        if (now - lastRenderRef.current < RENDER_INTERVAL_MS) {
+          rafRef.current = requestAnimationFrame(draw)
+          return
+        }
+        lastRenderRef.current = now
+
         const canvas = canvasRef.current
         if (!canvas || !video) { rafRef.current = requestAnimationFrame(draw); return }
 
@@ -540,7 +576,7 @@ export function usePerception(): UsePerceptionReturn {
 
         rafRef.current = requestAnimationFrame(draw)
       }
-      draw()
+      requestAnimationFrame(draw)
     }
 
     start()
