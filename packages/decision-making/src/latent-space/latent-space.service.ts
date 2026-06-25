@@ -773,14 +773,20 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       // DB gate: enforce the ceiling against the persisted use_count. When
       // use_count = 0 the stored value is LEAST(newConfidence, 0.60); once
       // use_count > 0 the reinforced value is written verbatim.
+      //
+      // The ceiling literal (0.6) is inlined rather than passed as a $3 parameter
+      // because PostgreSQL cannot resolve the LEAST($1, $3) CASE branch type when
+      // $3 is untyped — it infers TEXT and the query fails with "column confidence
+      // is of type double precision but expression is of type text". Inlining
+      // WRITE_TIME_CONFIDENCE_CEILING as a numeric literal avoids the ambiguity.
       this.timescale.query(
         `UPDATE learned_patterns
          SET confidence = CASE
-           WHEN use_count > 0 THEN $1
-           ELSE LEAST($1, $3)
+           WHEN use_count > 0 THEN $1::float
+           ELSE LEAST($1::float, ${WRITE_TIME_CONFIDENCE_CEILING})
          END
          WHERE id = $2`,
-        [newConfidence, patternId, WRITE_TIME_CONFIDENCE_CEILING],
+        [newConfidence, patternId],
       ).catch((err) => {
         this.logger.warn(`Confidence update failed: ${err instanceof Error ? err.message : String(err)}`);
       });
