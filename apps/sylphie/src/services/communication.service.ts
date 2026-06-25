@@ -580,6 +580,8 @@ export class CommunicationService implements OnModuleInit {
       llmCalled: true,
       costUsd: 0,
       knowledgeGrounding: facts.length > 0 ? 'GROUNDED' : 'UNKNOWN',
+      // WHO_AM_I is always user-initiated (originator present above).
+      emissionIntent: 'USER_REPLY',
     };
 
     this.deliverySubject.next(delivery);
@@ -712,6 +714,9 @@ export class CommunicationService implements OnModuleInit {
         ? { groundingProvenance: response.groundingProvenance }
         : {}),
       ...(response.groundedBy != null ? { groundedBy: response.groundedBy } : {}),
+      // TK-103: thread emissionIntent verbatim so TK-98/99/100 consumers can
+      // gate on a single discriminator at the delivery layer.
+      emissionIntent: response.emissionIntent,
     };
 
     vlog('response delivered', {
