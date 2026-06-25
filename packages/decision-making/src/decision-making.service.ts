@@ -81,6 +81,7 @@ import { DecisionTickEngineService } from './tick-engine/decision-tick-engine.se
 import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
 import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
 import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
+import { VisualPresenceHabituatorService } from './habituation/visual-presence-habituator';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -286,6 +287,11 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     // EP7-C (TK-33): Recall retrieval helper — computes pre-arbitration grounded
     // recall retrieval. Extracted from computeRecallRetrieval() + recallKeyEncoder().
     private readonly recallRetrievalHelper: RecallRetrievalHelper,
+
+    // TK-97: Per-identity habituation for sustained visual-presence drive pressure.
+    // Attenuates UndiscoveredObjectPressure and UnknownPersonPressure contributions
+    // so a static familiar scene does not permanently pin total pressure above 4.0.
+    private readonly visualPresenceHabituator: VisualPresenceHabituatorService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -1989,50 +1995,69 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
       const frameTurnId = frame.raw['turn_id'] as string | undefined;
 
       // ── Sustained curiosity for undiscovered visual objects ──────────────
+      // TK-97: per-identity habituation — attenuate the effective count so a
+      // static familiar scene does not permanently pin total pressure above 4.0.
+      // The raw count guards the early-exit; attenuation applies inside so a scene
+      // dropping to zero is still a no-op (attenuatedObjectCount will also be 0).
       const undiscoveredCount = frame.raw['undiscovered_count'] as number | undefined;
       if (undiscoveredCount && undiscoveredCount > 0 && this.actionOutcomeReporter) {
         try {
-          this.actionOutcomeReporter.reportOutcome({
-            actionId: 'undiscovered-objects',
-            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:undiscovered-objects',
-            actionType: 'UndiscoveredObjectPressure',
-            success: false,
-            metadata: {
-              undiscoveredObjectCount: undiscoveredCount,
-            },
-            feedbackSource: 'INFERENCE',
-            theaterCheck: {
-              expressionType: 'none',
-              correspondingDrive: null,
-              driveValue: null,
-              isTheatrical: false,
-            },
-          });
+          const undiscoveredIds = (frame.raw['undiscovered_ids'] as string[] | undefined) ?? [];
+          // Falls back to raw count when IDs are absent (non-gateway callers / tests
+          // that don't populate the id slot) so existing behaviour is preserved.
+          const attenuatedObjectCount = undiscoveredIds.length > 0
+            ? this.visualPresenceHabituator.computeAttenuatedCount(undiscoveredIds, 'object')
+            : undiscoveredCount;
+          if (attenuatedObjectCount > 0) {
+            this.actionOutcomeReporter.reportOutcome({
+              actionId: 'undiscovered-objects',
+              correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:undiscovered-objects',
+              actionType: 'UndiscoveredObjectPressure',
+              success: false,
+              metadata: {
+                undiscoveredObjectCount: attenuatedObjectCount,
+              },
+              feedbackSource: 'INFERENCE',
+              theaterCheck: {
+                expressionType: 'none',
+                correspondingDrive: null,
+                driveValue: null,
+                isTheatrical: false,
+              },
+            });
+          }
         } catch (err) {
           this.logger.warn(`Undiscovered object pressure routing failed: ${err}`);
         }
       }
 
       // ── Social pressure for unknown persons in view ─────────────────────
+      // TK-97: same per-identity habituation as undiscovered objects above.
       const unknownPersonCount = frame.raw['unknown_person_count'] as number | undefined;
       if (unknownPersonCount && unknownPersonCount > 0 && this.actionOutcomeReporter) {
         try {
-          this.actionOutcomeReporter.reportOutcome({
-            actionId: 'unknown-persons',
-            correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:unknown-persons',
-            actionType: 'UnknownPersonPressure',
-            success: false,
-            metadata: {
-              unknownPersonCount: unknownPersonCount,
-            },
-            feedbackSource: 'INFERENCE',
-            theaterCheck: {
-              expressionType: 'none',
-              correspondingDrive: null,
-              driveValue: null,
-              isTheatrical: false,
-            },
-          });
+          const unknownPersonIds = (frame.raw['unknown_person_ids'] as string[] | undefined) ?? [];
+          const attenuatedPersonCount = unknownPersonIds.length > 0
+            ? this.visualPresenceHabituator.computeAttenuatedCount(unknownPersonIds, 'person')
+            : unknownPersonCount;
+          if (attenuatedPersonCount > 0) {
+            this.actionOutcomeReporter.reportOutcome({
+              actionId: 'unknown-persons',
+              correlationId: frameTurnId ? `turn:${frameTurnId}` : 'action:unknown-persons',
+              actionType: 'UnknownPersonPressure',
+              success: false,
+              metadata: {
+                unknownPersonCount: attenuatedPersonCount,
+              },
+              feedbackSource: 'INFERENCE',
+              theaterCheck: {
+                expressionType: 'none',
+                correspondingDrive: null,
+                driveValue: null,
+                isTheatrical: false,
+              },
+            });
+          }
         } catch (err) {
           this.logger.warn(`Unknown person pressure routing failed: ${err}`);
         }

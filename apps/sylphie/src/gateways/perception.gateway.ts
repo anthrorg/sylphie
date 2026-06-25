@@ -307,6 +307,10 @@ export class PerceptionGateway
         const unknownPersons = this.vwm.getUnknownPersons();
         this.tickSampler.updateUndiscoveredCount(undiscovered.length);
         this.tickSampler.updateUnknownPersonCount(unknownPersons.length);
+        // TK-97: carry stable VWM entity IDs alongside counts so the
+        // VisualPresenceHabituatorService can apply per-identity attenuation.
+        this.tickSampler.updateUndiscoveredIds(undiscovered.map(e => e.id));
+        this.tickSampler.updateUnknownPersonIds(unknownPersons.map(e => e.id));
 
         // --- WS5 T1.0: scene-change cognitive-cycle nudge ---
         // A confirmed-object scene change must get a cognitive cycle to RUN on

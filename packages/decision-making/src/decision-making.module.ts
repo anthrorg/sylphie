@@ -97,6 +97,7 @@ import { WorkingMemoryService } from './working-memory/working-memory.service';
 import { SensoryPredictionRouterService } from './sensory/sensory-prediction-router.service';
 import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
 import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
+import { VisualPresenceHabituatorService } from './habituation/visual-presence-habituator';
 
 // ---------------------------------------------------------------------------
 // Sensory pipeline services
@@ -246,6 +247,9 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
 
     // ── Stream logging (persists encoded frames to TimescaleDB + pgvector) ────
     SensoryStreamLoggerService,
+
+    // ── TK-97: Per-identity visual-presence habituation (object + person) ────
+    VisualPresenceHabituatorService,
 
     // ── Sensory pipeline services (registered by class, no token indirection) ─
     // These are exported directly so that app-level code (gateways, controllers)
