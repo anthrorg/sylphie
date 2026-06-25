@@ -26,7 +26,7 @@
 import { Injectable, Inject, Logger, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Subject, type Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
-import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, type CycleErrorContext, computeInformationGain, type InformationGainResult, verboseFor } from '@sylphie/shared';
+import { ExecutorState, DriveName, EMBEDDING_VERSION, LLM_SERVICE, type ILlmService, type DriveSnapshot, type SensoryFrame, type ActionOutcome, type CognitiveContext, type ActionCandidate, type Episode, type Prediction, type PredictionEvaluation, type GapType, type CycleResponse, type ArbitrationResult, type KnowledgeGrounding, type TurnOriginator, type CycleErrorContext, computeInformationGain, type InformationGainResult, type EmissionIntent, verboseFor } from '@sylphie/shared';
 import { CycleGuardService } from './concurrency/cycle-guard.service';
 import type { InboundTurn } from './concurrency/inbound-turn';
 
@@ -497,6 +497,8 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         preExecutionDriveSnapshot: driveSnapshot.pressureVector,
         latentPatternIds: undefined,
         inputCategory: 'question',
+        // Watchdog SHRUGs fire for queued user turns — always USER_REPLY.
+        emissionIntent: 'USER_REPLY',
       });
     } catch (err) {
       this.logger.warn(`emitWatchdogShrug failed for turn ${turnId}: ${err}`);
@@ -1809,6 +1811,13 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
         const emitTurnId = this.currentTurnContext?.turnId ?? randomUUID();
         const emitOriginator = this.currentTurnContext?.originator;
 
+        // TK-103 — classify emission intent at the source.
+        // USER_REPLY   : an inbound human turn drove this cycle (context was set).
+        // AMBIENT_NONE : no inbound turn (self-tick or scene-nudge with nothing new).
+        // DELIBERATE_GREET / SALIENT_OBSERVATION are reserved for TK-100/104 and
+        // are not produced here — no call site sets them yet.
+        const emissionIntent = this.currentTurnContext !== null ? 'USER_REPLY' : 'AMBIENT_NONE';
+
         // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
         // social_interaction (Std-1) denominator = self-initiated comments only.
         // Proactive ⟺ this cycle had NO inbound guardian turn: no
@@ -1876,6 +1885,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
               : {}),
           } : {}),
           inputCategory: processInputResult.inputCategory,
+          emissionIntent,
         });
       } else {
         this.logger.debug(

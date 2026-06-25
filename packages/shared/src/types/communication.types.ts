@@ -17,6 +17,42 @@ import type { DriveSnapshot, PressureVector } from './drive.types';
 import type { ArbitrationResult } from './action.types';
 
 // ---------------------------------------------------------------------------
+// EmissionIntent — why a cycle produced an output (TK-103 seam)
+// ---------------------------------------------------------------------------
+
+/**
+ * Classifies the intent behind a cycle's emitted response.
+ *
+ * Stamped at the cycle SOURCE (DecisionMakingService) and threaded through
+ * CycleResponse → DeliveryPayload so TK-98/99/100 can gate on a single,
+ * unambiguous discriminator instead of inferring intent from originator
+ * presence/absence.
+ *
+ * USER_REPLY         — a queued inbound turn from a human speaker drove
+ *                      this cycle. The originator field is always present.
+ *
+ * DELIBERATE_GREET   — an intentional proactive bid, e.g. the greet-on-
+ *                      connect handshake (TK-100). Not produced by any
+ *                      current call site; the enum member exists so TK-100
+ *                      can stamp it without a type change.
+ *
+ * SALIENT_OBSERVATION — a genuinely novel perceptual event worth one remark
+ *                       (e.g. a new object/person enters the frame). Produced
+ *                       only when the TK-104 worth-saying/novelty check fires.
+ *                       Not produced by any current call site.
+ *
+ * AMBIENT_NONE       — a perception self-tick or idle drive-pressure cycle
+ *                      where nothing new was observed. The originator is
+ *                      always absent. TK-98 will suppress delivery for this
+ *                      intent; TK-99 will not count it against rate limits.
+ */
+export type EmissionIntent =
+  | 'USER_REPLY'
+  | 'DELIBERATE_GREET'
+  | 'SALIENT_OBSERVATION'
+  | 'AMBIENT_NONE';
+
+// ---------------------------------------------------------------------------
 // KnowledgeGrounding — How well a response is backed by Sylphie's own knowledge
 // ---------------------------------------------------------------------------
 
@@ -204,6 +240,24 @@ export interface CycleResponse {
   readonly inputCategory?: string;
 
   /**
+   * Why this cycle emitted a response (TK-103 emission-intent seam).
+   *
+   * Stamped at the cycle source so TK-98 (suppress AMBIENT_NONE), TK-99
+   * (rate-limit with DELIBERATE_GREET / SALIENT_OBSERVATION floor), and
+   * TK-100 (one DELIBERATE_GREET) can key on a single discriminator rather
+   * than inferring intent from originator absence.
+   *
+   * Classification rules (applied at responseSubject.next() in
+   * DecisionMakingService):
+   *   USER_REPLY      — currentTurnContext was set (inbound human turn)
+   *   AMBIENT_NONE    — no currentTurnContext (self-tick or scene-nudge
+   *                     with no novel content)
+   *   DELIBERATE_GREET / SALIENT_OBSERVATION — reserved for TK-100/104;
+   *                     no current call site produces these yet.
+   */
+  readonly emissionIntent: EmissionIntent;
+
+  /**
    * Deliberation intent classification for this turn, copied (never recomputed)
    * from the inner-monologue classifier (MonologueClassification.intent):
    * GREETING | EMOTION | QUESTION | FACT | COMMAND | UNKNOWN.
@@ -343,4 +397,11 @@ export interface DeliveryPayload {
    * Carried so the gateway/log layer can persist it (knowledge_retrieval metric).
    */
   readonly intent?: string;
+
+  /**
+   * Why this cycle emitted a response (TK-103 emission-intent seam).
+   * Forwarded verbatim from CycleResponse so TK-98/99/100 consumers can gate
+   * on a single discriminator at the delivery layer without re-deriving intent.
+   */
+  readonly emissionIntent: EmissionIntent;
 }

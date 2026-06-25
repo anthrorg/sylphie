@@ -103,6 +103,7 @@ export {
   type DeliveryPayload,
   type KnowledgeGrounding,
   type TurnOriginator,
+  type EmissionIntent,
 } from './communication.types';
 
 // Confidence types
