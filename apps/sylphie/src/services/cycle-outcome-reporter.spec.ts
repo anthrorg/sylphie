@@ -89,6 +89,7 @@ function makeResponse(overrides: {
     arbitrationResult: {} as never,
     latencyMs: 10,
     knowledgeGrounding: 'UNKNOWN',
+    emissionIntent: 'USER_REPLY',
   } as CycleResponse;
 }
 
