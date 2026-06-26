@@ -82,6 +82,7 @@ import { SensoryPredictionRouterService } from './sensory/sensory-prediction-rou
 import { TensorCandidateBuilder } from './tensor/tensor-candidate-builder';
 import { RecallRetrievalHelper } from './latent-space/recall-retrieval-helper';
 import { VisualPresenceHabituatorService } from './habituation/visual-presence-habituator';
+import { WorthSayingGate } from './monitoring/worth-saying-gate';
 
 @Injectable()
 export class DecisionMakingService implements IDecisionMakingService, OnModuleInit, OnModuleDestroy {
@@ -112,6 +113,16 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
    * feedback and (Ticket 4) route targeted delivery correctly.
    */
   private currentTurnContext: { turnId: string; originator: TurnOriginator } | null = null;
+
+  /**
+   * TK-104 — worth-saying / content-dedup gate for SELF-INITIATED cycles.
+   *
+   * In-process, ephemeral, instantiated directly (not DI) like the other
+   * lightweight cycle helpers. Only consulted on self-initiated emissions
+   * (emissionIntent !== USER_REPLY/DELIBERATE_GREET); it never touches the
+   * user-reply path. See worth-saying-gate.ts for the full rationale.
+   */
+  private readonly worthSayingGate = new WorthSayingGate();
 
   /**
    * Gap types accumulated from SHRUG arbitration results across recent cycles.
@@ -1819,10 +1830,48 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
 
         // TK-103 — classify emission intent at the source.
         // USER_REPLY   : an inbound human turn drove this cycle (context was set).
-        // AMBIENT_NONE : no inbound turn (self-tick or scene-nudge with nothing new).
-        // DELIBERATE_GREET / SALIENT_OBSERVATION are reserved for TK-100/104 and
-        // are not produced here — no call site sets them yet.
-        const emissionIntent = this.currentTurnContext !== null ? 'USER_REPLY' : 'AMBIENT_NONE';
+        // AMBIENT_NONE : no inbound turn (self-tick or scene-nudge) — provisional;
+        //                the TK-104 worth-saying gate refines this below.
+        const provisionalIntent: EmissionIntent =
+          this.currentTurnContext !== null ? 'USER_REPLY' : 'AMBIENT_NONE';
+
+        // TK-104 — worth-saying / content-dedup gate. Self-initiated cycles
+        // (provisional AMBIENT_NONE) only speak when they have something WORTH
+        // saying: a genuinely novel salient scene event (the "ball rolls into
+        // view" case → stamped SALIENT_OBSERVATION) or new grounded content, AND
+        // the line is not a repeat of a recent self-initiated utterance. A static
+        // scene / unchanged context yields nothing worth saying → suppress (stay
+        // silent, no SHRUG; state updates already happened upstream). USER_REPLY
+        // (and a future DELIBERATE_GREET) bypass the gate untouched — the
+        // user-reply generation path is never gated (TK-104 non_goal).
+        const worthSaying = this.worthSayingGate.evaluate({
+          emissionIntent: provisionalIntent,
+          responseText,
+          cachedSceneSurprise,
+          responseGrounding,
+        });
+
+        if (!worthSaying.worthSaying) {
+          vlog('worth-saying gate suppressed self-initiated emit', {
+            reason: worthSaying.reason,
+            actionId: emittedActionId,
+            responsePreview: responseText.substring(0, 80),
+            cachedSceneSurprise: +cachedSceneSurprise.toFixed(3),
+          });
+          this.logger.debug(
+            `TK-104 worth-saying gate suppressed self-initiated emission: ${worthSaying.reason}`,
+          );
+          return;
+        }
+
+        const emissionIntent = worthSaying.intent;
+
+        // Record the emitted line so a subsequent self-initiated cycle with
+        // unchanged context dedups against it (AC0). USER_REPLY/DELIBERATE_GREET
+        // are not recorded — they bypass dedup entirely.
+        if (provisionalIntent === 'AMBIENT_NONE') {
+          this.worthSayingGate.recordEmission(responseText);
+        }
 
         // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
         // social_interaction (Std-1) denominator = self-initiated comments only.

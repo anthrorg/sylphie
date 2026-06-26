@@ -104,6 +104,33 @@ const W_CONTEXT = 0.30;
 const W_DRIVE = 0.20;
 
 /**
+ * TK-104 (AC2) — bootstrap seed-greet de-prioritization.
+ *
+ * AD-0041 showed the generic SYSTEM_BOOTSTRAP seed-greet, reinforced to
+ * conf~0.81, wins essentially EVERY self-initiated cycle and starves real
+ * learned procedures — the runaway that makes Sylphie repeat one canned line.
+ * Bootstrap seeds exist only to cold-start the action tree; once REAL content
+ * exists (any non-SYSTEM_BOOTSTRAP procedure in the candidate set), the seeds
+ * should no longer dominate ranking by default.
+ *
+ * Fix: when the candidate set contains at least one non-bootstrap procedure,
+ * multiply each SYSTEM_BOOTSTRAP candidate's RANKING score by this factor. This
+ * is a RANK-TIME de-prioritization only — it does NOT mutate the stored node
+ * confidence (no self-modification, no demotion of the node) and applies only
+ * while real alternatives coexist. With no real content present (true cold
+ * start) the factor is not applied, so seeds still fire and bootstrap works.
+ *
+ * 0.5 is enough to let a real procedure of comparable raw score win the top
+ * slot while still leaving a graduated seed available as a lower-ranked
+ * fallback. EMPIRICAL TUNING: lower if seeds still dominate; raise toward 1.0
+ * if real content is over-favoured.
+ */
+export const BOOTSTRAP_RANK_ATTENUATION = 0.5;
+
+/** Provenance marker for cold-start bootstrap seed procedures. */
+const BOOTSTRAP_PROVENANCE = 'SYSTEM_BOOTSTRAP';
+
+/**
  * Minimal LRU cache backed by a Map.
  *
  * Map insertion order is used to approximate LRU: on each hit the key is
@@ -357,8 +384,19 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
             contextMatchScore,
             driveRelevanceScore: 0.0,
           };
-        })
-        .sort((a, b) => this.compositeScore(b) - this.compositeScore(a));
+        });
+
+      // TK-104 (AC2): once REAL learned content exists (any non-bootstrap
+      // procedure in the set), de-prioritize bootstrap seeds at rank time so the
+      // seed-greet stops winning every cycle. At true cold start (no real
+      // content) the attenuation is not applied and seeds still fire.
+      const realContentPresent = candidates.some(
+        (c) => c.procedureData.provenance !== BOOTSTRAP_PROVENANCE,
+      );
+      candidates.sort(
+        (a, b) =>
+          this.rankScore(b, realContentPresent) - this.rankScore(a, realContentPresent),
+      );
 
       const topCandidate = candidates.length > 0 ? candidates[0] : null;
       vlog('action retriever WKG query', {
@@ -369,6 +407,10 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
         topDriveRelevance: topCandidate?.driveRelevanceScore != null
           ? +topCandidate.driveRelevanceScore.toFixed(3) : null,
         topComposite: topCandidate ? +this.compositeScore(topCandidate).toFixed(3) : null,
+        topRankScore: topCandidate
+          ? +this.rankScore(topCandidate, realContentPresent).toFixed(3)
+          : null,
+        bootstrapDeprioritized: realContentPresent,
         motivatingDrive,
         cacheSize: this.cache.size,
       });
@@ -614,6 +656,29 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       W_CONTEXT * candidate.contextMatchScore +
       W_DRIVE * (candidate.driveRelevanceScore ?? 0.0)
     );
+  }
+
+  /**
+   * TK-104 (AC2): the score used to RANK candidates. Equal to the composite
+   * score, except a SYSTEM_BOOTSTRAP seed is attenuated by
+   * BOOTSTRAP_RANK_ATTENUATION when real (non-bootstrap) content coexists in the
+   * set — so a runaway-reinforced seed-greet no longer wins every cycle once
+   * genuine procedures exist. Rank-time only: the stored node confidence is
+   * never mutated (no demotion, no self-modification). At true cold start
+   * (realContentPresent=false) this is exactly the composite score, so seeds
+   * still fire and bootstrap is unaffected.
+   *
+   * @param candidate          - Candidate to score for ranking.
+   * @param realContentPresent - True when the set has >=1 non-bootstrap procedure.
+   * @returns The rank score in [0.0, 1.0].
+   */
+  private rankScore(candidate: ActionCandidate, realContentPresent: boolean): number {
+    const composite = this.compositeScore(candidate);
+    const isBootstrap = candidate.procedureData.provenance === BOOTSTRAP_PROVENANCE;
+    if (realContentPresent && isBootstrap) {
+      return composite * BOOTSTRAP_RANK_ATTENUATION;
+    }
+    return composite;
   }
 
   /**
