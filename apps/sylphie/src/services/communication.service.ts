@@ -48,6 +48,7 @@ import {
   NEGATIVE_VALENCE_THRESHOLD,
   MAGNITUDE_FLOOR,
 } from './theater-affect-scorer';
+import { detectCapabilityTheater } from './theater-capability-detector';
 import { buildResponseGeneratedPayload } from './response-generated-payload';
 import { CycleOutcomeReporterService } from './cycle-outcome-reporter.service';
 
@@ -716,6 +717,40 @@ export class CommunicationService implements OnModuleInit {
 
     const latencyMs = Date.now() - startMs;
 
+    // Theater Prohibition Layer 2 — capability-claim guard (TK-101 SHOULD-FIX).
+    //
+    // The WHO_AM_I path bypasses handleCycleResponse (and therefore the normal
+    // checkTheaterProhibitionCombined gate), creating an unchecked fabrication
+    // surface that could reach the guardian.  Run detectCapabilityTheater()
+    // directly on the LLM output before emitting.
+    //
+    // If a fabricated capability claim is detected, replace the LLM response
+    // with a brief honest fallback so the guardian is never silenced (WHO_AM_I
+    // is always user-initiated — AC2: "genuine suppression OR honest regeneration").
+    // The fallback text is itself non-theatrical and passes the detector.
+    const whoAmIVerdict = detectCapabilityTheater(responseText);
+    if (whoAmIVerdict.isCapabilityTheater) {
+      this.logger.warn(
+        `[Theater Prohibition L2] WHO_AM_I capability block — ` +
+          `class=${whoAmIVerdict.violationClass}, ` +
+          `phrase="${whoAmIVerdict.triggeringPhrase}"`,
+      );
+      this.logEvent('THEATER_CAPABILITY_BLOCKED', sessionId, {
+        turnId,
+        trigger: 'WHO_AM_I',
+        violationClass: whoAmIVerdict.violationClass,
+        triggeringPhrase: whoAmIVerdict.triggeringPhrase,
+        verdictReason: whoAmIVerdict.reason,
+        responseTextSnippet: responseText.substring(0, 100),
+        blocked: true,
+        honestFallbackEmitted: true,
+      });
+      // Replace with honest fallback — non-theatrical, no capability claims.
+      responseText = facts.length > 0
+        ? `Based on what you've told me, here is what I know about you: ${facts.map((f) => `${f.key}: ${f.value}`).join('; ')}.`
+        : "I don't have any recorded facts about you yet. Feel free to tell me about yourself.";
+    }
+
     // Emit delivery directly (bypasses decision-making executor).
     // WS4 Ticket 6: originator is now threaded onto the delivery so the gateway
     // routes the WHO_AM_I reply to the asker's socket only — closing the privacy-
@@ -730,7 +765,7 @@ export class CommunicationService implements OnModuleInit {
         socketId,
         isGuardian,
       },
-      isGrounded: true,
+      isGrounded: !whoAmIVerdict.isCapabilityTheater, // fallback is honest grounded data
       arbitrationType: 'TYPE_2',
       latencyMs,
       llmCalled: true,
@@ -894,6 +929,40 @@ export class CommunicationService implements OnModuleInit {
         capabilityViolationClass: combinedVerdict.capabilityVerdict.violationClass,
         capabilityTriggeringPhrase: combinedVerdict.capabilityVerdict.triggeringPhrase,
       });
+
+      // AC2 SHOULD-FIX: when a USER_REPLY is blocked, the guardian asked
+      // something and MUST NOT receive silence — silent suppression for a
+      // guardian turn is a usability CANON violation (the guardian stops
+      // engaging).  Emit a brief honest fallback that acknowledges the limit
+      // without theater.  For self-initiated emissions (DELIBERATE_GREET,
+      // SALIENT_OBSERVATION) silence is fine — the guardian did not ask.
+      if (response.emissionIntent === 'USER_REPLY') {
+        const fallbackText =
+          "I'm not able to claim that capability — I can only respond to what you've written.";
+        const fallbackDelivery: DeliveryPayload = {
+          type: 'cb_speech',
+          text: fallbackText,
+          turnId: response.turnId,
+          ...(response.originator !== undefined ? { originator: response.originator } : {}),
+          isGrounded: true,
+          arbitrationType: 'TYPE_2',
+          latencyMs: response.latencyMs,
+          llmCalled: false,
+          costUsd: 0,
+          knowledgeGrounding: 'UNKNOWN',
+          emissionIntent: 'USER_REPLY',
+        };
+        this.deliverySubject.next(fallbackDelivery);
+        this.logEvent('THEATER_PROHIBITION_FALLBACK', sessionId, {
+          turnId: response.turnId,
+          violationClass: combinedVerdict.capabilityVerdict.violationClass,
+          triggeringPhrase: combinedVerdict.capabilityVerdict.triggeringPhrase,
+          fallbackText,
+          reason: 'USER_REPLY blocked — honest fallback emitted to avoid guardian silence',
+        });
+        this.conversationHistory.addAssistantMessage(fallbackText);
+      }
+
       if (inFlightRegistered) {
         this.turnFloorGate.clearInFlight(response.turnId);
       }

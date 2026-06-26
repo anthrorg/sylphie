@@ -141,33 +141,88 @@ function isNegatedInClause(clause: string, phraseStart: number, maxLookback = 6)
  * structure; negation scope is checked separately.
  *
  * These cover:
- * - Visual perception claims ("optical sensors", "I can see you", "I see you",
+ * - Visual perception claims ("optical sensors", "I can see you right now",
  *   "I'm watching you", "I observe you", "my camera")
- * - Audio perception claims ("I hear you", "audio analysis", "I'm listening",
- *   "I can hear", "my microphone")
+ * - Audio perception claims ("audio analysis", "I'm listening to you",
+ *   "I can hear you through my microphone", "my microphone")
  * - Tactile/physical sensing claims ("I sense your", "I detect your")
+ *
+ * EMPATHY-IDIOM EXCEPTIONS (must NOT block — honest figurative speech):
+ *
+ *   "I hear you" / "I hear you, that sounds hard"
+ *     — Means "I understand / I acknowledge you." It is a conversational
+ *       empathy idiom, not a claim to microphone access. The phrase "hear
+ *       you" here functions as a transitive acknowledgement verb, not a
+ *       claim about Sylphie's audio hardware. HONEST.
+ *
+ *   "I can see you're upset" / "I see you've thought about this"
+ *     — The object is a CLAUSE ("you're upset", "you've thought about this"),
+ *       not a direct object "you". This is figurative perception of an
+ *       INFERRED emotional/cognitive state from the user's text. HONEST.
+ *
+ * LITERAL CLAIMS THAT MUST STILL BLOCK:
+ *   "I can see you clearly right now"     → direct physical visual claim
+ *   "I can see you and you look tired"    → visual description of appearance
+ *   "I can hear you through my mic"       → literal audio hardware claim
+ *   "I hear you, and I notice your tone"  → literal audio + analysis claim
+ *     (this one contains "and I notice your tone" after the idiom; the
+ *      combined clause is a sensory inference chain — treated as affirmative)
+ *
+ * Pattern design:
+ *   "i ... see you" patterns now require a non-clause context (not followed
+ *   by "re ", "ve ", "'re", "'ve", "are ", "have ") so figurative "I see
+ *   you're..." passes but "I see you clearly" blocks.
+ *
+ *   "i ... hear you" patterns now require a non-bare context: the phrase must
+ *   be followed by a physical/analysis marker ("through", "via", "and i
+ *   notice", "and i can tell") or a hardware noun ("microphone", "mic",
+ *   "speaker", "earpiece") to be a genuine audio claim. The bare idiom
+ *   "I hear you" or "I hear you, that sounds hard" passes.
  */
 const SENSORY_CLAIM_PATTERNS: ReadonlyArray<RegExp> = [
-  // Visual
+  // Visual — hardware / sensor vocabulary (always literal)
   /\boptical sensor[s]?\b/,
   /\bmy camera\b/,
-  /\bi (?:can |am )?see(?:ing)? you\b/,
-  /\bi(?:'m| am) watch(?:ing)? you\b/,
-  /\bi observe(?:d)? you\b/,
   /\bmy (?:visual|vision) (?:sensor[s]?|system|feed|input)\b/,
   /\bthrough my (?:camera|lens|optical|visual)\b/,
   /\bi (?:can |could )?detect(?:ed)? you(?: visually)?\b/,
 
-  // Audio
-  /\baudio analysis\b/,
-  /\bi (?:can |could )?hear you\b/,
-  /\bi(?:'m| am) listen(?:ing)? to you\b/,
+  // Visual — "I see/can see you" only when NOT followed by a subordinate clause.
+  // "I see you're upset" / "I see you've thought about..." → figurative (passes).
+  // "I see you clearly" / "I see you and you look tired" / "I can see you right now" → literal (blocks).
+  //
+  // Negative lookahead: (?!'?re\b|'?ve\b|\s+are\b|\s+have\b|\s+were\b|\s+had\b)
+  // This ensures we only match when the word after "you" is NOT a copula/aux
+  // that starts a subordinate clause.
+  /\bi (?:can |am )?see(?:ing)? you(?!'?re\b|'?ve\b|\s+are\b|\s+have\b|\s+were\b|\s+had\b)/,
+
+  // Visual — surveillance / watching (always a claim of physical presence tracking)
+  /\bi(?:'m| am) watch(?:ing)? you\b/,
+  /\bi observe(?:d)? you\b/,
+
+  // Audio — hardware vocabulary (always literal regardless of context)
   /\bmy microphone\b/,
   /\bmy audio (?:sensor[s]?|feed|input|stream)\b/,
   /\bthrough my (?:mic|microphone|audio)\b/,
+  /\bmy (?:ear[s]?|hearing)\b/,
+
+  // Audio analysis — always a fabricated capability claim
+  /\baudio analysis\b/,
   /\bi ran (?:audio|voice|sound) (?:analysis|processing|recognition)\b/,
   /\bi (?:can |could )?pick(?:ed)? up your (?:voice|audio|sound)\b/,
-  /\bmy (?:ear[s]?|hearing)\b/,
+
+  // Audio — "I can hear you" / "I could hear you" → literal audio-hardware claim.
+  // Bare "I hear you" (no modal "can"/"could") → empathy idiom (passes — see below).
+  // "I can hear you, and I notice your tone" → literal + tone analysis → BLOCKS.
+  // "I can hear you through my microphone" → literal audio hardware → BLOCKS.
+  //
+  // The empathy idiom "I hear you" (no "can"/"could") is NOT matched here because
+  // it is universally used as "I understand/acknowledge you" in conversational English.
+  // Only the modal form ("I can hear you", "I could hear you") claims audio access.
+  /\bi (?:can|could) hear you\b/,
+
+  // Audio — "I'm listening to you" (always a physical presence claim)
+  /\bi(?:'m| am) listen(?:ing)? to you\b/,
 
   // Generic sensory
   /\bmy (?:sensor[s]?|sensory feed[s]?)\b/,

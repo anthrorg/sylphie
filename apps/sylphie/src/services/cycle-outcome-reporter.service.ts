@@ -319,6 +319,31 @@ export class CycleOutcomeReporterService {
       return;
     }
 
+    // AC3 correctness: clear any active cycle prediction for this action BEFORE
+    // calling reportOutcome().
+    //
+    // Without this, reportOutcome() finds the active prediction, calls
+    // evaluatePrediction(predictionId, {driveEffectsObserved: {}}) and — if the
+    // action predicted small drive effects — computes MAE < 0.10 → accurate=true
+    // → 'reinforced', silently overriding predictionAccurate=false. The result
+    // is that the blocked action gets REWARDED, not extinguished.
+    //
+    // With this call the active prediction is removed before reportOutcome()
+    // reaches the evaluation branch, so:
+    //   isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate
+    //             = null?.accurate ?? false = false → counter_indicated  ✓
+    //
+    // CANON Std-6: clearExtinctionPrediction() does NOT modify the evaluator or
+    // scoring formula — it only discards a stale prediction for an action whose
+    // output was never legitimately delivered.
+    const cleared = this.decisionMaking.clearExtinctionPrediction(response.actionId);
+    if (cleared) {
+      this.logger.debug(
+        `[Theater Prohibition L2] cleared active prediction for actionId="${response.actionId}" ` +
+          `— prevents low-MAE empty-observed override on extinction path`,
+      );
+    }
+
     this.decisionMaking.reportOutcome(response.actionId, {
       selectedAction: {
         actionId: response.actionId,

@@ -209,4 +209,35 @@ export const HONEST_LINES: CorpusEntry[] = [
     text: "Hmm.",
     expectedBlocked: false,
   },
+
+  // ── Empathy-idiom regression guards (canon sign-off, TK-101 fix) ──────────
+  // These phrases are HONEST figurative/idiomatic speech and must never be
+  // blocked as capability theater.  They were previously false-positived by
+  // the bare "i ... hear you" and "i ... see you" patterns.
+
+  {
+    label: 'empathy idiom — bare "I hear you" (acknowledgement, not audio claim)',
+    text: "I hear you. That must be really frustrating.",
+    expectedBlocked: false,
+  },
+  {
+    label: 'empathy idiom — "I hear you, that sounds hard" (full empathy sentence)',
+    text: "I hear you, that sounds hard.",
+    expectedBlocked: false,
+  },
+  {
+    label: 'empathy idiom — "I can see you\'re upset" (figurative perception of inferred state)',
+    text: "I can see you're upset about this.",
+    expectedBlocked: false,
+  },
+  {
+    label: 'empathy idiom — "I see you\'ve thought about this" (figurative cognitive perception)',
+    text: "I see you've thought about this a lot.",
+    expectedBlocked: false,
+  },
+  {
+    label: 'empathy idiom — "I see you\'re going through a lot" (emotional state inference)',
+    text: "I see you're going through a lot right now.",
+    expectedBlocked: false,
+  },
 ];

@@ -2428,6 +2428,35 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // IDecisionMakingService — clearExtinctionPrediction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Remove any active (unevaluated) cycle prediction for the given actionId.
+   *
+   * Called by CycleOutcomeReporterService's Theater Prohibition extinction
+   * path BEFORE reportOutcome().  The problem being solved:
+   *
+   *   reportOutcome() calls evaluatePrediction(predictionId, outcome) where
+   *   outcome.driveEffectsObserved={}.  If the action's predicted effects are
+   *   small (all < 0.10), MAE < 0.10 → accurate=true → isAccurate=true →
+   *   'reinforced' — the exact opposite of extinction.
+   *
+   * By clearing the prediction first, getActivePredictionIdForAction() returns
+   * null, evaluatePrediction is not invoked, and:
+   *
+   *     isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate
+   *                = undefined ?? false = false  →  counter_indicated  ✓
+   *
+   * Delegates to PredictionService.clearActivePredictionForAction().
+   *
+   * CANON Std-6: does NOT modify the evaluator or scoring formula.
+   */
+  clearExtinctionPrediction(actionId: string): boolean {
+    return this.predictionService.clearActivePredictionForAction(actionId);
+  }
+
   /**
    * Resolve the ORIGIN correlation id to propagate with an action outcome
    * (CANON Standard 2 — provenance origin one-hop).

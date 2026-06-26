@@ -13,13 +13,16 @@
  *     - Tonal CHEERFUL_THEATER does NOT set shouldBlock (audit-only Layer 1).
  *     - The block is recorded in loggedEvents as THEATER_CAPABILITY_BLOCKED.
  *
- *   AC3 (LEARNED extinction):
- *     - Extinction calls ConfidenceUpdaterService.update(counter_indicated).
- *     - Repeated blocks trend confidence DOWN monotonically (provable from
- *       confidence telemetry).
- *     - SHRUG / greet-on-connect do NOT trigger extinction (no procedure node).
- *     - Extinction routes through reportOutcome() (existing path, NOT
- *       evaluator modification — CANON Std-6).
+ *   AC3 (LEARNED extinction — stub routing corridor):
+ *     - The stub DM mirrors the real DecisionMakingService.reportOutcome
+ *       routing PATH but is NOT the full real-path test.
+ *     - The real-path AC3 test (proving clearExtinctionPrediction() fixes the
+ *       active-prediction override defect) lives in:
+ *         packages/decision-making/src/prediction/theater-extinction-realpath.spec.ts
+ *       and runs under the decision-making jest suite.
+ *     - These stub tests prove: extinction fires on procedure-backed actions,
+ *       does NOT fire on SHRUG/greet-on-connect/type2-novel, and the stub
+ *       confidence update path reaches counter_indicated.
  *
  * DESIGN: This spec imports ONLY the new capability detector module (which has
  * zero external dependencies). The Layer 1 tonal affect check is proven
@@ -72,7 +75,19 @@ interface RecordedOutcome {
   theaterValidated: boolean;
 }
 
-/** Minimal DecisionMakingService stub. */
+/**
+ * Minimal DecisionMakingService stub.
+ *
+ * NOTE ON ROUTING: this stub routes predictionAccurate → counter_indicated
+ * naively, WITHOUT the real prediction-evaluation step.  This is intentional
+ * for the AC2 and stub-corridor AC3 tests: they prove that the block fires and
+ * that the outcome reaches reportOutcome() with the correct flags.
+ *
+ * The correctness of the REAL routing path (where an active prediction can
+ * override predictionAccurate=false via evaluatePrediction) is proven by the
+ * dedicated real-path suite:
+ *   packages/decision-making/src/prediction/theater-extinction-realpath.spec.ts
+ */
 class StubDM {
   readonly outcomes: RecordedOutcome[] = [];
   readonly cu = new StubConfidenceUpdater();
@@ -91,8 +106,8 @@ class StubDM {
       predictionError: outcome.predictionError,
       theaterValidated: outcome.selectedAction.theaterValidated,
     });
-    // Mirror DecisionMakingService.reportOutcome routing:
-    // predictionAccurate=false → counter_indicated
+    // Mirror DecisionMakingService.reportOutcome routing corridor:
+    // predictionAccurate=false → counter_indicated (naive, no prediction eval).
     const co: 'reinforced' | 'counter_indicated' =
       outcome.predictionAccurate ? 'reinforced' : 'counter_indicated';
     await this.cu.update(actionId, co);
@@ -281,11 +296,21 @@ async function main() {
     assert.strictEqual(r.capabilityVerdict.violationClass, 'FALSE_CONTINUITY');
   });
 
-  // ── AC3 — Extinction ──────────────────────────────────────────────────────
+  // ── AC3 — Extinction (stub routing corridor) ──────────────────────────────
+  //
+  // These tests prove the extinction corridor: block fires, reaches reportOutcome()
+  // with predictionAccurate=false, and the stub routes to counter_indicated.
+  //
+  // THE REAL CORRECTNESS TEST (active-prediction override defect + fix) lives in:
+  //   packages/decision-making/src/prediction/theater-extinction-realpath.spec.ts
+  //
+  // That suite instantiates the real PredictionService, seeds an active prediction
+  // with small drive effects, proves the defect (reinforced without fix), then
+  // proves the fix (counter_indicated after clearActivePredictionForAction).
 
-  console.log('\nAC3 — Extinction tests:');
+  console.log('\nAC3 — Extinction (stub routing corridor) tests:');
 
-  await checkAsync('AC3a: capability block fires counter_indicated extinction signal', async () => {
+  await checkAsync('AC3a: capability block fires reportOutcome with predictionAccurate=false', async () => {
     const dm = new StubDM();
     const actionId = 'proc-sensor-1';
     checkCombinedPure('I can see you clearly right now.', actionId, dm);
@@ -307,7 +332,7 @@ async function main() {
       'confidence update must use counter_indicated path');
   });
 
-  await checkAsync('AC3b: repeated blocks make confidence trend DOWN monotonically', async () => {
+  await checkAsync('AC3b: repeated blocks make confidence trend DOWN monotonically (stub path)', async () => {
     const dm = new StubDM();
     const actionId = 'proc-repeat';
     const TEXT = 'I can see you clearly and I ran audio analysis on that.';
@@ -360,7 +385,7 @@ async function main() {
       'type2-novel actions must not trigger extinction — no procedure node');
   });
 
-  await checkAsync('AC3f: extinction uses existing counter_indicated path (CANON Std-6 — not evaluator modification)', async () => {
+  await checkAsync('AC3f: extinction uses counter_indicated path (CANON Std-6 — not evaluator modification)', async () => {
     // CANON Std-6: extinction must NOT modify the evaluator/scoring logic.
     // It feeds a legitimate negative outcome through the existing reportOutcome()
     // → counter_indicated path — same as any wrong prediction.
