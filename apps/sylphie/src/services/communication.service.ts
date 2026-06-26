@@ -409,12 +409,6 @@ export class CommunicationService implements OnModuleInit {
     // This (a) marks the user as holding the floor (barge-in window), and
     // (b) cancels any in-flight self-initiated delivery (interrupt-mid-utterance).
     const interrupted = this.turnFloorGate.recordUserInput();
-    if (interrupted) {
-      vlog('TK-99: in-flight self-initiated delivery interrupted by inbound user turn', {
-        incomingTurnId: 'pending-mint', // real turnId assigned below
-        userId,
-      });
-    }
 
     // Step 5: construct the turn with full identity (WS4 Ticket 3).
     // userId, username, socketId, isGuardian are now populated from the gateway JWT.
@@ -430,6 +424,15 @@ export class CommunicationService implements OnModuleInit {
       username,
       socketId,
     };
+
+    // Log the AC2 interrupt AFTER turnId is minted so the audit trail records the
+    // real interrupting turn id, not a placeholder.
+    if (interrupted) {
+      vlog('TK-99: in-flight self-initiated delivery interrupted by inbound user turn', {
+        incomingTurnId: turnId,
+        userId,
+      });
+    }
 
     // Step 6: enqueue through the concurrency guard.
     this.decisionMaking.enqueueTurn(turn);
@@ -688,6 +691,12 @@ export class CommunicationService implements OnModuleInit {
     // For self-initiated deliveries that pass the gate, register them as in-flight
     // so a subsequent user turn can cancel them (AC2). USER_REPLY is never
     // registered as in-flight (it is never cancellable).
+    //
+    // CRITICAL (AC2): `cancelled` is a real per-call flag. The cancel() closure
+    // sets it synchronously; the guard below prevents deliverySubject.next() from
+    // firing once it is set. This is the actual cancellation mechanism — without
+    // this flag the delivery would emit even after the callback ran (Theater, Std-1).
+    let cancelled = false;
     let inFlightRegistered = false;
     if (
       response.emissionIntent === 'DELIBERATE_GREET' ||
@@ -697,12 +706,12 @@ export class CommunicationService implements OnModuleInit {
       this.turnFloorGate.registerInFlight({
         turnId: turnIdCapture,
         intent: response.emissionIntent,
-        // The cancel callback runs synchronously when a user turn interrupts.
-        // At this point in the pipeline we have not yet emitted to the subject,
-        // so the cancellation window is only within the async pipeline itself
-        // (TTS synthesis, etc.). The flag is checked before subject.next().
+        // The cancel callback runs synchronously when a user turn interrupts
+        // (via recordUserInput() or admit(USER_REPLY)). It sets `cancelled`
+        // so the guard before deliverySubject.next() can abort the emission.
         cancel: () => {
-          vlog('TK-99: in-flight delivery cancel callback invoked', {
+          cancelled = true;
+          vlog('TK-99: in-flight delivery cancel callback invoked — delivery suppressed', {
             turnId: turnIdCapture,
           });
         },
@@ -823,6 +832,22 @@ export class CommunicationService implements OnModuleInit {
           `(${response.tokensUsed?.prompt ?? 0}+${response.tokensUsed?.completion ?? 0} tokens, ` +
           `model=${response.model ?? 'unknown'})`,
       );
+    }
+
+    // TK-99 AC2: check cancellation flag BEFORE emitting. If a user turn arrived
+    // during the TTS await above and called cancel(), the self-initiated utterance
+    // must NOT reach the gateway. Log as suppressed-mid-flight with no reinforcement.
+    if (cancelled) {
+      this.logEvent('RESPONSE_GENERATED', sessionId, {
+        ...buildResponseGeneratedPayload(response),
+        suppressedMidFlight: true,
+        suppressedByFloorGate: true,
+        floorGateReason: 'cancelled-mid-utterance (user turn arrived during TTS synthesis)',
+      });
+      if (inFlightRegistered) {
+        this.turnFloorGate.clearInFlight(response.turnId);
+      }
+      return;
     }
 
     this.deliverySubject.next(delivery);

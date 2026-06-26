@@ -58,6 +58,14 @@ export interface AdmitResult {
    * USER_REPLY (AC2 interrupt-mid-utterance).
    */
   readonly interruptedInFlight: boolean;
+
+  /**
+   * The turnId of the in-flight delivery that was cancelled, if any.
+   * Populated when interruptedInFlight=true so the caller can log which
+   * delivery was interrupted (feeds the AC2 audit trail).
+   * Undefined when interruptedInFlight=false.
+   */
+  readonly cancelledTurnId?: string;
 }
 
 /**
@@ -195,17 +203,18 @@ export class TurnFloorGate {
     // Cancel any in-flight self-initiated delivery (AC2).
     if (intent === 'USER_REPLY') {
       let interrupted = false;
+      let cancelledTurnId: string | undefined;
       if (this.inFlight) {
+        cancelledTurnId = this.inFlight.turnId;
         this.inFlight.cancel();
-        const cancelledTurnId = this.inFlight.turnId;
         this.inFlight = null;
         interrupted = true;
-        void cancelledTurnId; // turnId logged by caller via interruptedInFlight
       }
       return {
         allow: true,
         reason: 'USER_REPLY always admitted',
         interruptedInFlight: interrupted,
+        cancelledTurnId,
       };
     }
 
