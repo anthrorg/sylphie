@@ -221,6 +221,34 @@ const SENSORY_CLAIM_PATTERNS: ReadonlyArray<RegExp> = [
   // Only the modal form ("I can hear you", "I could hear you") claims audio access.
   /\bi (?:can|could) hear you\b/,
 
+  // Audio — "I hear/heard you <sensory complement>" → literal audio claim.
+  //
+  // The bare idiom "I hear you" is intransitive-acknowledgement: the word "you"
+  // ends the phrase (followed by punctuation, comma, or conjunction). A LITERAL
+  // claim continues with a perceivable physical activity or body-part sound object:
+  //
+  //   LITERAL (BLOCK): "I hear you breathing", "I hear you crying",
+  //                    "I heard you snoring", "I heard you crying last night"
+  //   IDIOM (PASS):    "I hear you.", "I hear you, that sounds hard",
+  //                    "I hear you on that", "I hear you, and I understand"
+  //
+  // Discriminator: "i hear(?:d)? you" followed within a couple of tokens by a
+  // gerund describing a physical activity. This keeps the bare intransitive
+  // idiom passing while blocking any literal sensory complement.
+  //
+  // Gerunds covered: the most common LLM-generated audio/physical activity words.
+  /\bi heard? you (?:\w+ )?(?:breathing|crying|snoring|laughing|whispering|sobbing|sleeping|moving|typing|talking|speaking|singing|humming|coughing)\b/,
+
+  // Audio — "I hear/heard your <noun>" → literal possessive audio claim.
+  //
+  // "I can hear your heartbeat", "I hear your breathing", "I heard your voice".
+  // The existing modal pattern covers "I can/could hear you" but NOT "I can/could
+  // hear your <noun>" (object is the possessive noun, not "you"). This pattern
+  // closes that gap for both modal ("I can hear your") and non-modal forms
+  // ("I hear your", "I heard your").
+  /\bi (?:(?:can|could) )?hear your\b/,
+  /\bi heard your\b/,
+
   // Audio — "I'm listening to you" (always a physical presence claim)
   /\bi(?:'m| am) listen(?:ing)? to you\b/,
 
