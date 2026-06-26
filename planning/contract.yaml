@@ -5633,7 +5633,7 @@ nodes:
   - id: TK-99
     kind: ticket
     parent: EP-20
-    status: in_progress
+    status: done
     priority: P1
     estimate: M
     engineering_level: production
@@ -5767,7 +5767,7 @@ nodes:
   - id: TK-104
     kind: ticket
     parent: EP-20
-    status: in_progress
+    status: done
     priority: P1
     estimate: M
     engineering_level: production
