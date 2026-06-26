@@ -128,6 +128,25 @@ export class CommunicationService implements OnModuleInit {
   private readonly turnFloorGate = new TurnFloorGate();
 
   /**
+   * TK-100 — Greet dedup registry.
+   *
+   * Keyed by userId. Stores the wall-clock timestamp at which a connection
+   * greeting was INITIATED for that user. A second connect (page refresh,
+   * second tab, socket reopen) within GREET_DEDUP_WINDOW_MS of the first
+   * is silently skipped — no second DELIBERATE_GREET is emitted.
+   *
+   * The window is long enough to cover a typical page-refresh cycle
+   * (including React StrictMode double-mount and stale-socket eviction),
+   * short enough that a genuine re-visit well after the first session will
+   * still receive a greeting.
+   */
+  private readonly greetIssuedAt = new Map<string, number>();
+
+  /** Duration (ms) within which a repeated connect for the same userId
+   *  does NOT trigger a second greeting (TK-100 AC1 dedup window). */
+  static readonly GREET_DEDUP_WINDOW_MS = 60_000; // 60 seconds
+
+  /**
    * DeepSeek pricing rates for costUsd computation on TYPE_2 deliveries.
    * Resolved once at construction from env vars (same source as CostTrackerService)
    * so delivery cost and supervisor cost can never drift.
@@ -505,6 +524,117 @@ export class CommunicationService implements OnModuleInit {
     return true;
   }
 
+  // ---------------------------------------------------------------------------
+  // TK-100 — Connection greeting (greet-first on connect)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emit a single unprompted DELIBERATE_GREET when a new authenticated session
+   * connects, subject to dedup.
+   *
+   * Dedup key: `userId`, window: GREET_DEDUP_WINDOW_MS (60 s).
+   * A second connect (page refresh, second tab, socket reopen) within the
+   * window is silently skipped — exactly one greeting per user per window.
+   *
+   * The greeting is delivered through the existing TurnFloorGate so it counts
+   * as the one-per-turn contribution (TK-99 AC3). It is targeted to the
+   * specific socket that just connected (`socketId` in the originator) so no
+   * other connected session sees it.
+   *
+   * CANON Theater Prohibition: the greeting text is a plain, honest salutation —
+   * no fabricated capability claims or false-continuity ("I remember everything
+   * about you"). Drive state is not consulted because the greet fires before
+   * Sylphie has had a chance to observe anything about this session; a neutral,
+   * honest greeting is always authentic at connection time.
+   *
+   * @param userId   PostgreSQL User.id of the connecting user.
+   * @param socketId WebSocket socket ID of the connecting socket (for targeted
+   *                 delivery — only this socket receives the greeting).
+   * @param isGuardian Whether the connecting user holds guardian status.
+   */
+  async initiateConnectionGreet(userId: string, socketId: string, isGuardian = false): Promise<void> {
+    const now = Date.now();
+
+    // ── Dedup check ────────────────────────────────────────────────────────────
+    // If a greeting was already initiated for this userId within the dedup
+    // window (page refresh, second tab, rapid reconnect), skip.
+    const lastGreetAt = this.greetIssuedAt.get(userId);
+    if (lastGreetAt !== undefined && now - lastGreetAt < CommunicationService.GREET_DEDUP_WINDOW_MS) {
+      vlog('TK-100: connection greet skipped (dedup window active)', {
+        userId,
+        msSinceLastGreet: now - lastGreetAt,
+        windowMs: CommunicationService.GREET_DEDUP_WINDOW_MS,
+      });
+      return;
+    }
+
+    // ── Optimistic dedup key — set before the async floor check so concurrent
+    // calls within the same event-loop tick also see the guard. If the floor
+    // subsequently DENIES the greet (e.g. rate-limit), we roll back the key so
+    // the next legitimate connect isn't permanently blocked (SHOULD-FIX 2).
+    this.greetIssuedAt.set(userId, now);
+
+    // ── Build the delivery ─────────────────────────────────────────────────────
+    // A minimal DELIBERATE_GREET payload. Bypasses the DM executor (no cycle
+    // needed for a greeting) and emits directly through handleCycleResponse's
+    // equivalent path: TurnFloorGate admission → deliverySubject.
+    const turnId = `greet-${randomUUID().substring(0, 8)}`;
+    const greetText = 'Hi! How can I help you today?';
+
+    vlog('TK-100: emitting connection greet', { userId, socketId, turnId });
+
+    // Build a synthetic CycleResponse and run it through the normal handler.
+    // This ensures TurnFloorGate admission (AC3) and in-flight registration
+    // (AC2) follow the exact same code path as a drive-mediated DELIBERATE_GREET,
+    // so the floor accounting stays consistent.
+    const driveSnapshot = this.driveStateReader.getCurrentState();
+
+    const syntheticResponse: import('@sylphie/shared').CycleResponse = {
+      turnId,
+      originator: { userId, socketId, isGuardian },
+      text: greetText,
+      // Use TYPE_2 with null procedureData so reportOutcome classifies this as
+      // "no procedure node" and SKIPS the confidence update (CRITICAL FIX:
+      // TYPE_1+null procedureData was incorrectly treated as hasProcedureNode=true,
+      // causing a phantom confidence record for 'greet-on-connect' — CANON
+      // provenance violation, Std-1/Std-2). TYPE_2+null procedureData is the
+      // canonical "no-procedure" marker checked at decision-making.service.ts:2225.
+      //
+      // llmRationale is required on TYPE_2 (action.types.ts:215). An honest,
+      // non-LLM marker is used because no LLM ran for this synthetic greet.
+      arbitrationType: 'TYPE_2',
+      actionId: 'greet-on-connect',
+      driveSnapshot,
+      arbitrationResult: {
+        type: 'TYPE_2',
+        candidate: {
+          procedureData: null,
+          confidence: 1.0,
+          motivatingDrive: DriveName.Social,
+          contextMatchScore: 1.0,
+        },
+        // Honest marker: this is a synthetic greet, no LLM was invoked.
+        llmRationale: 'connection-greet (synthetic, no LLM)',
+      },
+      latencyMs: 0,
+      knowledgeGrounding: 'GROUNDED',
+      emissionIntent: 'DELIBERATE_GREET',
+    };
+
+    // Await the result so we can roll back the dedup key if the floor denied
+    // the greet (SHOULD-FIX 2: consume-on-admit semantics). handleCycleResponse
+    // returns true when the delivery was emitted, false when suppressed by floor
+    // or cancelled mid-flight.
+    const admitted = await this.handleCycleResponse(syntheticResponse);
+    if (!admitted) {
+      // Floor denied (e.g. rate-limit) or mid-flight cancel — roll back the key
+      // so AC0 "exactly one greet within a few seconds" is not violated by
+      // leaving a stale key that blocks the full 60 s window.
+      this.greetIssuedAt.delete(userId);
+      vlog('TK-100: dedup key rolled back (floor suppressed greet)', { userId, socketId, turnId });
+    }
+  }
+
   /**
    * Handle the "Who am I?" trigger.
    *
@@ -642,7 +772,17 @@ export class CommunicationService implements OnModuleInit {
    * 7. Store pending turn for guardian feedback correlation
    * 8. Call reportOutcome() to close the reinforcement loop
    */
-  private async handleCycleResponse(response: CycleResponse): Promise<void> {
+  /**
+   * Handle a CycleResponse from the Decision Making executor.
+   *
+   * Returns `true` if the delivery was emitted (floor admitted + not cancelled),
+   * `false` if suppressed by the TurnFloorGate or cancelled mid-flight.
+   *
+   * The return value is used by `initiateConnectionGreet` to implement
+   * consume-on-admit dedup-key semantics (SHOULD-FIX 2). All other callers
+   * (response$ subscriber) safely discard it via `void`.
+   */
+  private async handleCycleResponse(response: CycleResponse): Promise<boolean> {
     const sessionId = response.driveSnapshot.sessionId;
 
     // Sanitize response text: strip LLM formatting artifacts before delivery.
@@ -679,7 +819,7 @@ export class CommunicationService implements OnModuleInit {
         suppressedByFloorGate: true,
         floorGateReason: floorDecision.reason,
       });
-      return;
+      return false;
     }
 
     if (floorDecision.interruptedInFlight) {
@@ -796,7 +936,11 @@ export class CommunicationService implements OnModuleInit {
       isGrounded,
       arbitrationType: response.arbitrationType,
       latencyMs: response.latencyMs,
-      llmCalled: response.arbitrationType === 'TYPE_2',
+      // CRITICAL honesty guard (CANON Std-1 Theater Prohibition): a synthetic
+      // DELIBERATE_GREET is TYPE_2 (for correct no-procedure-node classification)
+      // but NO LLM was invoked. Reporting llmCalled:true would be dishonest theater.
+      // Key on emissionIntent — the single, unambiguous discriminator (TK-103).
+      llmCalled: response.arbitrationType === 'TYPE_2' && response.emissionIntent !== 'DELIBERATE_GREET',
       costUsd: computeDeliveryCost(response, this.pricingRates),
       knowledgeGrounding: response.knowledgeGrounding,
       // WS3 T5: forward the grounding provenance node id + its source so a
@@ -847,7 +991,7 @@ export class CommunicationService implements OnModuleInit {
       if (inFlightRegistered) {
         this.turnFloorGate.clearInFlight(response.turnId);
       }
-      return;
+      return false;
     }
 
     this.deliverySubject.next(delivery);
@@ -896,6 +1040,8 @@ export class CommunicationService implements OnModuleInit {
     // TK-35 (EP7-E): verdict was already computed above; pass it directly to
     // avoid a second scorer run.
     await this.cycleOutcomeReporter.reportBasicOutcome(response, theaterVerdict);
+
+    return true;
   }
 
   // ---------------------------------------------------------------------------

@@ -305,6 +305,20 @@ export class ConversationGateway
     }
 
     client.send(JSON.stringify({ type: 'system_status', is_thinking: false }));
+
+    // TK-100 — greet-first on connect.
+    // Emit exactly one DELIBERATE_GREET to the connecting socket after a short
+    // delay so the system_status message lands first and the client is ready.
+    // The greeting is deduped in CommunicationService on userId+window so rapid
+    // reconnects (page refresh, second tab) do not produce a second greeting.
+    // Only greet authenticated users (userId is known); anonymous connections
+    // get no greeting (no stable dedup key, no person model to greet into).
+    if (user) {
+      const greetSocketId = socketId;
+      setTimeout(() => {
+        void this.communication.initiateConnectionGreet(user.userId, greetSocketId, user.isGuardian);
+      }, 100);
+    }
   }
 
   handleDisconnect(client: WebSocket): void {
