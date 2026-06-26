@@ -5685,7 +5685,7 @@ nodes:
   - id: TK-101
     kind: ticket
     parent: EP-20
-    status: todo
+    status: in_progress
     priority: P1
     estimate: M
     engineering_level: production
