@@ -316,7 +316,7 @@ export class ConversationGateway
     if (user) {
       const greetSocketId = socketId;
       setTimeout(() => {
-        this.communication.initiateConnectionGreet(user.userId, greetSocketId, user.isGuardian);
+        void this.communication.initiateConnectionGreet(user.userId, greetSocketId, user.isGuardian);
       }, 100);
     }
   }

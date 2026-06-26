@@ -552,7 +552,7 @@ export class CommunicationService implements OnModuleInit {
    *                 delivery — only this socket receives the greeting).
    * @param isGuardian Whether the connecting user holds guardian status.
    */
-  initiateConnectionGreet(userId: string, socketId: string, isGuardian = false): void {
+  async initiateConnectionGreet(userId: string, socketId: string, isGuardian = false): Promise<void> {
     const now = Date.now();
 
     // ── Dedup check ────────────────────────────────────────────────────────────
@@ -568,7 +568,10 @@ export class CommunicationService implements OnModuleInit {
       return;
     }
 
-    // Record before any async work so a rapid second call also hits the guard.
+    // ── Optimistic dedup key — set before the async floor check so concurrent
+    // calls within the same event-loop tick also see the guard. If the floor
+    // subsequently DENIES the greet (e.g. rate-limit), we roll back the key so
+    // the next legitimate connect isn't permanently blocked (SHOULD-FIX 2).
     this.greetIssuedAt.set(userId, now);
 
     // ── Build the delivery ─────────────────────────────────────────────────────
@@ -590,27 +593,46 @@ export class CommunicationService implements OnModuleInit {
       turnId,
       originator: { userId, socketId, isGuardian },
       text: greetText,
-      // Use TYPE_1 with the minimal ActionCandidate shape required by the type.
-      // The greet-on-connect action has no backing procedure node (null) and
-      // uses Social as the motivating drive (greeting reduces Social pressure).
-      arbitrationType: 'TYPE_1',
+      // Use TYPE_2 with null procedureData so reportOutcome classifies this as
+      // "no procedure node" and SKIPS the confidence update (CRITICAL FIX:
+      // TYPE_1+null procedureData was incorrectly treated as hasProcedureNode=true,
+      // causing a phantom confidence record for 'greet-on-connect' — CANON
+      // provenance violation, Std-1/Std-2). TYPE_2+null procedureData is the
+      // canonical "no-procedure" marker checked at decision-making.service.ts:2225.
+      //
+      // llmRationale is required on TYPE_2 (action.types.ts:215). An honest,
+      // non-LLM marker is used because no LLM ran for this synthetic greet.
+      arbitrationType: 'TYPE_2',
       actionId: 'greet-on-connect',
       driveSnapshot,
       arbitrationResult: {
-        type: 'TYPE_1',
+        type: 'TYPE_2',
         candidate: {
           procedureData: null,
           confidence: 1.0,
           motivatingDrive: DriveName.Social,
           contextMatchScore: 1.0,
         },
+        // Honest marker: this is a synthetic greet, no LLM was invoked.
+        llmRationale: 'connection-greet (synthetic, no LLM)',
       },
       latencyMs: 0,
       knowledgeGrounding: 'GROUNDED',
       emissionIntent: 'DELIBERATE_GREET',
     };
 
-    void this.handleCycleResponse(syntheticResponse);
+    // Await the result so we can roll back the dedup key if the floor denied
+    // the greet (SHOULD-FIX 2: consume-on-admit semantics). handleCycleResponse
+    // returns true when the delivery was emitted, false when suppressed by floor
+    // or cancelled mid-flight.
+    const admitted = await this.handleCycleResponse(syntheticResponse);
+    if (!admitted) {
+      // Floor denied (e.g. rate-limit) or mid-flight cancel — roll back the key
+      // so AC0 "exactly one greet within a few seconds" is not violated by
+      // leaving a stale key that blocks the full 60 s window.
+      this.greetIssuedAt.delete(userId);
+      vlog('TK-100: dedup key rolled back (floor suppressed greet)', { userId, socketId, turnId });
+    }
   }
 
   /**
@@ -750,7 +772,17 @@ export class CommunicationService implements OnModuleInit {
    * 7. Store pending turn for guardian feedback correlation
    * 8. Call reportOutcome() to close the reinforcement loop
    */
-  private async handleCycleResponse(response: CycleResponse): Promise<void> {
+  /**
+   * Handle a CycleResponse from the Decision Making executor.
+   *
+   * Returns `true` if the delivery was emitted (floor admitted + not cancelled),
+   * `false` if suppressed by the TurnFloorGate or cancelled mid-flight.
+   *
+   * The return value is used by `initiateConnectionGreet` to implement
+   * consume-on-admit dedup-key semantics (SHOULD-FIX 2). All other callers
+   * (response$ subscriber) safely discard it via `void`.
+   */
+  private async handleCycleResponse(response: CycleResponse): Promise<boolean> {
     const sessionId = response.driveSnapshot.sessionId;
 
     // Sanitize response text: strip LLM formatting artifacts before delivery.
@@ -787,7 +819,7 @@ export class CommunicationService implements OnModuleInit {
         suppressedByFloorGate: true,
         floorGateReason: floorDecision.reason,
       });
-      return;
+      return false;
     }
 
     if (floorDecision.interruptedInFlight) {
@@ -904,7 +936,11 @@ export class CommunicationService implements OnModuleInit {
       isGrounded,
       arbitrationType: response.arbitrationType,
       latencyMs: response.latencyMs,
-      llmCalled: response.arbitrationType === 'TYPE_2',
+      // CRITICAL honesty guard (CANON Std-1 Theater Prohibition): a synthetic
+      // DELIBERATE_GREET is TYPE_2 (for correct no-procedure-node classification)
+      // but NO LLM was invoked. Reporting llmCalled:true would be dishonest theater.
+      // Key on emissionIntent — the single, unambiguous discriminator (TK-103).
+      llmCalled: response.arbitrationType === 'TYPE_2' && response.emissionIntent !== 'DELIBERATE_GREET',
       costUsd: computeDeliveryCost(response, this.pricingRates),
       knowledgeGrounding: response.knowledgeGrounding,
       // WS3 T5: forward the grounding provenance node id + its source so a
@@ -955,7 +991,7 @@ export class CommunicationService implements OnModuleInit {
       if (inFlightRegistered) {
         this.turnFloorGate.clearInFlight(response.turnId);
       }
-      return;
+      return false;
     }
 
     this.deliverySubject.next(delivery);
@@ -1004,6 +1040,8 @@ export class CommunicationService implements OnModuleInit {
     // TK-35 (EP7-E): verdict was already computed above; pass it directly to
     // avoid a second scorer run.
     await this.cycleOutcomeReporter.reportBasicOutcome(response, theaterVerdict);
+
+    return true;
   }
 
   // ---------------------------------------------------------------------------
