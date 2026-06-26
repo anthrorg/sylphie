@@ -279,6 +279,50 @@ export class PredictionService implements IPredictionService {
   }
 
   // ---------------------------------------------------------------------------
+  // IPredictionService — clearActivePredictionForAction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Remove any active (unevaluated) prediction for the given actionId.
+   *
+   * Used by the Theater Prohibition extinction path to discard the cycle
+   * prediction BEFORE reportOutcome() is called, so the evaluatePrediction
+   * step cannot override predictionAccurate=false with an "accurate" verdict
+   * computed from an empty driveEffectsObserved map.
+   *
+   * When driveEffectsObserved={} (extinction signal) and the action's
+   * predicted effects are small (e.g. all < 0.10), MAE < ACCURATE_MAE_THRESHOLD
+   * and evaluatePrediction returns accurate=true — which flips isAccurate to
+   * true and routes to 'reinforced' rather than 'counter_indicated'.  Clearing
+   * the active prediction before the call forces the fallback path:
+   *
+   *     isAccurate = predictionEvaluation?.accurate ?? outcome.predictionAccurate
+   *                = null?.accurate ?? false
+   *                = false  →  counter_indicated  ✓
+   *
+   * CANON Std-6: does NOT modify the evaluator or scoring formula.  It
+   * prevents evaluation from running on an outcome that was never legitimately
+   * delivered to the guardian.
+   *
+   * @param actionId - WKG procedure node ID whose prediction should be removed.
+   * @returns True if a prediction was found and removed; false otherwise.
+   */
+  clearActivePredictionForAction(actionId: string): boolean {
+    for (const [predictionId, stored] of this.activePredictions) {
+      const candidateActionId = stored.prediction.actionCandidate.procedureData?.id;
+      if (candidateActionId === actionId) {
+        this.activePredictions.delete(predictionId);
+        this.logger.debug(
+          `clearActivePredictionForAction: removed prediction ${predictionId} ` +
+            `for actionId="${actionId}" (theater extinction pre-flight)`,
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
   // IPredictionService — pruneStale
   // ---------------------------------------------------------------------------
 

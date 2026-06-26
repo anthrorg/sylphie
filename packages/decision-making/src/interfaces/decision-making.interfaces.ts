@@ -155,6 +155,25 @@ export interface IDecisionMakingService {
    * @param turn - The fully-constructed InboundTurn with turnId and text set.
    */
   enqueueTurn(turn: InboundTurn): void;
+
+  /**
+   * Remove any active (unevaluated) cycle prediction for the given actionId.
+   *
+   * Called by the Theater Prohibition extinction path (CycleOutcomeReporterService)
+   * BEFORE reportOutcome() so that the evaluatePrediction step cannot override
+   * predictionAccurate=false with a low-MAE "accurate" verdict produced by
+   * comparing the predicted effects against an empty driveEffectsObserved map.
+   *
+   * CANON Std-6: does NOT modify the evaluator or scoring formula.  It discards
+   * a stale prediction for an action whose output was blocked before delivery,
+   * so no legitimate evaluation is lost.
+   *
+   * Delegates to PredictionService.clearActivePredictionForAction().
+   *
+   * @param actionId - WKG procedure node ID whose prediction should be removed.
+   * @returns True if a prediction was found and removed; false otherwise.
+   */
+  clearExtinctionPrediction(actionId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +454,23 @@ export interface IPredictionService {
    * @param maxAgeMs - Maximum age in milliseconds before pruning.
    */
   pruneStale(maxAgeMs: number): void;
+
+  /**
+   * Remove any active (unevaluated) prediction for the given actionId.
+   *
+   * Used by the Theater Prohibition extinction path to discard a stale
+   * cycle prediction BEFORE calling reportOutcome(), so the evaluation
+   * logic cannot override predictionAccurate=false with a low-MAE
+   * "accurate" verdict from an empty driveEffectsObserved map.
+   *
+   * CANON Std-6: this does NOT modify the evaluator or scoring formula.
+   * It simply prevents evaluation from running on an outcome that was
+   * never legitimately delivered to the guardian.
+   *
+   * @param actionId - WKG procedure node ID whose prediction should be removed.
+   * @returns True if a prediction was found and removed, false if none existed.
+   */
+  clearActivePredictionForAction(actionId: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
