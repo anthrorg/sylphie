@@ -1851,7 +1851,106 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           responseGrounding,
         });
 
-        if (!worthSaying.worthSaying) {
+        // TK-98 (AC0) — worth-saying suppression must skip ONLY the chat emit,
+        // NOT the downstream curiosity/scene drive routing in the cycle tail
+        // (routeSensoryPredictionErrors / routeScenePredictionErrors /
+        // undiscovered-object + unknown-person pressure, ~:2032–:2123). Those
+        // are the "curiosity state STILL updates" half of AC0: a static/idle
+        // self-tick stays SILENT (no responseSubject.next, no SHRUG) but the
+        // perceptual prediction errors it observed must still reach the drives.
+        //
+        // The PRIOR implementation early-returned here, which aborted the whole
+        // cycle and dropped that routing — a genuine AC0 gap. We now guard ONLY
+        // the emit (and the emit-only bookkeeping: dedup-record, proactive-social
+        // capture, responseSubject.next) on `worthSaying.worthSaying`, and let
+        // control fall through to the drive-routing tail. Episodic encode already
+        // ran upstream (~:1415), so the "episodic state STILL updates" half holds
+        // regardless.
+        if (worthSaying.worthSaying) {
+          const emissionIntent = worthSaying.intent;
+
+          // Record the emitted line so a subsequent self-initiated cycle with
+          // unchanged context dedups against it (AC0). USER_REPLY/DELIBERATE_GREET
+          // are not recorded — they bypass dedup entirely.
+          if (provisionalIntent === 'AMBIENT_NONE') {
+            this.worthSayingGate.recordEmission(responseText);
+          }
+
+          // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
+          // social_interaction (Std-1) denominator = self-initiated comments only.
+          // Proactive ⟺ this cycle had NO inbound guardian turn: no
+          // currentTurnContext (so emitOriginator is undefined) AND no frame
+          // turn_id (perception/self-tick frames carry none). A degraded SHRUG
+          // (LLM unavailable) is not a real communicative bid, so it is excluded.
+          // We are inside the `responseText.trim().length > 0` real-emit block and
+          // past both epoch fences, so this fires at most once per emitted turn and
+          // never for a zombie. Consumed by reportOutcome() to emit
+          // SOCIAL_COMMENT_INITIATED. session_id MUST be non-null (the writer's
+          // self-join keys on it) — driveSnapshot.sessionId is always a real string.
+          const isProactiveSocialBid =
+            emitOriginator === undefined &&
+            (frame.raw['turn_id'] as string | undefined) == null &&
+            !responseDegradedNoLlm &&
+            emittedActionId !== 'SHRUG';
+          if (isProactiveSocialBid) {
+            this.pendingProactiveSocial.set(actionId, {
+              turnId: emitTurnId,
+              sessionId: driveSnapshot.sessionId,
+              initiatedAt: Date.now(),
+            });
+            if (this.pendingProactiveSocial.size > this.MAX_PENDING_LATENT) {
+              const oldest = this.pendingProactiveSocial.keys().next().value;
+              if (oldest !== undefined) this.pendingProactiveSocial.delete(oldest);
+            }
+          }
+
+          this.responseSubject.next({
+            turnId: emitTurnId,
+            ...(emitOriginator !== undefined ? { originator: emitOriginator } : {}),
+            text: responseText,
+            arbitrationType: emittedArbitrationType,
+            actionId: emittedActionId,
+            driveSnapshot,
+            arbitrationResult: emittedArbitrationResult,
+            latencyMs: cycleLatencyMs,
+            // No model produced a degraded SHRUG — the LLM was unavailable.
+            model: responseDegradedNoLlm ? undefined : responseModel,
+            tokensUsed: responseDegradedNoLlm ? undefined : responseTokens,
+            knowledgeGrounding: responseGrounding,
+            groundingProvenance: responseGroundingProvenance ?? undefined,
+            // WS3 T5: thread the GROUNDED source ('OKG'|'WKG') so a consumer can
+            // verify groundingProvenance against the correct live Neo4j instance.
+            groundedBy: responseGroundedBy ?? undefined,
+            // Deliberation intent — persisted on RESPONSE_GENERATED so the
+            // knowledge_retrieval metric can gate its denominator on QUESTION turns.
+            ...(responseIntent !== undefined ? { intent: responseIntent } : {}),
+            preExecutionDriveSnapshot: driveSnapshot.pressureVector,
+            latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
+            // Tensor metadata — populated when sidecar was available this cycle
+            ...(tensorResult ? {
+              tensorTopCategory: tensorResult.tensorTopCategory ?? undefined,
+              tensorUrgency: tensorResult.urgency,
+              tensorConsensus: tensorResult.consensus,
+              bootstrapMode: tensorResult.bootstrapMode,
+              // The exact 1561-dim assembled vector for this cycle — copied (never
+              // reconstructed) from the sidecar so it stays byte-identical to what
+              // the sidecar's _split_input_vector() expects. Lets the supervisor
+              // thread it into reinforce/correct. Omitted when the sidecar did not
+              // surface one (older build / non-tensor path) so reinforce/correct
+              // skip honestly rather than firing on a fabricated vector.
+              ...(tensorResult.globalInputVector
+                ? { globalInputVector: tensorResult.globalInputVector }
+                : {}),
+            } : {}),
+            inputCategory: processInputResult.inputCategory,
+            emissionIntent,
+          });
+        } else {
+          // TK-98 (AC0) — worth-saying suppressed the chat emit. Stay SILENT
+          // (no responseSubject.next, no SHRUG), but DO fall through to the
+          // curiosity/scene drive-routing tail below so perceptual prediction
+          // errors still reach the drives. This is the genuine-silence-with-
+          // state-update behavior AC0 requires.
           vlog('worth-saying gate suppressed self-initiated emit', {
             reason: worthSaying.reason,
             actionId: emittedActionId,
@@ -1861,87 +1960,7 @@ export class DecisionMakingService implements IDecisionMakingService, OnModuleIn
           this.logger.debug(
             `TK-104 worth-saying gate suppressed self-initiated emission: ${worthSaying.reason}`,
           );
-          return;
         }
-
-        const emissionIntent = worthSaying.intent;
-
-        // Record the emitted line so a subsequent self-initiated cycle with
-        // unchanged context dedups against it (AC0). USER_REPLY/DELIBERATE_GREET
-        // are not recorded — they bypass dedup entirely.
-        if (provisionalIntent === 'AMBIENT_NONE') {
-          this.worthSayingGate.recordEmission(responseText);
-        }
-
-        // ── Self-model: capture a GENUINELY PROACTIVE social bid ───────────────
-        // social_interaction (Std-1) denominator = self-initiated comments only.
-        // Proactive ⟺ this cycle had NO inbound guardian turn: no
-        // currentTurnContext (so emitOriginator is undefined) AND no frame
-        // turn_id (perception/self-tick frames carry none). A degraded SHRUG
-        // (LLM unavailable) is not a real communicative bid, so it is excluded.
-        // We are inside the `responseText.trim().length > 0` real-emit block and
-        // past both epoch fences, so this fires at most once per emitted turn and
-        // never for a zombie. Consumed by reportOutcome() to emit
-        // SOCIAL_COMMENT_INITIATED. session_id MUST be non-null (the writer's
-        // self-join keys on it) — driveSnapshot.sessionId is always a real string.
-        const isProactiveSocialBid =
-          emitOriginator === undefined &&
-          (frame.raw['turn_id'] as string | undefined) == null &&
-          !responseDegradedNoLlm &&
-          emittedActionId !== 'SHRUG';
-        if (isProactiveSocialBid) {
-          this.pendingProactiveSocial.set(actionId, {
-            turnId: emitTurnId,
-            sessionId: driveSnapshot.sessionId,
-            initiatedAt: Date.now(),
-          });
-          if (this.pendingProactiveSocial.size > this.MAX_PENDING_LATENT) {
-            const oldest = this.pendingProactiveSocial.keys().next().value;
-            if (oldest !== undefined) this.pendingProactiveSocial.delete(oldest);
-          }
-        }
-
-        this.responseSubject.next({
-          turnId: emitTurnId,
-          ...(emitOriginator !== undefined ? { originator: emitOriginator } : {}),
-          text: responseText,
-          arbitrationType: emittedArbitrationType,
-          actionId: emittedActionId,
-          driveSnapshot,
-          arbitrationResult: emittedArbitrationResult,
-          latencyMs: cycleLatencyMs,
-          // No model produced a degraded SHRUG — the LLM was unavailable.
-          model: responseDegradedNoLlm ? undefined : responseModel,
-          tokensUsed: responseDegradedNoLlm ? undefined : responseTokens,
-          knowledgeGrounding: responseGrounding,
-          groundingProvenance: responseGroundingProvenance ?? undefined,
-          // WS3 T5: thread the GROUNDED source ('OKG'|'WKG') so a consumer can
-          // verify groundingProvenance against the correct live Neo4j instance.
-          groundedBy: responseGroundedBy ?? undefined,
-          // Deliberation intent — persisted on RESPONSE_GENERATED so the
-          // knowledge_retrieval metric can gate its denominator on QUESTION turns.
-          ...(responseIntent !== undefined ? { intent: responseIntent } : {}),
-          preExecutionDriveSnapshot: driveSnapshot.pressureVector,
-          latentPatternIds: latentPatternIds.length > 0 ? latentPatternIds : undefined,
-          // Tensor metadata — populated when sidecar was available this cycle
-          ...(tensorResult ? {
-            tensorTopCategory: tensorResult.tensorTopCategory ?? undefined,
-            tensorUrgency: tensorResult.urgency,
-            tensorConsensus: tensorResult.consensus,
-            bootstrapMode: tensorResult.bootstrapMode,
-            // The exact 1561-dim assembled vector for this cycle — copied (never
-            // reconstructed) from the sidecar so it stays byte-identical to what
-            // the sidecar's _split_input_vector() expects. Lets the supervisor
-            // thread it into reinforce/correct. Omitted when the sidecar did not
-            // surface one (older build / non-tensor path) so reinforce/correct
-            // skip honestly rather than firing on a fabricated vector.
-            ...(tensorResult.globalInputVector
-              ? { globalInputVector: tensorResult.globalInputVector }
-              : {}),
-          } : {}),
-          inputCategory: processInputResult.inputCategory,
-          emissionIntent,
-        });
       } else {
         this.logger.debug(
           `Decision cycle produced empty responseText — suppressing CycleResponse emission.`,
