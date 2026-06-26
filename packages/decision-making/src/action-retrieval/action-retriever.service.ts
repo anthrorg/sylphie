@@ -391,7 +391,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
       // seed-greet stops winning every cycle. At true cold start (no real
       // content) the attenuation is not applied and seeds still fire.
       const realContentPresent = candidates.some(
-        (c) => c.procedureData.provenance !== BOOTSTRAP_PROVENANCE,
+        (c) => c.procedureData?.provenance !== BOOTSTRAP_PROVENANCE,
       );
       candidates.sort(
         (a, b) =>
@@ -674,7 +674,7 @@ export class ActionRetrieverService implements IActionRetrieverService, OnModule
    */
   private rankScore(candidate: ActionCandidate, realContentPresent: boolean): number {
     const composite = this.compositeScore(candidate);
-    const isBootstrap = candidate.procedureData.provenance === BOOTSTRAP_PROVENANCE;
+    const isBootstrap = candidate.procedureData?.provenance === BOOTSTRAP_PROVENANCE;
     if (realContentPresent && isBootstrap) {
       return composite * BOOTSTRAP_RANK_ATTENUATION;
     }
