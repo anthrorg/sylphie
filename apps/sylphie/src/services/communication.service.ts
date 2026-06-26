@@ -869,12 +869,39 @@ export class CommunicationService implements OnModuleInit {
     // gated metric (CANON Std-1).
     this.logEvent('RESPONSE_GENERATED', sessionId, buildResponseGeneratedPayload(response));
 
-    // Theater Prohibition check (CANON Standard 1). Audit + zero-reinforce on a
-    // violation; delivery is NOT blocked — the response still reaches the guardian.
-    // TK-35 (EP7-E): delegated to CycleOutcomeReporterService; verdict still
-    // needed here to set isGrounded on the DeliveryPayload.
-    const theaterVerdict = this.cycleOutcomeReporter.checkTheaterProhibition(response);
-    const isGrounded = !theaterVerdict.isTheatrical;
+    // Theater Prohibition check (CANON Standard 1, TK-101).
+    //
+    // Two-layer check via checkTheaterProhibitionCombined():
+    //   Layer 1 (tonal affect): audit + zero-reinforce only; delivery continues.
+    //   Layer 2 (capability-claim / false-continuity): BLOCK delivery + extinction.
+    //
+    // When shouldBlock=true the response MUST NOT reach the guardian.
+    // The block is logged and an extinction signal has already been fired inside
+    // checkTheaterProhibitionCombined (counter_indicated confidence update, AC3).
+    // We return false here so initiateConnectionGreet can roll back its dedup key.
+    const combinedVerdict = this.cycleOutcomeReporter.checkTheaterProhibitionCombined(response);
+    const isGrounded = !combinedVerdict.isTheatrical;
+
+    if (combinedVerdict.shouldBlock) {
+      this.logger.warn(
+        `[Theater Prohibition L2] DELIVERY BLOCKED — turn=${response.turnId}, ` +
+          `class=${combinedVerdict.capabilityVerdict.violationClass}, ` +
+          `phrase="${combinedVerdict.capabilityVerdict.triggeringPhrase}"`,
+      );
+      this.logEvent('RESPONSE_GENERATED', sessionId, {
+        ...buildResponseGeneratedPayload(response),
+        blockedByTheaterProhibitionL2: true,
+        capabilityViolationClass: combinedVerdict.capabilityVerdict.violationClass,
+        capabilityTriggeringPhrase: combinedVerdict.capabilityVerdict.triggeringPhrase,
+      });
+      if (inFlightRegistered) {
+        this.turnFloorGate.clearInFlight(response.turnId);
+      }
+      return false;
+    }
+
+    // Store the Layer 1 affect verdict for use at the end of this method.
+    const theaterVerdict = combinedVerdict.affectVerdict;
 
     // Voice output: check voice latent space FIRST, fall back to TTS on miss.
     // Every TTS-generated utterance is captured and stored so the same text

@@ -6,15 +6,35 @@
  *
  * Owns two formerly-private methods:
  *   - checkTheaterProhibition  — lexical tone vs. drive-state audit (CANON Std-1)
+ *                                + capability-claim / false-continuity check (TK-101)
  *   - reportBasicOutcome       — closes the reinforcement loop after delivery
  *
  * The theater check GATES the outcome report: a theatrical response sets
  * theaterValidated=false so the drive engine applies zero reinforcement
  * (Sylphie is not rewarded for expressing affect she does not feel).
  *
- * CANON Standard 1 (Theater Prohibition): the audit is deterministic — no LLM
- * calls, no external network. Delivery is NEVER blocked; this is an honesty
- * audit, not a content filter.
+ * TK-101 upgrade: checkTheaterProhibition now BLOCKS delivery for fabricated
+ * capability claims and false-continuity assertions (AC2) and fires a negative
+ * extinction signal through the confidence-update path (AC3).
+ *
+ * Two-layer theater detection:
+ *   Layer 1 — tonal affect mismatch (theater-affect-scorer.ts): AUDIT-ONLY.
+ *             Catches gross cheerfulness while distress drives are elevated,
+ *             or performed distress while Satisfaction is high. These are
+ *             punished with zero reinforcement but not blocked — tone drift is
+ *             recoverable and blocking every over-cheerful sentence would
+ *             cripple usability. Reinforcement extinction still applies.
+ *
+ *   Layer 2 — capability-claim / false-continuity (theater-capability-detector.ts):
+ *             BLOCK + EXTINCTION. Catches affirmative fabricated sensory
+ *             claims ("my optical sensors picked up...") and false-continuity
+ *             ("I have always been here"). These are hard CANON violations
+ *             (provenance, honesty) — the response must NOT reach the guardian.
+ *             The action that produced it gets a counter_indicated extinction
+ *             signal so its confidence trends down over repeated violations.
+ *
+ * CANON Standard 1 (Theater Prohibition): all detection is deterministic —
+ * no LLM calls, no external network.
  */
 
 import { Injectable, Inject, Logger } from '@nestjs/common';
@@ -39,6 +59,43 @@ import {
   classifyMismatch,
   type TextTheaterVerdict,
 } from './theater-affect-scorer';
+import {
+  detectCapabilityTheater,
+  type CapabilityTheaterVerdict,
+} from './theater-capability-detector';
+
+// ---------------------------------------------------------------------------
+// Combined theater verdict (TK-101)
+// ---------------------------------------------------------------------------
+
+/**
+ * Combined result from both theater-detection layers.
+ *
+ * `shouldBlock`:
+ *   true  → the response MUST NOT be delivered; Communication must suppress it
+ *            and fire an extinction signal (TK-101 AC2 + AC3).
+ *   false → the response may proceed to delivery.
+ *
+ * `isTheatrical` (Layer 1 affect mismatch) is still meaningful even when
+ * shouldBlock=false: it gates the reinforcement multiplier to zero so the
+ * drive engine does not reward over-cheerful responses.
+ */
+export interface CombinedTheaterVerdict {
+  /** Layer 1: tonal affect mismatch verdict (audit + zero-reinforcement). */
+  readonly affectVerdict: TextTheaterVerdict;
+  /** Layer 2: capability-claim / false-continuity verdict (block + extinction). */
+  readonly capabilityVerdict: CapabilityTheaterVerdict;
+  /**
+   * True when Layer 2 detected a fabricated capability claim.
+   * Communication MUST NOT deliver the response when this is true.
+   */
+  readonly shouldBlock: boolean;
+  /**
+   * Combined isTheatrical flag: true when either layer fired a violation.
+   * Used to set theaterValidated=false in the reinforcement outcome.
+   */
+  readonly isTheatrical: boolean;
+}
 
 @Injectable()
 export class CycleOutcomeReporterService {
@@ -65,21 +122,95 @@ export class CycleOutcomeReporterService {
    * Always call this after delivery — it is the single entry point so
    * the theater verdict is guaranteed to thread into the outcome report.
    *
-   * @returns the theater verdict (for logging / tests).
+   * TK-101: returns CombinedTheaterVerdict so Communication can gate on
+   * `shouldBlock` before calling deliverySubject.next(). For backward
+   * compatibility the method still exists but callers should prefer
+   * checkTheaterProhibitionCombined() at the delivery boundary.
+   *
+   * @returns the combined theater verdict (for logging / tests).
    */
-  async checkAndReport(response: CycleResponse): Promise<TextTheaterVerdict> {
-    const verdict = this.checkTheaterProhibition(response);
-    await this.reportBasicOutcome(response, verdict);
+  async checkAndReport(response: CycleResponse): Promise<CombinedTheaterVerdict> {
+    const verdict = this.checkTheaterProhibitionCombined(response);
+    // Only report outcome after delivery; callers that block must NOT call
+    // reportBasicOutcome (no delivery = no outcome to report).
+    if (!verdict.shouldBlock) {
+      await this.reportBasicOutcome(response, verdict.affectVerdict);
+    }
     return verdict;
   }
 
   // ---------------------------------------------------------------------------
-  // Theater Prohibition (CANON Standard 1)
+  // Theater Prohibition (CANON Standard 1) — combined two-layer check
   // ---------------------------------------------------------------------------
 
   /**
+   * Run both theater-detection layers and return a combined verdict.
+   *
+   * TK-101 (AC2): this is the authoritative pre-delivery check.
+   * Communication calls this BEFORE deliverySubject.next() and must NOT
+   * deliver when verdict.shouldBlock is true.
+   *
+   * Layer 1 — tonal affect mismatch (theater-affect-scorer.ts):
+   *   Audit-only. isTheatrical=true zeroes reinforcement but does NOT block.
+   *
+   * Layer 2 — capability-claim / false-continuity (theater-capability-detector.ts):
+   *   BLOCK + EXTINCTION. Any affirmative fabricated sensory claim or
+   *   false-continuity assertion sets shouldBlock=true. The response is
+   *   suppressed at the delivery boundary and the action receives an
+   *   extinction counter_indicated confidence signal (AC3).
+   */
+  checkTheaterProhibitionCombined(response: CycleResponse): CombinedTheaterVerdict {
+    // ── Layer 1: tonal affect mismatch ──────────────────────────────────────
+    const affectVerdict = this.checkTheaterProhibition(response);
+
+    // ── Layer 2: capability-claim / false-continuity ─────────────────────────
+    const capabilityVerdict = detectCapabilityTheater(response.text ?? '');
+
+    if (capabilityVerdict.isCapabilityTheater) {
+      this.logger.warn(
+        `[Theater Prohibition L2] CAPABILITY BLOCK — turn=${response.turnId}, ` +
+          `class=${capabilityVerdict.violationClass}, ` +
+          `phrase="${capabilityVerdict.triggeringPhrase}", ` +
+          `reason="${capabilityVerdict.reason}"`,
+      );
+
+      // Audit trail — fire-and-forget, never blocks the guard logic.
+      this.logEvent(
+        'THEATER_CAPABILITY_BLOCKED',
+        response.driveSnapshot.sessionId,
+        {
+          turnId: response.turnId,
+          actionId: response.actionId,
+          violationClass: capabilityVerdict.violationClass,
+          triggeringPhrase: capabilityVerdict.triggeringPhrase,
+          verdictReason: capabilityVerdict.reason,
+          responseTextSnippet: (response.text ?? '').substring(0, 100),
+          // TK-101 AC2: BLOCKED, not audit-only
+          blocked: true,
+        },
+        response.actionId ? `action:${response.actionId}` : null,
+      );
+
+      // TK-101 AC3: extinction signal — fire a counter_indicated confidence
+      // update for this action. This is NORMAL reinforcement (a real negative
+      // outcome), NOT self-modification of the evaluator. The same path that
+      // counter-indicates wrong predictions is used here.
+      this.extinctAction(response);
+    }
+
+    const isTheatrical = affectVerdict.isTheatrical || capabilityVerdict.isCapabilityTheater;
+
+    return {
+      affectVerdict,
+      capabilityVerdict,
+      shouldBlock: capabilityVerdict.isCapabilityTheater,
+      isTheatrical,
+    };
+  }
+
+  /**
    * Validate that the response text's tonal affect correlates with actual
-   * drive state (CANON Standard 1 — Theater Prohibition).
+   * drive state (CANON Standard 1 — Theater Prohibition, Layer 1).
    *
    * Uses a deterministic lexical scorer (theater-affect-scorer.ts) — no LLM
    * calls, no external dependencies. Catches gross tonal mismatches: effusive
@@ -88,8 +219,9 @@ export class CycleOutcomeReporterService {
    *
    * On violation: writes a THEATER_PROHIBITED audit event to TimescaleDB and
    * returns isTheatrical=true so the caller zeros reinforcement. Delivery is NOT
-   * blocked — the response still reaches the guardian (this is an honesty audit,
-   * not a content filter).
+   * blocked by this layer alone — the response still reaches the guardian.
+   * (Use checkTheaterProhibitionCombined() at the delivery boundary for the
+   * full two-layer check including the capability-claim block guard.)
    */
   checkTheaterProhibition(response: CycleResponse): TextTheaterVerdict {
     const affectScore = scoreAffect(response.text ?? '');
@@ -110,7 +242,7 @@ export class CycleOutcomeReporterService {
 
     if (verdict.isTheatrical) {
       this.logger.warn(
-        `[Theater Prohibition] VIOLATION — turn=${response.turnId}, ` +
+        `[Theater Prohibition L1] VIOLATION — turn=${response.turnId}, ` +
           `class=${verdict.violationClass}, drive=${verdict.offendingDrive}, ` +
           `driveValue=${verdict.offendingDriveValue?.toFixed(2)}, reason="${verdict.reason}"`,
       );
@@ -131,6 +263,7 @@ export class CycleOutcomeReporterService {
           markerCount: affectScore.markerCount,
           verdictReason: verdict.reason,
           responseTextSnippet: response.text.substring(0, 100),
+          // Layer 1 is audit-only; delivery is gated by Layer 2 only.
           auditOnly: true,
         },
         // CANON Std-2: correlate this violation row with the action that
@@ -140,12 +273,79 @@ export class CycleOutcomeReporterService {
       );
     } else {
       this.logger.debug(
-        `[Theater Prohibition] OK — turn=${response.turnId}, ` +
+        `[Theater Prohibition L1] OK — turn=${response.turnId}, ` +
           `valence=${affectScore.valence.toFixed(2)}, magnitude=${affectScore.magnitude.toFixed(2)}`,
       );
     }
 
     return verdict;
+  }
+
+  // ---------------------------------------------------------------------------
+  // AC3 — Extinction: counter_indicated confidence update
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fire a negative extinction signal for an action that produced a fabricated
+   * capability claim or false-continuity assertion (TK-101 AC3).
+   *
+   * CANON framing: this is NORMAL negative reinforcement — a real bad outcome
+   * (the system produced theater) flowing through the existing confidence-update
+   * path. It does NOT modify the evaluator or scoring logic; it feeds a
+   * legitimate negative outcome to the same reportOutcome() path that wrong
+   * predictions already use.
+   *
+   * The outcome uses predictionError=1.0 (maximum error) and
+   * predictionAccurate=false so DecisionMakingService.reportOutcome() routes
+   * to confidenceUpdater.update(actionId, 'counter_indicated'), which reduces
+   * base confidence by COUNTER_INDICATION_REDUCTION (0.15). Over repeated
+   * violations the action's confidence trends down and it is selected less often.
+   *
+   * Fire-and-forget — the block must not wait on the async confidence write.
+   */
+  private extinctAction(response: CycleResponse): void {
+    // Synthetic greets and SHRUG have no procedure node — skip extinction
+    // (there is nothing to demote).
+    if (
+      !response.actionId ||
+      response.actionId === 'SHRUG' ||
+      response.actionId === 'greet-on-connect' ||
+      response.actionId.startsWith('type2-novel-')
+    ) {
+      this.logger.debug(
+        `[Theater Prohibition L2] extinction skipped — no procedure node for ` +
+          `actionId="${response.actionId}"`,
+      );
+      return;
+    }
+
+    this.decisionMaking.reportOutcome(response.actionId, {
+      selectedAction: {
+        actionId: response.actionId,
+        arbitrationResult: response.arbitrationResult,
+        selectedAt: new Date(),
+        // Definitively not theater-validated — this is the whole point.
+        theaterValidated: false,
+      },
+      // Maximum prediction error: the action produced fabricated capability
+      // claims. This routes to counter_indicated in ConfidenceUpdaterService.
+      predictionAccurate: false,
+      predictionError: 1.0,
+      driveEffectsObserved: {},
+      anxietyAtExecution:
+        this.driveStateReader.getCurrentState().pressureVector[DriveName.Anxiety] ?? 0,
+      observedAt: new Date(),
+    }).catch((err: unknown) => {
+      this.logger.warn(
+        `[Theater Prohibition L2] extinction reportOutcome failed for ` +
+          `actionId="${response.actionId}": ${err}`,
+      );
+    });
+
+    this.logger.log(
+      `[Theater Prohibition L2] EXTINCTION fired — actionId="${response.actionId}", ` +
+        `predictionError=1.0 → confidence will trend down via counter_indicated path`,
+    );
   }
 
   // ---------------------------------------------------------------------------
