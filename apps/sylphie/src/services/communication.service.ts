@@ -128,6 +128,25 @@ export class CommunicationService implements OnModuleInit {
   private readonly turnFloorGate = new TurnFloorGate();
 
   /**
+   * TK-100 — Greet dedup registry.
+   *
+   * Keyed by userId. Stores the wall-clock timestamp at which a connection
+   * greeting was INITIATED for that user. A second connect (page refresh,
+   * second tab, socket reopen) within GREET_DEDUP_WINDOW_MS of the first
+   * is silently skipped — no second DELIBERATE_GREET is emitted.
+   *
+   * The window is long enough to cover a typical page-refresh cycle
+   * (including React StrictMode double-mount and stale-socket eviction),
+   * short enough that a genuine re-visit well after the first session will
+   * still receive a greeting.
+   */
+  private readonly greetIssuedAt = new Map<string, number>();
+
+  /** Duration (ms) within which a repeated connect for the same userId
+   *  does NOT trigger a second greeting (TK-100 AC1 dedup window). */
+  static readonly GREET_DEDUP_WINDOW_MS = 60_000; // 60 seconds
+
+  /**
    * DeepSeek pricing rates for costUsd computation on TYPE_2 deliveries.
    * Resolved once at construction from env vars (same source as CostTrackerService)
    * so delivery cost and supervisor cost can never drift.
@@ -503,6 +522,95 @@ export class CommunicationService implements OnModuleInit {
     }
 
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TK-100 — Connection greeting (greet-first on connect)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Emit a single unprompted DELIBERATE_GREET when a new authenticated session
+   * connects, subject to dedup.
+   *
+   * Dedup key: `userId`, window: GREET_DEDUP_WINDOW_MS (60 s).
+   * A second connect (page refresh, second tab, socket reopen) within the
+   * window is silently skipped — exactly one greeting per user per window.
+   *
+   * The greeting is delivered through the existing TurnFloorGate so it counts
+   * as the one-per-turn contribution (TK-99 AC3). It is targeted to the
+   * specific socket that just connected (`socketId` in the originator) so no
+   * other connected session sees it.
+   *
+   * CANON Theater Prohibition: the greeting text is a plain, honest salutation —
+   * no fabricated capability claims or false-continuity ("I remember everything
+   * about you"). Drive state is not consulted because the greet fires before
+   * Sylphie has had a chance to observe anything about this session; a neutral,
+   * honest greeting is always authentic at connection time.
+   *
+   * @param userId   PostgreSQL User.id of the connecting user.
+   * @param socketId WebSocket socket ID of the connecting socket (for targeted
+   *                 delivery — only this socket receives the greeting).
+   * @param isGuardian Whether the connecting user holds guardian status.
+   */
+  initiateConnectionGreet(userId: string, socketId: string, isGuardian = false): void {
+    const now = Date.now();
+
+    // ── Dedup check ────────────────────────────────────────────────────────────
+    // If a greeting was already initiated for this userId within the dedup
+    // window (page refresh, second tab, rapid reconnect), skip.
+    const lastGreetAt = this.greetIssuedAt.get(userId);
+    if (lastGreetAt !== undefined && now - lastGreetAt < CommunicationService.GREET_DEDUP_WINDOW_MS) {
+      vlog('TK-100: connection greet skipped (dedup window active)', {
+        userId,
+        msSinceLastGreet: now - lastGreetAt,
+        windowMs: CommunicationService.GREET_DEDUP_WINDOW_MS,
+      });
+      return;
+    }
+
+    // Record before any async work so a rapid second call also hits the guard.
+    this.greetIssuedAt.set(userId, now);
+
+    // ── Build the delivery ─────────────────────────────────────────────────────
+    // A minimal DELIBERATE_GREET payload. Bypasses the DM executor (no cycle
+    // needed for a greeting) and emits directly through handleCycleResponse's
+    // equivalent path: TurnFloorGate admission → deliverySubject.
+    const turnId = `greet-${randomUUID().substring(0, 8)}`;
+    const greetText = 'Hi! How can I help you today?';
+
+    vlog('TK-100: emitting connection greet', { userId, socketId, turnId });
+
+    // Build a synthetic CycleResponse and run it through the normal handler.
+    // This ensures TurnFloorGate admission (AC3) and in-flight registration
+    // (AC2) follow the exact same code path as a drive-mediated DELIBERATE_GREET,
+    // so the floor accounting stays consistent.
+    const driveSnapshot = this.driveStateReader.getCurrentState();
+
+    const syntheticResponse: import('@sylphie/shared').CycleResponse = {
+      turnId,
+      originator: { userId, socketId, isGuardian },
+      text: greetText,
+      // Use TYPE_1 with the minimal ActionCandidate shape required by the type.
+      // The greet-on-connect action has no backing procedure node (null) and
+      // uses Social as the motivating drive (greeting reduces Social pressure).
+      arbitrationType: 'TYPE_1',
+      actionId: 'greet-on-connect',
+      driveSnapshot,
+      arbitrationResult: {
+        type: 'TYPE_1',
+        candidate: {
+          procedureData: null,
+          confidence: 1.0,
+          motivatingDrive: DriveName.Social,
+          contextMatchScore: 1.0,
+        },
+      },
+      latencyMs: 0,
+      knowledgeGrounding: 'GROUNDED',
+      emissionIntent: 'DELIBERATE_GREET',
+    };
+
+    void this.handleCycleResponse(syntheticResponse);
   }
 
   /**
