@@ -292,6 +292,10 @@ import { TickSamplerService } from './inputs/sampling/tick-sampler';
     // Scene prediction: exported for scene-level drive routing.
     ScenePredictionService,
 
+    // TK-97 per-identity visual habituation: exported so app-level
+    // MetricsController can inject it for the habituation-state gate seam.
+    VisualPresenceHabituatorService,
+
     // Sensory pipeline services: exported so that app-level gateways and
     // controllers can inject TickSamplerService, ModalityRegistryService,
     // and the individual encoders without re-providing them.
