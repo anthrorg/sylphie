@@ -73,6 +73,7 @@ import { ConversationHistoryService } from './conversation-history.service';
 import { PersonModelService, extractFactsFromText } from './person-model.service';
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
 import { FastFactWriterService } from './fast-fact-writer.service';
+import { TurnFloorGate } from './turn-floor-gate';
 
 // ---------------------------------------------------------------------------
 // CommunicationService
@@ -114,6 +115,17 @@ export class CommunicationService implements OnModuleInit {
 
   /** Maximum pending turns to retain (prevent unbounded growth). */
   private readonly MAX_PENDING_TURNS = 50;
+
+  /**
+   * TK-99 — Turn-floor gate: one-per-turn cap, barge-in suppression,
+   * interrupt-mid-utterance, AMBIENT_NONE suppression.
+   *
+   * Keys on emissionIntent exclusively (DEC-26/DEC-27: never on originator-absence).
+   * USER_REPLY is always admitted. AMBIENT_NONE is always suppressed.
+   * Self-initiated deliveries (DELIBERATE_GREET / SALIENT_OBSERVATION) are
+   * rate-limited and barred when the user holds the floor.
+   */
+  private readonly turnFloorGate = new TurnFloorGate();
 
   /**
    * DeepSeek pricing rates for costUsd computation on TYPE_2 deliveries.
@@ -393,6 +405,11 @@ export class CommunicationService implements OnModuleInit {
     // Step 4: record arrival so self-tick 30s suppression guard stays accurate.
     this.tickSampler.recordInputArrival();
 
+    // TK-99 — AC1/AC2: notify the turn-floor gate that the user is speaking.
+    // This (a) marks the user as holding the floor (barge-in window), and
+    // (b) cancels any in-flight self-initiated delivery (interrupt-mid-utterance).
+    const interrupted = this.turnFloorGate.recordUserInput();
+
     // Step 5: construct the turn with full identity (WS4 Ticket 3).
     // userId, username, socketId, isGuardian are now populated from the gateway JWT.
     // CANON provenance-required: userId must be the real speaker id from the
@@ -407,6 +424,15 @@ export class CommunicationService implements OnModuleInit {
       username,
       socketId,
     };
+
+    // Log the AC2 interrupt AFTER turnId is minted so the audit trail records the
+    // real interrupting turn id, not a placeholder.
+    if (interrupted) {
+      vlog('TK-99: in-flight self-initiated delivery interrupted by inbound user turn', {
+        incomingTurnId: turnId,
+        userId,
+      });
+    }
 
     // Step 6: enqueue through the concurrency guard.
     this.decisionMaking.enqueueTurn(turn);
@@ -624,6 +650,75 @@ export class CommunicationService implements OnModuleInit {
     // should never reach the user or TTS.
     response = { ...response, text: sanitizeResponseText(response.text) };
 
+    // TK-99 — Turn-floor gate (AC0/AC1/AC2/AC3).
+    //
+    // Key on emissionIntent exclusively (DEC-26/DEC-27). Never infer intent
+    // from originator-presence — the originator is identity, not intent.
+    //
+    // Admission rules (applied in order):
+    //   AMBIENT_NONE    → always deny (idle artifact, no salient content)
+    //   USER_REPLY      → always admit (guardian asked; answer must come back)
+    //   barge-in        → deny if user input arrived within FLOOR_HOLD_WINDOW_MS
+    //   rate-limit      → deny if last self-initiated delivery < MIN_UTTERANCE_GAP_MS ago
+    //   otherwise       → admit (DELIBERATE_GREET / SALIENT_OBSERVATION pass through)
+    //
+    // DELIBERATE_GREET is admitted as the one-per-turn contribution — the floor
+    // gates rate and barge-in, never origin (AC3).
+    const floorDecision = this.turnFloorGate.admit(response.emissionIntent, response.turnId);
+
+    if (!floorDecision.allow) {
+      vlog('TK-99: delivery suppressed by turn-floor gate', {
+        turnId: response.turnId,
+        emissionIntent: response.emissionIntent,
+        reason: floorDecision.reason,
+      });
+      // Still log RESPONSE_GENERATED so the Learning subsystem has a record,
+      // but skip the delivery step and reinforcement loop (no outcome to report).
+      this.logEvent('RESPONSE_GENERATED', sessionId, {
+        ...buildResponseGeneratedPayload(response),
+        suppressedByFloorGate: true,
+        floorGateReason: floorDecision.reason,
+      });
+      return;
+    }
+
+    if (floorDecision.interruptedInFlight) {
+      vlog('TK-99: in-flight self-initiated delivery cancelled (AC2 interrupt-mid-utterance)', {
+        admittedTurnId: response.turnId,
+      });
+    }
+
+    // For self-initiated deliveries that pass the gate, register them as in-flight
+    // so a subsequent user turn can cancel them (AC2). USER_REPLY is never
+    // registered as in-flight (it is never cancellable).
+    //
+    // CRITICAL (AC2): `cancelled` is a real per-call flag. The cancel() closure
+    // sets it synchronously; the guard below prevents deliverySubject.next() from
+    // firing once it is set. This is the actual cancellation mechanism — without
+    // this flag the delivery would emit even after the callback ran (Theater, Std-1).
+    let cancelled = false;
+    let inFlightRegistered = false;
+    if (
+      response.emissionIntent === 'DELIBERATE_GREET' ||
+      response.emissionIntent === 'SALIENT_OBSERVATION'
+    ) {
+      const turnIdCapture = response.turnId;
+      this.turnFloorGate.registerInFlight({
+        turnId: turnIdCapture,
+        intent: response.emissionIntent,
+        // The cancel callback runs synchronously when a user turn interrupts
+        // (via recordUserInput() or admit(USER_REPLY)). It sets `cancelled`
+        // so the guard before deliverySubject.next() can abort the emission.
+        cancel: () => {
+          cancelled = true;
+          vlog('TK-99: in-flight delivery cancel callback invoked — delivery suppressed', {
+            turnId: turnIdCapture,
+          });
+        },
+      });
+      inFlightRegistered = true;
+    }
+
     // Log RESPONSE_GENERATED.
     // The payload (built by buildResponseGeneratedPayload) now carries
     // knowledgeGrounding + intent (reused from the response, never recomputed)
@@ -739,7 +834,30 @@ export class CommunicationService implements OnModuleInit {
       );
     }
 
+    // TK-99 AC2: check cancellation flag BEFORE emitting. If a user turn arrived
+    // during the TTS await above and called cancel(), the self-initiated utterance
+    // must NOT reach the gateway. Log as suppressed-mid-flight with no reinforcement.
+    if (cancelled) {
+      this.logEvent('RESPONSE_GENERATED', sessionId, {
+        ...buildResponseGeneratedPayload(response),
+        suppressedMidFlight: true,
+        suppressedByFloorGate: true,
+        floorGateReason: 'cancelled-mid-utterance (user turn arrived during TTS synthesis)',
+      });
+      if (inFlightRegistered) {
+        this.turnFloorGate.clearInFlight(response.turnId);
+      }
+      return;
+    }
+
     this.deliverySubject.next(delivery);
+
+    // TK-99: clear in-flight registration now that the delivery has been emitted.
+    // If a user turn cancelled it in-flight before this line, clearInFlight is a
+    // no-op (the inFlight slot was already cleared by recordUserInput).
+    if (inFlightRegistered) {
+      this.turnFloorGate.clearInFlight(response.turnId);
+    }
 
     // Log RESPONSE_DELIVERED
     this.logEvent('RESPONSE_DELIVERED', sessionId, {
