@@ -50,15 +50,34 @@ export class WkgBootstrapService implements OnModuleInit {
     private readonly outcomeReporter: IActionOutcomeReporter,
   ) {}
 
-  async onModuleInit() {
+  async onModuleInit(): Promise<void> {
+    // Bootstrap is best-effort MERGE — safe to defer if Neo4j is holding
+    // schema locks during a cold start. Wrapped in a 15 s deadline so a
+    // stuck MERGE never blocks NestFactory.create(). The next request that
+    // requires WKG nodes will trigger bootstrap via the lazy-call path, or
+    // the operator can POST /reset to re-run it explicitly.
+    const TIMEOUT_MS = 15_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`WKG bootstrap timed out after ${TIMEOUT_MS} ms`)),
+        TIMEOUT_MS,
+      );
+    });
+
     try {
-      await this.bootstrap();
+      await Promise.race([this.bootstrap(), deadline]);
     } catch (err) {
       this.logger.error(
         `WKG bootstrap failed (non-fatal): ${
           err instanceof Error ? err.message : String(err)
         }. Bootstrap will run on first successful connection.`,
       );
+      // Intentionally NOT re-throwing — must not block boot.
+    } finally {
+      // Always clear the timer so it cannot keep the event loop alive after
+      // onModuleInit returns (whether bootstrap won or the deadline fired).
+      clearTimeout(timer);
     }
   }
 

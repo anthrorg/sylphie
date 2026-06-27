@@ -148,12 +148,38 @@ export class WkgQueryService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     // Create indexes for WORLD, SELF, and OTHER in parallel.
-    // Failures are non-fatal — queries just run slower without indexes.
-    await Promise.all([
-      this.ensureKgIndexes(Neo4jInstanceName.WORLD),
-      this.ensureKgIndexes(Neo4jInstanceName.SELF),
-      this.ensureKgIndexes(Neo4jInstanceName.OTHER),
-    ]);
+    // Wrapped in a 20 s deadline so a cold Neo4j holding schema locks never
+    // blocks NestFactory.create(). Indexes are IF NOT EXISTS / idempotent —
+    // they will be created on the next successful Neo4j session run.
+    const TIMEOUT_MS = 20_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`KG index creation timed out after ${TIMEOUT_MS} ms`)),
+        TIMEOUT_MS,
+      );
+    });
+
+    try {
+      await Promise.race([
+        Promise.all([
+          this.ensureKgIndexes(Neo4jInstanceName.WORLD),
+          this.ensureKgIndexes(Neo4jInstanceName.SELF),
+          this.ensureKgIndexes(Neo4jInstanceName.OTHER),
+        ]),
+        deadline,
+      ]);
+    } catch (err) {
+      this.logger.warn(
+        `KG index creation did not complete during startup (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }. Indexes will be created on the next successful Neo4j connection.`,
+      );
+    } finally {
+      // Always clear the timer so it cannot keep the event loop alive after
+      // onModuleInit returns (whether the work won or the deadline fired).
+      clearTimeout(timer);
+    }
   }
 
   /**
