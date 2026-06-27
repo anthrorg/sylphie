@@ -30,6 +30,7 @@ import { AuthController } from './controllers/auth.controller';
 import { SupervisorController } from './controllers/supervisor.controller';
 import { RulesController } from './controllers/rules.controller';
 import { CognitionController } from './controllers/cognition.controller';
+import { HealthController } from './controllers/health.controller';
 import { GraphGateway } from './gateways/graph.gateway';
 import { ConversationGateway } from './gateways/conversation.gateway';
 import { TelemetryGateway } from './gateways/telemetry.gateway';
@@ -159,6 +160,7 @@ class CognitionModule {}
     SupervisorController,
     RulesController,
     CognitionController,
+    HealthController,
   ],
   providers: [
     // PostgreSQL runtime pool for guardian rule management

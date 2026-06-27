@@ -5567,6 +5567,35 @@ nodes:
     non_goals:
     - Building new dashboard features or visualizations
     depends_on: [TK-94, TK-95, TK-97, TK-98, TK-99]
+  - id: TK-106
+    kind: ticket
+    parent: EP-19
+    status: todo
+    priority: P1
+    estimate: S
+    engineering_level: production
+    title: "Make the container healthcheck a cheap liveness probe (stop heavy /api/metrics/health from de-routing the app)"
+    intent: "Live diagnosis (2026-06-27): after the neo4j-other fix, sylphie-app boots and listens on 8080, but Railway returns 502 on EVERY endpoint while the container keeps cycling. Root cause: the Dockerfile HEALTHCHECK (and Railway deploy healthcheck) probe GET /api/metrics/health, which runs Promise.all of 7 heavy aggregations per call (full Neo4j WORLD graph scan over 34k+ nodes + TimescaleDB aggregations). Under decision-cycle load it exceeds the 10s healthcheck timeout, the container is marked unhealthy, and Railway de-routes all traffic. Fix: add a dedicated cheap liveness endpoint (GET /api/health) that returns 200 immediately with no DB/heavy compute, and repoint the Dockerfile HEALTHCHECK + Railway deploy healthcheck at it. /api/metrics/health stays unchanged for the dashboard."
+    complexity_budget: "One small liveness endpoint (no DB calls) + Dockerfile HEALTHCHECK path + railway healthcheckPath. No change to the 7 metrics or the dashboard contract. No new product features."
+    acceptance_criteria:
+    - given: sylphie-app redeployed with the fix and decision cycles active
+      when: the Dockerfile/Railway healthcheck probes GET /api/health
+      then: it returns HTTP 200 well under the healthcheck timeout (no DB/heavy compute on the path), and the deploy stays healthy + routed
+    - given: the deploy is live under decision-cycle load
+      when: a normal endpoint (GET /api/graph/okg/count, GET /api/drives) is called over HTTPS
+      then: it returns a non-502 response (the de-routing is gone)
+    - given: the frontend dashboard
+      when: /api/metrics/health is still called for the 7-metric snapshot
+      then: it returns the same HealthMetrics shape as before (no behavioral change to that route)
+    files_in_scope:
+    - apps/sylphie/src/controllers (new lightweight health controller or endpoint)
+    - Dockerfile (HEALTHCHECK path)
+    - railway.json (deploy.healthcheckPath)
+    non_goals:
+    - Changing the 7 health metrics or the dashboard data contract
+    - Optimizing /api/metrics/health itself
+    - Event-loop saturation from the decision loop (separate concern if 502 persists post-fix)
+    depends_on: [TK-95]
 
   - { id: EP-20, kind: epic, parent: FEAT-2, status: done, priority: P1,
       title: "Communication / turn-taking fix — kill the runaway loop, enforce theater, make her proactive-but-responsive",
