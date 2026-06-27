@@ -59,6 +59,7 @@ import type {
   UnlearnedEvent,
   ExtractedEntity,
 } from '../interfaces/learning.interfaces';
+import { withTimeout } from '../util/llm-timeout';
 
 const vlog = verboseFor('Learning');
 
@@ -68,6 +69,19 @@ const vlog = verboseFor('Learning');
 
 /** Maximum number of entities to extract from a single event. */
 const MAX_ENTITIES_PER_EVENT = 20;
+
+/**
+ * Maximum time (ms) a single Neo4j MERGE is allowed to run.
+ *
+ * At cold boot, Neo4j may hold a DDL schema lock while building indexes.
+ * Without a deadline the MERGE blocks indefinitely, keeping `cycleInFlight`
+ * true forever and silently killing all subsequent maintenance cycles.
+ * 12 s is generous for a fast MERGE while remaining well inside the 60 s
+ * cycle interval. On timeout `withTimeout` rejects; the per-label try/catch
+ * in `mergeEntityNode` / `mergeCandidateNode` catches it, logs a warning,
+ * and returns '' — the same graceful-skip path used for any other Neo4j error.
+ */
+const NEO4J_MERGE_TIMEOUT_MS = 12_000;
 
 // ---------------------------------------------------------------------------
 // UpsertEntitiesService
@@ -218,29 +232,33 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     const nodeId = `entity-${randomUUID().substring(0, 8)}`;
 
     try {
-      const result = await session.run(
-        `MERGE (n:Entity {label: $label})
-         ON CREATE SET
-           n.node_id       = $nodeId,
-           n.node_type     = 'Entity',
-           n.schema_level  = 'instance',
-           n.provenance_type = $provenance,
-           n.confidence    = $confidence,
-           n.created_at    = datetime()
-         ON MATCH SET
-           n.confidence    = CASE WHEN $confidence > n.confidence
-                                  THEN $confidence
-                                  ELSE n.confidence END,
-           n.updated_at    = datetime()
-         RETURN n.node_id AS nodeId`,
-        { label, nodeId, provenance, confidence },
+      const result = await withTimeout(
+        session.run(
+          `MERGE (n:Entity {label: $label})
+           ON CREATE SET
+             n.node_id       = $nodeId,
+             n.node_type     = 'Entity',
+             n.schema_level  = 'instance',
+             n.provenance_type = $provenance,
+             n.confidence    = $confidence,
+             n.created_at    = datetime()
+           ON MATCH SET
+             n.confidence    = CASE WHEN $confidence > n.confidence
+                                    THEN $confidence
+                                    ELSE n.confidence END,
+             n.updated_at    = datetime()
+           RETURN n.node_id AS nodeId`,
+          { label, nodeId, provenance, confidence },
+        ),
+        NEO4J_MERGE_TIMEOUT_MS,
+        `mergeEntityNode(${label})`,
       );
 
       // If MERGE matched an existing node, return its id; otherwise the one we set.
       const record = result.records[0];
       return record ? (record.get('nodeId') as string) : nodeId;
     } catch (err) {
-      this.logger.error(
+      this.logger.warn(
         `mergeEntityNode failed for label "${label}": ${
           err instanceof Error ? err.message : String(err)
         }`,
@@ -274,41 +292,45 @@ export class UpsertEntitiesService implements IUpsertEntitiesService {
     const cappedConfidence = Math.min(CANDIDATE_CONFIDENCE_CAP, confidence);
 
     try {
-      const result = await session.run(
-        `MERGE (n:${CANDIDATE_NODE_LABEL} {label: $label})
-         ON CREATE SET
-           n.node_id          = $nodeId,
-           n.node_type        = $nodeLabel,
-           n.schema_level     = 'instance',
-           n.provenance_type  = $provenance,
-           n.confidence       = $confidence,
-           n.${CANDIDATE_PERSON_ID_PROP} = $speakerId,
-           n.created_at       = datetime()
-         ON MATCH SET
-           n.confidence = CASE
-                            WHEN $confidence > n.confidence AND $confidence <= $cap
-                            THEN $confidence
-                            ELSE n.confidence
-                          END,
-           n.${CANDIDATE_PERSON_ID_PROP} =
-             coalesce(n.${CANDIDATE_PERSON_ID_PROP}, $speakerId),
-           n.updated_at = datetime()
-         RETURN n.node_id AS nodeId`,
-        {
-          label,
-          nodeId,
-          nodeLabel: CANDIDATE_NODE_LABEL,
-          provenance: CANDIDATE_PROVENANCE_TYPE,
-          confidence: cappedConfidence,
-          cap: CANDIDATE_CONFIDENCE_CAP,
-          speakerId: speakerId ?? null,
-        },
+      const result = await withTimeout(
+        session.run(
+          `MERGE (n:${CANDIDATE_NODE_LABEL} {label: $label})
+           ON CREATE SET
+             n.node_id          = $nodeId,
+             n.node_type        = $nodeLabel,
+             n.schema_level     = 'instance',
+             n.provenance_type  = $provenance,
+             n.confidence       = $confidence,
+             n.${CANDIDATE_PERSON_ID_PROP} = $speakerId,
+             n.created_at       = datetime()
+           ON MATCH SET
+             n.confidence = CASE
+                              WHEN $confidence > n.confidence AND $confidence <= $cap
+                              THEN $confidence
+                              ELSE n.confidence
+                            END,
+             n.${CANDIDATE_PERSON_ID_PROP} =
+               coalesce(n.${CANDIDATE_PERSON_ID_PROP}, $speakerId),
+             n.updated_at = datetime()
+           RETURN n.node_id AS nodeId`,
+          {
+            label,
+            nodeId,
+            nodeLabel: CANDIDATE_NODE_LABEL,
+            provenance: CANDIDATE_PROVENANCE_TYPE,
+            confidence: cappedConfidence,
+            cap: CANDIDATE_CONFIDENCE_CAP,
+            speakerId: speakerId ?? null,
+          },
+        ),
+        NEO4J_MERGE_TIMEOUT_MS,
+        `mergeCandidateNode(${label})`,
       );
 
       const record = result.records[0];
       return record ? (record.get('nodeId') as string) : nodeId;
     } catch (err) {
-      this.logger.error(
+      this.logger.warn(
         `mergeCandidateNode failed for label "${label}": ${
           err instanceof Error ? err.message : String(err)
         }`,
