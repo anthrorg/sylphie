@@ -112,7 +112,10 @@ EXPOSE 3000
 # Railway sets PORT at runtime; mirror the same fallback chain the app uses
 # (process.env.PORT || process.env.APP_PORT || 3000) so the healthcheck always
 # hits the port the app is actually listening on, even in local docker runs.
+# TK-106: probe the cheap /api/health liveness endpoint, NOT /api/metrics/health
+# (the latter runs 7 heavy aggregations per call and times out under decision-
+# cycle load, marking the container unhealthy and de-routing all traffic → 502).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT:-3000}/api/metrics/health || exit 1
+  CMD wget -qO- http://localhost:${PORT:-3000}/api/health || exit 1
 
 CMD ["./docker-entrypoint.sh"]
