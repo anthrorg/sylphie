@@ -773,14 +773,26 @@ export class LatentSpaceService implements OnModuleInit, OnModuleDestroy {
       // DB gate: enforce the ceiling against the persisted use_count. When
       // use_count = 0 the stored value is LEAST(newConfidence, 0.60); once
       // use_count > 0 the reinforced value is written verbatim.
+      //
+      // TK-94 — type-inference fix. `confidence` is `double precision`. The
+      // earlier form `LEAST($1, $3)` left BOTH branches of the CASE untyped:
+      // PostgreSQL could not infer a type for the untyped `$3` parameter from
+      // the LEAST() context (LEAST resolves its own common type from its args,
+      // not from the assignment target), so it defaulted the whole expression
+      // to TEXT and the UPDATE failed at execution with
+      //   "column \"confidence\" is of type double precision but expression is
+      //    of type text".
+      // Every updateConfidence call (one per modality, several per cycle) threw,
+      // so the fix is to make BOTH branches resolve to double precision: cast
+      // `$1::float` and inline the ceiling as a numeric literal (no untyped $3).
       this.timescale.query(
         `UPDATE learned_patterns
          SET confidence = CASE
-           WHEN use_count > 0 THEN $1
-           ELSE LEAST($1, $3)
+           WHEN use_count > 0 THEN $1::float
+           ELSE LEAST($1::float, ${WRITE_TIME_CONFIDENCE_CEILING})
          END
          WHERE id = $2`,
-        [newConfidence, patternId, WRITE_TIME_CONFIDENCE_CEILING],
+        [newConfidence, patternId],
       ).catch((err) => {
         this.logger.warn(`Confidence update failed: ${err instanceof Error ? err.message : String(err)}`);
       });
