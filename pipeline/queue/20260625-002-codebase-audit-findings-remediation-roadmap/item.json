@@ -3,11 +3,11 @@
   "slug": "codebase-audit-findings-remediation-roadmap",
   "title": "Codebase Audit — Findings & Remediation Roadmap",
   "type": "feature",
-  "state": "refine",
+  "state": "queue",
   "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
   "source_file": "codebase-audit-remediation.md",
   "created_at": "2026-06-25T19:16:34+00:00",
-  "updated_at": "2026-07-03T13:09:05-04:00",
+  "updated_at": "2026-07-03T13:12:25-04:00",
   "attempts": 2,
   "refactor_attempts": 0,
   "contract_nodes": [
@@ -65,6 +65,12 @@
       "from": "planning",
       "to": "refine",
       "note": "TK-153 split executed: TK-154 + TK-155 written; refine re-checks atomicity + migration soundness of the split"
+    },
+    {
+      "at": "2026-07-03T13:12:25-04:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "TK-153 split (TK-154+TK-155) atomic + architect-ruled (DEC-34); convergent migration.md sound; dbcheck ok"
     }
   ]
 }
