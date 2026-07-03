@@ -195,6 +195,40 @@ export class DriveCoherenceError extends DriveException {
 }
 
 // ---------------------------------------------------------------------------
+// Drive Engine — Guardian Pool Not Configured
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a guardian rule write (approve/reject) is attempted but
+ * POSTGRES_GUARDIAN_USER / POSTGRES_GUARDIAN_PASSWORD are unset or blank.
+ *
+ * CANON Immutable Standard 6 (No Self-Modification of Evaluation): the
+ * privileged guardian_admin DB role (TK-154) is the only writer of
+ * drive_rules / proposed_drive_rules. If its credentials are not configured,
+ * the write path must fail CLOSED with this typed error rather than either
+ * (a) silently falling back to the runtime pool — which TK-154 REVOKEs write
+ * access from, producing a confusing permission-denied surprise — or
+ * (b) attempting a real network connection with undefined credentials (a
+ * cryptic pg authentication failure). Reads are unaffected: they never use
+ * this pool.
+ *
+ * code: 'GUARDIAN_CREDENTIALS_NOT_CONFIGURED'
+ */
+export class GuardianCredentialsNotConfiguredError extends DriveException {
+  /**
+   * @param reason  - What specifically was missing/misconfigured.
+   * @param context - Diagnostic context (e.g. the operation attempted).
+   */
+  constructor(reason: string, context: Record<string, unknown> = {}) {
+    super(
+      `Guardian credentials not configured: ${reason}`,
+      'GUARDIAN_CREDENTIALS_NOT_CONFIGURED',
+      context,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Testing — Test Environment
 // ---------------------------------------------------------------------------
 

@@ -35,7 +35,13 @@
     "reset:confirm": "npx tsx scripts/reset-data.ts --confirm",
     "test:vision:a": "npx tsx test/e2e/vision/accept-A.e2e.ts",
     "migrate:legacy-rescope:dry-run": "npx tsx infra/migrations/001-legacy-pattern-rescope.ts",
-    "migrate:legacy-rescope:confirm": "npx tsx infra/migrations/001-legacy-pattern-rescope.ts --confirm"
+    "migrate:legacy-rescope:confirm": "npx tsx infra/migrations/001-legacy-pattern-rescope.ts --confirm",
+    "migrate:drive-rules-lockdown:dry-run": "npx tsx infra/migrations/002-drive-rules-lockdown.ts",
+    "migrate:drive-rules-lockdown:confirm": "npx tsx infra/migrations/002-drive-rules-lockdown.ts --confirm",
+    "migrate:drive-rules-lockdown:reverse-dry-run": "npx tsx infra/migrations/002-drive-rules-lockdown.ts --reverse",
+    "migrate:drive-rules-lockdown:reverse-confirm": "npx tsx infra/migrations/002-drive-rules-lockdown.ts --reverse --confirm",
+    "migrate:drive-rules-lockdown:test": "npx tsx infra/migrations/002-drive-rules-lockdown.spec.ts",
+    "migrate:drive-rules-lockdown:smoke": "npx tsx infra/migrations/002-drive-rules-lockdown.smoke.ts"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0"

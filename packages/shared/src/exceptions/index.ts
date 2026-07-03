@@ -22,6 +22,7 @@ export {
   ContradictionDetectedError,
   DriveUnavailableError,
   DriveCoherenceError,
+  GuardianCredentialsNotConfiguredError,
   TestEnvironmentError,
   LesionModeError,
   MetricsComputationError,

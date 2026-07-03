@@ -31,7 +31,11 @@ export {
 } from './storage/neo4j.constants';
 
 // Storage - PostgreSQL Pools (raw pg, for drive engine RLS)
-export { POSTGRES_ADMIN_POOL, POSTGRES_RUNTIME_POOL } from './storage/database.tokens';
+export {
+  POSTGRES_ADMIN_POOL,
+  POSTGRES_RUNTIME_POOL,
+  POSTGRES_GUARDIAN_POOL,
+} from './storage/database.tokens';
 
 // Types
 export * from './types';
