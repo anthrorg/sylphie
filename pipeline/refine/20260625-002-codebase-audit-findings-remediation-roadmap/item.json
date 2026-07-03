@@ -3,14 +3,17 @@
   "slug": "codebase-audit-findings-remediation-roadmap",
   "title": "Codebase Audit — Findings & Remediation Roadmap",
   "type": "feature",
-  "state": "planning",
+  "state": "refine",
   "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
   "source_file": "codebase-audit-remediation.md",
   "created_at": "2026-06-25T19:16:34+00:00",
-  "updated_at": "2026-07-02T09:13:20-04:00",
+  "updated_at": "2026-07-03T11:26:35-04:00",
   "attempts": 1,
   "refactor_attempts": 0,
-  "contract_nodes": [],
+  "contract_nodes": [
+    "TK-153",
+    "EP-27"
+  ],
   "blocked_reason": null,
   "history": [
     {
@@ -36,6 +39,12 @@
       "from": "replan",
       "to": "planning",
       "note": "resolved: DEC-28 — mixed-readiness epic re-enters planning; P0 (TK-AUDIT-1 drive_rules REVOKE+RLS) build-ready, design-needing findings -> open_questions routed to architect; contract_write=staged so tickets await Jim's approval gate"
+    },
+    {
+      "at": "2026-07-03T11:26:35-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "P0 (TK-153) build-ready: EP-27+TK-153 written to contract (Jim-approved), migration.md sound, dbcheck ok; refine red-teams TK-153 atomicity + migration soundness"
     }
   ]
 }
