@@ -3155,3 +3155,150 @@ decisions:
       - ".claude/agents/drive.md:179 (reference scheme the live DB mirrors)"
       - "live sylphie-postgres psql 2026-07-03: table owners/RLS flags, grant/policy dump, _prisma_migrations history, rolled-back write attempts as sylphie_app"
     supersedes: null
+
+  - id: AD-0053
+    date: 2026-07-03
+    title: "PR #86 (TK-154+TK-155 drive_rules lockdown) independently verified — GO for merge"
+    status: accepted
+    context: >
+      Mandatory architect verification of PR #86 (branch
+      agent/tk-154-155-drive-rules-lockdown) implementing AD-0051 (guardian
+      pool seam) + AD-0052 (convergent DB end-state) under DEC-34. All code
+      read in full in the worktree; all four gates re-run first-hand, not
+      taken from build-agent reports.
+    decision: >
+      GO for merge. Gates observed directly: migration unit spec 37/37;
+      live continuity/reverse smoke 24/24 in a throwaway postgres:17
+      container (sentinel-tk154-smoketest-*, torn down clean, sylphie-postgres
+      untouched); build:shared + build:backend clean; guardian jest specs
+      15/15. The migration matches AD-0052 exactly: CREATE TABLE IF NOT
+      EXISTS both tables, idempotent ALTER OWNER TO sylphie_admin,
+      pg_roles-checked CREATE ROLE with env-only passwords (hard-stop if
+      absent, never clobbers an existing role's password), REVOKE ALL (three
+      roles + PUBLIC) before GRANT, exact DEC-34 grant matrix, ENABLE+FORCE
+      RLS with the five ruled policies incl. proposer INSERT WITH
+      CHECK(status='pending'), single-transaction apply, host-aware pg_dump
+      backup with hard-stop, functional REVERSE. REVOKE-primary denial
+      empirically confirmed (smoke shows 'permission denied', RLS CHECK
+      denial proven separately). TK-155: POSTGRES_GUARDIAN_POOL is a new
+      token (ADMIN_POOL untouched/unwired), single injection site
+      (GuardianRulesService), writes-only on guardian pool, reads on runtime
+      pool, genuinely fail-closed (unconfigured stand-in rejects with typed
+      GuardianCredentialsNotConfiguredError -> 503; no credential fallback;
+      no hardcoded guardian default anywhere). Blast radius clean: the only
+      other writers of these tables (rule-proposer clients) INSERT
+      status='pending' explicitly, which the new matrix permits.
+    rationale: >
+      Every acceptance criterion of TK-154/TK-155 passed a runnable check I
+      executed myself; the implementation is statement-for-statement the
+      AD-0052 ruling; no theater found — all denials are loud and the
+      fail-closed path is typed and surfaced (boot WARN + HTTP 503).
+    alternatives:
+      - option: "NO-GO pending fixes"
+        rejected_because: No CRITICAL/HIGH findings; only LOW housekeeping (uncommitted migration.md doc-sync in the worktree) and ops notes.
+    consequences: >
+      Pre-apply ops remain Jim's: (1) set POSTGRES_GUARDIAN_USER/PASSWORD
+      (+POSTGRES_DRIVE_ENGINE_PASSWORD) per environment; (2) NOTE — on the
+      live dev DB guardian_admin ALREADY exists and the migration
+      deliberately never resets an existing role's password, so the env
+      password must match the role's actual password or be aligned manually
+      (ALTER ROLE guardian_admin PASSWORD ...) before the guardian pool can
+      authenticate; (3) run :dry-run against Railway prod before --confirm
+      (prod state unobserved); (4) apply migration and deploy app in the
+      same window (either order is safe-broken, both co-ship here). LOW
+      residuals: stray hand-created RLS policies with other names survive
+      the migration (harmless — grants cap access; visible in the dry-run
+      /dp snapshot); worktree has an uncommitted migration.md doc-sync that
+      should be committed to the branch or dropped.
+    canon: "Implements Std-6 at the DB layer, verified live; Option-A in-process guardian credential residual is the AD-0051-ruled trade-off, not a regression; no theater"
+    evidence:
+      - infra/migrations/002-drive-rules-lockdown.ts:323
+      - infra/migrations/002-drive-rules-lockdown.smoke.ts:249
+      - apps/sylphie/src/services/guardian-pool.provider.ts:48
+      - apps/sylphie/src/services/guardian-rules.service.ts:139
+      - apps/sylphie/src/app.module.ts:202
+      - packages/shared/src/config/database.config.ts:57
+      - packages/drive-engine/src/drive-process/rule-engine.ts:329
+      - "gate runs 2026-07-03: 37/37 unit, 24/24 smoke (throwaway container), builds clean, 15/15 jest — executed by architect in the tk-154-155 worktree"
+    supersedes: null
+
+  - id: AD-0054
+    date: 2026-07-03
+    title: "PR #86 re-verified independently (second architect pass, head 98f6a32) — APPROVE-FOR-MERGE, with a new first-time end-to-end proof of the guardian approve/reject fix"
+    status: accepted
+    context: >
+      Mandatory milestone verification of PR #86 (TK-154 sentinel migration +
+      TK-155 forge guardian pool; item 20260625-002 in REVIEW). AD-0053
+      already recorded a GO, but this pass was requested as an independent
+      re-verification and executed as one: all changed files read in full in
+      the tk-154-155 worktree (head == origin == PR head 98f6a32), all gates
+      re-run first-hand, plus one NEW check AD-0053 proved only by
+      composition — the real GuardianRulesService driven end-to-end against
+      a real locked-down throwaway DB.
+    decision: >
+      APPROVE-FOR-MERGE (confirms AD-0053; adds direct e2e evidence).
+      Gates observed by this architect on 2026-07-03: migration unit spec
+      37/37; guardian jest specs 15/15; build:shared + build:backend clean;
+      LIVE continuity/reverse smoke 24/24 in throwaway postgres:17
+      (sentinel-tk154-smoketest-1783105911914, torn down; sylphie-postgres
+      not even running — untouched). NEW e2e (scratch script, deleted after
+      run): real GuardianRulesService with a sylphie_app runtime pool + a
+      guardian_admin pool from createGuardianPool(), against a container
+      that ran the actual init SQL and the actual migration --confirm —
+      9/9: getProposedRules on runtime pool; approveRule succeeds
+      (drive_rules row created, proposal -> 'approved'); rejectRule succeeds
+      (-> 'rejected'); unconfigured-creds approveRule rejects with typed
+      GuardianCredentialsNotConfiguredError while reads keep working. The
+      prior live break (approve RLS-violated / reject silent no-op) is
+      genuinely fixed, not just unit-mocked. Blast radius re-swept: only
+      writers of the two tables are GuardianRulesService (guardian pool) and
+      rule-proposer INSERT status='pending' (permitted); drive-server
+      connects as POSTGRES_RUNTIME_USER=sylphie_app so rule reads survive;
+      wkg-bootstrap's proposed_drive_rules table-clear runs on admin (owner)
+      creds, unaffected; POSTGRES_GUARDIAN_POOL has exactly one injection
+      site; POSTGRES_ADMIN_POOL stays unwired.
+    rationale: >
+      Every TK-154 AC (1-4) and TK-155 AC (1-2) passed a runnable check this
+      architect executed, including the one seam AD-0053 had only proven by
+      jest-mock + raw-SQL composition. CANON: implements Std-6 at the DB
+      layer (runtime can only SELECT rules + append pending proposals, WITH
+      CHECK enforced); drive isolation and the push-only event standard
+      untouched (no new path into/out of the drive engine); guardian
+      asymmetry untouched (authority stays guardian-JWT-gated, DB identity
+      now matches it); no theater (denials loud: 'permission denied', typed
+      503; no silent fallback); db-change-guard not routed around (the
+      migration never destroys data, init/ untouched, hard-stop pg_dump
+      backup before any write).
+    alternatives:
+      - option: "BLOCK pending the LOW findings"
+        rejected_because: >
+          None is load-bearing: (a) approveRule's catch does a bare `await
+          client.query('ROLLBACK')` that could mask the original error if
+          the connection died (cosmetic robustness, fix opportunistically);
+          (b) the worktree's uncommitted pipeline migration.md doc-sync
+          should be committed to the branch or dropped before merge;
+          (c) the migration header cites pipeline/working/... while the item
+          now sits in review/ (comment drift).
+    consequences: >
+      Jim's pre/post-merge ops confirmed REAL and required: (1) set
+      POSTGRES_GUARDIAN_USER/POSTGRES_GUARDIAN_PASSWORD (and
+      POSTGRES_DRIVE_ENGINE_PASSWORD where the role must be created) per
+      environment — the pool fails closed and the migration hard-stops
+      without them; (2) on the live dev DB guardian_admin ALREADY exists and
+      the migration never resets an existing role's password — align via
+      ALTER ROLE if the actual password is unknown; (3) Railway prod: run
+      migrate:drive-rules-lockdown:dry-run first (prod state unobserved),
+      then --confirm; (4) apply the migration and deploy the TK-155 app
+      build in the same window (the migration itself prints this warning).
+      Follow-up candidate stands (AD-0052): wire drive-server to the
+      drive_engine role instead of sylphie_app.
+    canon: "Implements Std-6, verified live twice; drive isolation / guardian asymmetry / provenance untouched; no theater"
+    evidence:
+      - infra/migrations/002-drive-rules-lockdown.ts:323
+      - infra/migrations/002-drive-rules-lockdown.smoke.ts:136
+      - apps/sylphie/src/services/guardian-pool.provider.ts:48
+      - apps/sylphie/src/services/guardian-rules.service.ts:139
+      - apps/sylphie/src/services/wkg-bootstrap.service.ts:358
+      - apps/drive-server/src/main.ts:94
+      - "gate runs 2026-07-03 (this pass): 37/37 unit, 15/15 jest, builds clean, 24/24 smoke, 9/9 e2e guardian approve/reject — all executed by architect"
+    supersedes: null
