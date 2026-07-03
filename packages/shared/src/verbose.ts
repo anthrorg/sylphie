@@ -30,7 +30,9 @@ const DEFAULT_PRUNE_DAYS = 7;
 
 let enabled = false;
 let allowedSubsystems: Set<string> | 'all' = new Set();
-let logStream: fs.WriteStream | null = null;
+// No persistent file handle: every write is a synchronous fs.appendFileSync,
+// so rotate()'s rename can never race a pending async flush.
+let sinkActive = false;
 let logDir = '';
 let logBaseName = '';
 let bytesWritten = 0;
@@ -44,17 +46,6 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function openStream(): void {
-  logStream = fs.createWriteStream(path.join(logDir, logBaseName), {
-    flags: 'a',
-  });
-  // A logging sink must never crash the host process on a filesystem
-  // hiccup (e.g. the log dir disappearing out from under it).
-  logStream.on('error', () => {
-    logStream = null;
-  });
-}
-
 function pruneStaleFiles(): void {
   try {
     const currentPid = process.pid;
@@ -66,6 +57,16 @@ function pruneStaleFiles(): void {
       if (!match) continue;
       const filePid = Number(match[1]);
       if (filePid === currentPid) continue;
+
+      // Skip a still-running sibling's file even if stale by mtime.
+      // process.kill(pid, 0) sends no signal; throws ESRCH only if dead.
+      try {
+        process.kill(filePid, 0);
+        continue; // alive — skip
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ESRCH') continue; // not confirmed dead — skip
+      }
+
       try {
         const stat = fs.statSync(path.join(logDir, entry));
         if (stat.mtimeMs < cutoffMs) {
@@ -96,7 +97,8 @@ function configure() {
   maxBytes = envInt('VERBOSE_MAX_BYTES', DEFAULT_MAX_BYTES);
   keepSegments = envInt('VERBOSE_KEEP', DEFAULT_KEEP);
 
-  // Open a persistent write stream for the per-process verbose log file
+  // Set up the per-process verbose log file. No file handle is kept open —
+  // each write is a synchronous fs.appendFileSync (see verbose() below).
   try {
     logDir = path.resolve(process.cwd(), 'logs');
     logBaseName = `verbose.${process.pid}.log`;
@@ -110,10 +112,10 @@ function configure() {
 
     pruneStaleFiles();
 
-    openStream();
+    sinkActive = true;
   } catch {
-    // If we can't open the file, verbose still works to stderr
-    logStream = null;
+    // If we can't set up the log dir, verbose still works to stderr
+    sinkActive = false;
   }
 }
 
@@ -122,16 +124,8 @@ configure();
 
 // ── Rotation ───────────────────────────────────────────────────
 
+/** Shift current -> .1 -> .2 ... -> N, pruning past the keep count. */
 function rotate(): void {
-  const oldStream = logStream;
-  logStream = null;
-  if (oldStream) {
-    oldStream.end();
-  }
-
-  // Synchronously shift rotated segments down the chain before
-  // reopening a stream, so the new stream's async open can't race
-  // the renames.
   try {
     const overflowPath = path.join(logDir, `${logBaseName}.${keepSegments}`);
     if (fs.existsSync(overflowPath)) {
@@ -149,15 +143,10 @@ function rotate(): void {
       fs.renameSync(current, path.join(logDir, `${logBaseName}.1`));
     }
   } catch {
-    // best-effort; fall through and reopen regardless
+    // best-effort; the next append recreates the current file regardless
   }
 
   bytesWritten = 0;
-  try {
-    openStream();
-  } catch {
-    logStream = null;
-  }
 }
 
 // ── Public API ─────────────────────────────────────────────────
@@ -183,15 +172,21 @@ export function verbose(
 
   process.stderr.write(line + '\n');
 
-  if (logStream) {
-    const lineBytes = Buffer.byteLength(line + '\n');
-    if (bytesWritten + lineBytes > maxBytes) {
-      rotate();
-    }
-    if (logStream) {
-      logStream.write(line + '\n');
-      bytesWritten += lineBytes;
-    }
+  if (!sinkActive) return;
+
+  const lineBytes = Buffer.byteLength(line + '\n');
+  if (bytesWritten + lineBytes > maxBytes) {
+    rotate();
+  }
+
+  try {
+    fs.appendFileSync(path.join(logDir, logBaseName), line + '\n');
+    bytesWritten += lineBytes;
+  } catch {
+    // A logging sink must never crash the host process on a filesystem
+    // hiccup (e.g. the log dir disappearing out from under it). Degrade
+    // to stderr-only for the rest of this process's lifetime.
+    sinkActive = false;
   }
 }
 
@@ -222,9 +217,6 @@ export function isVerbose(subsystem?: string): boolean {
  * Re-read VERBOSE env var at runtime (e.g. after dotenv loads late).
  */
 export function reconfigureVerbose(): void {
-  if (logStream) {
-    logStream.end();
-    logStream = null;
-  }
+  sinkActive = false;
   configure();
 }

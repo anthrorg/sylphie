@@ -150,6 +150,76 @@ describe('verbose log rotation (TK-INTAKE-1)', () => {
     expect(fs.existsSync(`${logsDir}/verbose.99999.log.1`)).toBe(false);
   });
 
+  test('pruneStaleFiles: a stale foreign-pid file whose process is DEAD gets pruned', () => {
+    process.env.VERBOSE = '1';
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const deadPid = 424242;
+    const deadFile = path.join(logsDir, `verbose.${deadPid}.log`);
+    fs.writeFileSync(deadFile, 'stale-dead-content');
+    const staleTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // well past the 7-day default cutoff
+    fs.utimesSync(deadFile, staleTime, staleTime);
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === deadPid) {
+        const err = new Error('kill ESRCH') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
+
+    verboseMod.reconfigureVerbose();
+
+    expect(fs.existsSync(deadFile)).toBe(false);
+
+    killSpy.mockRestore();
+  });
+
+  test('pruneStaleFiles: a stale foreign-pid file whose process is ALIVE is skipped, not deleted', () => {
+    process.env.VERBOSE = '1';
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const alivePid = 535353;
+    const aliveFile = path.join(logsDir, `verbose.${alivePid}.log`);
+    fs.writeFileSync(aliveFile, 'stale-alive-content');
+    const staleTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // well past the 7-day default cutoff
+    fs.utimesSync(aliveFile, staleTime, staleTime);
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === alivePid) {
+        return true; // no throw — process.kill(pid, 0) succeeding means alive
+      }
+      return true;
+    }) as typeof process.kill);
+
+    verboseMod.reconfigureVerbose();
+
+    expect(fs.existsSync(aliveFile)).toBe(true);
+    expect(readFileSafe(aliveFile)).toBe('stale-alive-content');
+
+    killSpy.mockRestore();
+  });
+
+  test('B1: rotation is synchronous — triggering line lands in the new file with no waitFor/await needed (no flush-before-rename race)', () => {
+    process.env.VERBOSE = '1';
+    process.env.VERBOSE_MAX_BYTES = '50';
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(currentLogFile(), 'w'.repeat(60));
+
+    verboseMod.reconfigureVerbose();
+    verboseMod.verbose('Test', 'sync-race-trigger-line');
+
+    // Deliberately NOT awaiting/polling: verbose() rotates (rename) and
+    // appends the triggering line entirely synchronously, so the correct
+    // end state must already hold the instant the call returns. If the sink
+    // still used an async write stream, the rename could race a pending
+    // flush and this assertion could be flaky or fail outright.
+    expect(fs.existsSync(`${currentLogFile()}.1`)).toBe(true);
+    expect(readFileSafe(`${currentLogFile()}.1`)).not.toContain('sync-race-trigger-line');
+    expect(readFileSafe(currentLogFile())).toContain('sync-race-trigger-line');
+  });
+
   test('AC5: disabled hot path creates no logs dir or file', async () => {
     delete process.env.VERBOSE;
     verboseMod.reconfigureVerbose();
