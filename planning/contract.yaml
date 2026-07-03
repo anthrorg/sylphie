@@ -5870,14 +5870,19 @@ nodes:
     pr_url: "https://github.com/anthrorg/sylphie/pull/71"
     branch: "agent/tk-105-frontend-perception-overlay-buffer-evict"
 
-  - id: EP-INTAKE
+  - { id: FEAT-3, kind: feature, parent: null, status: in_progress, priority: P2,
+      title: "Intake pipeline — rolling operational/maintenance work",
+      intent: "Umbrella feature for heterogeneous work carried into the contract from the pipeline/ intake system (bug fixes, hardening, small features across all subsystems). Exists so intake epics satisfy the feature->epic->ticket tracing rule; created 2026-07-02 when the pipeline's semantic epic ids (EP-INTAKE) were renumbered to schema-valid numeric ids (Jim-ruled: pipeline conforms to the planning-worx schema)." }
+  - id: EP-21
     kind: epic
-    status: todo
+    parent: FEAT-3
+    status: in_progress
+    priority: P2
     title: "Intake pipeline — rolling epic for approved intake items"
-    intent: "Parent epic for tickets carried into the contract from pipeline/ intake items (contract_routing: EP-INTAKE). Created with Jim's approval 2026-07-02 for TK-INTAKE-1."
-  - id: TK-INTAKE-1
+    intent: "Rolling parent epic for tickets carried into the contract from pipeline/ intake items (contract_routing: EP-21). Renamed from the schema-invalid EP-INTAKE on 2026-07-02 (Jim-ruled renumber). First ticket: TK-108 (was TK-INTAKE-1)."
+  - id: TK-108
     kind: ticket
-    parent: EP-INTAKE
+    parent: EP-21
     status: todo
     type: bug
     title: "Per-process size-bound + rotate the verbose log at the sink"
@@ -5890,11 +5895,11 @@ nodes:
     - packages/shared/jest.config.js
     - packages/shared/package.json
     acceptance_criteria:
-    - "Rotate at threshold: pre-existing verbose.<pid>.log at/above VERBOSE_MAX_BYTES rolls to .1 and a fresh file starts on next write."
-    - "Keep bound: with VERBOSE_KEEP=3, after >=4 rotations only verbose.<pid>.log + .1/.2/.3 remain; oldest pruned."
-    - "No data loss: the line that triggers a rotate lands in the new file; stderr output is unchanged."
-    - "Per-process isolation: two instances with distinct pids each write/rotate only their own verbose.<pid>.log."
-    - "Disabled hot path: with VERBOSE unset, no logs/ file is opened and no stat/rotation work runs."
+    - { given: "a verbose.<pid>.log at or above VERBOSE_MAX_BYTES", when: "the next verbose write occurs", then: "the file rolls to verbose.<pid>.log.1 and a fresh verbose.<pid>.log starts" }
+    - { given: "VERBOSE_KEEP=3", when: "four or more rotations have occurred", then: "only verbose.<pid>.log + .1/.2/.3 remain and the oldest segment is pruned" }
+    - { given: "a write that triggers a rotation", when: "the rotation happens", then: "the triggering line lands in the new file and stderr output is unchanged (no bytes lost)" }
+    - { given: "two instances with distinct pids", when: "both write and rotate concurrently", then: "each writes and rotates only its own verbose.<pid>.log" }
+    - { given: "VERBOSE is unset", when: "logging is invoked", then: "no logs/ file is opened and no stat or rotation work runs" }
     non_goals:
     - "normal/structured logs untouched; no logging library; no compression of rotated segments; external getLogContext glob update is a separate follow-up."
 governance:
@@ -6280,6 +6285,12 @@ governance:
       decision: "Move 20260625-002 replan -> planning so it re-enters fresh. On re-plan: stage TK-AUDIT-1 (P0, drive_rules REVOKE+RLS, owner sentinel/architect) as a build-ready ticket under a fresh EP-AUDIT epic; file the design-needing findings (#2/#3 god-objects, #6 EWC-confirm, #5 discarded-deliberation, #8 dup canonical-homes) as governance open_questions ROUTED TO architect — NOT pre-decided here; stage the mechanical cleanup (#4 dead IpcChannelService, #7 WebRTC no-op, #9 dead-exports/no-console) as normal tickets. The replan cog makes ZERO design calls (no god-object seams, no EWC outcome, no canonical-home picks) — those are architect's during /plan-design. Per contract_write=staged, NO ticket is written into contract.yaml by this move; tickets stage in the item's plan.md and the contract-write happens only at Jim's explicit staged-write approval gate.",
       consequences: "20260625-002 leaves replan -> planning at attempts=1; the live CANON Std-6 P0 stops rotting in replan and advances through the normal flow to Jim's approval gate instead of being invisible in replan. No EP-AUDIT epic or tickets are committed autonomously (staged). EP-AUDIT does not yet exist in the contract, so no duplicate-epic risk. If re-plan finds only architect-decidable design with no build-ready remainder, that routes back per normal planning, never a silent guess. 20260625-001 (verbose.log A-vs-B layout) stays PARKED — it needs Jim's explicit choice and he has not answered.",
       canon: "no tension — routing/record-keeping only; the staged contract-write boundary is untouched and no design decision is pre-empted. Surfaces the sharpest CANON gap found (Std-6 drive_rules self-write) toward remediation." }
+  - { id: DEC-29, type: decision, status: accepted, scope: project,
+      title: "Intake item 20260702-001 (backend audit — unauthenticated destructive endpoints + boot/WS/STT) — replan resolution: adopt the red-team's prescribed approach, re-enter planning",
+      context: "Replan item 20260702-001 was parked on two plan-reviewer CRITICALs against staged TK-BEH-1..4 (redteam.md). C1: TK-BEH-1 route enumeration under-scoped ~3x — metrics.controller.ts has 15 @Post routes; the plan hand-listed ~5 and MISSED destructive anonymous routes incl all-persons-facts-reset (:350, TRUNCATEs all persons), episodic-reset (:380), perception-reset (:418), scene-predictor-reset (:449), visual-presence-habituation-reset (:524), prompt-capture-reset (:577), latent-seed-overgeneral (:267) — a hand-list AC passes while worse endpoints stay open. C2: TK-BEH-1's AC mandates an e2e test but no e2e/HTTP (supertest/app-bootstrap) harness exists — hidden scope, AC not runnable as staged. Both are EXECUTION-approach corrections the red-team itself prescribes; neither is a design/CANON fork nor a Jim call.",
+      decision: "Adopt the red-team's prescription (no new design). (1) TK-BEH-1 gates the state-mutating route CLASS BY RULE, not a hand-list: apply the auth/localhost-env guard to all mutating controller routes, and the AC's e2e test ENUMERATES routes dynamically from the Nest router and asserts every non-GET/mutating + *-reset route is guarded (fails if any anonymous destructive route is reachable). (2) Add explicit e2e/supertest harness scope: bootstrap AppModule + supertest, declared in files_in_scope; restate TK-BEH-1's AC as supertest against the bootstrapped app. (3) Fold the HIGH findings into re-plan: extract the TK-107 Promise.race deadline into a shared helper (wkg-bootstrap.service.ts:59-81 / wkg-query.service.ts:151-182 duplicate it) rather than copy; widen TK-BEH-2 to also deadline person-model onModuleInit's unbounded SET p.label backfill (~:117-120) and face-snapshot ensureSchema()/hydrate(); correct migration.md (it wrongly claims 'nothing writes any store' — person-model boot DOES mutate); pin the TK-BEH-4 client-notification event contract jointly with frontend item 20260702-005. The replan cog makes NO design calls — it commits the corrected build APPROACH the red-team specified. Per contract_write=staged, NO ticket is written into contract.yaml by this move; tickets re-stage in the item's plan.md at Jim's approval gate.",
+      consequences: "20260702-001 leaves replan -> planning at attempts=1; re-plan rewrites TK-BEH-1 as a rule-based gate with a dynamic-route-discovery e2e AC + explicit supertest harness scope, widens TK-BEH-2, fixes migration.md, and cross-links TK-BEH-4 to 20260702-005. No silent guess — the approach is the red-team's own prescription.",
+      canon: "supports CANON — closes an unauthenticated-boundary gap on state-mutating endpoints (anonymous TRUNCATE/reset routes); gating by rule prevents a hand-list from re-opening the hole. No standard in tension; staged contract-write boundary untouched." }
 
 changelog:
   - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
