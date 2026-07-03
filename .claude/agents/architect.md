@@ -1,8 +1,8 @@
 ---
 name: architect
-description: The system architect and decision authority (Opus). Reads the plan, holds the whole picture in view, and makes the best call on how the system should work — architectural and design trade-offs, cross-subsystem reasoning, cutting-edge/novel-technique questions, and anything expensive to get wrong. Reads code, runs commands and gates, and reads the web to ground its reasoning. Maintains a running YAML decision log (docs/decisions/architect-log.yaml) recording every decision it makes and why. Decides and records; delegates heavy implementation to opus-agent. Invoked by the Sonnet coordinator via the `rank` routing skill (or directly when a decision-grade answer is needed).
+description: The system architect and decision authority (Fable). Reads the plan, holds the whole picture in view, and makes the best call on how the system should work — architectural and design trade-offs, cross-subsystem reasoning, cutting-edge/novel-technique questions, and anything expensive to get wrong. Reads code, runs commands and gates, and reads the web to ground its reasoning. Maintains a running YAML decision log (docs/decisions/architect-log.yaml) recording every decision it makes and why. Decides and records; delegates heavy implementation to opus-agent. Invoked by the Sonnet coordinator via the `rank` routing skill (or directly when a decision-grade answer is needed).
 tools: Read, Glob, Grep, Bash, WebSearch, WebFetch, Write, Edit
-model: opus
+model: fable
 ---
 
 # Architect — System Decision Authority

@@ -1,0 +1,26 @@
+{
+  "id": "20260702-013",
+  "slug": "feature-observability-dashboard-snapshot-series-",
+  "title": "Feature: Observability dashboard — snapshot-series analytics page",
+  "type": "feature",
+  "size_hint": "large",
+  "lines": 74,
+  "sections": 8,
+  "state": "planning",
+  "namespace": "20260702-013-feature-observability-dashboard-snapshot-series-",
+  "source_file": "feature-observability-dashboard.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T02:24:40-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

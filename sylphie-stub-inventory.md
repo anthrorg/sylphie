@@ -1,367 +1,149 @@
 # Sylphie Stub Inventory & Impact Analysis
 
-Date: 2026-04-29
-Source: Direct code reading (no markdown-derived claims)
-Companion to: `archive/sylphie-architecture-notes.txt`, `sylphie-assessment.md`
+**Date:** 2026-07-02 (regenerated) · **Baseline:** commit `228df73`
+**Source:** full-repo bug audit — seven subsystem auditors reading source in full, all CRITICAL findings independently re-verified against source. Full detail: `docs/audits/repo-bug-audit-2026-07-02.md`. Feature-by-feature status: `sylphie-feature-inventory.md`.
+**Supersedes:** the 2026-04-29 inventory (below the line). Several items it marked RESOLVED are re-opened here with evidence; several new theater/broken items were not previously enumerated.
 
-Each entry: **what** (the stub), **where** (file:line), **why it matters** (concrete behavioral impact), **fix complexity**.
-
-Ranked by severity. Severity reflects gap between architectural promise and runtime behavior, not effort to fix.
+Each entry: **what** (the gap), **where** (file:line), **why it matters** (behavioral impact), **complexity**. Ranked by severity — severity reflects the gap between architectural promise and runtime behavior, not effort to fix.
 
 ---
+
+## TIER 0 — NEWLY FOUND, HIGHEST SEVERITY (2026-07-02)
+
+### 0.1 Tensor cognition path is dead at the contract boundary
+**Where:** `apps/sylphie/src/services/tensor-inference-adapter.service.ts:189-198` sends `drive_history` **flat** (120 floats); `packages/cognition-service/schemas.py:48` requires **nested** `list[list[float]]`.
+**What:** Pydantic v2 cannot coerce `float → list[float]`, so **every `/cognition/cycle` call returns 422**. `runCycle` returns null, the breaker opens after 5, `last_cycle_result` stays None, categories never graduate, mode never advances. The service's `/health` still reports OK.
+**Why it matters:** The entire learned-cognition frontier — the project's headline thesis — is inert. The previously-known "`per_category_confidence` always empty" symptom is *caused* by this (its aggregation code is real but unreachable). This is theater at the system level: healthy-looking service, dead core.
+**Complexity:** Trivial (send nested; drop the `.flat()`). Add a contract test.
+
+### 0.2 Drive-server WS client never reconnects
+**Where:** `packages/drive-engine/src/ipc-channel/recovery.ts:118` (`attemptRecovery()` — zero production callers); `ws-channel.service.ts:106-141`; `drive-process-manager.service.ts:56-99`.
+**What:** The `close` handler nulls the socket and stops. `RecoveryMechanism` is constructed and never used. The startup catch logs *"Drive Engine not available on startup — recovery will reconnect"* — false. `sendQueue` is unbounded with no TTL.
+**Why it matters:** Any drive-server restart or network blip permanently severs the motivational system for the life of the main process, plus a slow memory leak. CANON's "isolated but connected" story quietly fails closed.
+**Complexity:** Medium (wire `attemptRecovery` into the close/health path; wait for `open`; cap the queue).
+
+### 0.3 Unauthenticated destructive endpoints
+**Where:** `apps/sylphie/src/controllers/skills.controller.ts` (`POST /api/skills/reset` → wipes WORLD/SELF/OTHER + truncates `events`, `learned_patterns`, `voice_patterns`, `sensory_ticks`, `proposed_drive_rules` + resets drive state), `reset-world`; `metrics.controller.ts` (several `*-reset` + `c3-seed` + `decay-now`); `llm.controller.ts` (`POST /api/llm/lesion`); `graph.controller.ts` (full OKG read). Only `RulesController` + `AuthController.me` use `AuthGuard`.
+**What:** Every listed route is anonymous-reachable; the only "protection" on reset is `{confirm:true}` in the body. CORS restrains browsers only.
+**Why it matters:** In a public deployment (Railway + `ServeStaticModule`) a single anonymous `curl` permanently destroys all accumulated memory, or disables the LLM, or exfiltrates person facts.
+**Complexity:** Low (apply `AuthGuard`, or gate to localhost/token/env-flag).
+
+### 0.4 WKG dedup boost bypasses the 0.60 confidence ceiling
+**Where:** `packages/decision-making/src/wkg/wkg-context.service.ts:823` — `const boosted = Math.min(1.0, existingConf + 0.05)`.
+**What:** Every Type-2 deliberation whose `triggerContext` Jaccard-matches (>0.70) an existing procedure bumps its stored confidence +0.05, capped at **1.0** (not the Std-3 ceiling 0.60), with no guardian confirmation and no `computeConfidence()` (bespoke math — a Std-6 concern). Contrast `reinforceFactNode()` :740 which correctly clamps to 0.60.
+**Why it matters:** Repeated similar inputs drive an unconfirmed INFERENCE procedure toward conf 1.0; with `W_CONFIDENCE=0.50` it then out-ranks everything — the documented runaway class (TK-104).
+**Complexity:** Low (route through `computeConfidence`, clamp 0.60).
+
+### 0.5 Pre-commit contradiction scanner is a structural no-op
+**Where:** `packages/decision-making/src/arbitration/contradiction-scanner.service.ts:108` vs the only CONTRADICTS writer `packages/learning/src/pipeline/detect-contradictions.service.ts:151-169`.
+**What:** Three independent mismatches: CONTRADICTS edges are only created between entity/candidate nodes (never ActionProcedures); the scanner matches `{id:$id}` but procedures carry `node_id`; and it reads `c.claim/c.existingFact/c.confidence` off the neighbouring **node** while the writer stores them on the **edge**.
+**Why it matters:** The coherence gate ArbitrationService relies on to downgrade contradictory actions to SHRUG can never fire — every scan returns "clean." A safety gate presented as real that structurally cannot trigger.
+**Complexity:** Medium (rewrite against the actual CONTRADICTS shape; add a fixture).
+
+### 0.6 RLS half of drive isolation is unenforced and unverified
+**Where:** `packages/drive-engine/src/postgres-verification/verify-rls.ts` (registered in no module → `OnModuleInit` never runs); `infra/postgres/init/001-runtime-user.sql:9-10` grants full DML to `sylphie_app` with no REVOKE/RLS policy on `drive_rules`.
+**What:** The archived case study claims "verified by RlsVerificationService … startup ABORTS on failure." At runtime, nothing verifies and nothing restricts.
+**Why it matters:** One of the two CANON pillars this subsystem is named for is presented as enforced but is façade. (The REVOKE gap is tracked as TK-AUDIT-1; the never-registered verifier is not.)
+**Complexity:** Medium (register + pass the verifier; land the REVOKE + policy).
+
+### 0.7 Frontend WS hooks: unmount-reconnect zombie sockets
+**Where:** `frontend/src/hooks/useWebSocket.ts:366-375` (+170-183, 512-521), `useSupervisorWebSocket.ts:94-103`.
+**What:** Cleanup clears the pending timer and calls `close()` but never nulls `wsRef` / sets an unmounted flag; the async `onclose` then passes its staleness guard and re-arms a reconnect that opens an orphan socket writing into the global store forever.
+**Why it matters:** Re-creates the exact double-delivery bug the code comments claim was fixed — duplicate messages, double turn counts, and an orphan reconnect that can evict the visible tab (close 1012 suppresses its reconnect → permanently "disconnected").
+**Complexity:** Low (one shared fix, applied to four hooks).
+
+### 0.8 Fabricated face confidence disables enrollment
+**Where:** `packages/perception-service/cobeing/layer2_perception/face_detector.py:256-258` (constant `self._config.confidence_threshold`, default 0.5); gated by `apps/sylphie/src/services/face-snapshot.service.ts:101,316` (`MIN_CONFIDENCE=0.65`).
+**What:** Every face is reported at a constant fabricated 0.5 < 0.65, so `processFaceFrame` bails on every frame. No log, no error.
+**Why it matters:** Face-snapshot enrollment never collects a single crop. A hardcoded value presented as model output that silently zeroes a downstream feature — the textbook theater case.
+**Complexity:** Low (derive a real score from blendshape/detection score, or lower + log the gate).
+
+### 0.9 Planning validation retry writes the wrong proposal
+**Where:** `packages/planning/src/pipeline/constraint-validation.service.ts:120-172`, `planning.service.ts:582-586,649`.
+**What:** `validate()` refines and re-validates internally but `ValidationResult` carries no proposal back; `executePipeline` never reassigns `currentProposal`, so on a pass at attempt ≥2 it creates the **original failing** proposal. Compounded by `refine()` zeroing `predictedDriveEffects` (`proposal.service.ts:107-130`) so refined expressive plans can never pass the theater check anyway.
+**Why it matters:** A procedure that failed step-type/theater/tracing checks gets written under a `PLAN_VALIDATED` event — a quiet constraint-engine bypass.
+**Complexity:** Low (return the refined proposal from `validate()`; repopulate drive effects on refine).
+
+### 0.10 Concurrency holes in CycleGuard / self-ticks / Ollama
+**Where:** `cycle-guard.service.ts:547-568`; `ollama-llm.service.ts:335,449`; `decision-tick-engine.service.ts:348-404`.
+**What:** The zombie cycle's `finally` unconditionally frees the mutex and disarms the successor's watchdog (only the breaker is epoch-guarded). `client.chat()` has no timeout despite `chatTimeoutMs` being read and logged as active. Self-ticks bypass the watchdog entirely.
+**Why it matters:** Under a slow/hung Ollama — the exact condition the guard exists for — turns are silently dropped, or a hung self-tick deadlocks all user turns until restart.
+**Complexity:** Medium (epoch-guard the release; add a chat timeout signal; watchdog self-ticks).
+
+---
+
+## TIER 1 — Re-opened from the 2026-04-29 inventory (marked RESOLVED, verified NOT)
+
+- **§Convergence "head removed" (was 2.5, RESOLVED):** the dead weights were removed, but `use_learned` can still flip true on one lucky random call after 1000 checks (`convergence.py:148-168`) — graduation of a **never-trained** head, persisted in the checkpoint. **THEATER, re-opened.**
+- **§EWC "RESOLVED" (was 1.1):** the math is real, but the only consolidation trigger (`POST /cognition/phase-transition`) has **no runtime caller**, so EWC never activates in production; and even if called, `set_reference` runs before `compute_fisher` so the fresh Fisher is never used for its phase. **DEAD + ordering bug, re-opened.**
+- **§per_category_confidence (was 2.3):** aggregation code now exists but is unreachable while every cycle 422s (see 0.1). **BROKEN by 0.1.**
+- **§Contradiction/coherence assumptions:** the contradiction gate (0.5) was never enumerated as a stub; it is theater.
+
+## TIER 2 — Confirmed still-open from the 2026-04-29 inventory
+
+- **2.4 DeepSeek reasoning trace dropped** — `supervisor.service.ts:273-274`, still TODO. **STUB.**
+- **4.3 One-shot voice transcribe empty** — `voice.controller.ts:32-36`, press-to-talk still returns empty. **STUB** (streaming path works).
+- **3.3 DrivesController override/drift/reset** — honest 501s now (good); frontend affordances still render. **STUB (honest).**
+- **2.9 Spreading-activation engine inert** — still ~1,090 lines, zero callers. **DEAD.**
+- **3.1 Communication theater check flag-only** — `communication.service.ts` still returns `true`; and the drive-side enforcement it defers to is itself theater (0.6). **THEATER (both ends).**
+
+## TIER 3 — Other verified live gaps (2026-07-02, see audit for full list)
+
+Drive engine: baseline self-adjustment DEAD; HEALTH_STATUS fake; Timescale event pipeline DEAD (wrong columns); snapshot-staleness anchor lockout; SESSION_START state-injection; tick-drift math wrong.
+WKG: `writeEntity` phantom node_id → dropped research edges; RELIEVES no-op (no `:Drive` nodes); `matchProcedures` property-name drift hides planned procedures; seeds minted at 0.60.
+Learning: conversation speaker-facts stamped GUARDIAN/0.60 and attached to arbitrary subjects; transient-LLM-failure forfeits reflection; `markAsLearned` swallow → duplicate `:Conversation` nodes; rate-limited opportunities dropped without dead-letter.
+Backend: TK-107 hardening incomplete (two more hang-capable inits + orphan-promise crash risk); `meanDriveResolutionTimes` SQL permanently broken; STT silent-death paths.
+Frontend: word-rating sends into the void; perception WS never reconnects; dead metrics panels; Anthropic key in the bundle; transient auth failure logs the user out.
+
+---
+
+## NOTE ON STUB CULTURE (retained, still true — with a caveat)
+
+The 2026-04-29 claim held that *"every stub sits behind a clean interface boundary … each stub is a known degraded mode, not a hidden bug."* That remains true of the **newest** paths (candidate staging, reinforcement, turn-taking, fail-closed validation — all real, wired, tested). It is **not** true of the older write/read plumbing and the resilience layer, where this audit found genuine hidden theater: success logged over no-op Cypher, verifiers never registered, reconnect that never reconnects, and confidence-ceiling escapes. The honest posture going forward: the interface discipline is real, but interface-honesty is not invocation-honesty — several clean interfaces front dead or lying implementations.
+
+---
+
+---
+
+# ARCHIVE — 2026-04-29 inventory (retained for history; reconcile against Tier 0-3 above)
+
+> The text below is the previous inventory. Where it says RESOLVED, cross-check Tier 1 — several resolutions did not hold at runtime as of 2026-07-02.
 
 ## TIER 1 — CRITICAL: Breaks an Architectural Promise
 
 ### 1.1 EWC catastrophic interference prevention — RESOLVED (2026-06-10)
-
-**Where (was):** `packages/cognition-service/training/replay.py`
-
-**Resolution:** `EWCRegularizer` rewritten as Online EWC (Schwarz 2018). `compute_fisher()` computes empirical Fisher diagonal (squared gradients, normalized, floored at 1e-8, clamped at 1e2 per-layer). `set_reference()` implements `F_new = 0.7·F_old + F_phase`. λ ramp-up over 200 steps prevents Adam-momentum shock. Per-layer Fisher stats logged at every phase transition (Fisher collapse is silent without this). `DataBuffer.snapshot_calibration()` added. `POST /cognition/phase-transition` endpoint triggers `set_reference()` + `compute_fisher()` at runtime when bootstrap phase changes. 7 tests in `training/tests/test_replay.py`, all passing.
-
----
+[Historical: EWCRegularizer rewritten as Online EWC. NOTE 2026-07-02: real math, but never invoked in production — see Tier 1 above.]
 
 ### 1.2 Pressure-driven learning cycles — RESOLVED (2026-06-10)
-
-**Where (was):** `packages/learning/src/learning.service.ts:8-12, 89, 187`
-
-**What (was):** Timer-only triggers; CognitiveAwareness pressure had zero influence on cycle scheduling.
-
-**Resolution:** `LearningService.forceCycle()` added (`ILearningService` contract + implementation). `LearningPressureBridgeService` in `apps/sylphie/src/services/learning-pressure-bridge.service.ts` subscribes to `driveState$`, and calls `forceCycle()` when `CognitiveAwareness > 0.70` (30s minimum interval between pressure-triggered cycles). Timer remains as a safety floor at 60s. Bridge registered in `AppModule`.
-
----
+[Historical: `forceCycle()` + `LearningPressureBridgeService`. Verified still holding 2026-07-02.]
 
 ### 1.3 Procedure conflict detection always passes — RESOLVED
-
-**Where:** `packages/planning/src/pipeline/constraint-validation.service.ts`, `constraint-checks.ts`, `proposal.service.ts`, `procedure-creation.service.ts`
-
-**What (was):** `fetchExistingTriggerContexts()` returned a hard-coded empty set, so `checkProcedureConflict` always passed and Planning could write duplicate `:ActionProcedure` nodes with overlapping `trigger_context`, fragmenting confidence across phantom-twin nodes and corrupting Type 1 graduation.
-
-**Resolution (two halves):**
-- **Live conflict fetch + fail-closed.** `fetchExistingTriggerContexts()` now queries Neo4j WORLD for existing `trigger_context` values. On query error it returns a discriminated `{ ok: false }` and `validate()` returns `deferred: true` (see §3.4) — fail CLOSED, never blind-pass.
-- **Stable dedup key for ALL proposal paths.** The exact-match dedup only worked for the template path (which used the deterministic `contextFingerprint`). The LLM path authored a free-form trigger string, so two proposals for the same pattern never collided. `ProposalService.withStableTrigger()` now pins `triggerContext` to `opportunity.payload.contextFingerprint` for every path (template, LLM, refinement, parse-fallback), and preserves any LLM-authored descriptive text in a separate `triggerDescription` property (`trigger_description` on the node). Decision Making retrieves by Jaccard similarity against the same fingerprint format, so retrieval semantics are unchanged. Empty/whitespace triggers can no longer poison the dedup set: `checkProcedureConflict` abstains on them, and the override means `''` never reaches the graph as a key. CANON: each guardian teaching carries a distinct `contextFingerprint`, so distinct teachings still get distinct keys.
-
-**KNOWN LIMITATION (flagged):** Dedup is still exact-match on the stable key. It closes the common case (same opportunity / same pattern → same fingerprint → caught). It does NOT catch semantic near-duplicates — two genuinely different opportunities whose `contextFingerprint`s differ but describe the same underlying behavior. True semantic/fuzzy dedup at write time would require the embedding service and is out of planning-local scope. (Note: Decision Making's own `wkg-context.service.ts:writeActionProcedure` DOES do Jaccard>0.70 fuzzy dedup on its write path; Planning's write path does not, by design, to keep validation synchronous and I/O-light.)
-
----
+[Historical: live conflict fetch + fail-closed + stable dedup key. Verified holding 2026-07-02, with the residual that the exact-match dedup + the +0.05→1.0 boost at write time (§0.4) reopen a confidence-ceiling escape on the same path.]
 
 ## TIER 2 — HIGH: Breaks a User-Visible Feature
 
-### 2.1 Supervisor cognition control endpoints — RESOLVED (2026-06-10)
-
-**Where (was):** `packages/cognition-service/main.py`
-
-**Resolution:** All four endpoints now do real work:
-- `reinforce` — injects `round(strengthFactor*3)` clamped [1,10] copies of the input sample into DataBuffer; DataBuffer.add_sample() added.
-- `correct` — injects `(inputVector, correctCategory)` 3× into DataBuffer; calls `zero_pending_for_category()` on the trainer (logs + no-op hook wired).
-- `freeze` / `unfreeze` — flip `trainer._training_frozen`; `_train_step()` returns early when frozen.
-- `boost_salience` (TypeScript sidecar-control.service.ts) deferred — needs per-feature attention multipliers on panel models (WS3).
-
----
-
-### 2.2 `boost_salience` intervention is unimplemented
-
-**Where:** `packages/supervisor/src/sidecar-control.service.ts:92-97`
-
-**What:** Comment: *"Not yet implemented on sidecar — log and acknowledge."* Returns OK without making any HTTP call.
-
-**Impact:**
-- One of the six SupervisorIntervention types is permanently inert. Anywhere code paths conditional on this type assume effect, the assumption is wrong.
-- Practical effect: the supervisor cannot tell the cognition sidecar "pay more attention to drive history when this pattern recurs" — the lever doesn't exist.
-
-**Fix complexity:** Medium. Requires both a sidecar endpoint and a defined "salience pattern" semantics on the panel models (probably a per-feature attention multiplier).
-
----
-
-### 2.3 `per_category_confidence` is always empty in metrics
-
-**Where:** `packages/cognition-service/main.py:148, 387-397`
-
-**What:** `_state.per_category_confidence: dict[str, float]` initialized empty, **never written** by trainer or cycle code. Surfaced via `GET /cognition/metrics`.
-
-**Impact:**
-- The Guardian dashboard's "Per-Category Confidence" panel renders empty — no per-category trust signal visible.
-- More subtly: the `agreement_rate` from BootstrapTracker is the only category-level signal flowing to the operator. Confidence and agreement are different things; without confidence, the operator cannot tell if a category that's at "85% agreement, ready to graduate" is also internally confident.
-- Causes operator misjudgment about which categories to allow into partial/full mode.
-
-**Fix complexity:** Low. The panel models already produce per-cycle confidence scalars (`panel_models.py:114-116`). A short hook in `_train_step` or `cycle.run` to aggregate by `action_category` would populate it.
-
----
-
-### 2.4 DeepSeek reasoning trace is dropped
-
-**Where:** `packages/supervisor/src/supervisor.service.ts:273-274`
-
-**What:** `SupervisorVerdict.reasoningTrace?` is in the type signature, but always set to `undefined`. TODO comment at line 273-274.
-
-**Impact:**
-- DeepSeek-reasoner returns a `reasoning_content` field with the chain-of-thought used to reach the verdict — the entire reason for choosing DeepSeek over Sonnet/Haiku.
-- Discarding it means we pay for reasoning tokens (priced separately at $0.42/M output) but never see the reasoning.
-- Operator cannot distinguish "supervisor flagged this because it's genuinely wrong" from "supervisor flagged this because of a shallow heuristic match" — exactly the audit signal the supervisor is supposed to provide.
-
-**Fix complexity:** Trivial. Plumb `response.metadata?.reasoningContent` through `OllamaLlmService` (likely also missing there) → `LlmResponse` → `parseVerdict` → `SupervisorVerdict.reasoningTrace`.
-
----
-
-### 2.5 ConvergenceModel dead panel-adjustment head — RESOLVED (2026-06-10)
-
-**Where (was):** `packages/cognition-service/models/convergence.py`
-
-**Resolution:** Dead `w_adj`/`b_adj` weights removed from `_build()`, `save()`, `load()`. `total_params` now accurately reports 10369. Legacy checkpoints with `w_adj`/`b_adj` keys are silently ignored in `load()` (backward compat). `_predict_learned()` has an explicit TODO: graduation criterion requires `>= N convergence training pairs + validation accuracy threshold`. `use_learned` remains False until that criterion is met.
-
----
-
-### 2.6 `alwaysEvaluate` event types — PARTIALLY RESOLVED (2026-06-10)
-
-**Where (was):** `packages/supervisor/src/supervisor.service.ts:229-230`
-
-**Resolution (guardian_feedback half):** `CycleResponse.inputCategory` field added (`packages/shared/src/types/communication.types.ts`). Threaded from `processInputResult.inputCategory` in `decision-making.service.ts`. `shouldEvaluate()` now returns `true` when `cycle.inputCategory === 'GUARDIAN_FEEDBACK'` and it's in the `alwaysEvaluate` list.
-
-**Remaining (attractor_alert half):** `attractor_alert` cannot be detected from `CycleResponse` yet — requires the attractor monitor to emit a per-cycle marker on the CycleResponse. Deferred until attractor monitor emits this signal.
-
----
-
-### 2.7 `MAX_INFERENCE_TIMEOUT_MS = 50` is not enforced
-
-**Where:** `packages/cognition-service/config.py:34`
-
-**What:** Constant defined, but no watchdog around `cycle.run`.
-
-**Impact:**
-- The TS-side `CognitionGatewayService` has its own 50ms timeout (`AbortSignal.timeout(50)` at `cognition-gateway.service.ts:174`), so a slow sidecar doesn't block the decision loop. But a hung sidecar means subsequent cycles silently skip tensor inference until reconnect.
-- If the sidecar enters a slow-path (e.g., a panel model with degenerate weights), the operator sees "tensor inference unavailable" with no internal sidecar diagnostic of why.
-
-**Fix complexity:** Trivial. Wrap the cycle in `asyncio.wait_for(...)`.
-
----
-
-### 2.8 Learning pipeline leaks person-fact values into shared WKG — SEALED-BY-WAVE-3 (`1f53de2`, TK-81, 2026-06-19)
-
-**Where:** `packages/learning/src/pipeline/` — `upsert-entities.service.ts` (mints SENSOR proper nouns), all four WKG grounding read-paths in `packages/decision-making/src/wkg/wkg-context.service.ts` (lines 286, 330, 1075, 1099).
-
-**What (historical):** WS4 Ticket 5 closed the *fast-fact* privacy leak (speaker facts no longer dual-write to WKG; latent patterns person-scoped). But the slow 60s learning cycle independently re-extracted spoken proper nouns from conversation transcripts into the shared WKG — e.g. `entity-dog-max` (label "Max") with `person-guardian -[OWNS]->` edges at INFERENCE/0.3, making **Person B able to ground a GROUNDED Type-2 reply off Person A's dog**.
-
-**Fix (SEALED):** `UpsertEntitiesService.mergeCandidateNode` now mints all SENSOR-provenance (conversation-derived) proper nouns as `:Candidate` nodes, NOT `:Entity`. The `:Candidate` is person-scoped (`grounding_person_id = speakerId`) and confidence-capped at ≤0.60. All four WKG grounding read-paths exclude `:Candidate` via `NOT <var>:Candidate` clauses: `matchEntities` (fulltext branch :1075, CONTAINS fallback :1099), `getSubgraph` (:286), `getEntityFacts` (:330), and `getRelationships` (also guarded). The fix was live as of commit `1f53de2`.
-
-**Regression (TK-81, 2026-06-19):** Two-person corpus regression added in `packages/learning/src/pipeline/upsert-entities.candidate.spec.ts` and `packages/decision-making/src/wkg/candidate-grounding-exclusion.spec.ts` — proving Person B cannot ground off Person A's spoken proper noun across all four read-paths. This is the proving regression, not a reopening (DEC-20).
-
-**Status:** NOT a stub. The breach is sealed and regression-tested.
-
----
-
-### 2.9 Spreading-activation engine is fully-formed but inert (2026-06-13)
-
-**Where:** `packages/perception-service/cobeing/layer3_knowledge/spreading_activation.py` (~1,090 lines — `SpreadingActivationEngine` class :670, `spread_from` :694, `create_session_activation` :1022).
-
-**What:** A complete four-layer spreading-activation engine (BFS propagation, MAX-accumulation, post-traversal lateral inhibition, developmental budget scaling, guardian-tunable EvolutionRule params) that is **dead code**. Its public symbols are referenced in **no other file** (grep-confirmed, self-references only). It is not re-exported from `layer3_knowledge/__init__.py`, has no FastAPI route, and no test. Its only nominal consumers are the three query handlers, which declare `activation_map: dict = field(default_factory=dict)` but **never populate it** — the single read site `definition_query.py:673 (if request.activation_map:)` is always falsy. The entire `cobeing/layer3_knowledge` semantic-query subsystem is referenced by **zero** TypeScript files; the live cognition path (`decision-making`, `apps/sylphie`) never calls into it.
-
-Separately, the **live** TS port `spreadActivation` (`packages/decision-making/src/working-memory/activation.ts:308`) is NOT a retrieval expander — it only **re-ranks already-retrieved items** inside working-memory buffer assembly (`working-memory.service.ts:152-177`). The live retrieval frontier (`wkg-context.service.ts:getContextForFrame`) is strictly single-hop.
-
-**Impact:** Latent theater-prohibition hazard — a comment-rich, never-executed subsystem reads as a capability the system does not have. It is NOT a turnkey "curve-mover": WS3's compounding work does not depend on it (see `wiki/ws3-build-plan.md`). Its four-layer *design* (budget / decay / inhibition / developmental depth) is a useful reference spec for any future Phase-3 multi-hop recall, but the depth-advancement governor is mis-designed for scale (servos on raw spread ratio, which inverts meaning under budget clamping) and must be redesigned before wiring.
-
-**Fix complexity:** Decision, not code. Either (a) leave in place explicitly labeled as a Phase-3 reference spec (current choice), or (b) delete it and keep the design in the build-plan doc. Do NOT wire it as-is.
-
----
-
-### 2.10 Post-hoc OKG recall regex — CLOSED (TK-84, 2026-06-20)
-
-**Where:** `packages/decision-making/src/decision-making.service.ts` and `packages/decision-making/src/deliberation/deliberation.service.ts` — all four grounding sites.
-
-**What:** TK-84 confirmed the durable pre-arbitration path fully subsumes the §2.10 legacy fallback. The three deleted symbols (`okgRecallProvenance`, `applyOkgRecallGrounding`, private `getRecalledFact`) are removed from `deliberation-helpers.ts`. All four `else`-fallback branches are collapsed to the single `applyRecallGroundingFromRetrieval(recallRetrieval, ...)` call — a passthrough (null provenance, base grounding unchanged) for non-recall turns and a GROUNDED-upgrade for recall turns where the pre-arbitration node was resolved. The subsumption proof lives in `okg-recall-subsumption.spec.ts`.
-
-**Status:** CLOSED — no residual.
-
----
-
-### 2.11 Fact reinforcement persists retrieval-tracking fields; WORLD decay now reads them, OTHER decay deferred (WS3 T2 closed, T3 closed, 2026-06-13)
-
-**Where:** `packages/decision-making/src/wkg/wkg-context.service.ts` (`reinforceFactNode`) — fired from `packages/decision-making/src/decision-making.service.ts` after the single per-turn CycleResponse emit, guarded by `responseGrounding === 'GROUNDED' && responseGroundingProvenance === recallRetrieval.factNodeId`.
-
-**What:** WS3 T2 closes the knowledge use→reinforce edge. On a successful grounded recall-and-use, the used fact node's `retrieval_count` is incremented, `last_retrieval_at` (+ `reinforced_at`) set, and `confidence` recomputed via the shared ACT-R `computeConfidence()` — clamped to the 0.60 ceiling (Std 3) and floored at the node's current confidence (never demotes a guardian-confirmed 0.90 fact). Persisted to the **correct store per `RecallSource`**: OKG `(:Attribute {attr_id})` → Neo4j **OTHER**; WKG `({node_id})` → Neo4j **WORLD**. No graph boundary is crossed.
-
-**T2 reinforce side (closed):** T2 is the FIRST writer of `retrieval_count` / `last_retrieval_at` on fact nodes in either store. Persisted per `RecallSource`: OKG `(:Attribute {attr_id})` → OTHER; WKG `({node_id})` → WORLD. Reinforces the fact **node** only — not WKG **edges** (out of T2 scope). Verified (unit tests assert OKG→OTHER, WKG→WORLD, ceiling clamp, never-demote, monotonic saturation at 0.60).
-
-**T3 decay side — WORLD closed (2026-06-13):** `ConfidenceDecayService.decayNodes()` (`packages/learning/src/pipeline/confidence-decay.service.ts`) now keys node decay on `coalesce(n.last_retrieval_at, n.updated_at, n.created_at)` instead of the `updated_at`/`created_at` proxy. Fallback is load-bearing: never-reinforced nodes (no `last_retrieval_at`) decay exactly as before; reinforced nodes decay from their last *use*. This closes the WKG/WORLD compounding loop end-to-end (reinforce→decay). Covered by `confidence-decay.service.spec.ts` (coalesce query shape + recalled-vs-control divergence). **Edges intentionally still read `updated_at`** — T2 reinforces nodes only, so no WORLD edge carries `last_retrieval_at`; a coalesce including it would be inert (documented in `decayEdges()`).
-
-**Residual flag — OTHER-instance (OKG self-fact) decay is DEFERRED to T4 gate-design (honest flag):** `decayNodes()`/`decayEdges()` run only against `Neo4jInstanceName.WORLD`. OKG self-facts in the **OTHER** instance (`:Attribute`) are NOT decayed by this service — and never have been. T3 deliberately did **not** add decay to OTHER, because:
-  - OTHER holds person-identity facts; guardian-taught identity ("my name is Jim") must not silently fade. The existing per-provenance GUARDIAN rate (0.03) *slows* but does not *stop* decay, and `pruneOrphanedNodes()` targets `:Entity` orphans (WORLD), not `:Attribute` self-facts — so the current protections are NOT sufficient to make OTHER decay safe by default.
-  - Adding decay to OTHER would be a brand-new behavior (not a retrieval-awareness upgrade), out of T3's "close the loop where decay already exists" scope.
-  - **Consequence for T4:** the T4 compounding proof ("recalled node diverges upward from a never-recalled control after a decay cycle") is proven on **WKG/WORLD**, where both reinforce (T2) and retrieval-aware decay (T3) now exist. T4 must seed its control + treatment fact nodes in **WORLD**, not OTHER. If T4 wants to demonstrate the loop on OKG self-facts as well, it must first design OTHER decay with strong guardian/identity exclusion (e.g. skip `provenance_type IN ['GUARDIAN','GUARDIAN_APPROVED_INFERENCE']` and/or `:Attribute` identity keys), then add the same retrieval-aware coalesce — that is a T4 gate-design decision, explicitly out of T3.
-
-**Why it is NOT a silent stub:** the reinforce write (T2) and the WORLD decay read (T3) are both real, wired, and unit-tested. The only deferred piece — OTHER-instance decay — is flagged here precisely, with its reasoning and its consequence for the T4 gate, not left implied.
-
-**Fix complexity:** OTHER decay = Medium (needs guardian/identity-fact exclusion design before any decay is applied to person facts).
-
----
-
-### 2.12 Visual episodes are recall-only; consolidation does not read `visualContext` (WS5 T1, 2026-06-13)
-
-**Where:** `packages/decision-making/src/episodic-memory/consolidation.service.ts` (`convertToSemantic`) — reads only `inputSummary`/`actionTaken`; `EXTRACTION_PROVENANCE` is a hardcoded INFERENCE constant.
-
-**What (verbatim per WS5 T1.4):** WS5 T1 visual episodes are recall-only. `visualContext` (caption/sceneLabels/personIds) is NOT read by consolidation (`convertToSemantic`); visual episodes contribute ZERO to the WKG semantic census; `EXTRACTION_PROVENANCE` remains a hardcoded INFERENCE constant, not derived from `episode.source`. No log distinguishes a visual episode from a text episode in the consolidation path. WS5.5's first regression test: a `source='perception'` episode, once consolidated, produces a WKG node whose provenance derives from `episode.source` (SENSOR for sceneLabels / LLM_GENERATED for caption), not the INFERENCE constant.
-
-**Why it is NOT a silent stub:** flagged here at write time, per the WS5 build plan (T1.4). T1 deliberately ships visual episodes as **recall-only** (T2 reads them; consolidation does not). The consolidation extension is explicitly DEFERRED to WS5.5, co-dependent with the §2.8 WKG person-fact leak fix and T5 world-fact promotion.
-
-**Fix complexity:** Medium (WKG-gain question; co-dependent with §2.8 + T5; named WS5.5 regression test above).
-
----
-
-## TIER 3 — MEDIUM: Silent Degradation
-
-### 3.1 CommunicationService theater check is flag-only
-
-**Where:** `apps/sylphie/src/services/communication.service.ts:778-794` (`checkTheaterProhibition`)
-
-**What:** Logs a debug warning when anxiety > 0.7 + non-empty text, but always returns `true` (grounded). Comment: *"TODO: Implement real theater validation — compare response sentiment against drive state."*
-
-**Impact:**
-- **Lower than it looks** because the drive-engine has its own enforcement: ActionOutcomePayload requires a `theaterCheck` field, and `applyOutcome` returns early with zero reinforcement when `isTheatrical=true`.
-- BUT — the theaterCheck field that arrives at the drive-engine is computed by callers, not by Communication. If callers send `isTheatrical: false` while Sylphie is in fact saying something incongruent with her state, no enforcement fires.
-- The real gap: there is no service that does sentiment-vs-drive correlation analysis on the response text. So `isTheatrical` is essentially never set to true in the current call sites.
-
-**Fix complexity:** High. Needs sentiment analysis (or a small classifier) that maps response text to expected drive correlates.
-
----
-
-### 3.2 SearXNG wire confirmed live — ✅ CLOSED (TK-50, 2026-06-20)
-
-**Where:** `docker-compose.yml:175-189`, `packages/decision-making/src/deliberation/tools/tool-registry.ts`, `packages/decision-making/src/action-handlers/action-handler-registry.service.ts`
-
-**Resolution:** TK-50 verified the wire is live. The original stub entry was stale: it cited `packages/learning/src/services/research.service.ts` as the only search consumer, but the decision-making package had already wired two real SearXNG HTTP fetch paths:
-- `ToolRegistryService.executeGoogleSearch` — deliberation `web_search` tool, logs DEBUG on successful `/search` response, warns and falls back gracefully on HTTP error or network failure.
-- `ActionHandlerRegistryService` `RESEARCH_ENTITY` handler — fires three parallel SearXNG queries per entity, logs DEBUG on each successful `/search` response (added TK-50), catches and silences failures per query (no uncaught exception).
-
-Both paths read `ollama.searxngUrl` (default `http://localhost:8888`) from ConfigService. The `infra/searxng/settings.yml` exposes the JSON format at `:8080/search?format=json` which the docker-compose port-maps to `8888:8080`.
-
-**Governance decision:** DEC-25 (appended to `planning/contract.yaml`) — wire confirmed live, no docker-compose change, no code removed.
-
-**Residual (separate scope):** `packages/learning/src/services/research.service.ts` still uses only TimescaleDB. Wiring SearXNG into the planning/learning research path is a distinct ticket outside TK-50 scope.
-
----
-
-### 3.3 Frontend DrivesController endpoints are stubs
-
-**Where:** `apps/sylphie/src/controllers/drives.controller.ts:11-24`
-
-**What:** `POST /api/drives/override`, `/drift`, `/reset` all return `{}` immediately. The DrivesPanel UI in `frontend/src/components/DrivesPanel.tsx` calls them with debounced 300ms POSTs.
-
-**Impact:**
-- Guardian dashboard's drive override switches and drift sliders **do nothing**. The frontend updates its local state, the API succeeds, the drive engine is unaffected.
-- This is a real CANON tension: drive isolation says the main app cannot mutate drive state. So these stubs may be **correctly stubs** — they pretend to be a control surface but the drive-engine ignores them by design.
-
-**Partial resolution (2026-06-09):** the three POST routes now throw `NotImplementedException` (HTTP 501) with a CANON Drive-Isolation explanation instead of returning a fake `{}` success. The "silent UI lie" — the worst outcome — is gone: a caller now gets a truthful error. The frontend DrivesPanel still needs follow-up (option (a) below) so guardians don't see 501s on decorative controls.
-
-**Fix complexity:** Remaining work is a product decision: either (a) remove the UI affordances, or (b) route the override through a permitted path (e.g., guardian feedback events that the drive-engine processes). The backend no longer misrepresents success.
-
----
-
-### 3.4 `validationResult.deferred` branch in Planning is unreachable — RESOLVED
-
-**Where:** `packages/planning/src/pipeline/constraint-validation.service.ts`, `packages/planning/src/planning.service.ts`
-
-**What (was):** ConstraintValidationService always set `deferred: false` since it became deterministic, leaving the `if (validationResult.deferred)` re-enqueue path in PlanningService as dead code.
-
-**Resolution:** The `deferred` path is now LIVE and load-bearing. When the procedure-conflict check cannot fetch existing trigger contexts from the WORLD graph (Neo4j unreachable), `validate()` returns `deferred: true` instead of silently passing with an empty set. This is the fail-closed half of the §1.3 fix: a transient DB blip now re-enqueues the opportunity rather than writing a possibly-duplicate procedure. PlanningService re-enqueues deferred opportunities up to `MAX_DEFERRALS` (5) times, then drops loudly (`OPPORTUNITY_DROPPED`, error log) so a permanent outage cannot spin forever. The degradation is logged at error level and emits a `PLAN_VALIDATION_FAILED` event with `reason: 'world_unreachable_conflict_check_skipped'`.
-
----
-
-## TIER 4 — LOW: Already-Handled or Cosmetic
-
-### 4.1 Perception streaming endpoints are dead code — ✅ RESOLVED (Phase 4 Wave 1, 2026-06-14)
-
-**Was:** `/perception/stream` and `/stream/raw` were defined but `_state.debug_frame_store` was never populated (the in-process camera pipeline is disabled — frames come from the browser via NestJS), so they always returned 503. Pure dead code from the pre-browser-camera era, with no live consumer.
-
-**Fix:** the routes and `debug_frame_store` were deleted from `packages/perception-service/main.py`. Verified absent (`grep` for `/perception/stream`, `/stream/raw`, `debug_frame_store` → no matches).
-
----
-
-### 4.2 DebugController is legacy stub
-
-**Where:** `apps/sylphie/src/controllers/debug.controller.ts`
-
-**What:** `/debug/camera/status` returns `{active:false}`, `/debug/camera/stream` returns 404.
-
-**Impact:** Pre-browser-camera compat. Nothing currently calls these.
-
-**Fix complexity:** Trivial deletion.
-
----
-
-### 4.3 VoiceController.transcribe one-shot endpoint is empty
-
-**Where:** `apps/sylphie/src/controllers/voice.controller.ts:32-36`
-
-**What:** Returns `{text:'', confidence:0, latencyMs:0}`. Comment notes the real path is `/ws/audio` Deepgram streaming.
-
-**Impact:**
-- `useVoiceRecording.ts` (the press-to-talk component) POSTs to this endpoint. It always gets empty text back, never recognizes any speech.
-- The streaming path (`useAudioStream` + `/ws/audio`) is the actual working voice input.
-- Net: **press-to-talk is broken**, hold-to-talk via streaming works. Operator-visible inconsistency.
-
-**Fix complexity:** Low. Either implement one-shot via Deepgram REST API or remove the press-to-talk UI affordance.
-
----
-
-## SUMMARY TABLE
-
-| # | Stub | Tier | Fix Effort | User-Visible? |
-|---|------|------|------------|---------------|
-| 1.1 | EWC catastrophic interference | CRITICAL | ✅ DONE | No (silent regression) |
-| 1.2 | Pressure-driven learning cycles | CRITICAL | ✅ DONE | No (latency only) |
-| 1.3 | Procedure conflict detection | CRITICAL | Low | Yes (non-deterministic Type 1) |
-| 2.1 | Cognition control endpoints | HIGH | ✅ DONE | Yes (supervisor inert) |
-| 2.2 | boost_salience intervention | HIGH | Medium | Partial |
-| 2.3 | per_category_confidence | HIGH | Low | Yes (empty dashboard panel) |
-| 2.4 | DeepSeek reasoning trace dropped | HIGH | Trivial | Yes (audit blindness) |
-| 2.5 | ConvergenceModel.use_learned | HIGH | ✅ DONE (head removed) | No (bootstrap stall risk) |
-| 2.6 | alwaysEvaluate types | HIGH | ✅ PARTIAL (guardian_feedback done, attractor_alert deferred) | No (sampling miss) |
-| 2.7 | Inference timeout enforcement | HIGH | Trivial | No (hang risk) |
-| 2.8 | Learning-pipeline person-fact WKG leak | HIGH | Medium (atlas) | No (gate-invisible; Std-3 breach) |
-| 2.9 | Spreading-activation engine inert | HIGH | Decision (don't wire as-is) | No (latent theater) |
-| 3.1 | Theater check sentiment-vs-drive | MEDIUM | High | No (toothless guard) |
-| 3.2 | SearXNG unused | MEDIUM | Medium | No (research limited to history) |
-| 3.3 | DrivesController stubs | MEDIUM | Trivial (delete) | Yes (UI lies) |
-| 3.4 | Planning deferred branch dead | MEDIUM | Trivial | No |
-| 4.1 | Perception streaming dead | LOW | Trivial (delete) | No |
-| 4.2 | DebugController legacy | LOW | Trivial (delete) | No |
-| 4.3 | One-shot voice transcribe | LOW | Low | Yes (press-to-talk broken) |
-
----
-
-## RECOMMENDED ORDER OF ATTACK
-
-**Phase A (immediate, before any partial-mode bootstrap):**
-- 1.1 EWC — without this, partial mode is unsafe
-- 1.3 Procedure conflict — ✅ RESOLVED (2026-06-10, 2e62de6); see §1.3
-- 2.4 DeepSeek reasoning trace — paying for it, throwing it away
-
-**Phase B (next sprint):**
-- 1.2 Pressure-driven learning
-- 2.3 per_category_confidence (cheap win, big observability gain)
-- 2.6 alwaysEvaluate wiring
-- 2.7 Inference timeout
-
-**Phase C (when supervisor work resumes):**
-- 2.1 Control endpoints (reinforce/correct/freeze)
-- 2.5 ConvergenceModel.use_learned
-- 2.2 boost_salience
-
-**Phase D (cleanup):**
-- 3.3 DrivesController — pick one resolution
-- 4.3 Voice one-shot — pick one resolution
-- 4.1, 4.2, 3.4 — delete dead code
-
-**Deferred (architectural decision needed):**
-- 3.1 Theater check sentiment analysis
-- 3.2 SearXNG integration
-
----
-
-## NOTE ON STUB CULTURE
-
-The pattern is consistent across the codebase: **every stub sits behind a clean interface boundary.** Type contracts are honored even where implementations are empty. Provenance fields, drive snapshots, theaterCheck records, and event-boundary maps are populated correctly even when the consumers of those values are stubs.
-
-This is a deliberate Lesion Test discipline — each stub is a known degraded mode, not a hidden bug. The honest case-study claim is:
-
-> *"The type system encodes the full architecture. ~80% of the cognitive loop is wired end-to-end. The remaining 20% routes through stable interfaces and is identifiable, named, and enumerable."*
-
-This document is that enumeration.
+### 2.1 Supervisor cognition control endpoints — RESOLVED (2026-06-10). Verified holding.
+### 2.2 boost_salience — NOW RESOLVED (sidecar endpoint exists, `main.py:834-903`).
+### 2.3 per_category_confidence — aggregation added; BROKEN by §0.1 (unreachable).
+### 2.4 DeepSeek reasoning trace dropped — STILL OPEN (STUB).
+### 2.5 ConvergenceModel — head removed, but THEATER re-opened (§Tier 1).
+### 2.6 alwaysEvaluate types — guardian_feedback done; attractor_alert deferred.
+### 2.7 Inference timeout — TS side has AbortSignal; sidecar-side asyncio guard still absent.
+### 2.8 Learning person-fact WKG leak — SEALED (Wave-3 `:Candidate`); residue = GUARDIAN-provenance edges (§Tier 3).
+### 2.9 Spreading-activation engine inert — STILL DEAD.
+### 2.10 Post-hoc OKG recall regex — CLOSED (TK-84). Verified.
+### 2.11 Fact reinforcement fields / decay — WORLD closed; OTHER deferred. Trigger gate rarely fires (see audit §1).
+### 2.12 Visual episodes recall-only — deferred to WS5.5. Unchanged.
+
+## TIER 3 — MEDIUM: Silent Degradation (2026-04-29)
+
+### 3.1 Communication theater check flag-only — STILL OPEN (both ends theater).
+### 3.2 SearXNG — CLOSED (TK-50). Verified live.
+### 3.3 DrivesController stubs — now honest 501s. Frontend affordances remain.
+### 3.4 Planning deferred branch — RESOLVED (live, load-bearing). Verified.
+
+## TIER 4 — LOW (2026-04-29)
+
+### 4.1 Perception streaming dead — RESOLVED (deleted).
+### 4.2 DebugController legacy — trivial deletion, unchanged.
+### 4.3 One-shot voice transcribe — STILL OPEN (press-to-talk broken).

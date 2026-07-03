@@ -1,0 +1,63 @@
+{
+  "id": "20260702-003",
+  "slug": "bug-decision-making-concurrency-deliberation-zom",
+  "title": "Bug: Decision-making concurrency & deliberation — zombie-cycle mutex release, no LLM timeout, unconditional debate, provenance drop",
+  "type": "bug",
+  "size_hint": "large",
+  "lines": 55,
+  "sections": 10,
+  "state": "queue",
+  "namespace": "20260702-003-bug-decision-making-concurrency-deliberation-zom",
+  "source_file": "bug-audit-decision-making-core.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T23:50:32-04:00",
+  "attempts": 1,
+  "refactor_attempts": 0,
+  "contract_nodes": [
+    "EP-24",
+    "TK-123",
+    "TK-124",
+    "TK-125",
+    "TK-126",
+    "TK-127"
+  ],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-07-02T02:50:51-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "plan.md written; evidence verified (6/6 confirmed); 3 tickets staged (003a/b/c); dbcheck ok (n/a migration.md — keyword false positive)"
+    },
+    {
+      "at": "2026-07-02T03:01:37-04:00",
+      "from": "refine",
+      "to": "replan",
+      "note": "red-team CRITICAL x2 on 003c: AC bypasses valueSurfacesAsWord honesty guard (CANON provenance/theater); wrong file path + wrong root cause (fix is grounding-signal ordering at deliberation.service.ts:420-450). 003a over-bundled (split 3 ways); 003b design fork unresolved. See redteam.md"
+    },
+    {
+      "at": "2026-07-02T20:35:15-04:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: DEC-31 (architect AD-0048) — surface check stays sole provenance gate; fix in shared applyRecallGroundingFromRetrieval (move valueSurfacesAsWord ahead of GROUNDED early-return), all 4 call sites; 003a/003b handled in re-plan. Re-plan per DEC-31."
+    },
+    {
+      "at": "2026-07-02T20:44:57-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "staged 003a-1/2/3 + 003b + 003c (working ids) under EP-21 per DEC-31/AD-0048; Given/When/Then ACs; dbcheck ok (touches_db=keyword false-positive, cortex confirmed no DB surface). REFINE MUST adjudicate 003b design fork (real confidence signal [recommended] vs lower threshold) — record as governance decision."
+    },
+    {
+      "at": "2026-07-02T21:57:43-04:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "atomic, red-teamed + fix pass applied (cortex): DEC-32 Option A on 003b, 003a-1 normal-path AC, 003a-2 per-request abort via Config.fetch (ollama has no per-call signal), 003a-3 tier-scoped probe, 003c unsequenced per DEC-31. dbcheck ok (no DB schema surface)."
+    }
+  ]
+}

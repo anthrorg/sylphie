@@ -1,0 +1,53 @@
+{
+  "id": "20260702-004",
+  "slug": "bug-drive-engineserver-resilience-isolation-laye",
+  "title": "Bug: Drive engine/server resilience & isolation layer is façade (no reconnect, RLS unenforced, self-monitoring fake)",
+  "type": "bug",
+  "size_hint": "large",
+  "lines": 60,
+  "sections": 10,
+  "state": "queue",
+  "namespace": "20260702-004-bug-drive-engineserver-resilience-isolation-laye",
+  "source_file": "bug-audit-drive-engine.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T23:50:32-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [
+    "EP-25",
+    "TK-128",
+    "TK-129",
+    "TK-130",
+    "TK-131",
+    "TK-132",
+    "TK-133",
+    "TK-134",
+    "TK-135",
+    "TK-136",
+    "TK-137",
+    "TK-138",
+    "TK-139",
+    "TK-140"
+  ],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-07-02T09:14:06-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "EP-DRIVE-RESILIENCE staged (8 tickets) in plan.md; testable ACs; DB=Postgres RLS reconciled to already-approved TK-AUDIT-1 (no clone) + Timescale code-only; migration.md written, sentinel must review; contract_write=staged so tickets await Jim gate"
+    },
+    {
+      "at": "2026-07-02T13:10:03-04:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "atomic (TK-DR-8 split 8a-8f), red-teamed clean, no CRITICAL; dbcheck ok + migration.md sound (RLS delegated to TK-AUDIT-1); HIGH deps recorded; tickets staged in plan.md await Jim contract-write gate"
+    }
+  ]
+}

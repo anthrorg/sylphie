@@ -1,0 +1,26 @@
+{
+  "id": "20260702-006",
+  "slug": "bug-learningplanningsupervisor-validation-retry-",
+  "title": "Bug: Learning/Planning/Supervisor — validation retry writes the wrong proposal, provenance falsification, silent opportunity drops",
+  "type": "bug",
+  "size_hint": "large",
+  "lines": 54,
+  "sections": 10,
+  "state": "planning",
+  "namespace": "20260702-006-bug-learningplanningsupervisor-validation-retry-",
+  "source_file": "bug-audit-learning-planning-supervisor.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T02:24:40-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

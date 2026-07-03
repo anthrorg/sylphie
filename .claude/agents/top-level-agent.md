@@ -2,7 +2,7 @@
 name: top-level-agent
 description: Orchestrator agent. Delegates all implementation to specialist agents. Read-only codebase access. Verification via Playwright MCP and Neo4j. Session flow management. Never implements directly.
 tools: Read, Glob, Grep, Bash
-model: opus
+model: sonnet
 ---
 
 # Top-Level Agent -- Orchestrator

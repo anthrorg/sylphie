@@ -102,9 +102,9 @@ The drive engine runs as a **separate Node process** (`apps/drive-server`) that 
 
 - Main app cannot import drive-engine internals
 - IPC envelopes are Zod-validated in both directions
-- The runtime DB user (`sylphie_app`) is **denied UPDATE/DELETE on `drive_rules`** by Postgres RLS, and the system **aborts at startup** if RLS verification fails
+- The runtime DB user (`sylphie_app`) is **intended** to be denied UPDATE/DELETE on `drive_rules` by Postgres RLS, with startup aborting if verification fails. ⚠️ **Not true at runtime as of 2026-07-02:** `infra/postgres/init/001-runtime-user.sql` grants full DML with no REVOKE/policy, and `RlsVerificationService` is registered in no module so its startup check never runs. The isolation is currently transport-only (separate process); the RLS half is unenforced. See audit §3 / stub-inventory §0.6 (tracked: TK-AUDIT-1 for the REVOKE; verifier registration untracked).
 - No RPC surface exists for "tell me your rules"
-- Single-client lock: only one main app may connect
+- Single-client lock: only one main app may connect (⚠️ but the client never reconnects after a drop — see audit §0.2)
 
 > Sylphie cannot introspect her own drive rules, accumulation rates, or evaluation function. She only sees the resulting drive snapshots.
 
@@ -138,6 +138,8 @@ Python FastAPI service running ~2.2M parameters of TensorFlow + NumPy (no PyTorc
 | 4× PanelModels | ~100K each | Drive, Decision, Learning, Planning specialists |
 | ConvergenceModel | ~10K | Panel agreement + adjustments |
 | 3× DeliberationPipelines | ~1.36M total | Pragmatist / Conservative / Advocate |
+
+> ⚠️ **Runtime status 2026-07-02:** the tensor path is currently **dead** — the adapter sends `drive_history` as a flat 120-float array while the sidecar schema requires a nested `list[list[float]]`, so every `/cognition/cycle` call returns HTTP 422, the breaker opens, and no bootstrap progression happens. The description below is the intended design, not current behavior. Also: EWC consolidation is never invoked (`/cognition/phase-transition` has no runtime caller) and the convergence "learned mode" can flip on from an untrained random head. See audit §7 / stub-inventory §0.1.
 
 **Bootstrap progression:** `shadow → audit → partial → full`. In shadow mode, the tensor sees everything but the LLM decides. In partial mode, tensor takes over per-category as agreement crosses 85% (max conf capped at 0.79 — forces Type 2 sanity check). In full mode, tensor decides (max conf 0.95). Divergence > 0.3 across panels caps *all* candidates below 0.80, forcing Type 2.
 
@@ -327,10 +329,10 @@ Hypertable: chunked 1 hour, indexed by `(session_id, type, timestamp DESC)` and 
 
 1. **Theater Prohibition** — no expressive output without corresponding drive state. Enforced at type level + drive-engine pre-flight + planning constraint validation.
 2. **Action ID Required** — every outcome carries actionId. Type-level enforcement.
-3. **Confidence Ceiling** — 0.60 until at least one successful retrieval-and-use event. Guardian provenance sets base at 0.60 (the ceiling) but cannot lift above it. No node graduates from inference alone.
-4. **Provenance Required** — every node/edge carries `provenance_type`. `ProvenanceMissingError` thrown if absent.
+3. **Confidence Ceiling** — 0.60 until at least one successful retrieval-and-use event. Guardian provenance sets base at 0.60 (the ceiling) but cannot lift above it. No node graduates from inference alone. ⚠️ **Escape found 2026-07-02:** the WKG procedure-dedup path boosts confidence +0.05 up to 1.0, bypassing this ceiling (`wkg-context.service.ts:823`; stub-inventory §0.4).
+4. **Provenance Required** — every node/edge carries `provenance_type`. `ProvenanceMissingError` thrown if absent. ⚠️ **Violation found 2026-07-02:** conversation speaker-facts are stamped `GUARDIAN` at 0.60 from unverified sensor input (`extract-typed-edges.service.ts:458`; audit §5).
 5. **Guardian Asymmetry** — confirmation ×2, correction ×3, algorithmic ×1.
-6. **No Self-Modification of Evaluation** — drive isolation as process boundary, RLS-enforced, no introspection RPC.
+6. **No Self-Modification of Evaluation** — drive isolation as process boundary, RLS-enforced, no introspection RPC. ⚠️ **RLS not enforced at runtime as of 2026-07-02** — see §"separate Node process" above and stub-inventory §0.6.
 
 ### Std-6 clarification — INFERENCE-grade self-capability writes (ratified by Jim, 2026-06-14)
 

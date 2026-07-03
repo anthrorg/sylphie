@@ -1,0 +1,853 @@
+{
+  "version": 1,
+  "next_seq": {
+    "20260625": 3,
+    "20260702": 18
+  },
+  "items": {
+    "20260625-001": {
+      "id": "20260625-001",
+      "slug": "verbose-log-file-grows-unbounded",
+      "title": "Verbose log file grows unbounded",
+      "type": "bug",
+      "state": "done",
+      "namespace": "20260625-001-verbose-log-file-grows-unbounded",
+      "source_file": "bug-verbose-log-rotation.md",
+      "created_at": "2026-06-25T18:41:46+00:00",
+      "updated_at": "2026-07-02T23:27:54-04:00",
+      "attempts": 1,
+      "refactor_attempts": 1,
+      "contract_nodes": [
+        "TK-108"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-06-25T18:41:46+00:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-06-25T18:43:46+00:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "planned: TK-INTAKE-1 staged in plan.md; no DB; awaiting contract-write decision"
+        },
+        {
+          "at": "2026-06-25T18:46:48+00:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "multi-process verbose.log: per-pid file (A) vs single-writer (B) — needs Jim before atomic"
+        },
+        {
+          "at": "2026-06-27T05:22:52+00:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "Jim picked A (per-pid verbose.<pid>.log); unblocked, atomic — ready for plan/refine to carry to queue"
+        },
+        {
+          "at": "2026-06-27T13:09:34+00:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "replanned with Jim's decision (per-pid verbose.<pid>.log); staged TK-INTAKE-1 under EP-INTAKE; 5 testable ACs; dbcheck=no DB; atomic"
+        },
+        {
+          "at": "2026-06-27T17:10:20+00:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "refine: atomic (no split), red-teamed clean (no CRITICAL; 2 HIGH/3 MEDIUM build notes recorded in plan.md), dbcheck touches_db=false ok=true (prior true was a prose keyword false-positive on 'migration'; corrected)"
+        },
+        {
+          "at": "2026-07-02T02:43:42-04:00",
+          "from": "queue",
+          "to": "working",
+          "note": "execute (to-pr): pick_ready confirmed TK-INTAKE-1; starting build"
+        },
+        {
+          "at": "2026-07-02T03:00:26-04:00",
+          "from": "working",
+          "to": "review",
+          "note": "PR https://github.com/anthrorg/sylphie/pull/85 (branch fix/tk-intake-1-verbose-log-rotation, head 201e3e2). No CI checks configured on repo; local verification green: jest 5/5 ACs (3 stable runs), tsc --noEmit clean. Deviations flagged in PR: ~115 net LOC vs ~70 budget; stream error handler added. NEVER merge — Jim's call."
+        },
+        {
+          "at": "2026-07-02T05:17:42-04:00",
+          "from": "review",
+          "to": "refactor",
+          "note": "code-reviewer CHANGES-REQUESTED (2 BLOCKING code-level fixes; design SOUND per ashby). B1: flush-before-rename race in rotate() — oldStream.end() is async then renameSync runs immediately; AC3 (no data loss) only tested on happy path, not with bytes buffered at rotate time; risk on Windows target. Fix: rename in stream finish/close cb or switch to sync append + add a burst/backpressure AC3 test. B2: test harness non-portable — packages/shared adds test:jest but jest/ts-jest undeclared in any package.json (only @types/jest at root); jest.config.js hardcodes C:/Users/Jim/...npx-cache/ts-jest fallback, so ACs only runnable on Jim's machine. Fix: declare jest+ts-jest devDeps in @sylphie/shared, delete hardcoded path. SHOULD-FIX: ~115 vs ~70 LOC budget; prune should skip live foreign pids (process.kill(pid,0)). CANON clean. No DB. PR #85 left OPEN — never merged."
+        },
+        {
+          "at": "2026-07-02T21:16:36-04:00",
+          "from": "refactor",
+          "to": "queue",
+          "note": "REWORK COMPLETE + reviewed. B1 sync-append rotation (no rename race), B2 portable jest harness, live-pid prune guard. code-reviewer APPROVE-WITH-NITS (nit closed w/ 2 regression tests). Build clean, test:jest 8/8. PR #85 updated -> 442bde2 (branch fix/tk-intake-1-verbose-log-rotation), MERGEABLE. READY FOR JIM'S MERGE — verify/merge, NOT a fresh rebuild (a PR is already open)."
+        },
+        {
+          "at": "2026-07-02T23:27:54-04:00",
+          "from": "queue",
+          "to": "done",
+          "note": "PR #85 MERGED 2026-07-03; TK-108 -> done in contract. External merge — skipping working/review (rework already reviewed APPROVE-WITH-NITS this session)."
+        }
+      ]
+    },
+    "20260625-002": {
+      "id": "20260625-002",
+      "slug": "codebase-audit-findings-remediation-roadmap",
+      "title": "Codebase Audit — Findings & Remediation Roadmap",
+      "type": "feature",
+      "state": "planning",
+      "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
+      "source_file": "codebase-audit-remediation.md",
+      "created_at": "2026-06-25T19:16:34+00:00",
+      "updated_at": "2026-07-02T09:13:20-04:00",
+      "attempts": 1,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-06-25T19:16:34+00:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-06-25T19:24:18+00:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "epic EP-AUDIT staged (9 tickets); P0 migration.md written; contract_write=staged"
+        },
+        {
+          "at": "2026-06-25T19:25:36+00:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "mixed-readiness epic: P0 ready, god-objects + EWC-confirm need architect/explore — recommend splitting the P0 into its own item"
+        },
+        {
+          "at": "2026-06-26T19:43:55+00:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-28 — mixed-readiness epic re-enters planning; P0 (TK-AUDIT-1 drive_rules REVOKE+RLS) build-ready, design-needing findings -> open_questions routed to architect; contract_write=staged so tickets await Jim's approval gate"
+        }
+      ]
+    },
+    "20260625-003": {
+      "id": "20260625-003",
+      "slug": "sylphie-interaction-directive-from-jim-2026-06-2",
+      "title": "Sylphie Interaction Directive (from Jim, 2026-06-22) — attach to EP-20",
+      "type": "feature",
+      "state": "done",
+      "namespace": "20260625-003-sylphie-interaction-directive-from-jim-2026-06-2",
+      "source_file": "sylphie-interaction-directive.md",
+      "created_at": "2026-06-25T19:16:34+00:00",
+      "updated_at": "2026-07-02T02:38:41-04:00",
+      "attempts": 1,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-20",
+        "TK-97",
+        "TK-98",
+        "TK-99",
+        "TK-100",
+        "TK-101",
+        "TK-102",
+        "TK-103",
+        "TK-104",
+        "TK-105"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-06-25T19:16:34+00:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-06-25T19:25:36+00:00",
+          "from": "planning",
+          "to": "replan",
+          "note": "needs /explore-topic reconciliation: proactive-vs-turn-taking design tension; no atomic AC until reconciled"
+        },
+        {
+          "at": "2026-06-25T19:43:56+00:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: parking tension (proactive-vs-turn-taking) already reconciled in-contract by EP-20/TK-97..105 + DEC-26 (Jim-approved); see DEC-27. Re-entering planning to ATTACH to EP-20 (dedupe), not create a new epic."
+        },
+        {
+          "at": "2026-06-26T13:09:29+00:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "ATTACH to EP-20 / TK-97..105 (dedupe per DEC-27); +TK-106 staged (demo perception kill-switch, the one uncovered directive point); dbcheck keyword-only false-positive, migration.md no-op filed for sentinel"
+        },
+        {
+          "at": "2026-06-26T17:09:44+00:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "atomic, red-teamed clean"
+        },
+        {
+          "at": "2026-07-02T02:38:41-04:00",
+          "from": "queue",
+          "to": "done",
+          "note": "No legal queue exit: scope fully landed in contract without a pipeline build (EP-20/TK-97..105 done per DEC-27 attach; TK-106 verified — health.controller.ts cheap GET /api/health, Dockerfile HEALTHCHECK repointed, live 200 in changelog v2.4/v2.6). Jim-directed close-out 2026-07-02."
+        }
+      ]
+    },
+    "20260702-001": {
+      "id": "20260702-001",
+      "slug": "bug-main-backend-unauthenticated-destructive-end",
+      "title": "Bug: Main backend — unauthenticated destructive endpoints, incomplete boot-hang fix, broken CANON metric, silent WS/STT death paths",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 55,
+      "sections": 10,
+      "state": "queue",
+      "namespace": "20260702-001-bug-main-backend-unauthenticated-destructive-end",
+      "source_file": "bug-audit-apps-sylphie-backend.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T23:50:31-04:00",
+      "attempts": 1,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-22",
+        "TK-109",
+        "TK-110",
+        "TK-111",
+        "TK-112",
+        "TK-113",
+        "TK-114",
+        "TK-115",
+        "TK-116",
+        "TK-117",
+        "TK-118"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-07-02T02:31:50-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "EP-BE-HARDEN + TK-BEH-1..5 staged in plan.md, all ACs Given/When/Then; dbcheck false-positive documented in migration.md; contract write awaits Jim's staged gate"
+        },
+        {
+          "at": "2026-07-02T03:01:37-04:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "red-team CRITICAL x2: TK-BEH-1 route enumeration misses ~7 destructive anonymous metrics routes (gate by rule, not hand-list); mandated e2e harness does not exist. Plus TK-BEH-2 scope/helper decision, TK-BEH-4 unpinned client event contract. See redteam.md"
+        },
+        {
+          "at": "2026-07-02T20:24:26-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-29 — adopt red-team's rule-based route gate (dynamic route-discovery e2e) + explicit supertest harness scope; widen TK-BEH-2, fix migration.md, cross-link TK-BEH-4 to item 005. Re-plan per DEC-29."
+        },
+        {
+          "at": "2026-07-02T20:45:47-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "staged TK-BEH-1..5 (working ids) under EP-21 per DEC-29; rule-based route gate + supertest e2e harness (TK-BEH-1), deadline-helper extraction (TK-BEH-2), TK-BEH-4 event-contract joint-pinned w/ item 005; webrtc deduped to TK-AUDIT-7; dbcheck ok, no DB schema surface"
+        },
+        {
+          "at": "2026-07-02T23:11:51-04:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "Jim's 2 decisions applied (forge): supervisor gating PAIRED with TK-BEH-1b frontend Bearer-token (must-land-together, guardian UI stays authenticated); mic_dead consumption = new TK-BEH-6 (EP-21, not 005). 10 tickets, no open decisions. dbcheck ok. atomic, red-teamed + fixed."
+        }
+      ]
+    },
+    "20260702-002": {
+      "id": "20260702-002",
+      "slug": "bug-tensor-cognition-sidecar-is-dead",
+      "title": "Bug: Tensor cognition sidecar is dead end-to-end (every /cognition/cycle 422s) + EWC/convergence safety paths unreachable",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 54,
+      "sections": 10,
+      "state": "queue",
+      "namespace": "20260702-002-bug-tensor-cognition-sidecar-is-dead",
+      "source_file": "bug-audit-cognition-sidecar.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T23:50:31-04:00",
+      "attempts": 2,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-23",
+        "TK-119",
+        "TK-120",
+        "TK-121",
+        "TK-122"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-07-02T02:50:51-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "plan.md written; evidence verified against source (7/7 confirmed); 1 ticket staged (TK-INTAKE-20260702-002); dbcheck ok (n/a migration.md — keyword false positive)"
+        },
+        {
+          "at": "2026-07-02T03:01:37-04:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "red-team CRITICAL x2: fix#2 'fold consolidation into advance_mode' targets a class with no trainer access (consolidation boundary needs architect/ashby); fix#1 nested-vs-schema-relax unjustified + gateway type change unstated. TK-37/39 theater contradiction unreconciled; convergence gate = silent disable. Split A/B/C. See redteam.md"
+        },
+        {
+          "at": "2026-07-02T20:35:15-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-30 (architect AD-0045/46/47) — consolidation helper at main.py:421 call site, nested number[][] emit + gateway type, Std-4 reconcile-then-rewrite + use_learned pin-off; split TK-A/B/C. Re-plan per DEC-30."
+        },
+        {
+          "at": "2026-07-02T20:43:43-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "staged TK-A/TK-B/TK-C (working ids) under EP-21 per DEC-30/AD-0045-0047; Given/When/Then ACs; dbcheck ok (no DB schema surface); ready for atomicity+red-team"
+        },
+        {
+          "at": "2026-07-02T21:42:48-04:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "refine red-team: 2 CRITICAL block queue. TK-C AC5 needs ARCHITECT ruling — the '_weight_lock' mandate deadlocks/stalls the LIVE consolidation path: trainer.get_weights() (trainer.py:593) already acquires the non-reentrant _weight_lock, so wrapping the helper self-deadlocks, and holding it across compute_fisher (1000-sample, replay.py:293-313) violates the documented sub-ms invariant + AD-0045's 'envelope unchanged' clause. AD-0045's 'verify EWC calls take _weight_lock' is imprecise/contradicts code. TK-C AC6 (fixable): use_learned hard-disable misses the load() checkpoint path (convergence.py:234-235) -> Std-4 theater survives via existing checkpoint; force use_learned=False on load(). Plus HIGHs: TK-B AC1 references not-yet-existing helper (reword to inline main.py:583/596); TK-C AC4 'penalty non-zero at boundary' false at t=0 (ramp=0; assert EWC armed instead); TK-B AC4 check_demotions 'every call' contradicts guarded site main.py:393-408."
+        },
+        {
+          "at": "2026-07-02T21:51:20-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-33 (architect AD-0049/0050) — lock discipline (helper no-lock, get_weights sole lock, compute_fisher/set_reference lock-free) + use_learned load-pin (Std-4 closure). Re-stage TK-B/TK-C per ruling; TK-A unchanged."
+        },
+        {
+          "at": "2026-07-02T21:57:43-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "re-staged per DEC-33/AD-0049-0050 (meridian): TK-C lock-free helper + deadlock/lock-scope tests, TK-D split for use_learned load-pin, AC4 EWC-armed, AC1 inline handler, TK-A harness named. Architect-resolved."
+        },
+        {
+          "at": "2026-07-02T21:57:43-04:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "atomic; blocking design forks architect-ruled (DEC-33/AD-0049-0050); re-staged ACs implement the ruling; dbcheck ok (in-memory, no DB schema surface). TK-A->TK-B->TK-C, TK-D independent."
+        }
+      ]
+    },
+    "20260702-003": {
+      "id": "20260702-003",
+      "slug": "bug-decision-making-concurrency-deliberation-zom",
+      "title": "Bug: Decision-making concurrency & deliberation — zombie-cycle mutex release, no LLM timeout, unconditional debate, provenance drop",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 55,
+      "sections": 10,
+      "state": "queue",
+      "namespace": "20260702-003-bug-decision-making-concurrency-deliberation-zom",
+      "source_file": "bug-audit-decision-making-core.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T23:50:32-04:00",
+      "attempts": 1,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-24",
+        "TK-123",
+        "TK-124",
+        "TK-125",
+        "TK-126",
+        "TK-127"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-07-02T02:50:51-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "plan.md written; evidence verified (6/6 confirmed); 3 tickets staged (003a/b/c); dbcheck ok (n/a migration.md — keyword false positive)"
+        },
+        {
+          "at": "2026-07-02T03:01:37-04:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "red-team CRITICAL x2 on 003c: AC bypasses valueSurfacesAsWord honesty guard (CANON provenance/theater); wrong file path + wrong root cause (fix is grounding-signal ordering at deliberation.service.ts:420-450). 003a over-bundled (split 3 ways); 003b design fork unresolved. See redteam.md"
+        },
+        {
+          "at": "2026-07-02T20:35:15-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-31 (architect AD-0048) — surface check stays sole provenance gate; fix in shared applyRecallGroundingFromRetrieval (move valueSurfacesAsWord ahead of GROUNDED early-return), all 4 call sites; 003a/003b handled in re-plan. Re-plan per DEC-31."
+        },
+        {
+          "at": "2026-07-02T20:44:57-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "staged 003a-1/2/3 + 003b + 003c (working ids) under EP-21 per DEC-31/AD-0048; Given/When/Then ACs; dbcheck ok (touches_db=keyword false-positive, cortex confirmed no DB surface). REFINE MUST adjudicate 003b design fork (real confidence signal [recommended] vs lower threshold) — record as governance decision."
+        },
+        {
+          "at": "2026-07-02T21:57:43-04:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "atomic, red-teamed + fix pass applied (cortex): DEC-32 Option A on 003b, 003a-1 normal-path AC, 003a-2 per-request abort via Config.fetch (ollama has no per-call signal), 003a-3 tier-scoped probe, 003c unsequenced per DEC-31. dbcheck ok (no DB schema surface)."
+        }
+      ]
+    },
+    "20260702-004": {
+      "id": "20260702-004",
+      "slug": "bug-drive-engineserver-resilience-isolation-laye",
+      "title": "Bug: Drive engine/server resilience & isolation layer is façade (no reconnect, RLS unenforced, self-monitoring fake)",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 60,
+      "sections": 10,
+      "state": "queue",
+      "namespace": "20260702-004-bug-drive-engineserver-resilience-isolation-laye",
+      "source_file": "bug-audit-drive-engine.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T23:50:32-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-25",
+        "TK-128",
+        "TK-129",
+        "TK-130",
+        "TK-131",
+        "TK-132",
+        "TK-133",
+        "TK-134",
+        "TK-135",
+        "TK-136",
+        "TK-137",
+        "TK-138",
+        "TK-139",
+        "TK-140"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-07-02T09:14:06-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "EP-DRIVE-RESILIENCE staged (8 tickets) in plan.md; testable ACs; DB=Postgres RLS reconciled to already-approved TK-AUDIT-1 (no clone) + Timescale code-only; migration.md written, sentinel must review; contract_write=staged so tickets await Jim gate"
+        },
+        {
+          "at": "2026-07-02T13:10:03-04:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "atomic (TK-DR-8 split 8a-8f), red-teamed clean, no CRITICAL; dbcheck ok + migration.md sound (RLS delegated to TK-AUDIT-1); HIGH deps recorded; tickets staged in plan.md await Jim contract-write gate"
+        }
+      ]
+    },
+    "20260702-005": {
+      "id": "20260702-005",
+      "slug": "bug-frontend-unmount-reconnect-zombie-sockets-br",
+      "title": "Bug: Frontend — unmount-reconnect zombie sockets, browser-exposed API key, dead/void UI features; shared DB nits",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 55,
+      "sections": 10,
+      "state": "queue",
+      "namespace": "20260702-005-bug-frontend-unmount-reconnect-zombie-sockets-br",
+      "source_file": "bug-audit-frontend-shared.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T23:50:32-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [
+        "EP-26",
+        "TK-141",
+        "TK-142",
+        "TK-143",
+        "TK-144",
+        "TK-145",
+        "TK-146",
+        "TK-147",
+        "TK-148",
+        "TK-149",
+        "TK-150",
+        "TK-151",
+        "TK-152"
+      ],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        },
+        {
+          "at": "2026-07-02T09:14:06-04:00",
+          "from": "planning",
+          "to": "refine",
+          "note": "EP-FE-RESILIENCE staged (6 tickets) in plan.md; testable ACs; dbcheck keyword false-positive resolved via deliberate n/a migration.md (client-code only, no schema), sentinel to confirm; contract_write=staged so tickets await Jim gate"
+        },
+        {
+          "at": "2026-07-02T13:10:03-04:00",
+          "from": "refine",
+          "to": "queue",
+          "note": "atomic (TK-FE-6 split 6a-6g, TK-FE-1/4 seam clarified), red-teamed clean, no CRITICAL; dbcheck keyword-FP + migration.md deliberate n/a sound; HIGH key-proxy note; tickets staged in plan.md await Jim contract-write gate"
+        }
+      ]
+    },
+    "20260702-006": {
+      "id": "20260702-006",
+      "slug": "bug-learningplanningsupervisor-validation-retry-",
+      "title": "Bug: Learning/Planning/Supervisor — validation retry writes the wrong proposal, provenance falsification, silent opportunity drops",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 54,
+      "sections": 10,
+      "state": "planning",
+      "namespace": "20260702-006-bug-learningplanningsupervisor-validation-retry-",
+      "source_file": "bug-audit-learning-planning-supervisor.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-007": {
+      "id": "20260702-007",
+      "slug": "bug-perception-service-fabricated-face-confidenc",
+      "title": "Bug: Perception service — fabricated face confidence disables enrollment, dead tracker config, unthrottled per-pixel hot path",
+      "type": "unclassified",
+      "size_hint": "large",
+      "lines": 49,
+      "sections": 10,
+      "state": "planning",
+      "namespace": "20260702-007-bug-perception-service-fabricated-face-confidenc",
+      "source_file": "bug-audit-perception-service.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-008": {
+      "id": "20260702-008",
+      "slug": "bug-wkg-writeread-plumbing-confidence-ceiling-es",
+      "title": "Bug: WKG write/read plumbing — confidence-ceiling escape, no-op contradiction gate, phantom node_ids, property-name drift",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 55,
+      "sections": 10,
+      "state": "planning",
+      "namespace": "20260702-008-bug-wkg-writeread-plumbing-confidence-ceiling-es",
+      "source_file": "bug-audit-wkg-knowledge-graph.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-009": {
+      "id": "20260702-009",
+      "slug": "bug-self-state-questions-how-are-you",
+      "title": "Bug: Self-state questions (\"how are you?\") are answered as an LLM guess, not grounded in actual drive state",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 115,
+      "sections": 10,
+      "state": "planning",
+      "namespace": "20260702-009-bug-self-state-questions-how-are-you",
+      "source_file": "bug-grounded-self-state.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-010": {
+      "id": "20260702-010",
+      "slug": "bug-taught-okg-facts-arent-loaded",
+      "title": "Bug: Taught OKG facts aren't loaded into conversation context on login (cold person-model cache)",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 108,
+      "sections": 10,
+      "state": "planning",
+      "namespace": "20260702-010-bug-taught-okg-facts-arent-loaded",
+      "source_file": "bug-login-fact-hydration.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-011": {
+      "id": "20260702-011",
+      "slug": "feature-consolidation-loop-idle-replay-and",
+      "title": "Feature: Consolidation loop — idle replay and insight synthesis",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 58,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260702-011-feature-consolidation-loop-idle-replay-and",
+      "source_file": "feature-consolidation-loop.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-012": {
+      "id": "20260702-012",
+      "slug": "feature-executor-tension-tensor-graduation-over",
+      "title": "Feature: Executor tension — tensor graduation over an immutable floor, stakes(), veto, and the Guilt drive",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 87,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260702-012-feature-executor-tension-tensor-graduation-over",
+      "source_file": "feature-executor-tension.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-013": {
+      "id": "20260702-013",
+      "slug": "feature-observability-dashboard-snapshot-series-",
+      "title": "Feature: Observability dashboard — snapshot-series analytics page",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 74,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260702-013-feature-observability-dashboard-snapshot-series-",
+      "source_file": "feature-observability-dashboard.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-014": {
+      "id": "20260702-014",
+      "slug": "feature-replay-from-events-rebuild-tensor-traini",
+      "title": "Feature: Replay-from-events — rebuild tensor training data from the event log",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 61,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260702-014-feature-replay-from-events-rebuild-tensor-traini",
+      "source_file": "feature-replay-from-events.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-015": {
+      "id": "20260702-015",
+      "slug": "feature-schema-versioning-migration-framework-an",
+      "title": "Feature: Schema versioning, migration framework, and boot/restore invariant checks",
+      "type": "unclassified",
+      "size_hint": "large",
+      "lines": 69,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260702-015-feature-schema-versioning-migration-framework-an",
+      "source_file": "feature-schema-versioning.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-016": {
+      "id": "20260702-016",
+      "slug": "feature-coordinated-sylphie-snapshot-tested-rest",
+      "title": "Feature: Coordinated Sylphie Snapshot + tested restore across all five stores (with metrics block)",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 76,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260702-016-feature-coordinated-sylphie-snapshot-tested-rest",
+      "source_file": "feature-snapshot-restore.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-017": {
+      "id": "20260702-017",
+      "slug": "feature-tensor-contract-versioned-inputarch-mani",
+      "title": "Feature: Tensor contract — versioned input/arch manifest + fusion-slot registry",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 67,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260702-017-feature-tensor-contract-versioned-inputarch-mani",
+      "source_file": "feature-tensor-contract.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260702-018": {
+      "id": "20260702-018",
+      "slug": "feature-theory-loop-curiosity-driven-acquisition",
+      "title": "Feature: Theory loop — curiosity-driven acquisition + Tess confirmation",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 79,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260702-018-feature-theory-loop-curiosity-driven-acquisition",
+      "source_file": "feature-theory-loop.md",
+      "created_at": "2026-07-02T02:24:40-04:00",
+      "updated_at": "2026-07-02T02:24:40-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-02T02:24:40-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    }
+  }
+}

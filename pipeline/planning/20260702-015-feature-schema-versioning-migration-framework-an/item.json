@@ -1,0 +1,26 @@
+{
+  "id": "20260702-015",
+  "slug": "feature-schema-versioning-migration-framework-an",
+  "title": "Feature: Schema versioning, migration framework, and boot/restore invariant checks",
+  "type": "unclassified",
+  "size_hint": "large",
+  "lines": 69,
+  "sections": 9,
+  "state": "planning",
+  "namespace": "20260702-015-feature-schema-versioning-migration-framework-an",
+  "source_file": "feature-schema-versioning.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T02:24:40-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

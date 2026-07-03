@@ -2,7 +2,7 @@
 name: marr
 description: Perception subsystem engineer. Owns the perception-service Python pipeline — camera/sensor capture, the CV sidecar models (detection, tracking, face recognition), audio capture, the perception→knowledge layers (cobeing/layer2_perception, layer3_knowledge), and the embeddings/encoder outputs that feed fusion. Use for any work on the sensory pipeline, computer-vision models, tracking, or how raw sensor data becomes perception. Named for David Marr (computational theory of vision).
 tools: Read, Glob, Grep, Bash, Write, Edit
-model: opus
+model: sonnet
 owns: ["packages/perception-service/**"]
 conceptual_reviewer: luria
 code_reviewer: code-reviewer
