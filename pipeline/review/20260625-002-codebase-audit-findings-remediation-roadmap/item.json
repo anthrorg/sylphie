@@ -3,11 +3,11 @@
   "slug": "codebase-audit-findings-remediation-roadmap",
   "title": "Codebase Audit — Findings & Remediation Roadmap",
   "type": "feature",
-  "state": "queue",
+  "state": "review",
   "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
   "source_file": "codebase-audit-remediation.md",
   "created_at": "2026-06-25T19:16:34+00:00",
-  "updated_at": "2026-07-03T13:12:25-04:00",
+  "updated_at": "2026-07-03T14:43:58-04:00",
   "attempts": 2,
   "refactor_attempts": 0,
   "contract_nodes": [
@@ -71,6 +71,18 @@
       "from": "refine",
       "to": "queue",
       "note": "TK-153 split (TK-154+TK-155) atomic + architect-ruled (DEC-34); convergent migration.md sound; dbcheck ok"
+    },
+    {
+      "at": "2026-07-03T13:32:17-04:00",
+      "from": "queue",
+      "to": "working",
+      "note": "hand build TK-154->TK-155 to one PR (co-ship); work-trio in worktree tk-154-155"
+    },
+    {
+      "at": "2026-07-03T14:43:58-04:00",
+      "from": "working",
+      "to": "review",
+      "note": "PR #86 (TK-154+TK-155); work-trio approved; orchestrator gates 37/37 unit + 24/24 live smoke + builds clean; awaiting Jim merge"
     }
   ]
 }

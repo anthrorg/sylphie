@@ -13,3 +13,5 @@
 - `2026-07-03T13:09:05-04:00` pipeline-plan: executed TK-153 split into contract (autonomous per Jim directive) — TK-153 canceled, TK-154 (sentinel migration) + TK-155 (forge guardian pool, depends_on TK-154) written under EP-27 (v2.13). -> refine to re-gate atomicity of the two new tickets.
 - `2026-07-03T13:09:05-04:00` moved **planning -> refine** — TK-153 split executed: TK-154 + TK-155 written; refine re-checks atomicity + migration soundness of the split
 - `2026-07-03T13:12:25-04:00` moved **refine -> queue** — TK-153 split (TK-154+TK-155) atomic + architect-ruled (DEC-34); convergent migration.md sound; dbcheck ok
+- `2026-07-03T13:32:17-04:00` moved **queue -> working** — hand build TK-154->TK-155 to one PR (co-ship); work-trio in worktree tk-154-155
+- `2026-07-03T14:43:58-04:00` moved **working -> review** — PR #86 (TK-154+TK-155); work-trio approved; orchestrator gates 37/37 unit + 24/24 live smoke + builds clean; awaiting Jim merge

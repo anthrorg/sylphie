@@ -75,5 +75,6 @@ Policies (`TO role`, drop-and-recreate): per-role `FOR SELECT USING(true)`;
   Railway/env secrets before prod `--confirm`.
 
 ## 7. Sign-off
-- dbcheck clean: [x] · sentinel reviewed: [ ] · continuity smoke passed: [ ]
+- dbcheck clean: [x] · sentinel reviewed: [x] · continuity smoke passed: [x] (24/24, throwaway container, orchestrator-run 2026-07-03) · ashby+code-reviewer: [x]
 - Approval marker used? no (no wipe; convergent + additive, no data loss).
+- Built to PR #86 (TK-154 + TK-155). Live apply/`--confirm` + guardian secret provisioning remain Jim's (merge gate).
