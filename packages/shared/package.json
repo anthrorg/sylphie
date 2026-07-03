@@ -8,7 +8,9 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "prisma:generate": "dotenv -e ../../.env -- prisma generate",
-    "prisma:migrate": "dotenv -e ../../.env -- prisma migrate dev"
+    "prisma:migrate": "dotenv -e ../../.env -- prisma migrate dev",
+    "test": "jest",
+    "test:jest": "jest"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
@@ -20,8 +22,11 @@
     "rxjs": "^7.0.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/pg": "^8.0.0",
     "dotenv-cli": "^7.0.0",
+    "jest": "^30.0.0",
+    "ts-jest": "^29.4.9",
     "typescript": "^5.3.3"
   },
   "peerDependencies": {
