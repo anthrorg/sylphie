@@ -133,7 +133,8 @@ above. Markdown items move through state folders
 (`inbox → planning → refine → queue → working → review → done → archive`, with
 `replan`/`refactor` off-ramps), driven by per-stage scheduled "cogs". All state moves
 go through `pipeline/pipeline.py` (never hand-edit `pipeline/pipeline.json`); the
-at-a-glance view is `pipeline/dashboard.html`. Current policy: `execute_mode=plan-only`,
+at-a-glance view is `pipeline/dashboard.html`. Current policy (Jim-ruled 2026-06-27):
+`execute_mode=to-pr` (execute cog builds queue items to an OPEN PR, never merges),
 `contract_write=staged`, never auto-merge, never wipe a DB (the repo-wide
 `db-change-guard` hook enforces this). The full operating memory — cogs, schedule,
 config knobs, safety invariants, gotchas, and live decisions — is imported below.
