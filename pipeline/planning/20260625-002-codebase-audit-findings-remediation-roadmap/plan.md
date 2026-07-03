@@ -105,3 +105,75 @@ Grant matrix (end-state):
 **Jim ops (provisioning, not a decision):** set `guardian_admin` (+ eventually `drive_engine`) passwords as Railway/env secrets before prod `--confirm`. Railway prod postgres state unobserved → migration **dry-run against prod before --confirm**.
 
 **Plan-cog next action:** stage TK-153a/TK-153b as the split of TK-153 in this plan.md (done above), present for Jim's approval-gate contract write, then → refine.
+
+---
+
+## STAGED TICKETS — awaiting Jim's approval gate (contract_write=staged; NOT written to contract.yaml)
+
+Plan cog 2026-07-03: formalized the DEC-34 split. `TK-153a`/`TK-153b` were placeholder labels — invalid as contract ids (schema `/^(FEAT|EP|TK|TASK)-\d+$/`). Assigned next free numeric ids: **TK-154** (sentinel) + **TK-155** (forge). On approval, **TK-153 is superseded** (status → cancelled, note pointing at TK-154/TK-155); the two nodes below are written under EP-27. dbcheck: touches_db, has_migration_plan, ok. migration.md already present + sound (per DEC-34/AD-0052).
+
+Copy-paste-ready nodes (append under EP-27; set `TK-153 status: cancelled` with a supersession note):
+
+```yaml
+  - id: TK-154
+    kind: ticket
+    parent: EP-27
+    status: todo
+    type: bug
+    title: "drive_rules lockdown — convergent migration: REVOKE writes from sylphie_app + RLS + guardian_admin/drive_engine grants (CANON Std-6)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "One convergent, idempotent migration infra/migrations/NNN-drive-rules-lockdown.ts (dry-run default, --confirm to apply) + a new continuity/reverse smoke. Convergent = reaches the same end-state from any start: CREATE TABLE IF NOT EXISTS drive_rules + proposed_drive_rules matching the LIVE schema (first in-repo codification); idempotent ALTER TABLE ... OWNER TO sylphie_admin; CREATE ROLE IF NOT EXISTS guardian_admin + drive_engine (LOGIN, env passwords); per-table REVOKE ALL then GRANT the DEC-34 matrix; ENABLE + FORCE ROW LEVEL SECURITY + per-role policies. REVOKE is the PRIMARY write-denial (raises 'permission denied'); RLS is defense-in-depth. Does NOT touch 001 global default privileges; NOT an edit to 001-runtime-user.sql. Larger than the retired TK-153 ~250 LOC estimate — the split absorbs it."
+    owner: "sentinel"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260625-002"
+    files_in_scope:
+    - "infra/migrations/NNN-drive-rules-lockdown.ts (NEW — convergent, dry-run default)"
+    - "infra/migrations/<continuity-reverse-smoke> (NEW)"
+    - "infra/postgres/init/001-runtime-user.sql (reference only — NOT edited)"
+    - "pipeline/planning/20260625-002-codebase-audit-findings-remediation-roadmap/migration.md"
+    depends_on: []
+    acceptance_criteria:
+    - { given: "the runtime role sylphie_app after the forward migration is applied", when: "it issues a direct UPDATE/INSERT/DELETE on drive_rules", then: "the database denies it with 'permission denied' (REVOKE-primary) — sylphie_app retains SELECT only (CANON Std-6)" }
+    - { given: "sylphie_app after the migration", when: "it reads drive_rules (SELECT) and inserts a pending proposal into proposed_drive_rules", then: "both succeed (verify-rls checks 3 + 4 pass); UPDATE/DELETE on proposed_drive_rules is denied" }
+    - { given: "drive_rules + proposed_drive_rules seeded with representative rows before the migration", when: "the forward migration is applied (from a state where the tables already exist, and separately from an empty state)", then: "existing row count + contents are unchanged AND a fresh DB converges to the same locked-down end-state (idempotent/convergent)" }
+    - { given: "the applied migration", when: "the REVERSE step is run", then: "sylphie_app INSERT/UPDATE/DELETE grants are restored and RLS disabled — reversibility proven by the smoke" }
+    non_goals:
+    - "No edit to infra/postgres/init/001-runtime-user.sql, and no change to its global ALTER DEFAULT PRIVILEGES (blast radius: other tables)"
+    - "Does NOT wire the dormant RlsVerificationService — that is TK-129 / DEP-3 scope"
+    - "No guardian-side application wiring — that is TK-155"
+    notes: "Convergent migration per DEC-34 / architect AD-0052 (live-DB-grounded: tables owned by sylphie_admin, guardian_admin role already exists). Grant matrix — sylphie_app: SELECT drive_rules + SELECT/INSERT proposed_drive_rules; drive_engine: SELECT both; guardian_admin: full DML both. Proposer INSERT policy WITH CHECK(status='pending'). Ship in the same release window as TK-155. Supersedes the migration half of retired TK-153."
+
+  - id: TK-155
+    kind: ticket
+    parent: EP-27
+    status: todo
+    type: bug
+    title: "guardian privileged pool — POSTGRES_GUARDIAN_POOL wiring + GuardianRulesService rewire so guardian approve/reject writes drive_rules (fixes a live break)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "New POSTGRES_GUARDIAN_POOL token in @sylphie/shared (NOT POSTGRES_ADMIN_POOL/superuser); provider in apps/sylphie/src/app.module.ts (creds from POSTGRES_GUARDIAN_USER/PASSWORD env, NO hardcoded default, fail-closed); rewire GuardianRulesService.approveRule/rejectRule to use the guardian pool while READS stay on POSTGRES_RUNTIME_POOL; .env.example plumbing. In-process Option-A-hardened seam per DEC-34. ~<=200 LOC."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260625-002"
+    files_in_scope:
+    - "packages/shared/src/storage/database.tokens.ts (ADD POSTGRES_GUARDIAN_POOL)"
+    - "apps/sylphie/src/app.module.ts (provider for the guardian pool)"
+    - "apps/sylphie/src/services/guardian-rules.service.ts (rewire approveRule/rejectRule to the guardian pool; reads stay on runtime pool)"
+    - ".env.example (POSTGRES_GUARDIAN_USER / POSTGRES_GUARDIAN_PASSWORD)"
+    depends_on: [TK-154]
+    acceptance_criteria:
+    - { given: "the guardian-approved privileged pool (guardian_admin) after TK-154 is applied and POSTGRES_GUARDIAN_POOL is wired", when: "GuardianRulesService.approveRule writes/updates a drive rule via the guardian path (guardian-JWT-gated endpoint)", then: "the write succeeds (drive_rules INSERT + proposed_drive_rules status UPDATE), fixing the currently-broken approve/reject path" }
+    - { given: "the guardian credentials env vars are unset/misconfigured", when: "the service starts and a guardian write is attempted", then: "the guardian pool fails CLOSED with a clear 'guardian credentials not configured' error, while runtime READS keep working (no hardcoded fallback)" }
+    non_goals:
+    - "No separate guardian-approval process — in-process pool per DEC-34 Option A hardened"
+    - "Does not change the guardian JWT/authz surface (rules.controller.ts) beyond routing DB writes to the privileged pool"
+    - "No DB grant/role/migration work — that is TK-154 (this ticket depends_on it)"
+    notes: "Fixes a LIVE pre-existing break (architect-found): today approveRule (runtime pool) RLS-violates and rejectRule silently updates 0 rows. Reads stay on POSTGRES_RUNTIME_POOL; only the two guardian write transactions move. depends_on TK-154 (grants/role must exist first); ship same release window. Guardian pool creds env-only; provisioning guardian_admin/drive_engine passwords as Railway/env secrets is Jim's ops step before prod --confirm."
+```
+
+**Approval gate ask for Jim:** approve writing TK-154 + TK-155 under EP-27 and marking **TK-153 → cancelled** (superseded by TK-154+TK-155). On approval the plan cog performs the contract write (numeric ids, DEP edge TK-155→TK-154), then the item → refine.
