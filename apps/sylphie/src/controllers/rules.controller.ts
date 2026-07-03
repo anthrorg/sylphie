@@ -18,7 +18,9 @@ import {
   UseGuards,
   Req,
   ForbiddenException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { GuardianCredentialsNotConfiguredError } from '@sylphie/shared';
 import { AuthGuard, JwtPayload } from '../guards/auth.guard';
 import { GuardianRulesService } from '../services/guardian-rules.service';
 
@@ -45,7 +47,11 @@ export class RulesController {
     if (!req.user.isGuardian) {
       throw new ForbiddenException('Only guardians can approve rules');
     }
-    await this.rulesService.approveRule(id);
+    try {
+      await this.rulesService.approveRule(id);
+    } catch (error) {
+      throw this.mapGuardianError(error);
+    }
     return { success: true };
   }
 
@@ -57,7 +63,24 @@ export class RulesController {
     if (!req.user.isGuardian) {
       throw new ForbiddenException('Only guardians can reject rules');
     }
-    await this.rulesService.rejectRule(id);
+    try {
+      await this.rulesService.rejectRule(id);
+    } catch (error) {
+      throw this.mapGuardianError(error);
+    }
     return { success: true };
+  }
+
+  /**
+   * Translate {@link GuardianCredentialsNotConfiguredError} into a 503 so the
+   * dashboard can distinguish "guardian write path disabled" from a generic
+   * server error. All other errors pass through unchanged (NestJS's default
+   * exception handling still applies to them, e.g. NotFoundException -> 404).
+   */
+  private mapGuardianError(error: unknown): unknown {
+    if (error instanceof GuardianCredentialsNotConfiguredError) {
+      return new ServiceUnavailableException(error.message);
+    }
+    return error;
   }
 }

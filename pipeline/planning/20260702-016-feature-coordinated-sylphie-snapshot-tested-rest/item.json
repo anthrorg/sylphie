@@ -1,0 +1,26 @@
+{
+  "id": "20260702-016",
+  "slug": "feature-coordinated-sylphie-snapshot-tested-rest",
+  "title": "Feature: Coordinated Sylphie Snapshot + tested restore across all five stores (with metrics block)",
+  "type": "feature",
+  "size_hint": "large",
+  "lines": 76,
+  "sections": 9,
+  "state": "planning",
+  "namespace": "20260702-016-feature-coordinated-sylphie-snapshot-tested-rest",
+  "source_file": "feature-snapshot-restore.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T02:24:40-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

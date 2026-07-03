@@ -1,0 +1,29 @@
+{
+  "$comment": "Knobs for the intake pipeline. Edit these; pipeline.py and the RUNBOOK read them.",
+  "states": [
+    "inbox",
+    "planning",
+    "refine",
+    "queue",
+    "working",
+    "review",
+    "refactor",
+    "replan",
+    "done",
+    "archive"
+  ],
+  "max_items_per_tick": 3,
+  "execute_mode": "to-pr",
+  "$execute_mode": "to-pr: execute cog runs /worktree-agents to an OPEN PR (never merges). plan-only: dry-run only.",
+  "contract_routing": "EP-21",
+  "$contract_routing": "EP-21 = the rolling intake epic (renamed from EP-INTAKE 2026-07-02 so ids satisfy the planning-worx schema /^(FEAT|EP|TK|TASK)-\\d+$/). Intake tickets nest under EP-21 (parent FEAT-3); larger items that warrant their own epic get the next free numeric EP-## assigned at contract-write time, not a semantic name.",
+  "contract_write": "autonomous",
+  "$contract_write": "autonomous (Jim directive 2026-07-03, supersedes the 2026-06-27 'staged' ruling): PROCESS/decomposition contract writes — ticket splitting, decomposition of already-approved intent, migration mechanics, implementing an architect ruling — are the coordinator's to make and are written WITHOUT a Jim approval gate. Only genuinely new application DIRECTION (a new feature/capability, a priority/vision/non-goal change, a CANON change) still surfaces to Jim before writing. Governance appends (decisions + changelog) remain append-only. A cog must NOT write contract.yaml while another writer has it dirty (concurrency guard).",
+  "max_replan_attempts": 2,
+  "max_refactor_attempts": 2,
+  "stuck_threshold_hours": 48,
+  "archive_after_days": 14,
+  "contract_path": "planning/contract.yaml",
+  "id_prefix_format": "%Y%m%d",
+  "default_priority": "P2"
+}

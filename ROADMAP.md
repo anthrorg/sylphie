@@ -5,6 +5,8 @@
 
 This document declares where the project stands and where it is going. It supersedes the old `action-plan.yaml` (which was the 2.0 migration build plan — now complete). The granular worklist lives in `wiki/ideas/`; this roadmap is the *strategy* those tickets serve.
 
+> ⚠️ **Reality check (2026-07-02):** a full-repo audit found the Phase-2 "Done" baseline overstates runtime health. The tensor cognition sidecar is dead at a contract boundary (every `/cognition/cycle` 422s), the drive-server link never reconnects, RLS drive-isolation is unenforced, and several graph-write / self-monitoring paths are theater. Phase 4's "make the thesis measurable" work is blocked first on these fixes. See [`docs/audits/repo-bug-audit-2026-07-02.md`](docs/audits/repo-bug-audit-2026-07-02.md), [`sylphie-feature-inventory.md`](sylphie-feature-inventory.md), and [`sylphie-stub-inventory.md`](sylphie-stub-inventory.md).
+
 ---
 
 ## Phase history

@@ -5870,6 +5870,1127 @@ nodes:
     pr_url: "https://github.com/anthrorg/sylphie/pull/71"
     branch: "agent/tk-105-frontend-perception-overlay-buffer-evict"
 
+  - { id: FEAT-3, kind: feature, parent: null, status: in_progress, priority: P2,
+      title: "Intake pipeline — rolling operational/maintenance work",
+      intent: "Umbrella feature for heterogeneous work carried into the contract from the pipeline/ intake system (bug fixes, hardening, small features across all subsystems). Exists so intake epics satisfy the feature->epic->ticket tracing rule; created 2026-07-02 when the pipeline's semantic epic ids (EP-INTAKE) were renumbered to schema-valid numeric ids (Jim-ruled: pipeline conforms to the planning-worx schema)." }
+  - id: EP-21
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P2
+    title: "Intake pipeline — rolling epic for approved intake items"
+    intent: "Rolling parent epic for tickets carried into the contract from pipeline/ intake items (contract_routing: EP-21). Renamed from the schema-invalid EP-INTAKE on 2026-07-02 (Jim-ruled renumber). First ticket: TK-108 (was TK-INTAKE-1)."
+  - id: TK-108
+    kind: ticket
+    parent: EP-21
+    status: done
+    type: bug
+    title: "Per-process size-bound + rotate the verbose log at the sink"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "~70 LOC in verbose.ts + per-package jest harness boilerplate"
+    files_in_scope:
+    - packages/shared/src/verbose.ts
+    - packages/shared/src/verbose.spec.ts
+    - packages/shared/jest.config.js
+    - packages/shared/package.json
+    acceptance_criteria:
+    - { given: "a verbose.<pid>.log at or above VERBOSE_MAX_BYTES", when: "the next verbose write occurs", then: "the file rolls to verbose.<pid>.log.1 and a fresh verbose.<pid>.log starts" }
+    - { given: "VERBOSE_KEEP=3", when: "four or more rotations have occurred", then: "only verbose.<pid>.log + .1/.2/.3 remain and the oldest segment is pruned" }
+    - { given: "a write that triggers a rotation", when: "the rotation happens", then: "the triggering line lands in the new file and stderr output is unchanged (no bytes lost)" }
+    - { given: "two instances with distinct pids", when: "both write and rotate concurrently", then: "each writes and rotates only its own verbose.<pid>.log" }
+    - { given: "VERBOSE is unset", when: "logging is invoked", then: "no logs/ file is opened and no stat or rotation work runs" }
+    non_goals:
+    - "normal/structured logs untouched; no logging library; no compression of rotated segments; external getLogContext glob update is a separate follow-up."
+  - id: EP-22
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "apps/sylphie backend hardening (2026-07-02 audit §4)"
+    intent: "One repo bug-audit source (§4) surfaced four separable execution-level defects in apps/sylphie — unauthenticated destructive HTTP routes, unbounded boot operations with no deadline, an ambiguous-column metric query, and unhandled WS/STT failure paths — plus the frontend co-fixes they require. Decompose and fix each as a traceable ticket."
+    pipeline_item: "20260702-001"
+  - id: TK-109
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Default-deny rule-based auth gate (public allowlist + auth-or-localhost-gate for mutations) + dynamic-route e2e harness"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "<=450 LOC net (guard/decorator + wiring + supertest harness + Neo4j/Timescale test-double providers); no new auth mechanism beyond the existing AuthGuard/JWT — coverage + mechanism-completeness fix, not a new auth scheme; do not touch graph.controller.ts GET response shapes, only gating."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/guards/auth.guard.ts (existing — reused as-is, unmodified)"
+    - "apps/sylphie/src/guards/route-auth.guard.ts (NEW — RouteAuthGuard)"
+    - "apps/sylphie/src/decorators/public.decorator.ts (NEW — @Public() reflector metadata)"
+    - "apps/sylphie/src/app.module.ts (wire RouteAuthGuard as APP_GUARD)"
+    - "apps/sylphie/src/controllers/health.controller.ts (mark GET /api/health @Public())"
+    - "apps/sylphie/src/controllers/auth.controller.ts (mark POST /register and POST /login @Public(); GET /me keeps existing AuthGuard)"
+    - "apps/sylphie/src/controllers/metrics.controller.ts (mark GET health and 7 GET observatory/* routes @Public(); all 15 @Post routes stay under default-deny gate; the 11 debug/introspection GETs are NOT on the public allowlist)"
+    - "apps/sylphie/src/controllers/skills.controller.ts (reset, reset-world — gated)"
+    - "apps/sylphie/src/controllers/llm.controller.ts (lesion, heal — gated)"
+    - "apps/sylphie/src/controllers/graph.controller.ts (all 8 @Get routes — gated, deliberate behavior change)"
+    - "apps/sylphie/src/controllers/supervisor.controller.ts (@Get status/verdicts @Public(); @Post policy/intervene/enable/disable default-deny gated)"
+    - "apps/sylphie/test/e2e/route-auth.e2e-spec.ts (NEW — AppModule bootstrap + supertest)"
+    - "apps/sylphie/test/e2e/support/mock-neo4j.provider.ts (NEW)"
+    - "apps/sylphie/test/e2e/support/mock-timescale.provider.ts (NEW)"
+    - "apps/sylphie/package.json (add supertest devDependency + test:e2e script)"
+    acceptance_criteria:
+    - { given: "the AppModule bootstrapped via supertest (Neo4jService/TimescaleService overridden by test doubles) with no Authorization header, and every route enumerated dynamically from the Nest HTTP adapter's router (not a hand list)", when: "each enumerated non-GET route, or path matching *-reset/reset/reset-world/lesion/heal, is called", then: "every such route returns 401 or 403 and no state changes — the test FAILS if any anonymous destructive/mutating route in the live router is reachable, including ones not named explicitly in this ticket" }
+    - { given: "the same dynamic route enumeration", when: "the enumerated mutating (@Post) routes from metrics.controller.ts are counted", then: "the count discovered is >=15 — a regression guard so a future hand-list narrowing cannot silently shrink coverage" }
+    - { given: "a valid Bearer token signed with the test JWT_SECRET", when: "the same enumerated mutating routes are called", then: "none return 401/403 (the guard passes authenticated requests through)" }
+    - { given: "GET /api/graph/* (OKG person-facts read routes) called with no Authorization header", when: "the request is made", then: "401/403 — covered structurally by the same rule-based gate, not a special case" }
+    - { given: "the AppModule bootstrapped with no Authorization header and JWT_SECRET explicitly UNSET (simulating unknown Railway provisioning)", when: "GET /api/health, POST /api/auth/register, POST /api/auth/login, GET /api/metrics/health, and each of the 7 GET /api/metrics/observatory/* routes are called", then: "every one returns non-401/403 — FAILS if a naive APP_GUARD-with-no-allowlist would 401 any of them, and must pass even though JWT_SECRET is unset (resolves finding #1, CRITICAL)" }
+    - { given: "no Authorization header", when: "POST /api/supervisor/policy, /intervene, /enable, /disable are each called", then: "401/403 and no state change (supervisor policy/enabled-state/verdict-buffer unaffected) (resolves finding #2, HIGH)" }
+    - { given: "no Authorization header", when: "GET /api/supervisor/status and /verdicts are called", then: "non-401 — matches the live SupervisorPanel.tsx anonymous read today" }
+    - { given: "a valid guardian Bearer token wired into SupervisorPanel.tsx per TK-BEH-1b, attached to POST /api/supervisor/policy, /intervene, /enable, /disable", when: "each is called (simulating the post-1b guardian UI)", then: "each succeeds (2xx) and produces the same state change as today — FAILS if TK-BEH-1's gate ships without TK-BEH-1b's token wiring (proof of the hard co-dependency)" }
+    - { given: "a raw WS client connects to the ConversationGateway/AudioGateway paths with no auth query param", when: "the connection is attempted", then: "the handshake succeeds — proving RouteAuthGuard's non-http short-circuit does not interfere with gateway connection lifecycle; per-message gateway auth unchanged and out of scope" }
+    - { given: "NODE_ENV=production with ServeStaticModule active", when: "a static asset path (e.g. /index.html) is requested with no Authorization header", then: "it is served — ServeStaticModule's exclude sits outside Nest's guard pipeline, verified as structurally already-true, not a code change" }
+    non_goals:
+    - "No new auth mechanism/scheme beyond the existing AuthGuard/JWT"
+    - "Do not touch graph.controller.ts GET response shapes (gating only)"
+    - "WS handshake / per-message gateway authorization stays as today (JWT-in-query-param), out of scope"
+    - "Railway JWT_SECRET provisioning is not confirmed/changed by this ticket"
+    notes: "HARD CO-DEPENDENCY with TK-BEH-1b (Jim-ruled): the supervisor @Post gating slice and TK-BEH-1b's SupervisorPanel.tsx token wiring MUST land in the same change/PR — TK-BEH-1's gate must not merge/deploy ahead of TK-BEH-1b. The 'guardian UI keeps working, authenticated' AC is the runnable proof. Soft build-order awareness: harness touches onModuleInit internals also touched by TK-BEH-2; if TK-BEH-2 lands first re-run this harness as a regression check (not a hard blocker)."
+  - id: TK-110
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Wire a guardian Bearer token into SupervisorPanel.tsx's mutating calls (hard co-dependency of TK-BEH-1's supervisor gating)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "<=100 LOC net; attach Authorization: Bearer <token> header to SupervisorPanel.tsx's existing fetch calls, reusing useAppStore's authToken — no new auth flow, no new token storage, no login-flow redesign."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "frontend/src/components/Supervisor/SupervisorPanel.tsx (postAndRefresh POST helper + status-refresh GET fetches: add Authorization: Bearer ${authToken} from useAppStore)"
+    acceptance_criteria:
+    - { given: "a signed-in guardian (authToken set) opens SupervisorPanel and clicks Enable/Disable or Apply Policy", when: "the resulting POST fires", then: "the request carries Authorization: Bearer <authToken> and succeeds against the TK-BEH-1-gated backend (2xx, no 401)" }
+    - { given: "no authToken (anonymous/guest session)", when: "the same SupervisorPanel controls are used", then: "the request is sent without a valid Bearer token and the backend correctly 401s (proving this ticket did not weaken TK-BEH-1's gate; a disabled-state/error UX is a reasonable minimal addition but not the main contract)" }
+    - { given: "TK-BEH-1's gate is live", when: "SupervisorPanel's status poll (GET /api/supervisor/status) runs", then: "it continues to succeed (status is on the public allowlist) whether or not a token is attached — confirms this ticket didn't accidentally start requiring auth on a route TK-BEH-1 left public" }
+    non_goals:
+    - "Does not invent a UI for POST /api/supervisor/intervene (no live caller exists in frontend today; covered by TK-BEH-1's gate regardless)"
+    - "No new auth flow, token storage mechanism, or login-flow redesign"
+    notes: "HARD CO-DEPENDENCY (Jim-ruled): must land together with TK-BEH-1's supervisor-gating slice in the same change — build as one PR or two PRs merged atomically. TK-BEH-1's gate must not merge ahead of this wiring. See governance co-ship dependency."
+  - id: TK-111
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Shared boot-deadline helper; widen to person-model backfill + face-snapshot schema/hydrate; correct migration.md"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "<=250 LOC net (one shared helper + 4 call-site conversions); no behavior change to already-passing boots — only bounds previously-unbounded ops; the shared helper takes an explicit ms parameter per call site (do NOT unify to one constant)."
+    owner: "forge (shared helper, face-snapshot, wkg-bootstrap, wkg-query) + vox (person-model.service.ts)"
+    conceptual_reviewer: "ashby (forge side) + skinner (vox side)"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/utils/boot-deadline.ts (NEW — shared withDeadline<T>(work, ms, label) incl. rejection handler on the losing promise)"
+    - "apps/sylphie/src/services/wkg-bootstrap.service.ts (replace inline Promise.race, ms=15_000)"
+    - "apps/sylphie/src/services/wkg-query.service.ts (replace inline Promise.race, ms=20_000)"
+    - "apps/sylphie/src/services/person-model.service.ts (onModuleInit — wrap both CREATE CONSTRAINT calls AND the unbounded SET p.label=p.username backfill, ms=15_000)"
+    - "apps/sylphie/src/services/face-snapshot.service.ts (onModuleInit — wrap CREATE CONSTRAINT, ensureSchema(), hydrate(), ms=20_000)"
+    acceptance_criteria:
+    - { given: "a Neo4j OTHER driver stubbed to never resolve (stalled-driver test double)", when: "PersonModelService.onModuleInit runs", then: "onModuleInit returns within the shared deadline with a degraded-mode log line, and the app does not hang" }
+    - { given: "the same stalled-driver stub", when: "FaceSnapshotService.onModuleInit runs", then: "onModuleInit returns within the shared deadline (covering the constraint call AND ensureSchema()/hydrate()), no hang" }
+    - { given: "the shared deadline helper's losing (deadline-exceeded) branch", when: "the racing work promise rejects LATE, after the deadline already fired", then: "no unhandledRejection is observed — asserted via a process.on('unhandledRejection') probe" }
+    - { given: "wkg-bootstrap.service.ts and wkg-query.service.ts after refactor", when: "grepped for Promise.race", then: "zero inline duplicates remain outside the shared helper module" }
+    - { given: "the shared helper invoked twice concurrently — once ms=15_000 and once ms=20_000, both against stalled-work promises", when: "both calls run", then: "each resolves/times out per its OWN ms value, proving the helper has no shared/global timeout state" }
+    - { given: "this ticket lands", when: "the item's migration.md is next revisited", then: "its §1 claim 'nothing writes any store' is corrected to note person-model boot performs a runtime Neo4j DDL + label-backfill write (no schema/migration FILE changes, so DB-surface classification stays 'no'); this pass does not itself edit migration.md" }
+    non_goals:
+    - "No behavior change to already-passing boots — only bounds previously-unbounded ops"
+    - "Do NOT unify the per-site ms values to one constant (15s wkg-bootstrap/person-model; 20s wkg-query/face-snapshot)"
+    - "This pass does not itself edit migration.md"
+    notes: "Per-site deadline values explicit, not unified: wkg-bootstrap 15s, wkg-query 20s (unchanged TK-107 constants), person-model 15s (NEW), face-snapshot 20s (NEW). Contains a CONFIRM sub-step (orphan-rejection repro) kept inside the ticket. Cross-couples with TK-BEH-1's harness (shared onModuleInit internals)."
+  - id: TK-112
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Qualify e1.payload in meanDriveResolutionTimes; surface query errors"
+    priority: P1
+    engineering_level: mvp
+    complexity_budget: "<=40 LOC net; SQL qualification + error propagation only — no schema change, no new endpoint, no change to the 5-sample-minimum CANON omission rule."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/controllers/metrics.controller.ts (computeMeanDriveResolutionTimes — qualify payload->>'drive' to e1.payload->>'drive' in SELECT and GROUP BY; surface the swallowed catch instead of returning {})"
+    acceptance_criteria:
+    - { given: ">=5 seeded DRIVE_PRESSURE_ELEVATED/RESOLVED pairs for a drive (same session_id, matching payload->>'drive', resolution within the 5-minute window)", when: "GET /api/metrics/health is called against the FIXED (qualified) query", then: "meanDriveResolutionTimes contains a numeric mean_ms/sample_count entry for that drive with sample_count>=5 — not {} (resolves finding #4, HIGH)" }
+    - { given: "the SAME >=5-pair seed data", when: "run against the UNFIXED (ambiguous-column) query", then: "the query throws a 42702 ambiguous-column error and computeMeanDriveResolutionTimes returns {} — proving AC1's pass discriminates on the SQL fix, not sample volume" }
+    - { given: "the same query", when: "run directly against Postgres", then: "no 42702 ambiguous-column error appears in logs or the query plan" }
+    - { given: "the underlying Timescale query throws for a reason OTHER than the ambiguous-column bug (e.g. stubbed connection failure)", when: "computeMeanDriveResolutionTimes runs", then: "the error is surfaced (logged with context and/or reflected in the response) rather than silently returning {}" }
+    non_goals:
+    - "No schema change"
+    - "No new endpoint"
+    - "No change to the 5-sample-minimum CANON omission rule"
+  - id: TK-113
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "STT session-identity-guarded close handler (pendingBuffers + sessions + keepAliveTimers)"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "<=80 LOC net; a generation/token guard on one close handler — do not redesign the STT session lifecycle or reconnect policy."
+    owner: "vox"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/services/stt.service.ts (the ws.on('close') handler — guard pendingBuffers.delete AND keepAliveTimers/sessions deletes, all keyed by clientId, on the entry still belonging to this session/generation before deleting — e.g. a per-clientId generation counter captured by the close handler's closure)"
+    acceptance_criteria:
+    - { given: "a new STT session is created for a client (new generation) before the OLD session's close event fires (reconnect churn)", when: "the stale close handler runs", then: "it does NOT delete the replacement session's sessions, keepAliveTimers, OR pendingBuffers entries — asserted by generation/session-identity check before any delete" }
+    - { given: "a session's own (non-superseded) close event fires normally", when: "the close handler runs", then: "all three maps (sessions, keepAliveTimers, pendingBuffers) ARE cleaned up for that clientId — the guard must not leak entries for legitimately-closed sessions" }
+    non_goals:
+    - "Do not redesign the STT session lifecycle or reconnect policy"
+    - "No client-visible wire change (purely internal map-integrity fix)"
+    notes: "Split from TK-BEH-4: buildable now, independent of TK-BEH-4b's event-contract question."
+  - id: TK-114
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "WS/STT client-notify: trigger-phrase rejection + Deepgram abnormal-close event contract (defined here, not deferred)"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "<=120 LOC net across the 2 sites; additive wire changes only (new/reused message-type fields), no new reconnect/backoff policy design."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/gateways/conversation.gateway.ts (add .catch emitting { type: 'thinking_indicator', is_thinking: false, error: true } to the originating client — reuses existing thinking_indicator type + scoped-send pattern)"
+    - "apps/sylphie/src/gateways/audio.gateway.ts (handleDeepgramClose code!==1000 branch — emit { type: 'mic_dead', code } to state.ws before returning, instead of the silent return; distinct from restart_audio which implies auto-reconnect this branch does NOT do)"
+    acceptance_criteria:
+    - { given: "handleTriggerPhrase rejects (e.g. personModel.loadFacts() throws)", when: "a trigger-phrase turn is processed", then: "the originating client receives { type: 'thinking_indicator', is_thinking: false, error: true } rather than a silent stall with the spinner left at is_thinking:true" }
+    - { given: "Deepgram closes with a non-1000 code", when: "the audio gateway's close handler runs", then: "the client receives { type: 'mic_dead', code } and no reconnect is silently attempted (matches existing code!=1000 no-auto-reconnect behavior, now paired with a notification instead of a silent drop)" }
+    non_goals:
+    - "Frontend consumption of error:true/mic_dead fields (spinner/mic-dead UI) is out of scope — owned by TK-BEH-6"
+    - "No new reconnect/backoff policy design"
+    - "Additive wire changes only — no existing message shape changes"
+    notes: "Event contract is defined HERE, no longer jointly-pinned with item 20260702-005. Frontend consumption is TK-BEH-6 (Jim-ruled: new ticket inside this epic, NOT an amendment to item 005). TK-BEH-6 soft-depends on this contract landing first."
+  - id: TK-115
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Unhandled cycle-response rejection + full socket-map purge on delivery to a dead socket"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "<=70 LOC net across 2 sites"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/services/communication.service.ts (onModuleInit's response$.subscribe — wrap the void this.handleCycleResponse(response) call with .catch(err => logger.error(...)) so a rejection is caught and logged, not left unhandled)"
+    - "apps/sylphie/src/gateways/conversation.gateway.ts (routeDelivery — when a targeted or fallback lookup finds a socket whose readyState !== OPEN, purge the stale socket from ALL five maps at the point of discovery, not just at handleDisconnect)"
+    acceptance_criteria:
+    - { given: "handleCycleResponse rejects", when: "a cycle response is processed", then: "the rejection is caught and logged with context, not left unhandled (asserted via a process.on('unhandledRejection') probe)" }
+    - { given: "routeDelivery finds a socket via socketIdToClient or userIdToClient whose readyState is NOT OPEN (half-dead, e.g. CLOSING)", when: "the delivery attempt runs", then: "that socket's entries are purged from clients, clientUsers, clientSocketIds, socketIdToClient, AND userIdToClient — not just logged and left in place" }
+    notes: "Corrected locus: handleCycleResponse is a private method on communication.service.ts; the unhandled-rejection call site is communication.service.ts (not conversation.gateway.ts as originally staged). Split from TK-BEH-5 (unaffected by DEC-29); 5a/5b/5c independent, any order."
+  - id: TK-116
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "SensoryLoggerService interval leak on shutdown"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "<=20 LOC net; add OnModuleDestroy, clear the one interval"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/services/sensory-logger.service.ts (implements OnModuleInit only; this.interval set via setInterval, never cleared — add OnModuleDestroy + clearInterval(this.interval))"
+    acceptance_criteria:
+    - { given: "app shutdown (OnModuleDestroy)", when: "SensoryLoggerService is destroyed", then: "its interval is cleared and the process can exit cleanly (no lingering timer keeping the event loop alive)" }
+    notes: "Split from TK-BEH-5; independent of 5a/5c."
+  - id: TK-117
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "DrivePublisher telemetry honesty: stop emitting the FULL fabricated-field set"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "<=60 LOC net; do NOT rework the telemetry contract into real entropy/state metrics — only stop emitting fabricated constants; emit null/omit when unmeasured."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    files_in_scope:
+    - "apps/sylphie/src/services/drive-publisher.service.ts (fabricated fields: pressure_metadata.is_stale:false, drive_entropy:0, category:null, action:null, action_confidence:null, state:'idle', transition_count:0, speech_refractory:0, dynamic_threshold:0 — 9 hardcoded constants; emit null or omit when unmeasured)"
+    acceptance_criteria:
+    - { given: "a DrivePublisher broadcast where the 9 fields are NOT actually measured", when: "the broadcast is emitted", then: "all 9 fields are absent or null in the payload, never the fabricated constants 0/'idle'/0/false/null-as-if-measured" }
+    non_goals:
+    - "Do NOT rework the telemetry contract into real entropy/state metrics — only stop emitting fabricated constants"
+    notes: "drive is a conceptual consult (telemetry contract is drive-adjacent). Reconciliation with item 20260702-005/TK-FE-5: THIS ticket is the single source of truth for the BACKEND emission at drive-publisher.service.ts; 005's action:null mention covers FRONTEND handling/display, not a second edit to this backend file. Split from TK-BEH-5; independent of 5a/5b."
+  - id: TK-118
+    kind: ticket
+    parent: EP-22
+    status: todo
+    type: bug
+    title: "Frontend: consume mic_dead + thinking_indicator.error:true (mic-dead indicator, spinner-error clear)"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "<=90 LOC net across 2 hooks; reuse existing state (useAudioStream's error state, useWebSocket's setThinking) rather than inventing new state containers — no new reconnect/backoff UI, no redesign of the mic/spinner components."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-001"
+    depends_on: [TK-114]
+    files_in_scope:
+    - "frontend/src/hooks/useWebSocket.ts (existing thinking_indicator branch — extend to read message.error and, when true, surface a distinct 'turn failed' signal alongside the spinner clear)"
+    - "frontend/src/hooks/useAudioStream.ts (existing ws.onmessage handler — add a msg.type === 'mic_dead' branch calling the hook's EXISTING setError(...) and setting isStreaming false)"
+    - "frontend/src/components/Audio/AudioPanel.tsx (verify/adjust its render of useAudioStream's error/isStreaming to surface the mic-dead case distinctly — minimal change if existing error UI already renders any non-null error string)"
+    acceptance_criteria:
+    - { given: "the WS client receives { type: 'thinking_indicator', is_thinking: false, error: true }", when: "useWebSocket processes the message", then: "the thinking spinner clears (is_thinking->false) AND a turn-failed signal is set that ConversationPanel can render (distinct from a normal successful turn completion)" }
+    - { given: "the audio WS client receives { type: 'mic_dead', code }", when: "useAudioStream processes the message", then: "isStreaming becomes false and error is set to a user-facing message referencing the mic session ending — AudioPanel's existing error/status rendering surfaces it, rather than the mic UI continuing to look live" }
+    - { given: "a normal thinking_indicator (is_thinking:false, no error field) or a normal restart_audio message", when: "the same handlers run", then: "existing behavior is unchanged — no regression to the non-error paths" }
+    non_goals:
+    - "No new reconnect/backoff UI"
+    - "No redesign of the mic/spinner components"
+    - "Do not invent new state containers — reuse existing state"
+    notes: "SOFT dependency on TK-BEH-4b (event contract must exist, not a hard co-ship — 4b's backend fix is truthful on its own before this lands). Jim-ruled: this is a separate NEW ticket inside this epic, NOT folded into item 20260702-005."
+  - id: EP-23
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "Tensor cognition sidecar: contract fix + lock-free EWC consolidation + convergence/demotion wiring"
+    intent: "Fix the dead tensor cognition sidecar (422 on every /cognition/cycle) by correcting the drive_history payload contract, then honestly wire the sidecar's EWC ordering, lock-free phase-boundary consolidation, demotion, and convergence gate."
+    pipeline_item: "20260702-002"
+  - id: TK-119
+    kind: ticket
+    parent: EP-23
+    status: todo
+    type: bug
+    title: "Contract fix: emit nested drive_history (number[][]) from tensor-inference-adapter; TS<->pydantic contract test"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-002"
+    files_in_scope:
+    - "apps/sylphie/src/services/tensor-inference-adapter.service.ts"
+    - "apps/sylphie/src/services/cognition-gateway.service.ts"
+    - "packages/cognition-service/schemas.py"
+    acceptance_criteria:
+    - { given: "getDriveHistory() in tensor-inference-adapter.service.ts (currently getDriveHistoryFlattened())", when: "the adapter builds the drive_history payload for a cycle request", then: "it emits nested number[][] (10 timesteps x 12 drives), not a flattened 120-float array; the .flat() call is removed" }
+    - { given: "CognitionGatewayService's cycle-request type (currently readonly number[])", when: "the payload type is checked against the nested drive_history the adapter now emits", then: "the field type is the nested readonly shape (readonly (readonly number[])[] or equivalent) and compiles cleanly; the spread of the array into the request body is unchanged" }
+    - { given: "a TS-built golden fixture (10x12 drive_history frame) exported by a small TS script/test that calls the adapter and dumps its output, plus a hand-built flat-120 regression fixture", when: "a pytest harness loads the golden fixture and calls schemas.py's CognitionCycleRequest.model_validate(...) against it, and separately against the flat-120 fixture", then: "the nested 10x12 fixture validates with no ValidationError; the flat-120 regression fixture raises pydantic.ValidationError (proving the schema would still catch a regression to the old flattened shape)" }
+    - { given: "sidecar + backend running live, a conversational turn triggering a decision cycle", when: "POST /cognition/cycle fires for the first cycle after startup", then: "first-cycle latency is measured and logged against the 50ms AbortSignal at cognition-gateway.service.ts; if it exceeds 50ms, a follow-up item is filed via the intake pipeline (a markdown file in pipeline/inbox/, not merely a log line) documenting the measured latency and proposing the AbortSignal change — this ticket does not itself change the 50ms value" }
+    non_goals:
+    - "relaxing/loosening schemas.py drive_history (stays list[list[float]])"
+    - "changing the 50ms AbortSignal timeout without first measuring — see AC3"
+    notes: "Governed by DEC-30 / AD-0045-0047 (split into independent per-owner/per-surface tickets). TK-A is the P0 unblocker, apps/sylphie + forge-owned, independently shippable. Sequencing: lands FIRST (A->B->C, D independent). No DB surface (migration.md keyword false positive)."
+  - id: TK-120
+    kind: ticket
+    parent: EP-23
+    status: todo
+    type: bug
+    title: "EWC ordering fix (compute_fisher before set_reference) + wire check_demotions() beside check_graduations()"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "meridian"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-002"
+    depends_on: [TK-119]
+    files_in_scope:
+    - "packages/cognition-service/main.py"
+    - "packages/cognition-service/training/replay.py"
+    - "packages/cognition-service/inference/bootstrap.py"
+    acceptance_criteria:
+    - { given: "the INLINE consolidation logic in the /cognition/phase-transition handler, where trainer.ewc.set_reference(weights) currently fires BEFORE trainer.ewc.compute_fisher(trainer, calibration), with the misleading 'Online EWC design' comment and the TK-37/TK-39 justification block — TK-C's module-level extraction does not exist yet at this point (TK-B lands first), so this fix is made directly in the still-inline handler", when: "the ordering is fixed in place inside the existing phase_transition() handler (no extraction — that is TK-C's job)", then: "compute_fisher() is invoked BEFORE set_reference() (call order swapped); the misleading comment is deleted; the TK-37/TK-39 comment block is rewritten in place to accurately describe the corrected compute_fisher-then-set_reference sequence — this corrected text is what TK-C's later extraction carries over verbatim, avoiding a throwaway edit / same-line merge race" }
+    - { given: "replay.py's set_reference() and compute_fisher(), which already tolerate either call order per their own docstrings", when: "main.py's handler is updated to call compute_fisher before set_reference", then: "no logic changes are required inside replay.py's set_reference/compute_fisher bodies — replay.py is in scope for read/verification of the ordering contract, not modification; this ticket is an ordering swap at the main.py call site only" }
+    - { given: "a graduated category whose rolling agreement dropped below the 0.70 demotion_threshold with >=20 recorded comparisons (bootstrap.py guard, same guard used for graduation)", when: "check_demotions() is called from the train path alongside check_graduations()", then: "the category is removed from _graduated_categories and logged as demoted (unit test on bootstrap.py); a category with <20 samples is NOT demoted regardless of agreement (precondition unit test)" }
+    - { given: "check_demotions(), wired into the SAME guarded block that already calls check_graduations() (gated on tracker/sample/last_cycle_result preconditions)", when: "check_graduations() executes (the guarded block's preconditions are met and it runs)", then: "check_demotions() executes immediately alongside it, on that same call — NOT on every /cognition/training-sample call unconditionally, only when the existing guard already lets check_graduations() run; no behavior change to check_graduations()'s own logic, to advance_mode(), or to the separate periodic advance_mode() block (untouched by this ticket)" }
+    non_goals:
+    - "changing the Online EWC blend math itself (gamma decay, ramp steps) — ordering only"
+    notes: "Governed by DEC-30 / AD-0045-0047; AC1/AC4 wording corrected per the DEC-33 red-team pass (ordering fix in-place in the still-inline handler, corrected comment carried into TK-C's extraction). cognition-service + meridian-owned. Sequencing: after TK-A, before TK-C (both touch main.py phase-transition region — land TK-B first to avoid a merge race). No DB surface."
+  - id: TK-121
+    kind: ticket
+    parent: EP-23
+    status: todo
+    type: bug
+    title: "Extract phase-boundary consolidation into a lock-free module-level helper; wire it at mode-advance; truth-edit ROADMAP.md"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    estimate: M
+    complexity_budget: "M"
+    owner: "meridian"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-002"
+    depends_on: [TK-120]
+    files_in_scope:
+    - "packages/cognition-service/main.py"
+    - "packages/cognition-service/training/replay.py"
+    - "packages/cognition-service/training/trainer.py"
+    - "packages/cognition-service/inference/bootstrap.py"
+    - "ROADMAP.md"
+    acceptance_criteria:
+    - { given: "the inline consolidation logic in the phase-transition handler (ordering already corrected by TK-B), plus trainer.get_weights() (which already acquires trainer._weight_lock internally for its brief copy-under-lock) and trainer._weight_lock itself", when: "the logic is extracted into a module-level function _consolidate_phase_boundary(trainer, buffer)", then: "the extracted function performs: get_weights() -> buffer.snapshot_calibration(1000, stratified=True) -> compute_fisher(trainer, calibration) [guarded: ValueError on empty buffer caught+logged as warning, not raised] -> set_reference(weights) UNCONDITIONALLY (even when calibration empty, so the anchor still moves); PER AD-0049, the helper acquires trainer._weight_lock ZERO times — no `with trainer._weight_lock:` block anywhere in _consolidate_phase_boundary; the only _weight_lock acquisition in the whole path remains get_weights()'s internal one; BootstrapTracker is NOT modified to hold a trainer reference" }
+    - { given: "_consolidate_phase_boundary(trainer, buffer) called against a real (non-mock) CognitiveTrainer with a non-empty replay buffer, with the trainer's background training loop concurrently running", when: "the helper is invoked from a worker thread while that background thread is live", then: "a deadlock-regression test asserts thread.join(timeout=~5s) returns True before the timeout — the test fails as a loud assertion, not a hang, if the join times out (direct regression test for the deadlock the old 'hold _weight_lock across both EWC calls' AC would have introduced)" }
+    - { given: "the helper's execution, instrumented for assertion", when: "compute_fisher() and set_reference() are entered during a call to _consolidate_phase_boundary", then: "a lock-scope test asserts trainer._weight_lock.locked() is False at entry to both compute_fisher() and set_reference(); get_weights() is asserted to have been called exactly once and to have returned before compute_fisher(); no new lock object is introduced anywhere in ewc.py/replay.py/main.py for this path" }
+    - { given: "_consolidate_phase_boundary running against production-scale weights and a 1000-sample stratified calibration draw", when: "the helper completes", then: "its wall-clock duration is measured (time.monotonic()) and logged at INFO with the measured ms; if a live/integration run measures duration > 250ms, a follow-up item is filed via the intake pipeline (a markdown file in pipeline/inbox/) proposing to move the synchronous numpy work off the event loop via asyncio.to_thread — this ticket does not itself add asyncio.to_thread" }
+    - { given: "tracker.advance_mode() returns True (a periodic mode-advance check succeeds)", when: "the mode actually advances (shadow->audit->partial->full)", then: "_consolidate_phase_boundary(trainer, buffer) is called exactly once for that boundary, immediately after advance_mode() returns True" }
+    - { given: "POST /cognition/phase-transition (the manual override endpoint)", when: "a guardian/supervisor forces a phase transition directly", then: "the endpoint calls the same _consolidate_phase_boundary(trainer, buffer) helper (no duplicated inline logic remains in the handler)" }
+    - { given: "a phase boundary with a non-empty replay buffer, exercised via an integration test driving tracker.advance_mode() across all four phases", when: "each boundary is crossed, including shadow->audit and the final ->full", then: "_consolidate_phase_boundary is invoked exactly once per boundary, and after the boundary EWC is ARMED — trainer.ewc._reference is not None AND trainer.ewc._fisher is not None; no assertion that penalty_gradients() returns non-zero here, because immediately after set_reference() w==ref so a zero gradient is CORRECT (see next AC)" }
+    - { given: "EWC armed per the prior AC, with model weights then perturbed away from the anchor so current_weights != reference", when: "penalty_gradients() is called at least twice in this perturbed state (the first call advances the initial ramp factor)", then: "the second (or later) call returns a gradient array with at least one non-zero element, confirming the EWC penalty exerts real pressure once weights diverge from the anchor" }
+    - { given: "ROADMAP.md's current phase-transition '✅ live' claim", when: "the true wiring state (manual-override endpoint + now-automatic mode-advance call) is known", then: "the line is edited to accurately reflect reality per Std-4 (no theater-by-documentation) — no unverified '✅ live' claim remains for functionality this ticket did not itself make live" }
+    non_goals:
+    - "injecting trainer into BootstrapTracker (helper lives at module level in main.py)"
+    - "acquiring trainer._weight_lock (or any new lock) anywhere in the helper — see AD-0049; only lock in the path is get_weights()'s internal one"
+    - "the use_learned hard-disable and checkpoint-load fix — split to TK-D (AD-0050); this ticket does not touch models/convergence.py"
+    - "adding a real trained convergence head (separate, larger ticket)"
+    - "moving the helper's numpy work onto asyncio.to_thread in this ticket (AC4 only requires measuring and, if warranted, filing a follow-up)"
+    notes: "DEC-33 / AD-0049 governs lock discipline: the old 'hold _weight_lock across both EWC calls' AC is DELETED (deadlock risk — get_weights() already acquires the non-reentrant Lock internally) and replaced with the deadlock-regression test + lock-scope test; helper acquires NO lock of its own. Old 'non-zero gradient at boundary' replaced by 'EWC ARMED' + a perturb-then-call-twice non-zero check. ROADMAP.md truth-edit kept on TK-C per AD-0047 (whichever ticket lands last; TK-C expected last). Riskiest of the three (M). CANON theater-prohibition + Std-6-adjacent — flag ashby. No DB surface."
+  - id: TK-122
+    kind: ticket
+    parent: EP-23
+    status: todo
+    type: bug
+    title: "Hard-disable ConvergenceModel.use_learned at both writers (check() graduation branch + load() checkpoint restore)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "meridian"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-002"
+    files_in_scope:
+    - "packages/cognition-service/models/convergence.py"
+    acceptance_criteria:
+    - { given: "ConvergenceModel.check(), whose graduation branch currently flips self.use_learned = True from a single lucky proxy-accuracy sample against an untrained random head, guarded only by not self.use_learned plus sample-count/accuracy thresholds", when: "check() runs, regardless of convergence_sample_count or proxy_accuracy", then: "self.use_learned can no longer be set to True by this code path (the assignment removed or made permanently unreachable); a unit test asserts use_learned stays False across 1000+ check() calls even when proxy_accuracy would clear the 0.80 threshold; the disablement is logged once with an explicit reason ('no trained head available — use_learned hard-disabled')" }
+    - { given: "ConvergenceModel.load(), whose current body applies a persisted use_learned flag from an npz checkpoint verbatim", when: "a checkpoint containing use_learned=True is loaded", then: "load() forces self.use_learned = False regardless of the persisted value, logging a WARNING when the persisted flag was True and got overridden; the checkpoint file on disk is NOT rewritten or migrated by load() — it stays read-only, and the flag self-heals to False the next time save() is called" }
+    - { given: "a checkpoint built with use_learned=True, loaded via ConvergenceModel.load()", when: "check() is subsequently called", then: "a unit test asserts the returned divergence_score matches the heuristic cosine-similarity computation (not the learned _predict_learned() output), confirming the `divergence_score = learned if use_learned else heuristic` resolves to the heuristic path" }
+    non_goals:
+    - "training a real convergence head (separate, larger ticket — this is a hard-disable/pin-off only)"
+    - "rewriting or migrating existing on-disk checkpoints in load() (load stays read-only; a persisted use_learned=True self-heals to False on next save())"
+    - "changing the heuristic cosine-similarity divergence computation itself"
+    notes: "DEC-33 / AD-0050 governs this ticket: split out of TK-C as its own safety-critical pin-off so the trivial 'never let an untrained random head go live' fix is not blocked by TK-C's larger lock-risky extraction. Pins BOTH use_learned writers to False. INDEPENDENT of TK-C (touches only models/convergence.py); MAY build/merge in parallel with or before TK-C. CANON: random-head 'learned mode' is theater-prohibition adjacent — flag ashby. No DB surface."
+  - id: EP-24
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "Decision-making concurrency & deliberation defects"
+    intent: "Fix a cluster of audit-derived concurrency, timeout, and deliberation-honesty defects in packages/decision-making: zombie-cycle mutex release, hung Ollama sockets, a never-recovering circuit breaker, a fabricated debate-gate confidence, and suppressed recall provenance."
+    pipeline_item: "20260702-003"
+  - id: TK-123
+    kind: ticket
+    parent: EP-24
+    status: todo
+    type: bug
+    title: "Epoch-guarded mutex release: a stale watchdog-killed cycle must not release/disarm a newer cycle's mutex/watchdog"
+    priority: P1
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "cortex"
+    conceptual_reviewer: "luria"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-003"
+    files_in_scope:
+    - "packages/decision-making/src/concurrency/cycle-guard.service.ts"
+    acceptance_criteria:
+    - { given: "a cycle is watchdog-killed and the epoch is bumped before that cycle's promise settles", when: "the stale cycle's finally block eventually runs", then: "it does not call disarmWatchdog() or clear tickInFlight/inFlightTurn for the successor's (current) epoch — unit test forces an epoch mismatch and asserts the successor's watchdog/mutex state is unchanged" }
+    - { given: "the same zombie-cycle scenario, with a successor cycle already running under the new epoch", when: "the stale cycle's finally runs concurrently with the successor", then: "no concurrent runCycle() executes and no in-flight turn is silently dropped (unit test with two overlapping cycles and a forced epoch bump, asserting exactly one honest outcome for the turn)" }
+    - { given: "an ordinary cycle that completes normally — no watchdog fire, no epoch bump between mutex acquisition and the finally block running", when: "the finally block runs (myEpoch === current cycleEpoch)", then: "it STILL calls disarmWatchdog() and clears tickInFlight/inFlightTurn, and drainNext() proceeds to run the next queued turn to completion — regression unit test: a single ordinary turn completes and asserts the watchdog was disarmed, the mutex freed, and a second turn queued behind it is drained and completes (not left queued forever). Guards against a naive epoch-gated fix that unconditionally skips release and bricks every ordinary turn while passing the two zombie-cycle ACs." }
+    notes: "Highest-leverage safety fix; should land first. Approach: capture the cycle's epoch at start; finally only disarms/clears if captured epoch still matches current epoch, mirroring the guard already applied to completed$/breaker. CANON lens (luria): zombie-mutex release violates 'exactly one honest outcome per turn'. Fully independent of all other tickets."
+  - id: TK-124
+    kind: ticket
+    parent: EP-24
+    status: todo
+    type: bug
+    title: "LLM chat timeout (both client.chat() call sites) + self-tick watchdog coverage — unwedge hung Ollama sockets"
+    priority: P1
+    engineering_level: production
+    estimate: M
+    complexity_budget: "M"
+    owner: "cortex"
+    conceptual_reviewer: "luria"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-003"
+    files_in_scope:
+    - "packages/decision-making/src/llm/ollama-llm.service.ts"
+    - "packages/decision-making/src/tick-engine/decision-tick-engine.service.ts"
+    acceptance_criteria:
+    - { given: "chatTimeoutMs is configured, and ollama-js v0.6.3's ChatRequest has NO per-call signal field — CONFIRMED: both client.chat() call sites use the non-streaming path (stream falsy), which threads no AbortController/signal; the streaming path is the only one that builds one, and Ollama.abort() only tracks ongoingStreamedRequests (instance-wide, wrong granularity for a concurrent queue-turn chat)", when: "the mechanism is implemented", then: "it is a custom fetch supplied via the Ollama client's Config.fetch hook (new Ollama({ host, fetch })) that wraps the global fetch: EACH outgoing HTTP request gets its OWN fresh AbortController + AbortSignal.timeout(this.timeoutMs) merged into that request's options — mirroring the DeepSeek path's own signal: AbortSignal.timeout(this.timeoutMs). This gives true per-request abort granularity without ever calling client.abort(). NOT satisfied by merely logging the timeout, nor by a bare Promise.race that leaves the underlying HTTP request/Ollama generation running unaborted server-side; IF a build-time spike shows the Config.fetch hook is impractical, a Promise.race fallback is acceptable ONLY paired with an explicit non-awaited .catch()/log on the abandoned promise (no unhandled rejection) AND the ticket must record the residual leaked-request risk. A test with a stalled client proves the chosen mechanism actually unwedges processInput (the promise settles) AND (for the Config.fetch route) that the underlying fetch was actually aborted (signal.aborted/AbortError observed), not just abandoned" }
+    - { given: "a hung Ollama socket during a self-tick (e.g. boredom-research inject) — CONFIRMED: decision-tick-engine.service.ts awaits this.callbacks.processInput(frame) directly inside the try, so if the chat() call inside processInput never settles, the finally block (which clears selfTickInFlight and calls cycleGuard.notifyExternalComplete()) never runs", when: "the chat timeout elapses (via the AC#1 mechanism)", then: "the aborted chat() call causes processInput() to settle (reject or resolve), so the self-tick's existing finally block runs and clears selfTickInFlight AND calls cycleGuard.notifyExternalComplete() — the fix must REACH the existing call, not add a duplicate or a separate flag-only reset (test: stalled client during a self-tick, assert notifyExternalComplete was invoked exactly once via the existing call and a subsequently queued user turn completes rather than queuing forever)" }
+    - { given: "steps-to-repro #1 and #2 from source.md (slow queue-turn Ollama; hung self-tick Ollama)", when: "replayed post-fix", then: "no turn queues forever and no cycle runs unwatchdogged" }
+    notes: "MECHANISM PIN: ollama-js v0.6.3 has no per-call AbortSignal for non-streaming chat(); the fix is a custom per-request fetch via Config.fetch, each HTTP request wrapped in its own fresh AbortController/AbortSignal.timeout — NOT client.abort() (instance-wide, cannot cancel non-streaming). Must call the EXISTING notifyExternalComplete() on timeout, not clear a local flag, or the queued-turns-forever bug re-appears. Second-highest leverage; depends on nothing."
+  - id: TK-125
+    kind: ticket
+    parent: EP-24
+    status: todo
+    type: bug
+    title: "LLM circuit breaker half-open auto-probe (auto-recovery after a transient outage)"
+    priority: P1
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "cortex"
+    conceptual_reviewer: "luria"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-003"
+    files_in_scope:
+    - "packages/decision-making/src/llm/ollama-llm.service.ts"
+    acceptance_criteria:
+    - { given: "the shared consecutiveFailures/available fields today cover 3 distinct call paths (DeepSeek-deep, DeepSeek-medium, local-Ollama)", when: "per-tier breaker state is introduced for the auto-probe", then: "the half-open auto-probe targets ONE named, concretely-specified tier — the primary local-Ollama chat tier (medium/quick, highest-frequency) — via its own tracked failure/available state; the DeepSeek tiers keep their existing (manual-reset-only) behavior in this ticket's scope, OR if the build extends per-tier tracking to all three, each tier's breaker state is independently probed and flipped: a successful probe recovering local-Ollama does not flip DeepSeek availability, and vice versa (unit test: trip the targeted tier only, assert only that tier's available flag flips after a successful probe)" }
+    - { given: "the breaker has tripped for the targeted tier (5 consecutive failures, available=false)", when: "a cooldown/probe interval elapses", then: "the breaker auto-attempts a single probe call against that tier and flips only that tier's availability back to true on success, mirroring CycleGuard's breaker pattern — no manual HTTP reset required (the manual-reset endpoint is apps/sylphie/src/controllers/llm.controller.ts heal(), calling resetCircuitBreaker()) (unit test: simulate recovery after cooldown, assert available flips without calling the reset endpoint)" }
+    - { given: "the breaker is open for the targeted tier and a probe attempt fails", when: "subsequent probe intervals elapse", then: "the breaker remains open for that tier and does not busy-loop probes faster than the defined cooldown/backoff (unit test: repeated probe failures, assert probe call count matches the expected schedule, not one-per-request)" }
+    non_goals:
+    - "a single shared consecutiveFailures/available flag across all three tiers — today one pair of instance fields is incremented/checked identically by the DeepSeek-deep, DeepSeek-medium, and local-Ollama paths, so a failure on ANY tier can trip availability for ALL. This ticket does not fix cross-tier failure attribution generally — it scopes the auto-probe to ONE named tier's breaker state."
+    notes: "Manual-reset endpoint is apps/sylphie/src/controllers/llm.controller.ts heal() -> resetCircuitBreaker(). CANON lens (luria): the permanent-SHRUG breaker is a silent-degradation honesty issue. Fully independent; any order."
+  - id: TK-126
+    kind: ticket
+    parent: EP-24
+    status: todo
+    type: bug
+    title: "Make the deliberation debate gate honest: thread scoreCandidates' selected-candidate score into confidence, normalized/clamped to [0,1] (DEC-32, Option A)"
+    priority: P2
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "cortex"
+    conceptual_reviewer: "luria"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-003"
+    files_in_scope:
+    - "packages/decision-making/src/deliberation/deliberation.service.ts"
+    - "packages/decision-making/src/deliberation/deliberation-helpers.ts"
+    acceptance_criteria:
+    - { given: "a candidate whose actual evaluated quality is high per scoreCandidates (e.g. GROUNDED grounding tag, score ~1.0+, selected as scored.bestIndex)", when: "deliberation computes confidence for the shouldDebate check using the pinned normalization", then: "confidence reflects scored.scores[selectedIndex].score via the defined [0,1] mapping rather than the fixed 0.5-or-0.6 placeholder, and clears DEBATE_THRESHOLD (0.7) for this candidate (unit test asserting confidence ≈0.929 for the GROUNDED/no-penalty reference case)" }
+    - { given: "such a high-confidence candidate (confidence >= 0.7) ALSO evaluated against the full compound-OR shouldDebate gate — confidence alone is insufficient; wkg.entities.length === 0 or anxiety > 0.5 each independently force debate regardless of confidence", when: "wkg.entities.length > 0 AND (driveSnapshot.pressureVector[Anxiety] ?? 0) <= 0.5", then: "shouldDebate === false and the turn completes with measurably fewer LLM calls than the always-debate path (unit test: confidence >= 0.7 AND wkg.entities.length > 0 AND anxiety <= 0.5 => shouldDebate === false, asserting 0 for/against debate LLM calls); AND a companion test proves debate still fires when EITHER wkg.entities.length === 0 OR anxiety > 0.5 even with the same high confidence — the OR-gate is not neutered" }
+    - { given: "a candidate genuinely uncertain under the pinned mapping (e.g. untagged, no grounding/entity bonus, no penalties — score ~0.5, confidence ≈0.690, or any weaker/penalized candidate)", when: "deliberation runs", then: "confidence stays below DEBATE_THRESHOLD (0.7) and debate still fires — regression test proving the gate was made honest via a real signal, not neutered into never-debate, using the same normalization mapping as the strong-candidate test (not a separately tuned threshold)" }
+    non_goals:
+    - "wholesale redesign of the confidence formula"
+    - "Option B (lower DEBATE_THRESHOLD instead of fixing the signal) — REJECTED by DEC-32 as Std-4 (Theater Prohibition) theater: a still-fabricated confidence made reachable by moving the bar is not honest, it just relocates the fabrication"
+    notes: "DEC-32 (accepted): design fork CLOSED to Option A (real confidence signal), Option B (threshold-lowering) FORBIDDEN as Std-4 theater. Replace `confidence = 0.5 + (selectedIndex === 0 ? 0.1 : 0)` with the real signal `scored.scores[selectedIndex].score` via a fixed [0,1] normalization: exported named constants SCORE_MIN=-0.95, SCORE_MAX=1.15; confidence = clamp((selectedScore + 0.95)/2.10, 0, 1). Bounds derived from BASE (pre-EMA) factor weights ONLY. Calibration: GROUNDED 1.0 -> ≈0.929 (clears 0.7); untagged 0.5 -> ≈0.690 (stays under). Confined to deliberation.service.ts + deliberation-helpers.ts. luria must confirm constants are visible/named/derived from base set. Independent of 003c."
+  - id: TK-127
+    kind: ticket
+    parent: EP-24
+    status: todo
+    type: bug
+    title: "applyRecallGroundingFromRetrieval: surface-check ahead of the GROUNDED early-return so provenance threads to the reinforcement gate (DEC-31 / AD-0048)"
+    priority: P2
+    engineering_level: production
+    estimate: S
+    complexity_budget: "S"
+    owner: "cortex"
+    conceptual_reviewer: "luria"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-003"
+    files_in_scope:
+    - "packages/decision-making/src/deliberation/recall-retrieval.ts"
+    - "packages/decision-making/src/deliberation/recall-retrieval.spec.ts"
+    - "packages/decision-making/src/deliberation/okg-recall-subsumption.spec.ts"
+    - "packages/decision-making/src/decision-making.service.ts (verification only — no functional change expected)"
+    acceptance_criteria:
+    - { given: "a recall retrieval whose fact value surfaces as a whole word in the response text, AND the current grounding is already 'GROUNDED' (set by an earlier signal before applyRecallGroundingFromRetrieval runs)", when: "applyRecallGroundingFromRetrieval runs", then: "it returns provenance === retrieval.factNodeId and groundedBy === retrieval.source (not null), and downstream the WS3-T2 reinforceFactNode gate fires for that node (unit test covering the already-GROUNDED + surfaced case at the function level, plus an integration-level assertion that reinforceFactNode is invoked)" }
+    - { given: "a retrieval is present but the fact value does NOT surface as a whole word in the response text", when: "applyRecallGroundingFromRetrieval runs", then: "grounding is unchanged, provenance is null, and reinforceFactNode does NOT fire — the honesty guard (C2) holds regardless of the prior grounding state (unit test: already-GROUNDED + not-surfaced case)" }
+    - { given: "the two existing characterization tests that currently assert the OLD (buggy) suppressed-provenance behavior — recall-retrieval.spec.ts ('already GROUNDED -> not double-labeled') and okg-recall-subsumption.spec.ts ('already GROUNDED (e.g. WKG-backed short-circuit) -> not double-labeled by recall')", when: "the fix lands", then: "both tests are updated, as part of this ticket, to assert the NEW correct behavior (provenance === factNodeId, groundedBy === retrieval.source, when the value surfaces) — not left asserting the old suppressed-provenance expectation" }
+    - { given: "a GROUNDED verdict resolved at write-time (decision-making.service.ts)", when: "responseGroundedBy === 'WKG' vs. responseGroundedBy is 'OKG' or ambiguous/null", then: "groundingPersonId is null (world-scoped) in the WKG case, and scoped to the current speaker in the OKG/ambiguous case — test covering both branches to confirm this write-time scoping is unaffected by the recall-retrieval.ts change" }
+    non_goals:
+    - "returning factNodeId unconditionally on any path — the valueSurfacesAsWord check remains the SOLE provenance gate (an unconditional return would be fabricated provenance, CANON Std-1/Std-4)"
+    - "reordering/merging logic in deliberation.service.ts — the fix is confined to the shared function in recall-retrieval.ts"
+    notes: "DEC-31 / AD-0048: fix CONFINED to the single shared function applyRecallGroundingFromRetrieval in recall-retrieval.ts (~6 lines: move the valueSurfacesAsWord surface-check AHEAD of the GROUNDED early-return). All four call sites (deliberation.service.ts x2, decision-making.service.ts x2) inherit the fix unchanged — none change. The decision-making.service.ts entry is VERIFICATION-ONLY: build-time verify note confirms both sites thread provenance with no drop; but build MUST re-confirm and reopen/re-scope if either site is found to drop provenance rather than patch inline. Ships independently of 003b's build order. luria: verify surface-check strictly ahead of early-return, not removed."
+  - id: EP-25
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "Drive subsystem resilience & isolation — make the named guarantees real"
+    intent: "The drive subsystem's reliability/integrity layer is a facade: a cluster of ~8 independent, source-verified defects where named guarantees (reconnect, RLS isolation, theater post-flight verification, event persistence, health, staleness recovery) are dead, unwired, or self-attesting. Make each named guarantee real (or honestly remove the dead theater), each with its own runnable check."
+    pipeline_item: "20260702-004"
+  - id: TK-128
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "Reconnect + bounded/drained send queue (wire attemptRecovery, wait-for-open, bounded TTL queue)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "Single fix surface: wire dead recovery.ts attemptRecovery(), wait-for-open event, bounded TTL send queue drained on reconnect"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope:
+    - "packages/drive-engine (recovery.ts, ws-channel)"
+    acceptance_criteria:
+    - { given: "a live drive-server connection", when: "the socket drops then the mock server re-accepts", then: "the client reconnects within the backoff window and resumes snapshots, the send queue stays bounded and is drained on reconnect, and success is declared only after the open event (integration test on ws-channel with a mock server that drops then re-accepts)" }
+    notes: "Shared reconnect pattern coordination (HIGH, cross-item): the 'wait-for-open + bounded TTL queue + guard against close/unmount' implementation is the same class as item 005 TK-FE-1/TK-FE-4 (now TK-141/TK-144) and the apps-sylphie drive-client — must be ONE shared implementation, not three divergent ones. Coordination note for execute, not a blocker."
+  - id: TK-129
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "Register RlsVerificationService + startup-abort on RLS misconfig"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "NestJS-side gap only: register RlsVerificationService (verify-rls.ts, implements OnModuleInit) in a module and abort startup on RLS misconfig. Reads DB; does NOT own the REVOKE/policy migration."
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope:
+    - "packages/drive-engine (verify-rls.ts)"
+    - "apps/drive-server"
+    acceptance_criteria:
+    - { given: "the runtime role sylphie_app with RLS on drive_rules misconfigured (grant present)", when: "the registered RlsVerificationService.OnModuleInit runs at startup", then: "it detects the misconfig and startup ABORTS (non-zero exit / thrown init error)" }
+    - { given: "RLS on drive_rules is correct", when: "startup runs", then: "startup proceeds (integration test toggling the grant)" }
+    non_goals:
+    - "Do NOT re-do the drive_rules REVOKE + RLS policy migration — that is TK-AUDIT-1 (item 20260625-002, DEC-28), already Jim-approved with its own migration.md. This ticket owns ONLY the NestJS-side registration + startup-abort gap TK-AUDIT-1 does not cover."
+    notes: "HIGH SEQUENCING DEPENDENCY on TK-AUDIT-1 (item 20260625-002, DEC-28), which is staged but NOT yet a contract node — so it is recorded in governance (co-dependency), not as a depends_on edge. If TK-DR-2 lands first, the verifier ABORTS drive-server startup on every boot until TK-AUDIT-1 applies the grant lockdown. MITIGATION (in AC scope): ship the verifier in WARN-ONLY mode until TK-AUDIT-1 is done, then flip to abort. DB GATE: this is the DB-touching ticket (reads Postgres RLS) — sentinel sign-off REQUIRED before build. migration.md delegates grant/policy to TK-AUDIT-1 and is confirmed sound."
+  - id: TK-130
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "detectTheater reads isolated currentDriveState for the verdict"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "Single fix: theater-prohibition.ts detectTheater must derive verdict from the unused currentDriveState: PressureVector param (engine's actual isolated state), not solely from caller-supplied theaterCheck.driveValueAtExpression"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope:
+    - "packages/drive-engine (theater-prohibition.ts)"
+    acceptance_criteria:
+    - { given: "a response whose reported driveValueAtExpression disagrees with the engine's actual isolated state", when: "detectTheater runs", then: "it reads currentDriveState and returns theatrical (unit test with mismatched inputs)" }
+    notes: "CANON-positive: strengthens theater-prohibition (judge stops trusting the defendant's testimony). No CANON conflict."
+  - id: TK-131
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "SESSION_START cannot overwrite drive state; preserve Timescale-restored checkpoint"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "Single fix: prevent SESSION_START from overwriting drive state; preserve the Timescale-restored checkpoint"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a Timescale-restored drive-state checkpoint", when: "a SESSION_START event is processed", then: "the restored checkpoint is preserved and SESSION_START does not overwrite the drive state (unit test)" }
+  - id: TK-132
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "Staleness anchor: a single >5s gap must not permanently lock the reader"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "Single fix: staleness anchor must advance after a >5s gap so the reader is not permanently locked"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a single >5 s snapshot gap", when: "the next valid snapshot arrives", then: "it is accepted and the reader resumes (unit test on the staleness anchor advancing)" }
+  - id: TK-133
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "Timescale event persistence: fix INSERT columns to match 002-events.sql OR remove the dead writer + emitter"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "code-only (existing schema, no migration). Fix-or-remove: fix timescale-writer.ts INSERT (4 column-name mismatches + omitted NOT NULL session_id) to match 002-events.sql, OR delete the dead writer + never-instantiated emitter"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope:
+    - "packages/drive-engine (timescale-writer.ts)"
+    - "infra (002-events.sql)"
+    acceptance_criteria:
+    - { given: "the event emitter is instantiated and emits one event", when: "the writer runs against a DB with the 002-events.sql schema", then: "the row is INSERTed with no column error" }
+    - { given: "removal chosen: the emitter/writer are deleted", when: "the build runs", then: "no dead reference remains (grep + typecheck)" }
+    non_goals:
+    - "No DB migration — the fix targets the existing 002-events.sql schema (code-only)."
+    notes: "MEDIUM fix-or-remove design call (red-team): both branches carry runnable ACs and both satisfy theater-prohibition. Not one of the Six Immutable Standards -> trio-level (skinner) call at BUILD time, not a planning-blocking hole."
+  - id: TK-134
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "HEALTH_STATUS: make real (engine emits, real lastPingAt/childMemoryBytes, enforce <10MB) OR remove the fake handler"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Fix-or-remove: make HEALTH_STATUS real — engine emits, real lastPingAt/childMemoryBytes, enforce <10 MB — OR remove the fake handler"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "the drive engine child process running", when: "HEALTH_STATUS is requested", then: "the engine emits a real status with true lastPingAt and childMemoryBytes and the <10 MB limit is enforced (test)" }
+    - { given: "removal chosen: the fake HEALTH_STATUS handler is deleted", when: "the build runs", then: "no fabricated health handler remains (grep + typecheck)" }
+    notes: "MEDIUM fix-or-remove design call (red-team): both branches carry runnable ACs and both satisfy theater-prohibition. Not one of the Six Immutable Standards -> trio-level (skinner) call at BUILD time, not a planning-blocking hole."
+  - id: TK-135
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "tick-drift accumulator math"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single mechanical correction to tick-drift accumulator math"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "the drive tick loop running under clock drift", when: "ticks accumulate", then: "the expected tick interval matches the actual tick interval (unit test: expected vs actual tick interval under drift)" }
+    notes: "Split from TK-DR-8 at refine (TK-DR-8 REPLACED by 8a-8f). Bounded, mechanical."
+  - id: TK-136
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "NaN guard on partial pressure vectors"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single mechanical NaN guard on partial pressure vectors"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a partial pressure vector", when: "it is processed and passed to consumers", then: "no NaN propagates to consumers (unit test)" }
+    notes: "Split from TK-DR-8 at refine. Bounded, mechanical."
+  - id: TK-137
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "fork checkpoint/exit race"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single fix to the fork checkpoint/exit race"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a forked child process being checkpointed", when: "the child exits during checkpoint", then: "the last snapshot is not corrupted or lost (test)" }
+    notes: "Split from TK-DR-8 at refine. Bounded, mechanical."
+  - id: TK-138
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "POSTGRES_DB default mismatch"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single fix to the POSTGRES_DB default value"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "no explicit POSTGRES_DB override", when: "the default is resolved and a connection is attempted", then: "the default resolves to the real DB name and the connection succeeds (test)" }
+    notes: "Split from TK-DR-8 at refine. Bounded, mechanical. (Config default mismatch — 'no-DB' per refine; no schema change.)"
+  - id: TK-139
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "reloadRules swallowed errors surface"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single fix so reloadRules errors are surfaced instead of swallowed"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a forced reloadRules failure", when: "reloadRules runs", then: "the failure throws/logs and is not silently swallowed (test)" }
+    notes: "Split from TK-DR-8 at refine. Bounded, mechanical."
+  - id: TK-140
+    kind: ticket
+    parent: EP-25
+    status: todo
+    type: bug
+    title: "cross-modulation x3 coefficient correctness vs CANON guardian-asymmetry x2/x3"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "no-DB, single correction to cross-modulation x3 coefficients to match ratified CANON guardian asymmetry (x2/x3)"
+    owner: "drive"
+    conceptual_reviewer: "skinner"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-004"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "the cross-modulation coefficients", when: "they are applied", then: "the coefficient matches the ratified CANON guardian-asymmetry x2/x3 (test)" }
+    notes: "Split from TK-DR-8 at refine. Touches CANON guardian-asymmetry (x2/x3) — correctness check against the ratified asymmetry. Bounded, mechanical."
+  - id: EP-26
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "Frontend reconnect correctness, secret hygiene, and no-void affordances"
+    intent: "Fix a systemic unmount-reconnect zombie-socket defect across the frontend WS hooks, get the Anthropic API key out of the browser bundle, and eliminate dead/void UI affordances plus assorted shared-package correctness nits."
+    pipeline_item: "20260702-005"
+  - id: TK-141
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Unmount-reconnect zombie sockets — one shared teardown util across the WS hooks"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "Build one shared teardown util (add unmounted/closedByUnmount flag, null wsRef, short-circuit scheduleReconnect); apply to useWebSocket, useSupervisorWebSocket, useWebRTC (usePerception handled by TK-FE-4)"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "frontend (useWebSocket.ts, useSupervisorWebSocket.ts, useWebRTC.ts)"
+    acceptance_criteria:
+    - { given: "a mounted WS panel with a mock socket", when: "its component unmounts and the async onclose fires", then: "no orphan socket remains and onclose does NOT call scheduleReconnect (unit test asserting no reconnect after unmount); returning to the tab shows single delivery and correct turn counts" }
+    notes: "Seam with TK-FE-4 (TK-144): TK-FE-1 builds the shared teardown util and applies it to useWebSocket/useSupervisorWebSocket/useWebRTC; TK-FE-4 applies the same util to usePerception and resumes detections. Shared reconnect pattern is the SAME CLASS as item 20260702-004 TK-DR-1 (TK-128, drive-server) and the apps-sylphie drive-client — coordinate one shared 'wait-for-open + bounded queue + guard-against-unmount/close -> short-circuit reconnect' implementation across all three."
+  - id: TK-142
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Anthropic API key out of the browser bundle — backend proxy for FE-agent calls"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "Proxy FE-agent calls through a backend endpoint; key never inlined into the built bundle (currently feAgent.ts reads import.meta.env.VITE_ANTHROPIC_API_KEY with dangerouslyAllowBrowser:true)"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "frontend (feAgent.ts)"
+    acceptance_criteria:
+    - { given: "a production build of the frontend", when: "the bundle is searched for the Anthropic key prefix", then: "it is absent, and the FE agent's requests go to a backend proxy route (build-grep test + proxy integration test)" }
+    notes: "Security-sensitive P0 — Anthropic key inlined into the browser bundle on a public login/register page; treat as top-priority split even though the epic's nominal severity is P1. Open at build (confirm with forge/ashby): which backend service hosts the proxy route, and does moving the agent server-side preserve streaming/tool-use parity. Bounded standard pattern, not a replan-forcing hole."
+  - id: TK-143
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Word-rating reaches a real backend handler — or the affordance is removed"
+    priority: P1
+    engineering_level: mvp
+    complexity_budget: "Proper {event,data} envelope + gateway handler for word-rating, OR remove the affordance"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a submitted word rating", when: "it is sent", then: "a backend gateway handler receives it (gateway log / unit test) — or, if removal chosen: the drawer affordance is gone (component test / grep)" }
+    non_goals:
+    - "Removing a guardian-facing affordance is a UX/design call for ashby at the trio, not a pure code fix — flag the fix-or-remove branch to ashby"
+    notes: "Fix-or-remove decision — flag for ashby (removing a guardian-facing affordance is a UX/design call). Both branches have runnable ACs. Red-team: MEDIUM, not a planning-blocking hole."
+  - id: TK-144
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Perception WS reconnect + resume detections (applies TK-FE-1's shared util)"
+    priority: P1
+    engineering_level: production
+    complexity_budget: "Apply TK-FE-1's shared teardown/reconnect util to usePerception; usePerception must reconnect AND resume detections on reconnect"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    depends_on: [TK-141]
+    files_in_scope:
+    - "frontend (usePerception.ts)"
+    acceptance_criteria:
+    - { given: "a backend restart with the perception panel open", when: "the socket drops", then: "perception reconnects and detections resume (integration test)" }
+    notes: "Folds into TK-FE-1's shared pattern: TK-FE-4 = apply the shared util to usePerception and resume detections on reconnect (TK-FE-1 covers useWebSocket/useSupervisorWebSocket/useWebRTC). Same reconnect class as item 20260702-004 TK-DR-1 (TK-128) and the apps-sylphie drive-client — coordinate one shared implementation."
+  - id: TK-145
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Telemetry contract drift -> dead panels: wire dead handlers or remove; fix drive-publisher action:null and ms-vs-seconds timestamp mismatch"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Wire the dead handlers to real events OR remove them; fix drive-publisher action:null; fix the ms-vs-seconds timestamp mismatch"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "the dead telemetry panels / MetricsPanel handlers", when: "the fix-or-remove decision is applied", then: "the dead handlers are wired to real events or removed, drive-publisher no longer emits action:null, and the ms-vs-seconds timestamp mismatch is corrected (so the UI stops implying data exists)" }
+    non_goals:
+    - "Building *real* telemetry for the dead MetricsPanel branches — that is a feature. Rule is wire-to-existing-events OR remove, so the UI stops implying data exists. Removing a 'data exists' implication is an ashby UX call, not a pure code fix"
+    notes: "Fix-or-remove decision — flag for ashby. Both branches have runnable ACs. Red-team: MEDIUM. Reconciliation: the drive-publisher action:null BACKEND emission is owned by item 20260702-001 TK-BEH-5c (TK-117); THIS ticket covers the FRONTEND handling/display. Cross-reference so a future build doesn't land two PRs on the same backend line."
+  - id: TK-146
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "WebRTC RTCPeerConnection leak + staleness guard"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Fix RTCPeerConnection leak on unmount/close + add stale-track staleness guard"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "an active WebRTC peer connection in a mounted component", when: "the component unmounts or the connection closes", then: "the RTCPeerConnection is closed (no leak) and stale tracks are guarded" }
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6). Split revealed no design hole."
+  - id: TK-147
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Transient /api/auth/me failure must not delete the token"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Only 401 clears the token; transient 5xx/timeout on me leaves it intact"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a stored auth token and a call to /api/auth/me", when: "the call returns a transient 5xx or times out", then: "the token is left intact; only a 401 clears it" }
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6)."
+  - id: TK-148
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "Full-store Zustand re-renders -> selector-scoped subscriptions"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Replace full-store subscriptions with selector-scoped subscriptions"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope: []
+    acceptance_criteria:
+    - { given: "a panel subscribed to the Zustand store", when: "an unrelated store write occurs", then: "the panel does not re-render" }
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6)."
+  - id: TK-149
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "usePressureStatus competing writers reconciled to a single source"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "Reconcile usePressureStatus competing writers to a single source of truth"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "frontend (usePressureStatus)"
+    acceptance_criteria:
+    - { given: "usePressureStatus with multiple writers", when: "pressure status updates occur", then: "there is a single source (no write-thrash / last-writer-wins race)" }
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6)."
+  - id: TK-150
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "shared: Prisma DSN URL-escape + drop env! non-null assertions"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "URL-escape the Prisma DSN; replace env! non-null assertions with fail-loud checks"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "packages/shared"
+    acceptance_criteria:
+    - { given: "a DSN with a special-character password and a missing env var", when: "the client connects / env is read", then: "the special-char password DSN connects, and a missing env fails loud (not !-masked)" }
+    non_goals:
+    - "No schema/migration surface — client-code only (DSN escaping); sentinel to confirm no schema surface before build"
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6). Owner forge (packages/shared)."
+  - id: TK-151
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "shared: withTransaction ROLLBACK must propagate the original error"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "On ROLLBACK, propagate the ORIGINAL error, not the rollback error"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "packages/shared"
+    acceptance_criteria:
+    - { given: "a transaction that fails and triggers ROLLBACK", when: "the rollback itself also errors", then: "withTransaction propagates the original error, not the rollback error (unit test on withTransaction)" }
+    non_goals:
+    - "No schema/migration surface — client-code only (ROLLBACK error propagation); sentinel to confirm no schema surface before build"
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6). Owner forge (packages/shared)."
+  - id: TK-152
+    kind: ticket
+    parent: EP-26
+    status: todo
+    type: bug
+    title: "useAutoScroll honors the behavior argument"
+    priority: P2
+    engineering_level: mvp
+    complexity_budget: "useAutoScroll must honor the behavior argument instead of ignoring it"
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260702-005"
+    files_in_scope:
+    - "frontend (useAutoScroll)"
+    acceptance_criteria:
+    - { given: "useAutoScroll called with a behavior argument", when: "behavior is 'auto' vs 'smooth'", then: "the difference is observed / honored" }
+    notes: "Atomicity split of TK-FE-6 (do not emit TK-FE-6)."
+  - id: EP-27
+    kind: epic
+    parent: FEAT-3
+    status: in_progress
+    priority: P1
+    title: "Codebase audit remediation (2026-06-21) — CANON Std-6 drive_rules lockdown + audit findings"
+    intent: "The 2026-06-21 whole-codebase audit (9 findings; docs/audits/dead-code.md, duplication.md, coherence.md) consolidated into remediation. This epic carries the build-ready P0: drive_rules has no DB-level write-protection, so the runtime sylphie_app role can rewrite its own evaluation rules (CANON Std-6 gap). Design-needing findings are filed as architect open_questions Q-25..Q-29 (per DEC-28); mechanical cleanup (#4 IpcChannelService, #7 WebRTC no-op, #9 dead-exports/no-console) stays staged in pipeline item 20260625-002 pending Jim's approval gate."
+    pipeline_item: "20260625-002"
+  - id: TK-153
+    kind: ticket
+    parent: EP-27
+    status: canceled
+    type: bug
+    title: "drive_rules write-protection — REVOKE INSERT/UPDATE/DELETE from sylphie_app + RLS; guardian writes via a privileged role (CANON Std-6)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "One incremental migration infra/migrations/NNN-drive-rules-lockdown.ts (dry-run default, --confirm to apply): REVOKE INSERT/UPDATE/DELETE on drive_rules (+ proposed_drive_rules write path) from sylphie_app, enable RLS as defense-in-depth, route guardian-approved writes through a separate privileged role/connection the runtime cognition path does not hold, wire existing verify-rls.ts + guardian-rules.service.ts to the boundary. Additive/privileges-only — NO edit to 001-runtime-user.sql, NO schema/data change. ~<=250 LOC."
+    owner: "sentinel"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260625-002"
+    files_in_scope:
+    - "infra/migrations/NNN-drive-rules-lockdown.ts (NEW — incremental, dry-run default)"
+    - "infra/postgres/init/001-runtime-user.sql (reference only — NOT edited)"
+    - "guardian-rules.service.ts (route guardian writes via the privileged role)"
+    - "verify-rls.ts (wire to the new role boundary)"
+    - "pipeline/planning/20260625-002-codebase-audit-findings-remediation-roadmap/migration.md"
+    acceptance_criteria:
+    - { given: "the runtime role sylphie_app after the forward migration is applied", when: "it issues a direct UPDATE (or INSERT/DELETE) on drive_rules", then: "the database denies it (permission denied / RLS) — the runtime cannot rewrite the rules it is judged by (CANON Std-6)" }
+    - { given: "the guardian-approved privileged role/connection after the forward migration", when: "it writes or updates a drive rule via the guardian path", then: "the write succeeds" }
+    - { given: "drive_rules seeded with representative rows before the migration", when: "the forward migration is applied", then: "row count and contents are unchanged (additive privileges/RLS only, no data loss)" }
+    - { given: "the applied migration", when: "the REVERSE step is run", then: "sylphie_app INSERT/UPDATE/DELETE grants on drive_rules are restored and RLS disabled (reversibility proven)" }
+    non_goals:
+    - "No edit to infra/postgres/init/001-runtime-user.sql — incremental migration path only"
+    - "No schema or data change — privileges + RLS only"
+    - "Does not redesign the guardian approval flow beyond routing its writes through the privileged role"
+    notes: "SUPERSEDED by TK-154 (sentinel convergent migration) + TK-155 (forge guardian pool) per DEC-34 / architect AD-0051+AD-0052. Refine red-team + the architect's live-DB ruling showed this could not build as one ~250 LOC sentinel migration: the assumed privileged role/pool did not exist and the seam (in-process vs isolated) needed a ruling. Split into TK-154+TK-155; DEP-3 (TK-129 sequencing) now points at TK-154 (the migration half)."
+  - id: TK-154
+    kind: ticket
+    parent: EP-27
+    status: todo
+    type: bug
+    title: "drive_rules lockdown — convergent migration: REVOKE writes from sylphie_app + RLS + guardian_admin/drive_engine grants (CANON Std-6)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "One convergent, idempotent migration infra/migrations/NNN-drive-rules-lockdown.ts (dry-run default, --confirm to apply) + a new continuity/reverse smoke. Convergent = reaches the same end-state from any start: CREATE TABLE IF NOT EXISTS drive_rules + proposed_drive_rules matching the LIVE schema (first in-repo codification); idempotent ALTER TABLE ... OWNER TO sylphie_admin; CREATE ROLE IF NOT EXISTS guardian_admin + drive_engine (LOGIN, env passwords); per-table REVOKE ALL then GRANT the DEC-34 matrix; ENABLE + FORCE ROW LEVEL SECURITY + per-role policies. REVOKE is the PRIMARY write-denial (raises 'permission denied'); RLS is defense-in-depth. Does NOT touch 001 global default privileges; NOT an edit to 001-runtime-user.sql. Larger than the retired TK-153 ~250 LOC estimate — the split absorbs it."
+    owner: "sentinel"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260625-002"
+    files_in_scope:
+    - "infra/migrations/NNN-drive-rules-lockdown.ts (NEW — convergent, dry-run default)"
+    - "infra/migrations/<continuity-reverse-smoke> (NEW)"
+    - "infra/postgres/init/001-runtime-user.sql (reference only — NOT edited)"
+    - "pipeline/planning/20260625-002-codebase-audit-findings-remediation-roadmap/migration.md"
+    depends_on: []
+    acceptance_criteria:
+    - { given: "the runtime role sylphie_app after the forward migration is applied", when: "it issues a direct UPDATE/INSERT/DELETE on drive_rules", then: "the database denies it with 'permission denied' (REVOKE-primary) — sylphie_app retains SELECT only (CANON Std-6)" }
+    - { given: "sylphie_app after the migration", when: "it reads drive_rules (SELECT) and inserts a pending proposal into proposed_drive_rules", then: "both succeed (verify-rls checks 3 + 4 pass); UPDATE/DELETE on proposed_drive_rules is denied" }
+    - { given: "drive_rules + proposed_drive_rules seeded with representative rows before the migration", when: "the forward migration is applied (from a state where the tables already exist, and separately from an empty state)", then: "existing row count + contents are unchanged AND a fresh DB converges to the same locked-down end-state (idempotent/convergent)" }
+    - { given: "the applied migration", when: "the REVERSE step is run", then: "sylphie_app INSERT/UPDATE/DELETE grants are restored and RLS disabled — reversibility proven by the smoke" }
+    non_goals:
+    - "No edit to infra/postgres/init/001-runtime-user.sql, and no change to its global ALTER DEFAULT PRIVILEGES (blast radius: other tables)"
+    - "Does NOT wire the dormant RlsVerificationService — that is TK-129 / DEP-3 scope"
+    - "No guardian-side application wiring — that is TK-155"
+    notes: "Convergent migration per DEC-34 / architect AD-0052 (live-DB-grounded: tables owned by sylphie_admin, guardian_admin role already exists). Grant matrix — sylphie_app: SELECT drive_rules + SELECT/INSERT proposed_drive_rules; drive_engine: SELECT both; guardian_admin: full DML both. Proposer INSERT policy WITH CHECK(status='pending'). Ship in the same release window as TK-155. Supersedes the migration half of retired TK-153."
+  - id: TK-155
+    kind: ticket
+    parent: EP-27
+    status: todo
+    type: bug
+    title: "guardian privileged pool — POSTGRES_GUARDIAN_POOL wiring + GuardianRulesService rewire so guardian approve/reject writes drive_rules (fixes a live break)"
+    priority: P1
+    severity: "P0-blocker"
+    engineering_level: production
+    complexity_budget: "New POSTGRES_GUARDIAN_POOL token in @sylphie/shared (NOT POSTGRES_ADMIN_POOL/superuser); provider in apps/sylphie/src/app.module.ts (creds from POSTGRES_GUARDIAN_USER/PASSWORD env, NO hardcoded default, fail-closed); rewire GuardianRulesService.approveRule/rejectRule to use the guardian pool while READS stay on POSTGRES_RUNTIME_POOL; .env.example plumbing. In-process Option-A-hardened seam per DEC-34. ~<=200 LOC."
+    owner: "forge"
+    conceptual_reviewer: "ashby"
+    code_reviewer: "code-reviewer"
+    pipeline_item: "20260625-002"
+    files_in_scope:
+    - "packages/shared/src/storage/database.tokens.ts (ADD POSTGRES_GUARDIAN_POOL)"
+    - "apps/sylphie/src/app.module.ts (provider for the guardian pool)"
+    - "apps/sylphie/src/services/guardian-rules.service.ts (rewire approveRule/rejectRule to the guardian pool; reads stay on runtime pool)"
+    - ".env.example (POSTGRES_GUARDIAN_USER / POSTGRES_GUARDIAN_PASSWORD)"
+    depends_on: [TK-154]
+    acceptance_criteria:
+    - { given: "the guardian-approved privileged pool (guardian_admin) after TK-154 is applied and POSTGRES_GUARDIAN_POOL is wired", when: "GuardianRulesService.approveRule writes/updates a drive rule via the guardian path (guardian-JWT-gated endpoint)", then: "the write succeeds (drive_rules INSERT + proposed_drive_rules status UPDATE), fixing the currently-broken approve/reject path" }
+    - { given: "the guardian credentials env vars are unset/misconfigured", when: "the service starts and a guardian write is attempted", then: "the guardian pool fails CLOSED with a clear 'guardian credentials not configured' error, while runtime READS keep working (no hardcoded fallback)" }
+    non_goals:
+    - "No separate guardian-approval process — in-process pool per DEC-34 Option A hardened"
+    - "Does not change the guardian JWT/authz surface (rules.controller.ts) beyond routing DB writes to the privileged pool"
+    - "No DB grant/role/migration work — that is TK-154 (this ticket depends_on it)"
+    notes: "Fixes a LIVE pre-existing break (architect-found): today approveRule (runtime pool) RLS-violates and rejectRule silently updates 0 rows. Reads stay on POSTGRES_RUNTIME_POOL; only the two guardian write transactions move. depends_on TK-154 (grants/role must exist first); ship same release window. Guardian pool creds env-only; provisioning guardian_admin/drive_engine passwords as Railway/env secrets is Jim's ops step before prod --confirm."
 governance:
   - { id: DEC-1, type: decision, status: accepted, scope: TK-8,
       title: "IPC schema .passthrough() -> .strict() (TIGHTEN)",
@@ -6253,7 +7374,48 @@ governance:
       decision: "Move 20260625-002 replan -> planning so it re-enters fresh. On re-plan: stage TK-AUDIT-1 (P0, drive_rules REVOKE+RLS, owner sentinel/architect) as a build-ready ticket under a fresh EP-AUDIT epic; file the design-needing findings (#2/#3 god-objects, #6 EWC-confirm, #5 discarded-deliberation, #8 dup canonical-homes) as governance open_questions ROUTED TO architect — NOT pre-decided here; stage the mechanical cleanup (#4 dead IpcChannelService, #7 WebRTC no-op, #9 dead-exports/no-console) as normal tickets. The replan cog makes ZERO design calls (no god-object seams, no EWC outcome, no canonical-home picks) — those are architect's during /plan-design. Per contract_write=staged, NO ticket is written into contract.yaml by this move; tickets stage in the item's plan.md and the contract-write happens only at Jim's explicit staged-write approval gate.",
       consequences: "20260625-002 leaves replan -> planning at attempts=1; the live CANON Std-6 P0 stops rotting in replan and advances through the normal flow to Jim's approval gate instead of being invisible in replan. No EP-AUDIT epic or tickets are committed autonomously (staged). EP-AUDIT does not yet exist in the contract, so no duplicate-epic risk. If re-plan finds only architect-decidable design with no build-ready remainder, that routes back per normal planning, never a silent guess. 20260625-001 (verbose.log A-vs-B layout) stays PARKED — it needs Jim's explicit choice and he has not answered.",
       canon: "no tension — routing/record-keeping only; the staged contract-write boundary is untouched and no design decision is pre-empted. Surfaces the sharpest CANON gap found (Std-6 drive_rules self-write) toward remediation." }
+  - { id: DEC-29, type: decision, status: accepted, scope: project,
+      title: "Intake item 20260702-001 (backend audit — unauthenticated destructive endpoints + boot/WS/STT) — replan resolution: adopt the red-team's prescribed approach, re-enter planning",
+      context: "Replan item 20260702-001 was parked on two plan-reviewer CRITICALs against staged TK-BEH-1..4 (redteam.md). C1: TK-BEH-1 route enumeration under-scoped ~3x — metrics.controller.ts has 15 @Post routes; the plan hand-listed ~5 and MISSED destructive anonymous routes incl all-persons-facts-reset (:350, TRUNCATEs all persons), episodic-reset (:380), perception-reset (:418), scene-predictor-reset (:449), visual-presence-habituation-reset (:524), prompt-capture-reset (:577), latent-seed-overgeneral (:267) — a hand-list AC passes while worse endpoints stay open. C2: TK-BEH-1's AC mandates an e2e test but no e2e/HTTP (supertest/app-bootstrap) harness exists — hidden scope, AC not runnable as staged. Both are EXECUTION-approach corrections the red-team itself prescribes; neither is a design/CANON fork nor a Jim call.",
+      decision: "Adopt the red-team's prescription (no new design). (1) TK-BEH-1 gates the state-mutating route CLASS BY RULE, not a hand-list: apply the auth/localhost-env guard to all mutating controller routes, and the AC's e2e test ENUMERATES routes dynamically from the Nest router and asserts every non-GET/mutating + *-reset route is guarded (fails if any anonymous destructive route is reachable). (2) Add explicit e2e/supertest harness scope: bootstrap AppModule + supertest, declared in files_in_scope; restate TK-BEH-1's AC as supertest against the bootstrapped app. (3) Fold the HIGH findings into re-plan: extract the TK-107 Promise.race deadline into a shared helper (wkg-bootstrap.service.ts:59-81 / wkg-query.service.ts:151-182 duplicate it) rather than copy; widen TK-BEH-2 to also deadline person-model onModuleInit's unbounded SET p.label backfill (~:117-120) and face-snapshot ensureSchema()/hydrate(); correct migration.md (it wrongly claims 'nothing writes any store' — person-model boot DOES mutate); pin the TK-BEH-4 client-notification event contract jointly with frontend item 20260702-005. The replan cog makes NO design calls — it commits the corrected build APPROACH the red-team specified. Per contract_write=staged, NO ticket is written into contract.yaml by this move; tickets re-stage in the item's plan.md at Jim's approval gate.",
+      consequences: "20260702-001 leaves replan -> planning at attempts=1; re-plan rewrites TK-BEH-1 as a rule-based gate with a dynamic-route-discovery e2e AC + explicit supertest harness scope, widens TK-BEH-2, fixes migration.md, and cross-links TK-BEH-4 to 20260702-005. No silent guess — the approach is the red-team's own prescription.",
+      canon: "supports CANON — closes an unauthenticated-boundary gap on state-mutating endpoints (anonymous TRUNCATE/reset routes); gating by rule prevents a hand-list from re-opening the hole. No standard in tension; staged contract-write boundary untouched." }
+  - { id: DEC-30, type: decision, status: accepted, scope: project, decision_ref: "AD-0045/AD-0046/AD-0047",
+      title: "Intake item 20260702-002 (tensor cognition sidecar dead) — replan resolution: architect ruled all 3 forks (AD-0045/46/47); split into TK-A/B/C, re-enter planning",
+      context: "Item 20260702-002 parked on plan-reviewer CRITICALs: (C1) Fix#2 'fold consolidation into advance_mode()' is a layer violation — bootstrap.py:249 advance_mode() has no trainer/ewc access; consolidation lives in main.py:583-608. (C2) Fix#1 drive_history flat-vs-nested had two opposite-blast-radius fixes, unjustified. Plus a Std-4 theater contradiction: main.py:590-596 (TK-37/39) claim a 'live active path, real empirical Fisher' the audit says is dead. architect verified against code and ruled (docs/decisions/architect-log.yaml AD-0045..0047).",
+      decision: "AD-0045 (consolidation boundary): extract main.py:569-608 into a module-level _consolidate_phase_boundary(trainer, buffer); call it from the train handler right after tracker.advance_mode() returns True (main.py:421, the production trigger) AND from /cognition/phase-transition (kept as manual override, same helper). Do NOT inject trainer into BootstrapTracker. Helper flow: get_weights -> stratified buffer.snapshot_calibration(1000) -> compute_fisher (guarded) -> set_reference UNCONDITIONALLY. AD-0046 (blast radius): emit nested number[][] — drop .flat() in tensor-inference-adapter.service.ts:189-198 and change gateway type cognition-gateway.service.ts:166-167 readonly number[] -> nested (compiler-forced, kills the half-fix risk); do NOT relax pydantic (schemas.py:48 stays) — nested is the declared self-describing contract item 20260702-017 (versioned input manifest) needs. AD-0047 (theater, Std-4 CONFIRMED): /cognition/phase-transition is production-dead (zero runtime callers; penalty_gradients() returns zeros forever, replay.py:392-393) yet main.py:589-595 + ROADMAP.md:83 claim it live = false system claim. Reconcile-then-rewrite (NOT delete): wire the trigger per AD-0045, rewrite the misleading comments + truth-edit ROADMAP.md:83, swap to compute_fisher-before-set_reference (the 'Online EWC design' excuse at :584 is wrong), and HARD-DISABLE use_learned (convergence.py:155-160 lucky-proxy on an untrained head) with a recorded reason until a real convergence-head trainer exists.",
+      consequences: "Re-plan splits 002 into three staged tickets (red-team split upheld): TK-A (P0, forge) adapter nested emit + gateway type + TS<->pydantic contract test + first-cycle-latency-vs-50ms-AbortSignal smoke; TK-B (meridian) fisher/reference order swap + comment rewrite + wire check_demotions() beside check_graduations() (main.py:408, AC states the >=20-sample precondition); TK-C (meridian) the AD-0045 wiring + 'consolidation fires exactly once incl ->full, penalty_gradients non-zero after first transition' integration test + verify EWC calls take trainer._weight_lock + use_learned pin-off + ROADMAP truth-edit. contract_write=staged: NO ticket written to contract.yaml by this move. Item 20260702-002 leaves replan -> planning.",
+      canon: "Std-4 theater violation RESOLVED by AD-0047 (reconcile-then-rewrite; no false 'live' claim survives). use_learned pin-off is an honest statement of current reality (learned-convergence mode shelved until a convergence-head trainer is planned), not a product change. No standing tension." }
+  - { id: DEC-31, type: decision, status: accepted, scope: project, decision_ref: "AD-0048",
+      title: "Intake item 20260702-003 ticket 003c (grounding provenance) — replan resolution: architect ruled the CANON fork (AD-0048); fix in the shared function, re-enter planning",
+      context: "003c parked on plan-reviewer CRITICALs: (C1) the AC 'return factNodeId even when already GROUNDED' would fabricate provenance for facts never surfaced — it sits beside valueSurfacesAsWord (deliberation/recall-retrieval.ts:525) which enforces CANON Std-1 provenance / the honesty guard. (C2) wrong file path + wrong root cause. architect verified and ruled (AD-0048). 003a concurrency-hardening + 003b debate-gate are execution/atomicity issues handled in re-plan, not here.",
+      decision: "AD-0048 (Std-1+Std-4): the surface check STAYS the sole provenance gate — the unconditional-return AC is FORBIDDEN. Honest fix inside applyRecallGroundingFromRetrieval (deliberation/recall-retrieval.ts:504-534): move the valueSurfacesAsWord check (:525) AHEAD of the GROUNDED early-return (:517-519) — retrieval+surfaced => GROUNDED + retrieval.factNodeId + retrieval.source regardless of who set the label first; retrieval+not-surfaced => keep grounding, provenance null; null retrieval => passthrough. This restores the function's own documented contract at :497-499 (node id returned WHENEVER the value surfaced) which the code currently violates. Root cause CONFIRMED with corrections: upstream short-circuit is real (deliberation.service.ts:425-430 sets GROUNDED before the retrieval applies at :446 -> :517 early-return -> null provenance -> reinforce gate never fires), BUT the suppression exists at ALL FOUR call sites (deliberation.service.ts:446/:813, decision-making.service.ts:1060/:1151), so the true fix locus is the SHARED FUNCTION (~6 lines, all sites), NOT 'order/merge at deliberation.service.ts:420-450'. discriminateGroundedBy is production-dead -> routed to the occam docket, out of 003c scope.",
+      consequences: "Re-plan rewrites 003c as a clean S slice in deliberation/recall-retrieval.ts (+specs), owner cortex. Testable ACs: (1) surfaced + already-GROUNDED -> provenance===factNodeId, groundedBy===retrieval.source, WS3-T2 reinforceFactNode fires; (2) retrieval present but not surfaced -> provenance null, reinforce does NOT fire; (3) the two characterization tests that asserted the OLD bug (recall-retrieval.spec.ts:143, okg-recall-subsumption.spec.ts:187) are deliberately updated as part of the AC; (4) write-time groundedBy scoping — WKG recall -> groundingPersonId null (world), OKG recall -> speaker-scoped (decision-making.service.ts:1633, WS4-T5 invariant). Sequence 003c AFTER 003b (both touch deliberation.service.ts regions). NO ticket written to contract.yaml by this move. Item 20260702-003 leaves replan -> planning.",
+      canon: "Std-1/Std-4 honesty-mechanics call RESOLVED by AD-0048 — provenance stays gated on real surfacing; no fabricated provenance. No standing tension." }
+  - { id: DEC-32, type: decision, status: accepted, scope: project,
+      title: "Intake item 20260702-003 ticket 003b (honest debate gate) — resolve fork to Option A (real confidence signal); reject Option B (threshold-lowering = Std-4 theater)",
+      context: "refine red-team (plan-reviewer) on staged 003b confirmed the debate skip-branch is dead code: confidence = 0.5 + (selectedIndex===0?0.1:0) maxes at 0.6 (deliberation.service.ts:641) vs DEBATE_THRESHOLD 0.7, so shouldDebate (deliberation.service.ts:648-650) can never be false via the confidence term. The fork was (A) thread a real confidence signal vs (B) lower the threshold. Finding: a real signal ALREADY exists one step upstream — scoreCandidates (deliberation-helpers.ts:230+) returns scored.scores[selectedIndex].score (grounded +1.0, assisted +0.5, entity +0.15/ea, penalties negative). Both cortex (owner) and the red-team independently recommend Option A; the red-team adds the CANON argument that Option B makes the branch reachable on a still-fabricated confidence value = Std-4 theater.",
+      decision: "Option A: thread the scoreCandidates selected-candidate score into the debate-gate confidence, NORMALIZED/clamped to [0,1] with a defined factor set (scoreCandidates output is additive/unnormalized and its EMA weights are mutable via nudgeEmaScoringWeights, so a fixed [0,1] clamp + explicit factor set is required to keep the 0.7 threshold stable — the exact mapping is part of 003b's build decision and must be recorded in the ticket). REJECT Option B (threshold-lowering) as Std-4 theater. AC#2 MUST pin the full compound-OR gate: given confidence >= 0.7 AND wkg.entities.length > 0 AND anxiety <= 0.5 => shouldDebate === false (a strong candidate alone is insufficient because the gate ORs in wkg-empty and anxiety>0.5); and MUST assert a weak candidate still debates under the same mapping.",
+      consequences: "003b is buildable within its S budget under Option A (the signal need not be invented); the design fork is closed. AC#2 rewritten to be satisfiable + falsifiable. cortex applies the AC tightening in the staged plan.md; owner cortex / conceptual luria / code-reviewer.",
+      canon: "supports Std-4 (Theater Prohibition) — the debate gate keys on a genuine evaluated score, not a fabricated-reachable branch. No standing tension." }
+  - { id: DEC-33, type: decision, status: accepted, scope: project, decision_ref: "AD-0049/AD-0050",
+      title: "Intake item 20260702-002 TK-C — architect ruled the _weight_lock discipline (AD-0049) + use_learned load-path pin (AD-0050); supersedes AD-0045's imprecise lock clause",
+      context: "refine red-team found TK-C AC5 (the '_weight_lock held across the EWC calls' mandate) DEADLOCKS the live consolidation path — trainer.get_weights() (trainer.py:593) already acquires the non-reentrant _weight_lock, so wrapping the helper self-deadlocks, and holding it across compute_fisher stalls the training-thread write-back (trainer.py:852), violating the documented sub-ms invariant. And TK-C AC6 (use_learned hard-disable) covered only the check() flip, missing load() (convergence.py:234-235) which restores the persisted flag — so a previously-graduated checkpoint boots the random head live = Std-4 theater survives. architect verified + ruled (AD-0049/AD-0050), superseding AD-0045's imprecise 'verify the EWC calls take _weight_lock' clause.",
+      decision: "AD-0049 (lock discipline): the _consolidate_phase_boundary helper acquires NO lock itself (no `with trainer._weight_lock`); the ONLY _weight_lock acquisition is get_weights()'s internal brief copy-under-lock; compute_fisher + set_reference run LOCK-FREE (as the existing endpoint does). set_reference needs no EWC-state lock vs its reader (training-thread penalty_gradients) — GIL-atomic assignment, worst case a bounded one-step new-fisher/old-reference transient; do NOT add an EWC-state lock. Fisher T0-anchor/T1-live-weights drift accepted (diagonal estimator noise). TK-C lock AC REPLACED by: (a) deadlock regression (helper in a worker thread + real trainer + non-empty buffer, join(timeout), assert completion); (b) lock-scope (assert trainer._weight_lock.locked() is False at compute_fisher/set_reference entry; get_weights() called exactly once) + a wall-clock duration log (>250ms → asyncio.to_thread follow-up). AD-0050 (use_learned): pin ALL writers (there are two: convergence.py:160 and :235) — load() forces use_learned=False, IGNORING the persisted flag with a warning (ignore, do NOT migrate/rewrite the checkpoint — load stays read-only; the flag self-heals to False at next save); unit test loads a use_learned=True checkpoint → asserts False + heuristic path (convergence.py:168). AC4 → assert EWC ARMED (_reference and _fisher both set) after the boundary; the non-zero-gradient assertion moves behind an explicit perturb-off-anchor + >=2 penalty_gradients (ramp advance) precondition. AC1 (TK-B) → targets the INLINE handler (main.py:583/596 swap + :584/:589-595 comment rewrite in place); TK-C's extraction AC preserves the TK-B-corrected order rather than re-deciding it.",
+      consequences: "Item 20260702-002 re-enters planning; meridian re-stages TK-B/TK-C against AD-0049/AD-0050 (TK-A unchanged — was ATOMIC-CLEAN). CANON Std-4 theater closure UPHELD (the use_learned load-pin closes the checkpoint-restore re-entry of the random-head 'learned mode'). Jim-only residual (product): whether/when to build a real convergence-head trainer — until then the head stays honestly pinned off.",
+      canon: "Std-4 (Theater Prohibition) UPHELD — AD-0050 closes the surviving-theater path (random head presented as 'learned' via checkpoint restore). AD-0049 keeps the documented thread-safety envelope unchanged (no new lock on the inference/train path). No standing tension." }
 
+  - { id: DEP-2, type: dependency, status: open, scope: TK-109, title: "TK-109 and TK-110 are a hard co-ship (Jim-ruled) — must land in the same change/PR", description: "TK-109 (default-deny auth gate incl. supervisor @Post gating) and TK-110 (SupervisorPanel guardian Bearer-token wiring) must merge/deploy together; TK-109's gate must not land ahead of TK-110 or the guardian UI breaks. Represented as governance (not a depends_on edge) because a bidirectional depends_on would be a cycle. TK-109 AC8 is the runnable proof (guardian UI keeps working, authenticated)." }
+  - { id: DEP-3, type: dependency, status: open, scope: TK-129, title: "TK-129 (drive RLS startup-verifier) sequences after TK-AUDIT-1 (drive_rules REVOKE+RLS)", description: "TK-AUDIT-1 is staged in pipeline item 20260625-002 (DEC-28) and is NOT yet a contract node, so this cannot be a depends_on edge. If TK-129 lands first, the verifier aborts drive-server startup on every boot until TK-AUDIT-1 applies the grant lockdown. Mitigation (in TK-129 AC scope): ship the verifier in WARN-ONLY mode until TK-AUDIT-1 is written+built, then flip to abort. sentinel DB sign-off required before TK-129 build." }
+  - { id: Q-25, type: open_question, status: open, scope: EP-27, owner: architect, date_raised: "2026-07-03", title: "Audit #2 — decision-making.service.ts god-object (~2,671 lines; processInput ~1,500): where are the decomposition seams?", description: "Per DEC-28 this is architect-decidable, not a guess. The cognitive-loop center of gravity needs a seam decision (decompose along predict -> act -> evaluate) before it can be sized as a ticket. Route: architect seam decision during /plan-design, then cortex implements. Not pre-decided here." }
+  - { id: Q-26, type: open_question, status: open, scope: EP-27, owner: architect, date_raised: "2026-07-03", title: "Audit #3 — metrics.controller.ts god-object (1,777 lines) + layering inversion: canonical decomposition and correct layer?", description: "A presentation/controller surface doing work that belongs a layer down; appeared in two coherence dimensions. Needs an architect layering decision before ticket sizing. Route: architect, then forge. Not pre-decided here." }
+  - { id: Q-27, type: open_question, status: open, scope: EP-27, owner: architect, date_raised: "2026-07-03", title: "Audit #5 — /cognition deliberation leg computed-then-discarded at the TS tier: wire it through or delete it?", description: "The deliberation leg is computed then dropped — wasted work and a coherence smell, but the correct resolution (consume the result vs remove the computation) is a design call with correctness implications. Route: architect, then meridian. Not pre-decided here." }
+  - { id: Q-28, type: open_question, status: open, scope: EP-27, owner: architect, date_raised: "2026-07-03", title: "Audit #6 — orphaned /cognition/phase-transition endpoint: is EWC consolidation silently inert (no live trigger)?", description: "Highest-value P1 to CONFIRM — an investigation, not a build. Nothing live calls /cognition/phase-transition, implying EWC consolidation may have no runtime trigger (a learning-loop mechanism silently inert). Route: architect confirms whether EWC is inert and decides the fix; cross-check DEC-33 / AD-0049-0050 (EWC arming). Not pre-decided here." }
+  - { id: Q-29, type: open_question, status: open, scope: EP-27, owner: architect, date_raised: "2026-07-03", title: "Audit #8 — 11 duplication clusters: canonical-home calls before consolidation into @sylphie/shared", description: "5 true / 6 near clusters (procedure-bootstrap-helpers, as-number-coercion, parse-vector-literal, etc.; see docs/audits/duplication.md). Consolidation needs canonical-home decisions respecting drive-process isolation + package layering (cross-boundary @sylphie/shared placements flagged for architect/forge) before low-risk cleanup tickets. Route: architect/forge. Not pre-decided here." }
+  - { id: DEC-34, type: decision, status: accepted, scope: TK-153, date: "2026-07-03", title: "TK-153 drive_rules lockdown — resolve Q-34/Q-35/Q-36 via architect AD-0051 + AD-0052; SPLIT into TK-153a (sentinel migration) + TK-153b (forge guardian pool)", context: "Refine red-team routed TK-153 to replan on 3 architect-blocking design holes (Q-34 privileged-pool seam/CANON, Q-35 table ownership, Q-36 grant matrix+RLS). Architect ruled against the LIVE sylphie-postgres DB (write probes rolled back), recorded AD-0051 + AD-0052 in docs/decisions/architect-log.yaml.", decision: "Q-34: Option A HARDENED — an in-process POSTGRES_GUARDIAN_POOL (role guardian_admin, NOT POSTGRES_ADMIN_POOL/superuser) injected only into GuardianRulesService in apps/sylphie; env creds only (POSTGRES_GUARDIAN_USER/PASSWORD), NO hardcoded default, fail-closed while reads keep working on the runtime pool; no separate approval process (Std-6 threat model is the autonomous runtime = sylphie_app, which the REVOKE denies; guardian approval is episodic + JWT-gated). Q-35: tables owned by sylphie_admin (live-verified) so REVOKE bites + RLS not owner-bypassed; migration must be CONVERGENT (CREATE TABLE IF NOT EXISTS matching live schema = first in-repo codification, idempotent ALTER TABLE OWNER TO sylphie_admin, CREATE ROLE if absent, per-table REVOKE ALL then grant matrix, ENABLE+FORCE RLS; does NOT touch 001 global default privileges; NOT an edit to 001). Q-36: REVOKE is PRIMARY write-denial (raises 'permission denied' for verify-rls.ts:130), RLS defense-in-depth. Grant matrix — sylphie_app: SELECT drive_rules + SELECT/INSERT proposed_drive_rules (revoke the dead INSERT on drive_rules + UPDATE/DELETE on proposed); guardian_admin: full DML both; drive_engine: SELECT both. Policies TO role FOR SELECT USING(true); guardian FOR ALL USING/WITH CHECK(true); proposer INSERT WITH CHECK(status='pending'). SPLIT: TK-153a (sentinel/ashby — convergent migration + NEW continuity/reverse smoke; proves AC1/3/4) and TK-153b (forge/ashby, depends_on TK-153a — POSTGRES_GUARDIAN_POOL token in @sylphie/shared + provider in app.module.ts + GuardianRulesService rewire + .env.example; proves AC2); ship same release window.", consequences: "guardian rule approve/reject is ALREADY broken vs the dev DB (pre-existing, discovered during ruling — TK-153 fixes it, not causes it). RlsVerificationService is dormant; wiring it is TK-129/DEP-3 scope, not TK-153. Railway prod postgres state unobserved -> migration dry-run before --confirm on prod. JIM PROVISIONING (ops, not a decision): set guardian_admin (+ eventually drive_engine) passwords as Railway/env secrets. The TK-153->TK-153a/b split + rescope are TICKET writes gated by contract_write=staged — staged in plan.md, await Jim's approval gate; this DEC records the resolution + routing only.", supersedes_questions: "Q-34, Q-35, Q-36", refs: "AD-0051, AD-0052, DEP-3", by: "architect (via pipeline-replan)" }
+  - { id: Q-34, type: open_question, status: resolved, scope: TK-153, owner: architect, date_raised: "2026-07-03", title: "TK-153 privileged-role seam — WHERE does the guardian drive_rules write path execute once sylphie_app loses write? (blocks build)", description: "Refine red-team (grounded): guardian-rules.service.ts:44 injects POSTGRES_RUNTIME_POOL (sylphie_app) and INSERTs drive_rules at :133; the moment REVOKE lands, approveRule() dies (AC2 fails). No privileged pool exists — POSTGRES_ADMIN_POOL is a defined Symbol (packages/shared/src/storage/database.tokens.ts:14) but is NEVER provide:d anywhere; POSTGRES_GUARDIAN_POOL does not exist. So making AC2 pass requires provisioning a new DB role + secret/env + a new pool token + provider in app.module.ts + a rewire of guardian-rules.service.ts — spanning sentinel AND forge, NOT the single ~<=250 LOC sentinel migration the complexity_budget claims. The CANON question: does the privileged write pool live in-process in apps/sylphie (protection then rests on app-layer discipline, not the DB boundary) or in a separate guardian-approval process mirroring drive isolation? The ticket notes concede this seam is unresolved. Architect must rule before queue; ruling likely splits TK-153 into a sentinel migration + a forge pool/guardian-rewire ticket." }
+  - { id: Q-35, type: open_question, status: resolved, scope: TK-153, owner: architect, date_raised: "2026-07-03", title: "TK-153 drive_rules table ownership/creation path is undefined — if sylphie_app owns the table, REVOKE is a no-op and RLS is bypassed (blocks build)", description: "Refine red-team (grounded): grep across all .ts/.sql finds NO CREATE TABLE drive_rules / proposed_drive_rules in executable code (002-drive-rules-indexes.sql guards IF EXISTS and comments 'after tables are created' — but nothing creates them). In Postgres a table OWNER keeps implicit INSERT/UPDATE/DELETE that REVOKE cannot remove and bypasses RLS unless FORCE ROW LEVEL SECURITY + non-ownership. So whether the entire REVOKE+RLS approach works at all depends on who owns the table — an un-codified fact, and AC3 seeds 'representative rows' against a table the repo never provisions. Architect/sentinel must establish + commit the schema-creation path and confirm owner=sylphie_admin (not sylphie_app); if sylphie_app owns it the migration must also ALTER TABLE ... OWNER TO sylphie_admin and use FORCE RLS." }
+  - { id: Q-36, type: open_question, status: resolved, scope: TK-153, owner: architect, date_raised: "2026-07-03", title: "TK-153 exact per-table/per-role grant matrix + RLS SELECT policy are unspecified — as sketched the migration either bricks reads or fails the harness", description: "Refine red-team (grounded): (a) sylphie_app MUST retain SELECT drive_rules (postgres-rules-client.ts:67, verify-rls.ts check3 aborts startup otherwise) and SELECT/INSERT proposed_drive_rules (proposer path insertProposedRule, verify-rls check4) — so the ticket's parenthetical '(+ proposed_drive_rules write path)' REVOKE must NOT strip proposer INSERT; only guardian UPDATE proposed_drive_rules (:140/:162) moves to the privileged role. (b) Enabling RLS with no policy default-denies ALL commands incl. SELECT → breaks reads; needs an explicit permissive FOR SELECT USING(true) for sylphie_app + a RESTRICTIVE deny-write policy. (c) An RLS-blocked UPDATE returns 0 rows, NOT an error, but verify-rls.ts:130 expectPermissionDenied asserts the string 'permission denied' — so REVOKE (not RLS) must be the PRIMARY write-denial or AC1's existing harness fails. Also: AC2/AC3/AC4 have NO existing harness (verify-rls.ts only exercises sylphie_app) — a privileged-pool continuity/reverse smoke must be built. Architect/sentinel to fix the grant matrix + RLS design before build." }
 changelog:
   - { date: "1970-01-01", version: "0.0", change: "Contract scaffolded by planning-worx.", by: "planning-worx" }
   - { date: "2026-06-15", version: "0.1", change: "Reconciliation (/plan-reconcile) of the ABC vision plan against the working tree @ 1f557e8. CONFIRMED done: P1 (TK-1..5), P2.1 (TK-6), P3 (TK-9..11), the §6 test suite. DRIFT: TK-7 (P2.2) partial — enforce-canon SKILL repointed but the canon-check.cjs gate was DELETED (ISS-1); TK-8 (P2.3 .strict) NOT done. NOT STARTED: P4 Fork C (TK-12..14), P5 retirement (TK-15), live acceptance (TK-16..18). Ingested the remaining tail per Jim. Counts: confirmed-done 11, behind/partial 2, todo 7.", by: "plan-reconcile" }
@@ -6286,3 +7448,10 @@ changelog:
   - { date: "2026-06-27", version: "2.4", change: "EP-19 live-diagnosis + fix session (TK-94/95/96 + new TK-106). Diagnosed against the LIVE Railway deploy (the step that got PRs #70/#75 parked). (1) sylphie-app was Failed: boot hung on '[OTHER] KG indexes ensured' because the neo4j-other SERVICE was stuck in a crashed runtime behind a stale 'Online' (app config was CORRECT, overturning TK-95's app-side assumption, within its escape-hatch). Restart -> Bolt up clean -> app boots to 'listening on 8080'. TK-95 VERIFIED: GET /api/graph/okg/count -> 200 {nodes:50,edges:3}; boot shows Connected to [other] + [OTHER] KG indexes ensured + OKG schema initialized. (2) TK-94 REPRODUCES under sustained load (NOT at boot; earlier 'not reproducing' was wrong): ~25min in, floods 'Failed to flush N decision events: timeout exceeded when trying to connect'. Cause = updateConfidence() SQL 'LEAST($1,$3)' untyped branches -> PG infers TEXT -> every UPDATE fails (confidence is double precision) -> failing fire-and-forget queries saturate the shared pool. FIX (cortex; code-reviewer APPROVE-WITH-NITS): $1::float cast + inline 0.6 ceiling; +regression spec 7/7; +.env.example pool docs (MAX_CONNECTIONS 20->10, CONNECTION_TIMEOUT_MS 5000->30000; Railway env apply DEFERRED to Jim). Deployed+VERIFIED: 8+min, cycles active, ZERO Timescale errors. (3) The '502 on EVERY endpoint' was a CUSTOM-DOMAIN break: www.sylphie.live/sylphie.live -> 502 while sylphie-app-production.up.railway.app -> 200. App HEALTHY; public URL broken separately (Jim: leave it; needs Railway domain re-attach). Thus TK-106's 'heavy-healthcheck de-routing' theory was a MISDIAGNOSIS, but cheap GET /api/health (TK-106 new) is valid hardening, VERIFIED -> 200; root railway.json DROPPED per code-review (sibling-service blast-radius, cf 4110cde). TK-96 VERIFIED via data endpoints (Jim's chosen method): /api/metrics/health live (type2Count=44, provenanceRatio total=35553), observatory 200 w/data, okg/count 200; UI render = Jim manual. ALL fixes in PR #82 (branch agent/tk-106-health-liveness-probe), ephemeral railway-up deploy serving; pending Jim merge to main. RESIDUALS: custom-domain 502 (Jim); TK-94 extended-soak recommended (verified clean to 8min, exhaustion was ~25min slow-build); Timescale pool env not yet applied to Railway; pre-existing WARN pickResearchTarget 'Cannot run query in a closed session' every cycle (out of scope); app left UP on railway.app for soak (emissions suppressed by TK-104, ~$0.26/day under $5 cap).", by: "coordinator+cortex+sentinel+code-reviewer" }
   - { date: "2026-06-27", version: "2.5", change: "EP-19 resume + recovery (TK-94 re-soak FAILED, boot-hang found+fixed = new TK-107). Merged PR #82 (TK-94 SQL fix + TK-106 liveness) to main. Overnight 11h soak of the ephemeral deploy showed TK-94 is NOT fully fixed: the Timescale pool RE-EXHAUSTED ('Failed to flush ... timeout exceeded when trying to connect' flooding DecisionEventLogger/PlanningService/SensoryStreamLogger), and the app was stuck in a TYPE_2_ADDICT attractor (metric=1.000) grinding all night = the load driver. timescaledb server showed NO connection-limit errors (client-side pool backlog, not a server cap). Jim's calls: 'reset + apply config, re-soak' and 'flag TYPE_2_ADDICT, fix TK-94 first'. Applied the deferred pool config to Railway env: TIMESCALE_CONNECTION_TIMEOUT_MS 5000->30000 + TIMESCALE_MAX_CONNECTIONS 20->10. (timescaledb restart was authorized in Jim's option but the sandbox classifier blocked it twice; skipped — its server logs showed no errors.) Redeploy from main then hit an INTERMITTENT BOOT-HANG (app never reached app.listen()). Jim: 'debug boot-hang first'. hopper root-caused (= TK-107): two AppModule providers run onModuleInit CONCURRENTLY in NestFactory.create() — WkgQueryService DDL (CREATE INDEX/CONSTRAINT) holds Neo4j schema locks while WkgBootstrapService MERGE blocks on them; session.run() has NO query timeout (driver connectionTimeoutMs only covers TCP handshake) -> blocked forever -> onModuleInit never resolves -> create() never returns -> listen() never runs. Intermittent: warm Neo4j boots, cold/just-restarted Neo4j (our state post-TK-95 neo4j-other restart) hangs. FIX (forge+learning, code-reviewer APPROVE-WITH-NITS): wkg-bootstrap/wkg-query onModuleInit Promise.race([work, deadline]) 15s/20s log-and-continue + clearTimeout guard (app.listen always reached); upsert-entities MERGE withTimeout 12s (cycleInFlight always resets). RECOVERED + VERIFIED live (deploy 1a53d608): KG indexes ensured + WKG bootstrap complete (39601 nodes) + 'Nest application successfully started' + 'listening on 8080'; /api/health 200, okg/count 200; fresh boot 0 Timescale errors, 0 stuck learning cycles. Boot-hang fix makes boot robust regardless of MAX_CONNECTIONS=10. TK-107 in PR (branch agent/tk-107-boot-hang-fix); currently serving via ephemeral railway-up deploy. RESIDUALS: (a) TK-94 re-soak NOT yet confirmed over long horizon (re-exhaustion took hours last time; need extended soak with the new config+fixes); (b) TYPE_2_ADDICT 11h grind = flagged, needs its own ticket (arbitration never settles to Type 1 — load + compute driver); (c) code-review nits: LlmCallTimeoutError name misleading on the Neo4j path + wkg-bootstrap comment overstates recovery; (d) custom-domain 502 still Jim's; (e) timescaledb restart still blocked by classifier if needed.", by: "coordinator+hopper+forge+learning+cortex+code-reviewer" }
   - { date: "2026-06-27", version: "2.6", change: "CONTRACT WRAP-UP / reality reconciliation (Jim-directed). Diagnosis: the contract appeared to have a large backlog but had only 1 open epic (EP-19) + 3 open tickets (TK-94/96/106) — every other node was done. The 311 'todo' TASK nodes were ALL stale drift under already-done tickets (granular plan-steps never flipped when their parent tickets completed). Per Jim: (1) bulk-closed all 311 stale tasks -> done (reconciliation, not new work — parents already passed acceptance); (2) closed EP-19's last 3 tickets: TK-94 (Timescale pool — SQL fix + pool config MAX_CONNECTIONS=10/CONNECTION_TIMEOUT_MS=30000 + TK-107 boot-hang fix all merged & deployed; closed on the landed fix, scheduled soak re-check at ~17:03 EDT kept as a POST-CLOSE monitor), TK-96 (dashboard verified via live data endpoints: /api/metrics/health live telemetry + observatory 200 + okg/count 200), TK-106 (cheap /api/health liveness probe verified live -> 200); (3) closed EP-19 epic. RESULT: contract is now FULLY DONE — 2 features, 20 epics, 97 tickets, 311 tasks all done (1 ticket canceled); 0 remaining open work nodes. The automated build system can come off hold. OPEN OPERATIONAL RESIDUALS (tracked outside the now-complete plan, NOT blocking contract completion): TK-94 long-soak confirmation (scheduled monitor); TYPE_2_ADDICT grind (needs a fresh ticket if pursued); durable from-main deploy needs the Railway sylphie-app deploy-healthcheck path repointed to /api/health (heavy /api/metrics/health gate fails under competing load) — prod currently serving on an ephemeral railway-up deploy with all fixes; custom-domain www.sylphie.live 502 (Jim); code-review nits (LlmCallTimeoutError name on DB path, wkg-bootstrap comment).", by: "coordinator" }
+  - { date: "2026-07-02", version: "2.7", change: "Intake item 20260625-001 (verbose-log rotation): Jim APPROVED the staged contract write (per-item approval, contract_write=staged). Added rolling epic EP-INTAKE + ticket TK-INTAKE-1 (P2, mvp, forge/ashby/code-reviewer trio, 5 runnable ACs, no DB surface). Red-team notes carried in item plan.md: flush-before-rename race (HIGH, guard = AC no-data-loss), external getLogContext glob follow-up (HIGH, out of scope). First open work since the 2.6 wrap-up; execute cog may now pick TK-INTAKE-1 to PR.", by: "coordinator (Jim-approved)" }
+  - { date: "2026-07-02", version: "2.8", change: "Pipeline session: renumbered the schema-invalid semantic epic ids (EP-INTAKE->EP-21, TK-INTAKE-1->TK-108, +FEAT-3 parent; validator requires (FEAT|EP|TK|TASK)-<number>) so the pipeline convention conforms; config.contract_routing->EP-21. Drove intake items 20260702-001/002/003 through the full replan->plan->refactor->refine arc: DEC-29 (001 rule-based route gate), DEC-30 (002 consolidation/nested-emit/theater, AD-0045/46/47), DEC-31 (003c provenance surface-gate, AD-0048), DEC-32 (003b debate-gate Option A real confidence signal, reject threshold-lowering as Std-4 theater), DEC-33 (002 _weight_lock lock-free discipline + use_learned load-pin, AD-0049/0050 superseding AD-0045 lock clause). Refine red-team caught+fixed 3 latent traps before build: a public-route gap that would re-create the Railway healthcheck deadlock, a Std-4 theater surviving via checkpoint restore, and a training-thread deadlock. Items 001/002/003 (+ earlier 004/005) staged as working-id tickets in each pipeline item plan.md, now in the build queue. TK-108 (verbose-log rotation) MERGED via PR #85 -> status done. Jim APPROVED writing all staged EP-21 tickets into the contract with numeric ids (execution pending). Governance DEC-1..33; architect-log AD-..0050.", by: "coordinator (Jim-approved)" }
+  - { date: "2026-07-02", version: "2.9", change: "Executed the Jim-APPROVED staged-write of the 5 queued pipeline items (20260702-001..005) into the contract as numeric nodes. Per Jim's structure ruling (per-item sub-epics), added 5 epics under FEAT-3: EP-22 (backend hardening, item 001), EP-23 (tensor cognition sidecar, 002), EP-24 (decision-making concurrency, 003), EP-25 (drive resilience, 004), EP-26 (frontend resilience, 005); EP-21 stays the rolling catch-all (TK-108 only). Transcribed 44 tickets TK-109..TK-152 from each item's staged plan.md (post-refine set), preserving Given/When/Then ACs, files_in_scope, complexity_budget, owner+trio, non_goals, and decision refs (DEC-30..33 / AD-0045..0050, DEC-29, DEC-31, DEC-32). Transforms applied for schema validity: P0->P1 (validator allows only P1/P2/P3) with the blocker signal preserved in a severity field; TK-B/TK-C and TK-120/121 A->B->C merge-order kept as depends_on; TK-118->TK-114 and TK-144->TK-141 depends_on remapped from working ids. Two cross-item couplings that cannot be depends_on edges recorded as governance: DEP-2 (TK-109<->TK-110 hard co-ship, would be a depends_on cycle) and DEP-3 (TK-129->TK-AUDIT-1 sequencing, TK-AUDIT-1 not yet a node; warn-only mitigation). All tickets status=todo so the scheduled execute cog can pick them up. Contract validates: 483 nodes, 72 governance. Item->node mappings recorded via pipeline.py set --add-node.", by: "coordinator (Jim-approved staged-write)" }
+  - { date: "2026-07-03", version: "2.10", change: "Interactive /pipeline-plan tick on the oldest planning item 20260625-002 (2026-06-21 codebase-audit remediation roadmap). Performed the Jim-APPROVED (2026-06-27) contract write that had been deferred 3x by the scheduled-cog write-prohibition + a git-dirty contract (both now resolved: contract committed clean @ bf24ce2/9cf1e54, and this is an interactive run). Renamed the approved semantic ids to numeric per the 2026-07-02 convention: EP-AUDIT->EP-27 (parent FEAT-3), TK-AUDIT-1->TK-153 (the build-ready P0 drive_rules INSERT/UPDATE/DELETE REVOKE + RLS + guardian privileged-role, CANON Std-6; owner sentinel/ashby; migration.md written, dbcheck clean; P0->P1 with severity P0-blocker). Filed the 5 design-needing findings DEC-28 directed but that were never recorded, as architect-routed open_questions Q-25..Q-29 (#2/#3 god-objects, #5 discarded-deliberation, #6 EWC-confirm, #8 duplication). Mechanical-cleanup findings #4/#7/#9 stay staged in the item plan.md (NOT in Jims write approval). Item 20260625-002 -> refine.", by: "coordinator (Jim-approved 2026-06-27)" }
+  - { date: "2026-07-03", version: "2.11", change: "Interactive /pipeline-refine on item 20260625-002 (in-scope node TK-153, drive_rules lockdown). Atomicity + plan-reviewer red-team, findings independently re-verified against source. RESULT: TK-153 is NOT build-ready — routed item to REPLAN. Three grounded design holes recorded as architect open_questions Q-34..Q-36: (Q-34) the 'separate privileged role/connection' the ticket assumes DOES NOT EXIST — guardian-rules.service.ts:44 injects POSTGRES_RUNTIME_POOL (sylphie_app) + INSERTs drive_rules:133, POSTGRES_ADMIN_POOL is a defined-but-never-provided Symbol; making AC2 pass needs a new role+secret+pool+provider+service-rewire spanning sentinel+forge (not the claimed single ~250 LOC sentinel migration), and where the privileged pool executes (in-process vs isolated) is an unmade CANON seam decision the ticket notes concede. (Q-35) NO CREATE TABLE drive_rules exists in executable code — if sylphie_app owns the table, REVOKE is a no-op and RLS is bypassed (owner implicit privileges + RLS bypass without FORCE); ownership must be established/confirmed=sylphie_admin first. (Q-36) exact per-table/per-role grant matrix + RLS SELECT policy unspecified — as sketched RLS-with-no-policy bricks sylphie_app reads (verify-rls check3 aborts startup) and RLS-denied UPDATE returns 0 rows not 'permission denied' (fails verify-rls:130 expectPermissionDenied), so REVOKE must be primary denial; AC2/3/4 also have no existing harness. TK-153 node + EP-27 left intact (accepted, append-only); it re-enters via replan->planning once architect rules the seam. contract_write=staged honored (governance appends only, no ticket edits).", by: "coordinator (pipeline-refine)" }
+  - { date: "2026-07-03", version: "2.12", change: "Interactive /pipeline-replan on item 20260625-002 (TK-153 seam). Got the architect ruling on the 3 refine blockers — recorded DEC-34 (accepted) resolving Q-34/Q-35/Q-36 and citing architect AD-0051 + AD-0052. Architect ruled against the LIVE sylphie-postgres DB and found: tables owned by sylphie_admin (so REVOKE bites), guardian_admin role already exists (un-codified), and — material — the guardian rule approve/reject path is ALREADY broken vs dev (approveRule RLS-violates, rejectRule silently updates 0 rows); TK-153 fixes a live break, not just hardens. Decision: Q-34 = Option A HARDENED (in-process POSTGRES_GUARDIAN_POOL role guardian_admin, env creds only/fail-closed, NOT superuser POSTGRES_ADMIN_POOL, no separate process); Q-35 = convergent migration (CREATE TABLE IF NOT EXISTS matching live schema = first in-repo codification, ALTER OWNER, CREATE ROLE if absent, REVOKE ALL + grant matrix, FORCE RLS; no touch to 001 defaults); Q-36 = REVOKE-primary denial + RLS defense-in-depth with a fixed per-table/per-role grant matrix + proposer INSERT WITH CHECK(status='pending'). Ticket SPLITS: TK-153a (sentinel — convergent migration + continuity/reverse smoke; AC1/3/4) + TK-153b (forge, depends_on 153a — POSTGRES_GUARDIAN_POOL token/provider/GuardianRulesService rewire; AC2), same release window. Q-34/35/36 -> status:resolved. The split + rescope are TICKET writes still gated by contract_write=staged (staged in plan.md, await Jim). Item 20260625-002 replan->planning. FLAG: this was the item's 2nd replan (attempts=2=max) but a NEW finding (not a loop) resolved by an architect ruling = forward progress. Jim ops: provision guardian_admin (+drive_engine) passwords as Railway/env secrets.", by: "coordinator (pipeline-replan)" }
+  - { date: "2026-07-03", version: "2.13", change: "Executed the TK-153 split into the contract (Jim directive 2026-07-03: process/decomposition changes like ticket splitting are the coordinator's to make, not Jim's approval gate — only application-DIRECTION questions route to Jim). Per DEC-34 / architect AD-0051+AD-0052: marked TK-153 status=canceled (superseded), wrote TK-154 (sentinel — convergent drive_rules lockdown migration: CREATE TABLE IF NOT EXISTS live schema + ALTER OWNER + CREATE ROLE guardian_admin/drive_engine + REVOKE ALL + DEC-34 grant matrix + FORCE RLS, REVOKE-primary denial, + continuity/reverse smoke; AC1/3/4) and TK-155 (forge — POSTGRES_GUARDIAN_POOL token/provider + GuardianRulesService approve/reject rewire, env-only creds fail-closed, reads stay on runtime pool; depends_on TK-154; AC2, fixes the live-broken guardian approve/reject path). Both under EP-27, priority P1 / severity P0-blocker / engineering_level production. DEP-3 (TK-129 sequencing) now effectively points at TK-154. Item 20260625-002 -> refine. Also flipped pipeline config contract_write staged->autonomous (supersedes the 2026-06-27 staged ruling) for process/decomposition writes; genuinely new application direction still surfaces to Jim.", by: "coordinator (Jim directive: stop gating process changes)" }

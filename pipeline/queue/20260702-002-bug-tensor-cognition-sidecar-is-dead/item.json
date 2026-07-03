@@ -1,0 +1,80 @@
+{
+  "id": "20260702-002",
+  "slug": "bug-tensor-cognition-sidecar-is-dead",
+  "title": "Bug: Tensor cognition sidecar is dead end-to-end (every /cognition/cycle 422s) + EWC/convergence safety paths unreachable",
+  "type": "bug",
+  "size_hint": "large",
+  "lines": 54,
+  "sections": 10,
+  "state": "queue",
+  "namespace": "20260702-002-bug-tensor-cognition-sidecar-is-dead",
+  "source_file": "bug-audit-cognition-sidecar.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-02T23:50:31-04:00",
+  "attempts": 2,
+  "refactor_attempts": 0,
+  "contract_nodes": [
+    "EP-23",
+    "TK-119",
+    "TK-120",
+    "TK-121",
+    "TK-122"
+  ],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-07-02T02:50:51-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "plan.md written; evidence verified against source (7/7 confirmed); 1 ticket staged (TK-INTAKE-20260702-002); dbcheck ok (n/a migration.md — keyword false positive)"
+    },
+    {
+      "at": "2026-07-02T03:01:37-04:00",
+      "from": "refine",
+      "to": "replan",
+      "note": "red-team CRITICAL x2: fix#2 'fold consolidation into advance_mode' targets a class with no trainer access (consolidation boundary needs architect/ashby); fix#1 nested-vs-schema-relax unjustified + gateway type change unstated. TK-37/39 theater contradiction unreconciled; convergence gate = silent disable. Split A/B/C. See redteam.md"
+    },
+    {
+      "at": "2026-07-02T20:35:15-04:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: DEC-30 (architect AD-0045/46/47) — consolidation helper at main.py:421 call site, nested number[][] emit + gateway type, Std-4 reconcile-then-rewrite + use_learned pin-off; split TK-A/B/C. Re-plan per DEC-30."
+    },
+    {
+      "at": "2026-07-02T20:43:43-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "staged TK-A/TK-B/TK-C (working ids) under EP-21 per DEC-30/AD-0045-0047; Given/When/Then ACs; dbcheck ok (no DB schema surface); ready for atomicity+red-team"
+    },
+    {
+      "at": "2026-07-02T21:42:48-04:00",
+      "from": "refine",
+      "to": "replan",
+      "note": "refine red-team: 2 CRITICAL block queue. TK-C AC5 needs ARCHITECT ruling — the '_weight_lock' mandate deadlocks/stalls the LIVE consolidation path: trainer.get_weights() (trainer.py:593) already acquires the non-reentrant _weight_lock, so wrapping the helper self-deadlocks, and holding it across compute_fisher (1000-sample, replay.py:293-313) violates the documented sub-ms invariant + AD-0045's 'envelope unchanged' clause. AD-0045's 'verify EWC calls take _weight_lock' is imprecise/contradicts code. TK-C AC6 (fixable): use_learned hard-disable misses the load() checkpoint path (convergence.py:234-235) -> Std-4 theater survives via existing checkpoint; force use_learned=False on load(). Plus HIGHs: TK-B AC1 references not-yet-existing helper (reword to inline main.py:583/596); TK-C AC4 'penalty non-zero at boundary' false at t=0 (ramp=0; assert EWC armed instead); TK-B AC4 check_demotions 'every call' contradicts guarded site main.py:393-408."
+    },
+    {
+      "at": "2026-07-02T21:51:20-04:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: DEC-33 (architect AD-0049/0050) — lock discipline (helper no-lock, get_weights sole lock, compute_fisher/set_reference lock-free) + use_learned load-pin (Std-4 closure). Re-stage TK-B/TK-C per ruling; TK-A unchanged."
+    },
+    {
+      "at": "2026-07-02T21:57:43-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "re-staged per DEC-33/AD-0049-0050 (meridian): TK-C lock-free helper + deadlock/lock-scope tests, TK-D split for use_learned load-pin, AC4 EWC-armed, AC1 inline handler, TK-A harness named. Architect-resolved."
+    },
+    {
+      "at": "2026-07-02T21:57:43-04:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "atomic; blocking design forks architect-ruled (DEC-33/AD-0049-0050); re-staged ACs implement the ruling; dbcheck ok (in-memory, no DB schema surface). TK-A->TK-B->TK-C, TK-D independent."
+    }
+  ]
+}

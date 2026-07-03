@@ -1,0 +1,64 @@
+{
+  "id": "20260625-003",
+  "slug": "sylphie-interaction-directive-from-jim-2026-06-2",
+  "title": "Sylphie Interaction Directive (from Jim, 2026-06-22) — attach to EP-20",
+  "type": "feature",
+  "state": "done",
+  "namespace": "20260625-003-sylphie-interaction-directive-from-jim-2026-06-2",
+  "source_file": "sylphie-interaction-directive.md",
+  "created_at": "2026-06-25T19:16:34+00:00",
+  "updated_at": "2026-07-02T02:38:41-04:00",
+  "attempts": 1,
+  "refactor_attempts": 0,
+  "contract_nodes": [
+    "EP-20",
+    "TK-97",
+    "TK-98",
+    "TK-99",
+    "TK-100",
+    "TK-101",
+    "TK-102",
+    "TK-103",
+    "TK-104",
+    "TK-105"
+  ],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-06-25T19:16:34+00:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-06-25T19:25:36+00:00",
+      "from": "planning",
+      "to": "replan",
+      "note": "needs /explore-topic reconciliation: proactive-vs-turn-taking design tension; no atomic AC until reconciled"
+    },
+    {
+      "at": "2026-06-25T19:43:56+00:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: parking tension (proactive-vs-turn-taking) already reconciled in-contract by EP-20/TK-97..105 + DEC-26 (Jim-approved); see DEC-27. Re-entering planning to ATTACH to EP-20 (dedupe), not create a new epic."
+    },
+    {
+      "at": "2026-06-26T13:09:29+00:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "ATTACH to EP-20 / TK-97..105 (dedupe per DEC-27); +TK-106 staged (demo perception kill-switch, the one uncovered directive point); dbcheck keyword-only false-positive, migration.md no-op filed for sentinel"
+    },
+    {
+      "at": "2026-06-26T17:09:44+00:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "atomic, red-teamed clean"
+    },
+    {
+      "at": "2026-07-02T02:38:41-04:00",
+      "from": "queue",
+      "to": "done",
+      "note": "No legal queue exit: scope fully landed in contract without a pipeline build (EP-20/TK-97..105 done per DEC-27 attach; TK-106 verified — health.controller.ts cheap GET /api/health, Dockerfile HEALTHCHECK repointed, live 200 in changelog v2.4/v2.6). Jim-directed close-out 2026-07-02."
+    }
+  ]
+}

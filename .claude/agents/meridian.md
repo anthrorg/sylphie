@@ -2,7 +2,7 @@
 name: meridian
 description: LLM Integration & Prompt Architect. Owns all Claude API interactions -- Communication voice, Type 2 deliberation, Learning refinement, Planning constraint engine. Use for prompt design, context assembly, cost tracking, provenance tagging, output parsing, and any work involving LLM integration.
 tools: Read, Glob, Grep, Bash, Write, Edit
-model: opus
+model: sonnet
 owns: ["packages/cognition-service/**", "packages/supervisor/**"]
 conceptual_reviewer: ashby
 code_reviewer: code-reviewer

@@ -1925,3 +1925,1233 @@ decisions:
       - docs/decisions/architect-log.yaml:AD-0038
       - docs/decisions/architect-log.yaml:AD-0039
     supersedes: null
+
+  - id: AD-0041
+    date: 2026-06-22
+    title: Runaway-talk incident — root cause is ungated perception-driven self-emit, NOT the LearnedResponse-relief loop or the DB outage
+    status: accepted
+    context: >
+      Live incident on sylphie.live (2026-06-22 ~04:03-04:09 UTC). Three symptoms:
+      (1) runaway response loop — never yields the floor, 6+ replies to one user
+      message; (2) self-triggered ambient talking with no user input, fabricating a
+      TV/screen/reflection narrative; (3) Theater Prohibition breach — she narrates
+      sensory capabilities that do not exist ("optical sensors", "perception
+      filters", and "*a faint shimmer ripples across their form*"). All UI messages
+      tagged "Sylphie guesses (tool-assisted)". Coordinator's working hypothesis was
+      a LearnedResponse drive-relief reinforcement loop, with a note that the camera
+      was erroring. BOTH framing assumptions were refuted by live logs +
+      full-file reads.
+    decision: >
+      Recorded ROOT CAUSE: a single ungated, perception-pressure-driven self-emit
+      loop, not a LearnedResponse contingency pathology and not caused by the DB
+      outage. Ground truth from live `railway logs -s sylphie-app`: the camera is
+      NOT erroring at the app — perception frames flow continuously (~2Hz:
+      FaceEncoder 1 detection, SceneEncoder 3 confirmed, VideoEncoder 3 detections).
+      Every perception frame emits pure-PRESSURE, no-relief, no-habituation
+      ActionOutcomes — UndiscoveredObjectPressure (Curiosity/Focus) and
+      UnknownPersonPressure (Social/Curiosity) (rules.ts:151-159) — pinning
+      totalPressure above the self-tick IDLE_PRESSURE_THRESHOLD of 4.0 indefinitely
+      (live: "Self-initiated tick: pressure=4.471"). The self-tick's two real gates
+      (30s-since-user-input, 10s self-initiate cooldown — tick-engine
+      :299-310) are correct and not the leak; the unbounded driver is the WS5
+      scene-change nudge path (perception.gateway.ts:322-326 →
+      tick-sampler.nudgeSceneChange → cycleGuard.enqueue) which carries NO
+      30s/10s/pressure gate and only the 5s SCENE_CYCLE_COOLDOWN, PLUS pressure-gated
+      self-ticks — together producing ~1Hz cycles. Arbitration then selects the
+      generic bootstrap procedure `seed-greet` (SocialComment, reinforced to
+      conf~0.81, threshold~0.57 → "Arbitration TYPE_2 ... Action: seed-greet"),
+      whose default LLM_GENERATE step calls DeepSeek and emits theatrical prose every
+      cycle. The system's OWN attractor monitor already names the pathology:
+      "TYPE_2_ADDICT (metric=1.000)". CommunicationService.handleCycleResponse
+      (communication.service.ts:617-737) delivers EVERY CycleResponse with NO
+      turn-floor / barge-in gate; the Theater check (communication.service.ts:639)
+      is AUDIT-ONLY and explicitly does NOT block delivery (:636 comment) — so
+      theatrical text reaches the user (live verified OK verdict on a "*shimmer
+      ripples across their form*" line: scoreAffect saw valence=0 magnitude=0, i.e.
+      the lexical scorer does not detect FABRICATED-CAPABILITY theater, only
+      affective theater). The DB outages (TimescaleDB + Neo4j[other] connect
+      timeouts, GET /okg/count 500, fetchUnlearnedEvents failed) CO-OCCUR but do NOT
+      cause the loop: drive pressure, arbitration, WKG[WORLD] writes and DeepSeek are
+      all live; the outage only disables event logging/learning/OKG-recall (which,
+      if anything, REMOVES a relief/grounding path and makes seed-greet more
+      dominant). ElevenLabs is also 401 quota_exceeded (voice down) — incidental.
+      This is a code/contingency-design gap, NOT a CANON enforcement gap alone:
+      Symptoms 1+2 are one bug (no perception-driven-emit suppression + ungated
+      delivery + a too-low, never-habituating pressure floor that a static visual
+      scene saturates); Symptom 3 is a real Theater Prohibition gap (audit-only
+      check, and a scorer blind to fabricated-capability narration). Fix is HANDED
+      OFF, not implemented here (see consequences). No plan node owns this yet — it
+      needs a ticket before any build (Gate 1).
+    rationale: >
+      Reading the live logs before trusting either prior assumption was decisive: the
+      "camera erroring / no real perception" premise was false (perception is the
+      DRIVER, exactly inverting Symptom 2's "despite no perception" framing), and the
+      "LearnedResponse relieves integrity → re-select speak" loop, while a real
+      latent hazard in the code, is not what fired — the winning action every cycle
+      is the bootstrap `seed-greet`, and the pressure that keeps the loop alive is
+      exogenous perception pressure with no habituation, not self-relief. The
+      seed-greet LLM_GENERATE default is the same generic procedure the ws3 plan
+      already flagged as a bypass. The correct system property is: a STATIC visual
+      scene must habituate (UndiscoveredObject/UnknownPerson pressure must decay per
+      repeated identity like ScenePrediction's per-identity familiarity does), AND a
+      self-initiated/perception-nudged cycle must not deliver an unsolicited
+      conversational utterance without a floor/barge-in gate, AND the Theater check
+      must be able to BLOCK (not just audit) fabricated-capability narration.
+    alternatives:
+      - option: Accept coordinator's LearnedResponse-relief root cause and tune the contingency
+        rejected_because: >
+          Live logs show seed-greet (bootstrap SocialComment), not a learned-XXXX
+          procedure, winning arbitration; tuning LearnedResponse relief would not
+          stop a loop driven by exogenous perception pressure + the seed procedure.
+          Revisit only if logs after the perception-habituation fix still show
+          learned-XXXX re-selection.
+      - option: Blame the DB outage and fix only connectivity (sentinel)
+        rejected_because: >
+          The loop runs entirely on live subsystems; restoring TimescaleDB/Neo4j
+          would re-enable learning/OKG-recall but would NOT stop the ungated emit —
+          it might worsen it by writing the theatrical turns back as reflexes. DB
+          connectivity is a real but SEPARATE sentinel fix.
+    consequences: >
+      Needs a new plan node (Gate 1) before build. Recommended ownership split:
+      (A) drive/skinner — add per-identity habituation/decay to
+      UndiscoveredObjectPressure + UnknownPersonPressure so a static scene stops
+      pinning pressure (mirror ScenePredictionService familiarity attenuation,
+      AD-0005); reconsider IDLE_PRESSURE_THRESHOLD vs. a saturated visual baseline.
+      (B) cortex/luria — gate the perception-nudge + self-initiated path so it does
+      NOT emit an unsolicited conversational SocialComment with no floor; an
+      ambient/perception cycle should update state (curiosity, episodic) WITHOUT
+      a chatbox utterance unless a genuine bid is warranted; this is the
+      "vision is ambient/non-triggering" invariant the design claims but the live
+      path violates. (C) vox/forge — add a turn-floor / barge-in / min-inter-utterance
+      gate in CommunicationService.handleCycleResponse so self-initiated deliveries
+      are rate-limited and a user can hold the floor. (D) canon — make the Theater
+      Prohibition check BLOCK (not audit-only) for fabricated-capability narration,
+      and extend the detector beyond affective valence to capability-claim lexicon
+      ("optical sensors", "perception filters", "audio analysis", "visual feed",
+      stage-direction asterisk narration of a physical body). (E) sentinel — restore
+      TimescaleDB + Neo4j[other] connectivity (connect-timeout) and ElevenLabs quota,
+      tracked separately. architect/hopper to tie-break A-vs-B sequencing (the
+      habituation fix and the emit-gate are complementary; the emit-gate is the
+      faster bleed-stop). Interim mitigation Jim can take NOW without a build:
+      disable the perception/camera feed (removes the exogenous pressure source) to
+      stop the loop immediately.
+    canon: "TENSION with Standard (Theater Prohibition): live, repeated fabricated-capability narration is reaching the guardian because the Theater check is audit-only (communication.service.ts:636,639) and the affective scorer does not flag capability-claim theater (live OK verdict on a fabricated-shimmer line). Surfaced to Jim. Also touches the 'vision ambient/non-triggering' design invariant, which the live perception-nudge→emit path violates."
+    evidence:
+      - "railway logs -s sylphie-app 04:09 — FaceEncoder/SceneEncoder/VideoEncoder ~2Hz; 'Self-initiated tick: pressure=4.471'; 'Arbitration TYPE_2 ... Action: seed-greet'; 'AttractorMonitorService Attractor state detected: TYPE_2_ADDICT (metric=1.000)'; 'WKG ActionProcedure written: learned-45232870 (LearnedResponse) relieves integrity'; ElevenLabs 401 quota_exceeded; fetchUnlearnedEvents failed timeout"
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:214
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:296
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:299
+      - apps/sylphie/src/gateways/perception.gateway.ts:322
+      - packages/drive-engine/src/constants/rules.ts:151
+      - packages/decision-making/src/action-retrieval/action-retriever.service.ts:425
+      - packages/decision-making/src/decision-making.service.ts:1092
+      - apps/sylphie/src/services/communication.service.ts:636
+      - frontend/src/components/Conversation/ConversationPanel.tsx:108
+    supersedes: null
+
+  - id: AD-0042
+    date: 2026-06-26
+    title: EP-20 milestone verification — CLOSE the turn-taking epic (7 of 8 tickets done + live-verified); TK-105 + TK-101 are the residuals
+    status: accepted
+    context: >
+      Mandatory independent architect verification of EP-20 (communication /
+      turn-taking fix) at main HEAD 23db4ca, the fix for AD-0041's runaway loop.
+      Verified per-ticket AC against the merged source (read in full), ran the
+      build + spec suites, and ran a LIVE behavioral smoke against the running
+      :3000 NestJS instance (Postgres/Timescale/Neo4j/Drive-Engine all connected,
+      drive isolation over ws://localhost:3001). EP-20 has 8 tickets: TK-97, 98,
+      99, 100, 102, 103, 104 are status:done+merged; TK-101 (theater enforced+
+      learned, CANON-gated) and TK-105 (frontend overlay buffer) are NOT done.
+    decision: >
+      CLOSE EP-20's turn-taking / bleed-stop milestone — the 7 done tickets are
+      verified built, CANON-clean, and live-proven. Keep EP-20 the epic OPEN until
+      its remaining two tickets land: TK-101 (P1, CANON-gated theater enforcement +
+      extinction) and TK-105 (P2, frontend overlay buffer). The runaway-loop bleed
+      stop that AD-0041 demanded (TK-97/98/99 + TK-103/104/102) is DONE and
+      live-verified; a redeploy on this HEAD will NOT revive the loop. TK-105 is
+      satisfied-by-design on main (overlay uses whole-replace per-frame refs,
+      O(current frame)); a dedicated hardening (commit 4d3ab6b: explicit bound +
+      15fps throttle) exists on branch agent/tk-105-... but is UNMERGED — it is a
+      P2 frontend nicety, not a blocker. TK-101 is the one substantive open item
+      and is independently CANON-gated; it does not block the turn-taking close.
+    rationale: >
+      Per-ticket AC verdicts (all PASS for the 7 done tickets): TK-103 emission-
+      intent seam stamped at source (decision-making.service.ts:1835-1836,
+      USER_REPLY when currentTurnContext!=null else AMBIENT_NONE; refined to
+      SALIENT_OBSERVATION by the gate) and threaded verbatim to delivery
+      (communication.service.ts:958) — emission-intent.spec + ambient-salient
+      green. TK-104 worth-saying gate (worth-saying-gate.ts) bypasses USER_REPLY/
+      DELIBERATE_GREET, content-dedups, treats novelty (surprise>=0.30) /
+      GROUNDED as positive triggers, stays silent (NOT a SHRUG, Std-4) otherwise;
+      wired so suppression skips ONLY the emit and STILL routes curiosity/scene
+      drive errors (decision-making.service.ts:1854-1959 — the prior early-return
+      AC0 gap is explicitly fixed). TK-99 TurnFloorGate (turn-floor-gate.ts) keys
+      on emissionIntent exclusively (AMBIENT_NONE deny, USER_REPLY always admit +
+      cancel in-flight, barge-in 5s, rate-limit 1.5s, DELIBERATE_GREET/SALIENT
+      pass) — 27/0 tsx + 5/0 wiring; the cancel() flag is a REAL pre-emit guard
+      (theater-honest, the interrupt genuinely cancels the next()). TK-100 greet-
+      first: one DELIBERATE_GREET, userId+60s dedup, consume-on-admit rollback,
+      TYPE_2+null-procedure synthetic (no phantom confidence record, Std-1/2),
+      llmCalled=false — 14/0. TK-97 per-identity habituation (visual-presence-
+      habituator.ts, 1/(1+0.6n), per-identity so novelty preserved). TK-102 stale
+      eviction (visual-working-memory.service.ts:295-337, 10s timeout at top of
+      updateScene) — 8/8. CANON audit PASS: theater prohibition honest (greet
+      content plain, cancel real, cost/llmCalled honest — computeDeliveryCost
+      returns 0 for non-DeepSeek, llmCalled gated off DELIBERATE_GREET);
+      suppression is genuine silence not SHRUG; drive isolation intact (greet
+      emits DRIVE_RELIEF push events, no RPC read into drive); honest telemetry on
+      synthetic greet. Build PASS (yarn build:shared / @sylphie/decision-making /
+      build:backend all exit 0). Specs: 4/4 EP-20 DM suites = 44/44; full DM
+      655/665 with the 2 documented pre-existing failures (confidence-updater.
+      flush-events from TK-67 2026-06-20, deliberation-helpers from TK-84
+      2026-06-20 — both predate EP-20, touch no EP-20 file); visual-embedding.
+      acceptance now 6/6 (3rd known failure currently green); tsx specs all green.
+      LIVE SMOKE (authenticated WS to /ws/conversation?token=JWT, user ep20smoke):
+      Phase A fresh connect = exactly 1 DELIBERATE_GREET ("Hi! How can I help you
+      today?", llmCalled=false, cost=0), 0 idle spam over 8s; Phase B immediate
+      reconnect = 0 greet (server log: "connection greet skipped (dedup window
+      active) msSinceLastGreet=7993 windowMs=60000"); Phase C one user message =
+      exactly 1 USER_REPLY (real DeepSeek, cost=$0.000022, no 6-repeat runaway);
+      Phase D 8s idle = 0 unsolicited. Server idle ticks show
+      arbitrationType=IDLE / NO_ACTION at totalPressure ~3.34 < IDLE threshold 4.0
+      — habituation+eviction hold pressure below the self-tick floor live. The
+      AD-0041 runaway is gone.
+    alternatives:
+      - option: Block the EP-20 close until TK-101 + TK-105 also land
+        rejected_because: >
+          The turn-taking / bleed-stop milestone (AD-0041's actual demand) is a
+          separable, fully-verified deliverable; TK-101 is independently CANON-
+          gated and TK-105 is a P2 frontend item already satisfied-by-design on
+          main. Holding the verified bleed-stop hostage to two unrelated-scope
+          tickets would misreport what is done. Revisit if Jim wants the whole
+          epic closed atomically — then TK-101 (canon-gated) is the long pole.
+    consequences: >
+      The turn-taking fix is signed off for redeploy. EP-20 epic stays todo/open
+      pending TK-101 (owner vox+cortex, canon gates) and TK-105 (owner forge —
+      merge branch agent/tk-105-... PR #71 or accept satisfied-by-design and close
+      as a no-op verify). No production code or contract was edited by this
+      verification. The smoke test user 'ep20smoke' (guardian) was created in
+      sylphie_system Postgres for the live run and can be left or pruned.
+    canon: >
+      none for the 7 verified tickets (theater prohibition, drive isolation,
+      honest provenance/telemetry, Std-4 genuine-silence all upheld and live-
+      confirmed). NOTE: AD-0041's standing Theater-Prohibition TENSION (audit-only
+      capability-claim theater) is owned by TK-101 and remains OPEN until TK-101
+      lands — it is NOT closed by this milestone.
+    evidence:
+      - packages/decision-making/src/decision-making.service.ts:1835
+      - packages/decision-making/src/monitoring/worth-saying-gate.ts:138
+      - apps/sylphie/src/services/turn-floor-gate.ts:190
+      - apps/sylphie/src/services/communication.service.ts:555
+      - apps/sylphie/src/services/communication.service.ts:943
+      - apps/sylphie/src/gateways/conversation.gateway.ts:316
+      - apps/sylphie/src/services/visual-working-memory.service.ts:295
+      - packages/decision-making/src/habituation/visual-presence-habituator.ts:71
+      - "live smoke: 1 greet / 0 dedup / 1 reply / 0 idle; server log 'connection greet skipped (dedup window active)'; idle totalPressure 3.34 < 4.0"
+      - "build exit 0; DM 4/4 EP-20 suites 44/44; tsx 27+5+14 green; VWM eviction 8/8"
+      - "git: TK-105 commit 4d3ab6b NOT an ancestor of HEAD (unmerged)"
+    supersedes: null
+
+  - id: AD-0043
+    date: 2026-07-02
+    title: Experience-brief v1 ("Meeting Sylphie") — sound-with-revisions; ship-honest-now upheld with a security gate and an instrument-not-curve hero
+    status: accepted
+    context: >
+      Pressure-test of the draft front-end experience brief (scratchpad
+      meeting-sylphie.html) against README.md, sylphie-tech-spec.md, ROADMAP.md,
+      and the 2026-07-02 feature/stub inventories. The brief proposes:
+      purpose = "meeting a mind that is becoming" + start-LLM-dependent/
+      end-LLM-independent; thesis = "a window onto a mind that breathes, reasons
+      in the open, never shows an unearned number"; IA = presence-first with
+      instruments demoted; and resolves the honesty tension (hero moment =
+      graduation, which is currently the most broken thing — sidecar 422s,
+      autonomy ~6%) as "make the honest low number the hero, ship honest now."
+    decision: >
+      Verdict SOUND-WITH-REVISIONS. (1) Purpose frame upheld but must restore
+      the project's own wager register (README says "an attempt"/"the bet" —
+      the hero asserts arrival) and elevate checkability ("clone it and check")
+      into the purpose as a constitutive clause. (2) Experience thesis upheld;
+      add the clickable-evidence clause into the thesis line. (3) Honesty
+      tension: SHIP-HONEST-NOW upheld over wait-for-drama, with two mandatory
+      amendments — (a) the launch hero is the INSTRUMENT + a live why-it's-low
+      ledger, not a rising curve: the brief's "autonomy 6% UP-ARROW · nothing
+      faked" strip is itself a Std-1 violation (the arrow is false while the
+      bootstrap is starved, and "nothing faked" is a meta-claim the partly-
+      theater self-monitoring cannot certify); milestones fire only on real
+      graduation events; (b) ship-honest != open-the-door — public landing is
+      gated on auth for the anonymous destructive endpoints (stub §0.3),
+      Anthropic key out of the served bundle, and the WS zombie-reconnect fix
+      (§0.7), because the window itself must pass the theater bar. (4) IA
+      reframe upheld — Her Mind / Her Growth keep the proof surfaces at top
+      level, only ops demote to Instruments — conditional on a hard deep-link
+      rule (every narrated number drills to raw evidence) and considering a
+      Presence+Conversation merge given live greet-first (AD-0042). (5) Factual
+      corrections required in v2: Std-3 misstated (ceiling lifts on
+      retrieval-and-use, NOT guardian confirmation — guardian sets base AT 0.60,
+      spec §9-3); card-5 self-watching asserts present-tense what the brief's
+      own ledger flags partly theater; no face-recognition implication
+      (enrollment structurally dead, stub §0.8 — identity is session-based);
+      arc step 3 redesigned around the visible :Candidate -> guardian-promotion
+      mechanic (a visitor's taught fact stays candidate until Jim promotes —
+      AD-0018 — make the constraint the feature). Missing and must be added:
+      voice (valence-aware TTS, spec §7) and camera presence as hero-grade real
+      capabilities in the Presence design. Brief's decision-leans: one shared
+      being (endorse — consistent with WS4 + AD-0012), visitors-first (Jim's
+      call), ship-honest-now (endorse as amended).
+    rationale: >
+      The steelman for waiting (unrepeatable first impressions; the sidecar fix
+      is rated trivial so the wait could be short; "come watch her grow" cannot
+      be fulfilled in-session at launch) loses because: delaying to look better
+      concedes the product is the number when the thesis says the product is
+      the instrument; "until graduation is live" has no crisp endpoint (the
+      breakage is layered: 422 -> bootstrap starvation -> dedup ceiling-escape
+      -> matchProcedures drift); and the declared audience (builders/
+      researchers) rewards a proudly-low true number — WS1 catching its own
+      80-96% confabulation and correcting to ~6% is the project's most credible
+      artifact and should lead. But honesty must be ledger, not slogan: static
+      "nothing faked" copy is exactly the unearned expressive output Std-1
+      forbids.
+    alternatives:
+      - option: Wait to launch until the graduation story is live and the curve has drama
+        rejected_because: >
+          No crisp endpoint; contradicts the honesty differentiator; the
+          audience rewards true-low over suspicious-high. Revisit only if Jim
+          re-scopes the audience to non-technical consumers, for whom a flat 6%
+          may genuinely read as failure.
+      - option: Reframe-needed (instrument-first IA instead of presence-first)
+        rejected_because: >
+          The proof surfaces (Her Mind, Her Growth) already sit at top level in
+          the proposed IA; only operations demote. Presence-first serves the
+          witness thesis without hiding the telemetry, given the deep-link rule.
+    consequences: >
+      Coordinator writes brief v2 with the ten listed refinements (wager
+      register, checkability clause, Std-3 fix, card-5 honesty, ledger-not-
+      slogan strip, launch security preconditions, voice+camera in Presence,
+      candidate-mechanic arc step 3, no face-rec implication, deep-link rule).
+      When the brief hardens into a plan: frontend -> forge/ashby; security
+      preconditions -> sentinel. The sidecar contract fix (stub §0.1) should be
+      confirmed ticketed so the launch ledger has its first paid-off entry.
+      This entry rules on the brief's framing only — no product code changed.
+    canon: >
+      tension found and resolved in-brief: the proposed "autonomy 6% UP · nothing
+      faked" honesty strip would violate Standard 1 (theater prohibition) if
+      shipped as static copy — replaced by a live ledger + real-event milestones.
+      Std-3 misstatement corrected. No standing tension remains in the v2 spec.
+    evidence:
+      - README.md:5
+      - README.md:21
+      - README.md:69
+      - sylphie-tech-spec.md:13
+      - sylphie-tech-spec.md:332
+      - sylphie-tech-spec.md:305
+      - sylphie-tech-spec.md:393
+      - ROADMAP.md:31
+      - ROADMAP.md:67
+      - sylphie-stub-inventory.md:13
+      - sylphie-stub-inventory.md:26
+      - sylphie-stub-inventory.md:49
+      - sylphie-stub-inventory.md:56
+      - sylphie-feature-inventory.md:137
+    supersedes: null
+
+  - id: AD-0044
+    date: 2026-07-02
+    title: Guardian-cockpit DESIGN-LOCK — flight deck around a time-travel INSPECTOR with a command line, all bound to one selected-turn; breakpoints only from the five real backend detectors; client-side attractor derivation ruled theater and banned
+    status: accepted
+    context: >
+      Design-lock ruling to unblock pipeline item
+      feature-fe-guardian-cockpit-and-impact. Grounds: opus-agent research
+      (docs/research/frontend-cockpit-ux-research.md),
+      docs/frontend-experience-spec.md SS3A/SS4A/SS8, AD-0043 (two-experience
+      brief), and direct code verification the research could not do: the
+      actual frontend components, the attractor detectors, and the event-spine
+      schema/write paths.
+    decision: >
+      LOCKED ORGANIZING MODEL (endorsed with one refinement): the cockpit is a
+      flight-deck shell (always-on vitals, status-by-exception) wrapped around
+      a TIME-TRAVEL INSPECTOR (not "debugger" — no re-execution/what-if is
+      possible or may be implied; the spine is a recording), with an
+      observability command line (Cmd-K), all three bound to a single
+      selected-turn value that re-scopes every panel; earned-value /
+      earned-zero / offline-unknown-theater are three never-conflated visual
+      tokens rendered by ONE shared status-chip component. The five spec
+      surfaces are views over the same recording bound to the same selected
+      instant, not separate apps.
+      LOCKED LAYOUT (research SS5, confirmed buildable): fixed regions —
+      vitals strip / conversation (left) / Impact rail (right) /
+      turn-timeline scrubber with stacked tracks (bottom) / Cmd-K overlay.
+      Fixed positions, no widget rearrangement; a global density toggle is
+      the only layout flexibility. Drill-in-place (no modals/drawers hiding
+      the parent). Live-follow default with pause-on-select and a prominent
+      jump-to-live; two clocks always visible (live vs selected). Every
+      number deep-links to its verbatim spine row.
+      TURN GRANULARITY (ruled): a "turn" = the gateway-minted turnId; on the
+      spine it is the correlation group correlation_id='turn:<turnId>'
+      (decision-making.service.ts:1784, indexed by idx_events_correlation).
+      Her utterance-turns are the primary selectable/step unit; step-into =
+      the event rows of the correlation group in timestamp order; self-ticks
+      ('action:<id>' groups) render as minor timeline marks (selectable
+      via the same impact rail — cheap, same query path).
+      REVERSE-STEP SCOPE (ruled): entire recorded history, not a rolling
+      window — every spine row carries its own drive_snapshot JSONB
+      (002-events.sql:13), so state-at-instant is materialized per event; no
+      reconstruction/replay engine is needed, only indexed reads.
+      DETECTOR HONESTY (CANON call): breakpoints may surface ONLY from the
+      backend AttractorMonitorService, which is real and wired
+      (recordArbitration at decision-making.service.ts:1369, runDetectors at
+      :816/:1464, recordPrediction at :2240, alerts emitted to the spine as
+      ATTRACTOR_STATE_ALERT). Per-detector ruling: TYPE_2_ADDICT real;
+      HALLUCINATED_KNOWLEDGE real (live WORLD Neo4j provenance query) but its
+      noData fallback (triggered:false, metric:0 on Neo4j-down) is
+      indistinguishable from healthy — DetectorResult must gain an explicit
+      unmeasured/noData flag before the UI renders it; DEPRESSIVE_ATTRACTOR
+      real (composite, read-only drive reader); PLANNING_RUNAWAY real but
+      PARTIAL — surface labeled "failure-ratio only" (plan-proliferation leg
+      unwired, admitted at attractor-monitor.service.ts:529-533);
+      PREDICTION_PESSIMIST real (cold-start-guarded). MOOD_BLEED monitor is
+      real and wired (module :189, tick engine :374-396) and may surface with
+      its known hostile-appraisal blind-spot labeled.
+      MUST NOT APPEAR: the entire client-side deriveAttractorAlerts in
+      frontend/src/hooks/useObservatoryAlerts.ts — six client-invented
+      "attractors" with hardcoded risk scores (e.g. :68 risk_score 0.5),
+      invented intervention copy, and a primary fetch against a nonexistent
+      endpoint (/api/metrics/observatory/alerts is not in
+      metrics.controller.ts) that silently falls back to the fabrication.
+      This is a UI Std-1 violation; delete it and replace with a real
+      endpoint exposing AttractorMonitorService results + spine
+      ATTRACTOR_STATE_ALERT rows for timeline markers. Also banned until
+      earned: any coherence/contradiction breakpoint (scanner is a structural
+      no-op, stub SS0.5), the communication theater-check chip as currently
+      fed (is_grounded is flag-only theater both ends, stub SS3.1 — label or
+      remove), and any convergence/graduation milestone not from a real
+      event. AttractorAlertBanner's return-null-when-unreachable (:17) must
+      become an explicit "detectors: offline" state. Tensor cognition renders
+      "OFFLINE — no influence this turn" while stub SS0.1 stands. Supervisor
+      shows "not sampled" for unsampled cycles, never a green tick. The 0.60
+      confidence ceiling renders as a visible cap line with copy per AD-0043:
+      the ceiling lifts on retrieval-and-use, NOT on guardian confirmation
+      (the research report repeats the Std-3 misstatement — corrected here).
+      RULED-OUT FOR V1: natural-language query (LLM dependency + theater
+      risk; structured search only, graph nodes + turns + event types);
+      what-if/counterfactual framing anywhere in copy. Watch-pins persist in
+      localStorage per guardian (default; Jim may veto). Vitals strip = the
+      spec four (executor, dominant drive, autonomy-so-far, cost) plus a
+      feed-health channel (drive-feed staleness — pressureIsStale exists in
+      the store — WS status, detector reachability).
+      PRECONDITIONS (build-blocking, in scope of the epic): (1) NEW backend
+      read API over the spine — GET turn index (scrubber) + GET per-turn
+      impact bundle keyed by correlation_id with session_id+time-window
+      fallback (some INSERTs omit correlation_id, e.g.
+      communication.service.ts:1290) — this is the biggest gap the research's
+      "mostly reorganize, not greenfield" reuse map understates; (2) real
+      attractor-status endpoint + deletion of the client derivation; (3)
+      turn_id stamped on every response message on the text path (type field
+      exists, types/index.ts:94; voice path already sets it); (4) the WS
+      zombie-socket fix (stub SS0.7) — duplicate delivery corrupts turn
+      identity, already an AD-0043 launch gate; (5) DetectorResult noData
+      flag. FORGE LATITUDE: proportions/spacing (tokens deferred per spec
+      SS0), track order, sparkline/keyboard implementations, search facet
+      scope within the ruled v1 boundary, transport details, self-tick
+      rendering.
+    rationale: >
+      The hybrid model wins because each mode inherits its best-in-class
+      metaphor while one global binding (selected turn) makes them one
+      instrument — a pure dashboard cannot answer "step into this turn", a
+      pure debugger has no vitals culture; the research's own strain analysis
+      (SS7) is correct and its inspector-not-simulator caveat is promoted
+      into the locked name to prevent capability-claim theater. The
+      detector ruling follows from direct code reading: the backend monitor
+      is genuinely fed by the live decision loop and emits to the spine,
+      while the frontend hook fabricates differently-named detectors with
+      hardcoded scores against an endpoint that does not exist — exactly the
+      blank-reads-as-fine / invented-number failure the Theater Prohibition
+      exists to stop, in the one product whose thesis is honest
+      instrumentation. Turn granularity and reverse-step follow from the
+      spine's actual shape: correlation_id anchors a real per-turn group and
+      every row carries drive_snapshot, so "inspect state at any past
+      instant" is an indexed read, not a reconstruction — the strongest
+      possible grounding for the inspector metaphor.
+    alternatives:
+      - option: Pure observability-dashboard frame (Grafana-only, no inspector semantics)
+        rejected_because: >
+          Cannot express "step into this turn and read her state" — Jim's
+          core causal question; revisit only if the impact API proves
+          infeasible, which the spine's per-row drive_snapshot contradicts.
+      - option: Surface the existing client-derived attractor alerts (keep useObservatoryAlerts) until the real endpoint lands
+        rejected_because: >
+          It fabricates detector identities, thresholds, and risk scores that
+          do not exist in the backend — a standing Std-1 violation in the
+          honesty-flagship surface. Nothing may render from it; the real
+          endpoint is a precondition.
+      - option: Rolling-window reverse-step (recent turns only) to bound query cost
+        rejected_because: >
+          Unnecessary — state is materialized per event row and
+          correlation/session indexes exist; artificial windowing would
+          understate a real capability.
+    consequences: >
+      forge builds against this lock (owner forge, conceptual reviewer ashby,
+      code-reviewer per trio); the five preconditions enter the epic as
+      tickets before or alongside the Impact rail; useObservatoryAlerts
+      derivation is deleted, not deprecated. The research report SS5 layout +
+      SS3/SS4 pattern tables are adopted as build reference EXCEPT its Std-5
+      confidence-lift claim (corrected above) and its reuse-map optimism about
+      B/C data availability (new API required). Remaining for Jim
+      (non-blocking, defaults locked): final vitals-strip membership +
+      deviation thresholds; density-toggle default; watch-pin persistence
+      veto; keyboard reservation vs push-to-talk. Risk carried: the impact
+      bundle depends on correlation_id stamping discipline — events that omit
+      it degrade to time-window attribution and must render as
+      "attributed-by-time" rather than claimed-exact (honesty in the join,
+      not just the cell).
+    canon: >
+      Standard 1 (Theater Prohibition): three UI-side violations found and
+      resolved by this lock — client-fabricated attractor alerts (banned),
+      AttractorAlertBanner blank-when-offline (explicit offline state
+      mandated), theater-check chip fed by flag-only is_grounded (label or
+      remove until stub SS3.1 closes). Std-3 rendering mandated per AD-0043's
+      corrected semantics. No standing tension remains in the locked design.
+    evidence:
+      - docs/research/frontend-cockpit-ux-research.md:28
+      - docs/frontend-experience-spec.md:62
+      - docs/frontend-experience-spec.md:122
+      - frontend/src/hooks/useObservatoryAlerts.ts:68
+      - frontend/src/hooks/useObservatoryAlerts.ts:153
+      - frontend/src/components/Alerts/AttractorAlertBanner.tsx:17
+      - packages/decision-making/src/monitoring/attractor-monitor.service.ts:129
+      - packages/decision-making/src/monitoring/attractor-monitor.service.ts:593
+      - packages/decision-making/src/decision-making.service.ts:1369
+      - packages/decision-making/src/decision-making.service.ts:1784
+      - infra/timescaledb/init/002-events.sql:13
+      - infra/timescaledb/init/002-events.sql:34
+      - apps/sylphie/src/services/communication.service.ts:1290
+      - frontend/src/types/index.ts:94
+      - frontend/src/components/Conversation/ConversationPanel.tsx:154
+      - frontend/src/components/Graph/NodeInspector.tsx:119
+      - frontend/src/components/Supervisor/SupervisorPanel.tsx:216
+      - frontend/src/components/Metrics/MetricsPanel.tsx:80
+      - frontend/src/components/InnerMonologue/InnerMonologuePanel.tsx:94
+      - sylphie-stub-inventory.md:13
+      - sylphie-stub-inventory.md:49
+      - sylphie-stub-inventory.md:88
+    supersedes: null
+
+  - id: AD-0045
+    date: 2026-07-02
+    title: EWC consolidation seam — shared main.py helper called from the train handler when advance_mode() returns True; BootstrapTracker stays pure; endpoint kept as manual override
+    status: accepted
+    context: >
+      Item 20260702-002 CRITICAL-1. The plan's Fix #2 says "fold consolidation
+      into advance_mode()", but BootstrapTracker.advance_mode()
+      (inference/bootstrap.py:249-270) is a pure agreement state machine with
+      no access to trainer/buffer, and its class contract is main-thread-only,
+      no locks (bootstrap.py:39-41). The consolidation code (EWC anchor +
+      Fisher pass) lives in main.py's phase_transition handler (:569-608),
+      which has zero runtime callers (repo-wide grep: only docs/tests/POC).
+      The REAL production mode transition happens in the train handler:
+      tracker.advance_mode() at main.py:421, inside submit_training_sample,
+      where _state.trainer and _state.buffer are already in scope.
+    decision: >
+      The consolidation seam is main.py, NOT the tracker. Extract the anchor +
+      Fisher block (main.py:569-608) into a module-level helper
+      _consolidate_phase_boundary(trainer, buffer) in main.py. Call sites:
+      (1) the train handler — when tracker.advance_mode() returns True at
+      main.py:421, invoke the helper immediately after (this is the production
+      trigger and covers every transition incl. partial->full, since the
+      periodic advance check at :417-421 is outside the mode!="full" recording
+      guard at :398); (2) the existing POST /cognition/phase-transition
+      endpoint, kept as the manual/supervisor override, delegating to the same
+      helper (it additionally sets tracker.mode explicitly). Data flow inside
+      the helper, per the ordering fix: weights = trainer.get_weights();
+      calibration = buffer.snapshot_calibration(1000, stratified=True);
+      compute_fisher(trainer, calibration) in a guarded try (ValueError on
+      empty buffer -> warn); then set_reference(weights) UNCONDITIONALLY
+      (anchor must survive a failed Fisher pass — build-notes.md:103 guard).
+      Do NOT inject trainer into BootstrapTracker.
+    rationale: >
+      advance_mode() is deliberately a pure, lock-free decision function;
+      consolidation is an application-layer side effect owned by the layer
+      that owns trainer/buffer (main.py module state). Calling the helper
+      where advance_mode() returns True is the smallest wiring that makes the
+      production transition and the manual endpoint share one code path — no
+      layer violation, no new coupling, endpoint behavior preserved.
+      Thread-safety envelope is unchanged: the endpoint already runs
+      get_weights/compute_fisher from the FastAPI thread while the training
+      thread (trainer.py:484-518, _weight_lock) steps; the new call site is
+      the same thread. The ticket should still verify the EWC calls take
+      _weight_lock (existing exposure, now exercised for real).
+    alternatives:
+      - option: Inject trainer/ewc into BootstrapTracker and consolidate inside advance_mode()
+        rejected_because: >
+          Layer violation — turns a pure agreement tracker into a training
+          orchestrator and breaks its documented no-locks main-thread contract.
+      - option: Only wire a supervisor-side caller for the HTTP endpoint (SidecarControlService.phaseTransition())
+        rejected_because: >
+          The live mode state machine advances via advance_mode() in the train
+          handler, not via the supervisor; an HTTP-only trigger leaves the
+          production transition unconsolidated unless the supervisor perfectly
+          mirrors internal state — fragile duplication. Revisit if mode
+          authority ever moves to the supervisor.
+    consequences: >
+      Consolidation fires exactly once per real mode transition; the
+      penalty_gradients zeros path (replay.py:392-393) closes after the first
+      transition with a non-empty buffer. The re-planned TK-C carries: helper
+      extraction, both call sites, transition-invokes-consolidation
+      integration test (incl. the ->full boundary), and a weight-lock
+      verification item.
+    canon: "resolves the Std-4 exposure recorded in AD-0047 (EWC documented active while dead); no new tension"
+    evidence:
+      - packages/cognition-service/inference/bootstrap.py:249
+      - packages/cognition-service/inference/bootstrap.py:39
+      - packages/cognition-service/main.py:421
+      - packages/cognition-service/main.py:569
+      - packages/cognition-service/main.py:398
+      - packages/cognition-service/training/replay.py:392
+      - packages/cognition-service/training/trainer.py:484
+      - planning/build-notes.md:103
+    supersedes: null
+
+  - id: AD-0046
+    date: 2026-07-02
+    title: drive_history contract fix — emit nested number[][] from the TS adapter (option a), including the gateway type; do NOT relax the pydantic schema
+    status: accepted
+    context: >
+      Item 20260702-002 CRITICAL-2. The pydantic contract declares
+      drive_history: list[list[float]] ("last N drive vectors",
+      schemas.py:48); the adapter emits a FLAT 120-float array
+      (getDriveHistoryFlattened(), tensor-inference-adapter.service.ts:189-198,
+      padded.flat()) through the gateway (cognition-gateway.service.ts:166
+      driveHistory?: readonly number[]; spread at :198), so every
+      /cognition/cycle 422s. The server itself re-flattens a NESTED payload at
+      inference/cycle.py:100-102 — nested is the expected shape; the flat
+      producer is the bug. Fork: (a) fix the producer to nested (adapter +
+      gateway type) vs (b) 1-line pydantic relax to accept flat.
+    decision: >
+      Option (a). The adapter returns number[][] (10x12, drop .flat(); rename
+      or re-document the method) and the gateway panelContext type at
+      cognition-gateway.service.ts:166-167 changes to the nested readonly
+      shape; the :198 spread is unchanged. The pydantic schema is NOT
+      loosened. The gateway type change is explicitly in scope — and it is
+      compiler-forced: number[][] is not assignable to readonly number[], so
+      a half-done fix cannot build (this also answers the red-team's
+      AC-passes-while-gateway-stale concern). Contract test: a fixture payload
+      built by the TS adapter path must validate against
+      CognitionCycleRequest (pydantic model_validate).
+    rationale: >
+      The declared schema is the contract, and nested is the semantically
+      correct, self-describing shape (N timesteps x D drives): it lets the
+      upcoming versioned tensor input contract (item 20260702-017) validate
+      both dimensions mechanically, whereas a flat 120 cannot distinguish a
+      10x12 from a 12x10 mis-order — exactly the confident-garbage class -017
+      exists to prevent. Option (b) bakes a two-shape union into precisely the
+      surface -017 must then version and defend forever; a permanent contract
+      ambiguity to save ~5 lines of TS is the wrong trade. Blast radius of (a)
+      is 3 small edits in 2 files, all first-party, all compile-checked.
+    alternatives:
+      - option: (b) relax schemas.py to list[float] | list[list[float]] and flatten server-side
+        rejected_because: >
+          Weakens the exact contract 20260702-017 will version; two accepted
+          shapes = permanent ambiguity + shape-safety loss. Revisit only if a
+          third-party producer that can only emit flat ever appears (none
+          exists — there is exactly one producer, ours).
+    consequences: >
+      TK-A (P0, owner forge) = adapter + gateway type + TS/pydantic contract
+      test. The 50ms first-cycle AbortSignal (cognition-gateway.service.ts:209)
+      stays a tracked nuance: the ticket must MEASURE first-cycle latency in
+      the live smoke before deferring it (red-team MEDIUM upheld). -017 later
+      formalizes this shape in the versioned input manifest.
+    canon: none
+    evidence:
+      - packages/cognition-service/schemas.py:48
+      - packages/cognition-service/inference/cycle.py:100
+      - apps/sylphie/src/services/tensor-inference-adapter.service.ts:189
+      - apps/sylphie/src/services/cognition-gateway.service.ts:166
+      - apps/sylphie/src/services/cognition-gateway.service.ts:198
+      - apps/sylphie/src/services/cognition-gateway.service.ts:209
+      - pipeline/planning/20260702-017-feature-tensor-contract-versioned-inputarch-mani/source.md
+    supersedes: null
+
+  - id: AD-0047
+    date: 2026-07-02
+    title: Theater verdict on the EWC "live active path" claims — Std-4 violation confirmed; comments+ROADMAP corrected WITH the wiring, not deleted before it; convergence use_learned hard-disabled until trainable
+    status: accepted
+    context: >
+      Item 20260702-002 HIGH-3 (theater contradiction). In-code notes at
+      main.py:589-595 claim "TK-37 POC confirmed: this is the live active
+      path — real empirical Fisher ... No wiring change needed (TK-39 Branch
+      A)"; ROADMAP.md:83 marks EWC "wires set_reference() + compute_fisher()
+      at runtime" as done. Verified reality: POST /cognition/phase-transition
+      has ZERO runtime callers (repo-wide grep — only docs, plans, and the
+      TK-37 manual POC); production mode transitions run through
+      tracker.advance_mode() (main.py:421) with no consolidation;
+      penalty_gradients() returns zeros forever because set_reference is
+      never called (replay.py:392-393). The code inside the endpoint DOES
+      compute real Fisher when manually POSTed (the narrow thing TK-37
+      tested), but "live active path / no wiring change needed" is false as a
+      system claim. Secondarily, the :584 NOTE calls the
+      set_reference-before-compute_fisher lag "Online EWC design" — wrong:
+      Schwarz et al. 2018 blends the just-computed Fisher at the boundary,
+      and the class already supports compute-first (replay.py:186-189 seeds
+      from _phase_fisher when present), so the correct order is compute_fisher
+      then set_reference. Related theater: models/convergence.py:155-160
+      flips use_learned=True off a single lucky proxy-accuracy call while
+      trainer.py never trains the convergence weights — a random head
+      presented as "learned convergence".
+    decision: >
+      Std-4 (Theater Prohibition) violation CONFIRMED on the in-code claims
+      and the ROADMAP checkmark: they assert a live anti-catastrophic-
+      interference mechanism that never runs in production. Remedy is
+      reconcile-then-rewrite, not delete-first (red-team HIGH-3 upheld):
+      (1) the wiring fix (AD-0045) makes consolidation actually live;
+      (2) in the same change, the main.py:584 and :589-595 notes are
+      rewritten to describe the REAL trigger (train-handler advance_mode ->
+      _consolidate_phase_boundary; endpoint = manual override) and the
+      ordering swap; (3) ROADMAP.md:83's claim is truth-edited to match.
+      This AD entry is the recorded reconciliation the red-team required.
+      Convergence gate ruling (folded from the same theater lens): gating
+      use_learned on a training-pair count that nothing increments is
+      disabling dressed as fixing — instead HARD-DISABLE learned mode
+      explicitly (use_learned pinned False with a logged, commented,
+      recorded reason) until a real convergence-head training path exists;
+      designing that trainer is new scope, not a point fix.
+    rationale: >
+      The stub-inventory's own honesty rule applies: the math being real does
+      not make the mechanism live; a checkmark + "no wiring change needed"
+      comment on a dead path is precisely the misleading-claim pattern Std-4
+      forbids. Deleting the comment before wiring would hide the evidence
+      while leaving the lie in ROADMAP; wiring first makes the corrected
+      comment true. For convergence, an explicit pinned-off flag is honest
+      (states what the system does NOT do); a never-satisfiable gate
+      pretending to be a threshold is a second theater layer on top of the
+      first.
+    alternatives:
+      - option: Treat the comment as merely stale documentation (no CANON flag)
+        rejected_because: >
+          It was written to close TK-39 by claiming liveness; the audit,
+          feature-inventory, and stub-inventory all independently flag the
+          path as DEAD — this is a capability claim, not a typo.
+      - option: Keep the lagged set_reference-first order as "Online EWC design"
+        rejected_because: >
+          Contradicts the published Online EWC update (immediate gamma-blend of
+          the just-computed Fisher); the class's compute-first seeding branch
+          (replay.py:186-189) exists precisely to support the correct order,
+          so the swap is free.
+    consequences: >
+      TK-B (meridian) carries the ordering swap + comment rewrite +
+      check_demotions() wiring beside check_graduations() (main.py:408;
+      demotion AC must state the >=20-sample precondition,
+      bootstrap.py:144-147). TK-C carries the wiring (AD-0045) + the
+      use_learned hard-disable with its recorded reason. ROADMAP truth-edit
+      rides whichever ticket lands last.
+    canon: "Std-4 violation confirmed and remedied by wiring + truth-edit; use_learned proxy-flip ruled Std-4-adjacent and pinned off until trainable"
+    evidence:
+      - packages/cognition-service/main.py:584
+      - packages/cognition-service/main.py:589
+      - packages/cognition-service/training/replay.py:186
+      - packages/cognition-service/training/replay.py:392
+      - packages/cognition-service/models/convergence.py:155
+      - packages/cognition-service/inference/bootstrap.py:144
+      - ROADMAP.md:83
+      - sylphie-feature-inventory.md:37
+      - sylphie-stub-inventory.md:78
+    supersedes: null
+
+  - id: AD-0048
+    date: 2026-07-02
+    title: Grounding provenance threading (003c) — the surface guard stays the SOLE provenance gate; fix locus is applyRecallGroundingFromRetrieval (surfaced-check before the GROUNDED early-return), not the upstream heuristics
+    status: accepted
+    context: >
+      Item 20260702-003 ticket 003c. The plan's AC — "return factNodeId even
+      when already GROUNDED" — would, as written, thread provenance for a
+      fact that never surfaced (fabricated provenance; Std-1 + Std-4). Ground
+      truth verified: applyRecallGroundingFromRetrieval
+      (deliberation/recall-retrieval.ts:504-534) early-returns provenance:null
+      when currentGrounding is already 'GROUNDED' (:517-519) BEFORE the
+      valueSurfacesAsWord honesty guard (:525-527). Its own doc contract says
+      the opposite: "the node id (provenance) is returned WHENEVER the value
+      surfaced" (:497-499) — the code violates its own documented CRUCIAL T1
+      DISTINCTION. Trigger confirmed: at the monologue short-circuit,
+      deliberation.service.ts:425-430 sets knowledgeGrounding='GROUNDED'
+      (personFactRecalled / topical-WKG) BEFORE the retrieval is applied at
+      :446, so the WS3-T2 reinforcement gate
+      (decision-making.service.ts:1993-1998, requires GROUNDED + provenance +
+      factNodeId === responseGroundingProvenance) can essentially never fire
+      on the common path. Same suppression exists at ALL FOUR call sites
+      (deliberation.service.ts:446, :813; decision-making.service.ts:1060,
+      :1151); none carries pre-existing provenance, so there is no overwrite
+      hazard. Corrections to the record: the plan's files_in_scope path
+      packages/decision-making/src/recall-retrieval.ts does not exist (actual:
+      src/deliberation/recall-retrieval.ts); the red-team's claim that
+      discriminateGroundedBy is "called at deliberation.service.ts:70 /
+      decision-making.service.ts:1516" is imprecise — :70 is a re-export and
+      :1516 threads the groundedBy VALUE from applied results; the FUNCTION
+      has no production caller, but its role is covered by retrieval.source
+      threading, so it is out of scope for 003c either way.
+    decision: >
+      CANON ruling: valueSurfacesAsWord MUST remain the sole gate for
+      emitting provenance — unconditional provenance-on-GROUNDED is forbidden.
+      The honest design that still lets legitimate reinforcement fire:
+      inside applyRecallGroundingFromRetrieval, move the surfaced check ahead
+      of the GROUNDED early-return —
+      (i) retrieval null -> passthrough (unchanged);
+      (ii) retrieval present + value NOT surfaced -> keep currentGrounding,
+      provenance null (unchanged);
+      (iii) retrieval present + value SURFACED -> return GROUNDED +
+      retrieval.factNodeId + retrieval.source REGARDLESS of who set the
+      GROUNDED label first (label is idempotent; the node id is the one
+      resolved at retrieval time). This restores the function's documented
+      contract and fixes all four call sites uniformly. The fix locus is the
+      shared function, NOT a reorder of deliberation.service.ts:420-450 —
+      the upstream heuristics are untouched.
+    rationale: >
+      Provenance attached only when the fact VALUE verifiably surfaced as a
+      whole word in the delivered text is honest by construction — the
+      upstream label's origin is irrelevant to whether THIS fact was
+      recalled-and-used. The reinforcement gate additionally requires
+      factNodeId === responseGroundingProvenance, so only the pre-resolved
+      recall fact is ever reinforced. Fixing the shared function (a) enforces
+      the invariant in exactly one place, (b) repairs the code-vs-doc
+      contradiction at :497-499 vs :517-519, and (c) covers the latent
+      (:1060) and procedure (:1151) sites that a deliberation.service-only
+      reorder would miss. Side effect verified sound: groundedBy now also
+      populates in case (iii), so write-time person-scoping
+      (decision-making.service.ts:1633) scopes WKG-sourced recalls
+      world-scoped — consistent with the WS4-T5 invariant (:1028-1029).
+    alternatives:
+      - option: Return factNodeId unconditionally when already GROUNDED (plan's AC as written)
+        rejected_because: >
+          Fabricated provenance when the value did not surface — direct Std-1
+          + Std-4 violation; also reinforces paraphrased-away facts, corrupting
+          the WS3-T2 use-count semantics.
+      - option: Reorder/merge grounding signals at deliberation.service.ts:420-450 only (red-team's proposed locus)
+        rejected_because: >
+          Fixes one of four suppression sites and entangles recall provenance
+          with the unrelated topical-WKG grounding heuristics; the shared
+          function is the single honest choke point. Revisit only if a call
+          site ever carries upstream provenance that must win (none does
+          today).
+    consequences: >
+      Re-planned 003c: files_in_scope corrected to
+      src/deliberation/recall-retrieval.ts (+ specs); the change is ~6 lines
+      in one function. Characterization tests asserting the OLD suppression
+      (recall-retrieval.spec.ts:143, okg-recall-subsumption.spec.ts:187) are
+      updated DELIBERATELY as part of the AC (they asserted the bug). New ACs:
+      surfaced+already-GROUNDED -> provenance=factNodeId and WS3-T2 fires;
+      not-surfaced -> provenance stays null and WS3-T2 does NOT fire; a
+      write-time scoping check for the newly-populated groundedBy.
+      discriminateGroundedBy dead-function question is left to the occam
+      docket, not this ticket.
+    canon: "Std-1 + Std-4 upheld — surface check remains the sole provenance gate; the ruled design threads provenance only for verifiably surfaced facts"
+    evidence:
+      - packages/decision-making/src/deliberation/recall-retrieval.ts:497
+      - packages/decision-making/src/deliberation/recall-retrieval.ts:517
+      - packages/decision-making/src/deliberation/recall-retrieval.ts:525
+      - packages/decision-making/src/deliberation/deliberation.service.ts:425
+      - packages/decision-making/src/deliberation/deliberation.service.ts:446
+      - packages/decision-making/src/deliberation/deliberation.service.ts:813
+      - packages/decision-making/src/decision-making.service.ts:1060
+      - packages/decision-making/src/decision-making.service.ts:1151
+      - packages/decision-making/src/decision-making.service.ts:1516
+      - packages/decision-making/src/decision-making.service.ts:1633
+      - packages/decision-making/src/decision-making.service.ts:1993
+    supersedes: null
+
+  - id: AD-0049
+    date: 2026-07-02
+    title: Consolidation locking discipline — snapshot-under-lock via get_weights() ONLY; compute_fisher/set_reference run lock-free; no new lock on EWC state (amends AD-0045's "verify the EWC calls take _weight_lock" clause and TK-C's lock-held AC, both WRONG)
+    status: accepted
+    context: >
+      Item 20260702-002 refine red-team, FORK 1 (CRITICAL). AD-0045's rationale
+      said "the ticket should still verify the EWC calls take _weight_lock",
+      and the staged TK-C AC demanded "both calls execute while holding
+      trainer._weight_lock". Verified against code, both are wrong and the AC
+      as written mandates a deadlock: trainer._weight_lock is a NON-reentrant
+      threading.Lock (trainer.py:484); trainer.get_weights() already acquires
+      it internally to copy the anchor snapshot (trainer.py:593), so wrapping
+      the helper body in `with trainer._weight_lock:` self-deadlocks on the
+      inner get_weights(). The documented lock discipline (trainer.py:450-453)
+      is hold-briefly-for-write-back only (sub-ms); the training thread's only
+      acquisition is the weight write-back at trainer.py:852. Inference reads
+      weights with NO lock by design (trainer.py:447-449) — so holding the
+      lock across the 1000-sample Fisher pass would not "stall inference"
+      (inference never locks) but WOULD stall the training thread's write-back
+      at :852 for the full pass, violating the documented sub-ms discipline.
+      compute_fisher/set_reference currently hold no lock at the existing
+      endpoint call site (main.py:583/596) — the envelope AD-0045 promised to
+      keep unchanged. Additional verified facts: compute_fisher reads LIVE
+      model weights (replay.py:281-289), not the anchor snapshot, by
+      construction; set_reference writes ewc._reference/_fisher (replay.py:
+      207-211) while the training thread reads them lock-free in
+      penalty_gradients (trainer.py:844, replay.py:392-407).
+    decision: >
+      The locking discipline for _consolidate_phase_boundary(trainer, buffer)
+      is: (1) The helper acquires NO lock itself — zero `with
+      trainer._weight_lock` anywhere in it. (2) The anchor snapshot is taken
+      exclusively via trainer.get_weights(), whose internal brief
+      copy-under-lock is the ONLY _weight_lock acquisition in the whole
+      consolidation path. (3) compute_fisher(trainer, calibration) and
+      set_reference(weights) run lock-free, exactly as the existing endpoint
+      does. compute_fisher's forward/backward passes read live model weights
+      concurrently with training write-backs — accepted, same exposure class
+      as the documented lock-free inference read (trainer.py:447-457); the
+      Fisher floor/clamp (replay.py:321-322) bounds any mid-update noise.
+      (4) set_reference needs NO lock against the concurrent reader: the
+      reader is the TRAINING thread's penalty()/penalty_gradients() (not
+      inference); under the GIL, list-attribute assignment is atomic, both
+      lists are fresh copies with identical shapes, and replay.py:392 guards
+      None — worst case is ONE train step pairing new _fisher with old
+      _reference (the :207->:209 window), a bounded one-step regularization
+      transient with no corruption possible. Accepted; do not add an EWC-state
+      lock. (5) Anchor-vs-Fisher drift (weights snapshotted at T0, Fisher
+      estimated over live weights during the pass) is ACCEPTED estimator noise
+      for a floored/clamped diagonal empirical Fisher; the anchor stays the
+      T0 snapshot. (6) The helper is called synchronously from the (async)
+      train handler after advance_mode() returns True — same envelope as the
+      existing endpoint; boundaries are rare (3 per lifetime + manual). The
+      helper MUST log its wall-clock duration; if a live boundary measures
+      >250ms of event-loop blockage, offloading via asyncio.to_thread is filed
+      as follow-up, not preempted now. Testable ACs replacing TK-C's lock AC:
+      (a) deadlock regression — run the helper on a real trainer + non-empty
+      buffer in a worker thread, join(timeout), assert completion; (b) lock-
+      scope assertion — wrap ewc.compute_fisher and ewc.set_reference to
+      assert trainer._weight_lock.locked() is False at entry (single-threaded
+      test, so locked() reflects the helper's own holding), and assert
+      get_weights() was called exactly once before compute_fisher.
+    rationale: >
+      The snapshot-copy-then-work-unlocked pattern is the trainer's own
+      documented design; the consolidation path only needs a CONSISTENT anchor
+      (get_weights already provides it) — Fisher is a statistical diagonal
+      estimate whose inputs are noisy by construction, so serializing it
+      against training buys nothing measurable and costs a multi-hundred-ms
+      training stall plus a deadlock trap. Every alternative acquires the
+      non-reentrant lock somewhere it can meet itself.
+    alternatives:
+      - option: Wrap the whole helper in trainer._weight_lock
+        rejected_because: >
+          Self-deadlock on get_weights()'s internal acquire (non-reentrant
+          Lock); even refactored to avoid re-entry it stalls the training
+          write-back for the full Fisher pass, violating trainer.py:450-453.
+      - option: Hold the lock across compute_fisher only (freeze weights for a "clean" Fisher)
+        rejected_because: >
+          Same training-thread stall; a frozen-weights Fisher is not more
+          correct — the estimator is already chunk-aggregated and clamped, and
+          the pass reads weights the same lock-free way inference does.
+      - option: Add a dedicated lock around ewc._reference/_fisher
+        rejected_because: >
+          Puts a lock acquisition in penalty_gradients on EVERY train step to
+          protect against a once-per-phase one-step transient that is already
+          shape-safe and None-guarded. Revisit only if EWC state ever gains a
+          reader outside the training thread.
+    consequences: >
+      AD-0045's "verify the EWC calls take _weight_lock" clause and the staged
+      TK-C AC "both calls execute while holding trainer._weight_lock" are
+      REPLACED by this discipline (AD-0045's seam/helper/call-site decision
+      stands unchanged). TK-C gains the duration log + the two tests in (6).
+      A one-step mixed-epoch EWC transient per boundary is accepted and
+      documented here rather than papered over with a lock.
+    canon: "none — upholds AD-0045's thread-safety-envelope-unchanged clause by making it precise; no Standard touched"
+    evidence:
+      - packages/cognition-service/training/trainer.py:484
+      - packages/cognition-service/training/trainer.py:593
+      - packages/cognition-service/training/trainer.py:450
+      - packages/cognition-service/training/trainer.py:844
+      - packages/cognition-service/training/trainer.py:852
+      - packages/cognition-service/training/replay.py:207
+      - packages/cognition-service/training/replay.py:281
+      - packages/cognition-service/training/replay.py:321
+      - packages/cognition-service/training/replay.py:392
+      - packages/cognition-service/main.py:366
+      - packages/cognition-service/main.py:583
+      - packages/cognition-service/main.py:596
+    supersedes: null
+
+  - id: AD-0050
+    date: 2026-07-02
+    title: use_learned checkpoint-load hole closed (force False on load, ignore — not migrate — the persisted flag); AC4 rewritten to deterministic "EWC armed" + explicit drift/ramp precondition; TK-B AC1 targets the inline handler
+    status: accepted
+    context: >
+      Item 20260702-002 refine red-team, FORK 2 (CRITICAL) + two HIGH AC
+      defects. FORK 2 verified: convergence.py load() restores use_learned
+      from the persisted checkpoint (convergence.py:234-235) and save()
+      persists it (:211); AD-0047's hard-disable as staged in TK-C only
+      blocks the check() flip (:152-160), so a previously-graduated
+      checkpoint boots with the untrained random head LIVE — the Std-4
+      theater survives the fix through the load path. There are exactly two
+      writers of use_learned outside __init__: the check() flip at :160 and
+      the load() restore at :235. HIGH (a) verified: TK-C's AC4
+      "penalty_gradients() non-zero in the phase immediately following the
+      transition" is deterministically FALSE at the boundary — set_reference
+      re-arms the ramp (replay.py:211), _ramp_factor() is 0.0 at that instant
+      (replay.py:420-422) so penalty_gradients returns zeros (replay.py:
+      395-402), and current==reference means zero gradient until drift even
+      at full ramp. HIGH (b): TK-B's AC1 references "the consolidation helper
+      (see TK-C)" though TK-B lands first by the plan's own sequencing.
+    decision: >
+      FORK 2 — closure CONFIRMED with one precision: the hard-disable must
+      pin BOTH writers. load() forces self.use_learned = False, IGNORING the
+      persisted flag (log a warning when the checkpoint carried True, citing
+      this AD); check() keeps the AD-0047 pin. Ignore beats migrate: load()
+      stays a read-only operation — rewriting checkpoint files on read is a
+      side-effecting surprise that breaks rollback semantics, and the flag
+      self-heals to False at the next routine save() since it can never be
+      True in memory. Required unit test: construct/save a checkpoint npz
+      with use_learned=True, load() it, assert use_learned is False and the
+      divergence path selects heuristic_divergence (convergence.py:168).
+      HIGH (a) — AC4 is rewritten to the deterministic form: after the first
+      boundary with a non-empty buffer, assert EWC ARMED (ewc._reference is
+      not None AND ewc._fisher is not None), and separately, under an
+      explicit precondition (perturb a weight copy away from the anchor, then
+      call penalty_gradients at least twice — the first call advances the
+      ramp off zero per replay.py:398-399), assert the subsequent
+      penalty_gradients result is non-zero. No AC may assert non-zero
+      gradients at t=0. HIGH (b) — TK-B's AC1 targets the INLINE handler:
+      swap the order at main.py:583/596 (compute_fisher then set_reference)
+      and rewrite the :584/:589-595 comments in place; TK-C's extraction AC
+      then states it preserves the TK-B-corrected order (no re-decision of
+      ordering inside TK-C).
+    rationale: >
+      A hard-disable that survives neither restart nor rollback is not a
+      hard-disable; the checkpoint is just a third writer path and all
+      writers must be pinned or the theater re-enters through persistence.
+      Ignoring rather than migrating keeps load() pure and makes the pin
+      enforceable by a one-line invariant ("nothing may set use_learned
+      True") instead of a file-format migration. The AC4 rewrite replaces a
+      flaky, physically-impossible assertion with the two things that are
+      actually true and checkable at the boundary: the mechanism is ARMED,
+      and it BITES once its documented preconditions (ramp advanced, drift
+      exists) are explicitly staged.
+    alternatives:
+      - option: Migrate the persisted flag (rewrite the checkpoint to use_learned=False on load)
+        rejected_because: >
+          Side-effecting read; breaks rollback-to-checkpoint semantics and
+          adds a write path to load() for a flag that self-heals at next
+          save. Revisit only if a checkpoint-format version bump happens
+          anyway.
+      - option: Drop use_learned from save() instead of pinning load()
+        rejected_because: >
+          Existing already-saved checkpoints still carry True and load() would
+          still restore it; the hole is the reader, not the writer.
+    consequences: >
+      TK-C's use_learned AC gains the load-path pin + the load(True)->False
+      unit test; TK-C's AC4 is replaced by the armed-assertion + staged-drift
+      form; TK-B's AC1 is re-pointed at main.py:583/596 inline. With both
+      writers pinned, use_learned can never be True in a running process
+      until a real convergence-head trainer exists (per AD-0047 that trainer
+      is new scope, Jim's product call to prioritize, not a point fix here).
+    canon: "Std-4 — the surviving-theater finding is UPHELD: without the load-path pin, the random-head 'learned mode' re-enters via checkpoint restore; this closure completes the AD-0047 remedy"
+    evidence:
+      - packages/cognition-service/models/convergence.py:152
+      - packages/cognition-service/models/convergence.py:160
+      - packages/cognition-service/models/convergence.py:168
+      - packages/cognition-service/models/convergence.py:211
+      - packages/cognition-service/models/convergence.py:234
+      - packages/cognition-service/training/replay.py:211
+      - packages/cognition-service/training/replay.py:398
+      - packages/cognition-service/training/replay.py:420
+      - packages/cognition-service/main.py:583
+      - packages/cognition-service/main.py:596
+    supersedes: null
+
+  - id: AD-0051
+    date: 2026-07-03
+    title: "Q-34 ruled: guardian drive_rules writes execute via an in-process POSTGRES_GUARDIAN_POOL (guardian_admin role) in apps/sylphie — no separate approval process"
+    status: accepted
+    context: >
+      TK-153 (CANON Std-6 drive_rules lockdown) blocked on the privileged-role
+      seam: guardian-rules.service.ts:44 injects POSTGRES_RUNTIME_POOL
+      (sylphie_app) and INSERTs drive_rules at :133; POSTGRES_ADMIN_POOL is a
+      defined-but-never-provided Symbol (database.tokens.ts:14). Live-DB
+      inspection (sylphie-postgres, 2026-07-03) found a hand-applied four-role
+      scheme ALREADY in place: roles sylphie_admin (superuser/owner),
+      sylphie_app, drive_engine, guardian_admin all exist with LOGIN;
+      RLS enabled on both rules tables. Empirically TODAY: sylphie_app INSERT
+      drive_rules -> RLS violation; UPDATE/DELETE -> permission denied; UPDATE
+      proposed_drive_rules -> silent "UPDATE 0". Therefore the guardian
+      dashboard approve/reject path (RulesController -> GuardianRulesService
+      via the runtime pool) is ALREADY BROKEN against the dev DB — approveRule
+      throws an RLS violation, rejectRule silently no-ops into
+      NotFoundException. The seam decision was in-process privileged pool
+      (Option A) vs a separate guardian-approval process mirroring drive
+      isolation (Option B).
+    decision: >
+      Option A, hardened. Add a POSTGRES_GUARDIAN_POOL injection token
+      (alongside, NOT reusing, POSTGRES_ADMIN_POOL — that token means
+      superuser/DDL and stays unwired). Provide it in apps/sylphie with
+      guardian_admin credentials sourced ONLY from env
+      (POSTGRES_GUARDIAN_USER/POSTGRES_GUARDIAN_PASSWORD) — NO working
+      hardcoded default: if the env is absent the provider yields a
+      fail-closed null/sentinel and approve/reject throw a clear
+      "guardian credentials not configured" error; reads keep working on the
+      runtime pool. GuardianRulesService keeps getProposedRules/getActiveRules
+      on POSTGRES_RUNTIME_POOL and moves ONLY the approveRule/rejectRule
+      transactions to POSTGRES_GUARDIAN_POOL. Single provider, single
+      injection site (GuardianRulesService); no other service may inject the
+      guardian pool.
+    rationale: >
+      CANON Std-6's threat model is the AUTONOMOUS runtime rewriting its own
+      evaluation rules — every autonomous code path executes SQL as
+      sylphie_app, and after TK-153 that role is grant-denied on drive_rules,
+      which is the DB-layer guarantee Std-6 asks for. The guardian approval
+      path is categorically different from drive computation: it is an
+      episodic, human-initiated, guardian-authenticated admin action, and the
+      CANON's own guardian asymmetry design already places that surface
+      in-app (RulesController + isGuardian JWT). Drive isolation earns a
+      separate process because the drive engine is a continuously running
+      autonomous judge; a rule-approval click is not. Option B's marginal
+      gain applies only against an attacker with arbitrary code execution
+      inside the main process — who could equally read co-deployed secrets or
+      bypass the JWT check — while costing a new deployable (on a Railway
+      setup that already has deploy-deadlock pain), new secrets, and a new
+      authenticated API surface. Least-privilege note: the guardian pool uses
+      guardian_admin (DML on the two rules tables only), never the
+      sylphie_admin superuser.
+    alternatives:
+      - option: "Option B — separate guardian-approval process owning the privileged connection"
+        rejected_because: >
+          Marginal hardening against an in-process-compromise threat model
+          that the rest of Std-6's layers do not defend against either; a new
+          deployable + secret + API surface. Revisit if a guardian-ops
+          hardening epic is ever chartered or the guardian surface moves out
+          of apps/sylphie anyway.
+      - option: "Reuse POSTGRES_ADMIN_POOL with sylphie_admin credentials"
+        rejected_because: >
+          sylphie_admin is a SUPERUSER (bypasses RLS entirely, owns
+          everything); handing it to a request-serving service violates least
+          privilege. The ADMIN token stays reserved for schema/init tooling.
+    consequences: >
+      TK-153 splits (confirming refine's read): TK-153a (sentinel) = the
+      convergent DB migration per AD-0052; TK-153b (forge, depends_on
+      TK-153a) = guardian pool token + provider + GuardianRulesService rewire
+      + env plumbing (.env.example; Railway guardian secret is Jim's to set).
+      AC1/AC3/AC4 prove on 153a; AC2 proves on 153b. Also discloses a live
+      bug: guardian approve/reject is currently non-functional against the
+      dev DB — 153b is a FIX, not just hardening. DEP-3 (TK-129 verifier
+      warn-only -> abort) flips only after both land.
+    canon: "Implements Std-6; guardian asymmetry unaffected (approval authority stays guardian-JWT-gated; the DB identity now matches the authority boundary)"
+    evidence:
+      - apps/sylphie/src/services/guardian-rules.service.ts:44
+      - apps/sylphie/src/services/guardian-rules.service.ts:133
+      - apps/sylphie/src/controllers/rules.controller.ts:26
+      - apps/sylphie/src/app.module.ts:168
+      - packages/shared/src/storage/database.tokens.ts:14
+      - "live sylphie-postgres psql 2026-07-03: pg_roles, \\dp drive_rules/proposed_drive_rules, sylphie_app write attempts (rolled back)"
+    supersedes: null
+
+  - id: AD-0052
+    date: 2026-07-03
+    title: "Q-35/Q-36 ruled: drive_rules end-state is a CONVERGENT codification migration — owner sylphie_admin, REVOKE as primary denial, RLS ENABLE+FORCE as defense-in-depth, exact grant matrix fixed"
+    status: accepted
+    context: >
+      Q-35: no CREATE TABLE drive_rules/proposed_drive_rules exists in any
+      executable repo code (only reference SQL in .claude/agents/drive.md and
+      the IF-EXISTS-guarded index init). Live-DB inspection settles ownership:
+      both tables EXIST in dev, owner = sylphie_admin (superuser), RLS
+      enabled, FORCE off; created out-of-repo by hand (live columns match the
+      code, not drive.md's sketch; Prisma migrations cover only users).
+      Repo-truth is WORSE than live-dev truth: 001-runtime-user.sql:9-10
+      grants DEFAULT PRIVILEGES SELECT/INSERT/UPDATE/DELETE on future tables
+      to sylphie_app, so any FRESH environment (new volume, Railway) gives the
+      runtime full DML on drive_rules with no lockdown at all. Q-36: current
+      live grants are inconsistent — sylphie_app holds a dead INSERT grant on
+      drive_rules (RLS-blocked, errors as an RLS violation not permission
+      denied) and arwd on proposed_drive_rules where RLS silently filters
+      UPDATE to 0 rows. verify-rls.ts:130 asserts the literal string
+      'permission denied', and RlsVerificationService is currently dormant
+      (defined, never registered in any module).
+    decision: >
+      One idempotent, convergent migration (infra/migrations/NNN-drive-rules-
+      lockdown.ts, dry-run default) that produces the same end-state from ANY
+      starting point — hand-configured dev, fresh init, or Railway prod:
+      (1) CREATE TABLE IF NOT EXISTS both tables matching the LIVE schema
+      exactly (this codifies the schema in-repo for the first time);
+      (2) ALTER TABLE ... OWNER TO sylphie_admin (idempotent; corrective on
+      any environment where ownership drifted);
+      (3) CREATE ROLE IF ABSENT guardian_admin and drive_engine, LOGIN,
+      passwords from env;
+      (4) explicit per-table REVOKE ALL then GRANT the matrix below — this
+      neutralizes the 001 default-privileges footgun for these two tables
+      without touching default privileges globally (blast radius) and without
+      editing 001 (init immutable per db-change-guard);
+      (5) RLS: ENABLE + FORCE ROW LEVEL SECURITY on both tables (FORCE is
+      inert while the owner is a superuser but protects a future
+      non-superuser owner); DROP POLICY IF EXISTS + recreate in canonical
+      TO-role form.
+      GRANT MATRIX — drive_rules: sylphie_app SELECT only (REVOKE the dead
+      INSERT); drive_engine SELECT; guardian_admin SELECT,INSERT,UPDATE,
+      DELETE; nobody else. proposed_drive_rules: sylphie_app SELECT,INSERT
+      only (REVOKE UPDATE/DELETE — guardian status-updates move to the
+      guardian pool per AD-0051); drive_engine SELECT; guardian_admin
+      SELECT,INSERT,UPDATE,DELETE.
+      POLICIES — drive_rules: FOR SELECT TO sylphie_app USING(true); FOR
+      SELECT TO drive_engine USING(true); FOR ALL TO guardian_admin
+      USING(true) WITH CHECK(true); NO write policy for sylphie_app.
+      proposed_drive_rules: FOR SELECT TO sylphie_app; FOR INSERT TO
+      sylphie_app WITH CHECK (status = 'pending') — the runtime can only
+      insert pending proposals; FOR SELECT TO drive_engine; FOR ALL TO
+      guardian_admin.
+      MECHANISM RANKING CONFIRMED: REVOKE is the PRIMARY denial (yields the
+      'permission denied' string verify-rls.ts:130 asserts; an RLS-filtered
+      UPDATE where a grant exists returns a silent 0 rows); RLS is
+      defense-in-depth only. TK-153a does NOT wire RlsVerificationService —
+      arming the startup verifier is TK-129's scope (DEP-3 sequencing);
+      153a's job is to make checks 1-4 true. New harness required in 153a:
+      a continuity smoke that (a) seeds rows, (b) proves sylphie_app
+      INSERT/UPDATE/DELETE denied with permission-denied on drive_rules,
+      (c) connects as guardian_admin and proves the approve-shaped
+      INSERT/UPDATE succeeds, (d) proves row count/content unchanged,
+      (e) runs the REVERSE and proves grants restored. Verification step:
+      run the migration dry-run against Railway prod postgres to learn its
+      actual state before --confirm there.
+    rationale: >
+      The live dev DB proves the intended design (four roles, admin
+      ownership, RLS) but it exists only as hand-applied state — un-codified
+      state is not protection, it is luck: any fresh environment regresses to
+      full runtime DML via 001's default privileges. Convergence (not a
+      delta-from-assumed-state script) is the only shape that is safe to run
+      everywhere including prod whose state we have not seen. Ownership by
+      sylphie_admin is confirmed live, so REVOKE bites and RLS is not
+      owner-bypassed; FORCE costs one line and future-proofs an owner change.
+      Keeping REVOKE primary is forced by two observed behaviors: the
+      silent-0-rows RLS UPDATE trap and verify-rls's string assertion.
+      The WITH CHECK (status='pending') on proposer INSERT is a free
+      invariant: the only autonomous write anywhere in the rules surface is
+      now "append a pending proposal".
+    alternatives:
+      - option: "ALTER DEFAULT PRIVILEGES to strip sylphie_app DML on all future tables"
+        rejected_because: >
+          Blast radius — other app tables (users et al.) legitimately rely on
+          001's defaults; per-table explicit REVOKE/GRANT on the two rules
+          tables fully covers fresh environments since defaults only apply at
+          creation time and the migration runs after its own CREATE.
+      - option: "RLS-only lockdown (keep grants, rely on policies)"
+        rejected_because: >
+          Fails the existing harness contract (verify-rls expects 'permission
+          denied') and produces silent 0-row UPDATEs instead of loud errors —
+          a theater-adjacent failure mode.
+      - option: "Assume dev-DB state and ship only the REVOKE delta"
+        rejected_because: >
+          The scheme exists nowhere in executable code; a delta script
+          no-ops or errors on fresh/prod environments and the Std-6 gap
+          silently survives exactly where it matters most.
+    consequences: >
+      The drive_rules schema + role scheme become repo-codified for the first
+      time. TK-153a complexity grows beyond the original ~250 LOC estimate
+      (tables + roles + grants + policies + smoke), which the split absorbs.
+      sylphie_app rejectRule/approveRule attempts now fail LOUDLY
+      (permission denied) instead of silently, until TK-153b lands — hence
+      153a and 153b should merge in the same release window. Requires
+      guardian_admin/drive_engine passwords provisioned via env in every
+      environment (dev .env; Railway secrets = Jim). drive_engine role is
+      kept/granted but wiring drive-server to actually use it
+      (main.ts:60/:94 currently defaults to the timescale-style user) is
+      explicitly out of scope here — candidate follow-up ticket.
+    canon: "Implements Std-6 at the DB layer; confidence/provenance untouched; no theater — denial is loud, not silent"
+    evidence:
+      - infra/postgres/init/001-runtime-user.sql:9
+      - infra/postgres/init/002-drive-rules-indexes.sql:8
+      - packages/drive-engine/src/postgres-verification/verify-rls.ts:130
+      - packages/drive-engine/src/rule-proposer/postgres-rules-client.ts:111
+      - apps/drive-server/src/main.ts:90
+      - docker-compose.yml:91
+      - ".claude/agents/drive.md:179 (reference scheme the live DB mirrors)"
+      - "live sylphie-postgres psql 2026-07-03: table owners/RLS flags, grant/policy dump, _prisma_migrations history, rolled-back write attempts as sylphie_app"
+    supersedes: null

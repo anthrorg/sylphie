@@ -1,29 +1,51 @@
 {
-  "version": "0.2.1",
-  "installedAt": "2026-06-15T23:35:01.700Z",
-  "lastUpgradedAt": "2026-06-15T23:35:01.700Z",
+  "version": "0.5.3",
+  "installedAt": "2026-06-28T02:22:48.082Z",
+  "lastUpgradedAt": "2026-06-28T02:22:48.082Z",
   "installMode": "global",
   "cliPathAtInstall": "C:\\Users\\Jim\\AppData\\Local\\nvm\\v24.11.1\\node_modules\\@sylphie-labs\\codebase-pkg\\dist\\cli\\codebase-pkg.js",
   "managedFiles": [
     {
       "path": ".claude/skills/classify-pkg-domains/SKILL.md",
-      "installedHash": "1f6b5e0484814cc59b4ee1f833f1ab80ef5e8eec3bdd09a4c855a4ec2b9b2d83"
+      "installedHash": "ea250948ddbf183742ab3d27cdb4f21704b88025fc1fa5e9280483a7cc660704"
     },
     {
       "path": ".claude/skills/infer-pkg-connections/SKILL.md",
-      "installedHash": "58ffa71d965e9cbdc673d7eb328f40465f2d868d1d2c8b82c3f44cac60b7150c"
+      "installedHash": "e22a9008f0c6bc18d657beb7ae7fcca9a3f2e0f773be58fceeae75990af9ecb8"
+    },
+    {
+      "path": ".claude/skills/map-pkg-from-root/SKILL.md",
+      "installedHash": "342bf323120e3bfb1a64d171f633a20548c00116f071db655079c056d98d9601"
     },
     {
       "path": ".claude/skills/sync-pkg/SKILL.md",
-      "installedHash": "199c9fffdf3c9bcde5e26ad200cd16e3ae4c31791228b59e81ec15313e11c196"
+      "installedHash": "0c1a4cb27eec0d5f33f2860b1f1ad1cb729944d5f07b68bf330d8a6a633d81ac"
     },
     {
       "path": ".mcp.json",
-      "installedHash": "3625ac55a4e1a2f0a6c82cebaba2e4b9c4464accc2a3556d485e668866ecd5da"
+      "installedHash": "1a2e2d8fd620023dbd61292ed9fda9b81b7c0be20b9aad79375e5e6987e6c3d1"
     },
     {
       "path": "constraints.json",
       "installedHash": "e6d73be9dd001431b1d6c7670662823b63471e7b4613766e67ffa8ee263b2e08"
+    },
+    {
+      "path": "docker-compose.codebase-pkg.yml",
+      "installedHash": "241530746c7c427ffba7eec40df3d5eb83ba06b169c4f2d0d5a19f06580c8801"
     }
-  ]
+  ],
+  "root": "C:\\Users\\Jim\\OneDrive\\desktop\\Code\\sylphie",
+  "neo4j": {
+    "uri": "bolt://localhost:8208",
+    "containerName": "codebase-pkg-neo4j-sylphie-c9c4",
+    "httpPort": 7979,
+    "boltPort": 8208,
+    "slug": "sylphie-c9c4"
+  },
+  "postgres": {
+    "uri": "postgres://codebase-pkg:codebase-pkg-local@localhost:6123/codebase_pkg",
+    "containerName": "codebase-pkg-postgres-sylphie-c9c4",
+    "port": 6123,
+    "slug": "sylphie-c9c4"
+  }
 }

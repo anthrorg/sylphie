@@ -1,0 +1,1 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-snapshot-restore.md` -> planning/ (type guess: feature)

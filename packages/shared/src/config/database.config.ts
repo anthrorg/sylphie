@@ -48,6 +48,14 @@ export const postgresConfig = registerAs('postgres', () => ({
   adminPassword: process.env.POSTGRES_ADMIN_PASSWORD!,
   runtimeUser: process.env.POSTGRES_RUNTIME_USER!,
   runtimePassword: process.env.POSTGRES_RUNTIME_PASSWORD!,
+  // Guardian pool credentials (TK-155). Deliberately NOT asserted with `!`
+  // like the admin/runtime users above — these are allowed to be unset (a
+  // fresh/dev environment before TK-154's guardian_admin role is provisioned)
+  // and the guardian pool factory (apps/sylphie/src/services/
+  // guardian-pool.provider.ts) fails CLOSED on first use rather than the app
+  // crashing at boot.
+  guardianUser: process.env.POSTGRES_GUARDIAN_USER,
+  guardianPassword: process.env.POSTGRES_GUARDIAN_PASSWORD,
   maxConnections: parseInt(process.env.POSTGRES_MAX_CONNECTIONS || '10', 10),
   idleTimeoutMs: parseInt(process.env.POSTGRES_IDLE_TIMEOUT_MS || '30000', 10),
   connectionTimeoutMs: parseInt(process.env.POSTGRES_CONNECTION_TIMEOUT_MS || '5000', 10),

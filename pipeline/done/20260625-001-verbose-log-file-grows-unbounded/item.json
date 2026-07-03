@@ -1,0 +1,85 @@
+{
+  "id": "20260625-001",
+  "slug": "verbose-log-file-grows-unbounded",
+  "title": "Verbose log file grows unbounded",
+  "type": "bug",
+  "state": "done",
+  "namespace": "20260625-001-verbose-log-file-grows-unbounded",
+  "source_file": "bug-verbose-log-rotation.md",
+  "created_at": "2026-06-25T18:41:46+00:00",
+  "updated_at": "2026-07-02T23:27:54-04:00",
+  "attempts": 1,
+  "refactor_attempts": 1,
+  "contract_nodes": [
+    "TK-108"
+  ],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-06-25T18:41:46+00:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-06-25T18:43:46+00:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "planned: TK-INTAKE-1 staged in plan.md; no DB; awaiting contract-write decision"
+    },
+    {
+      "at": "2026-06-25T18:46:48+00:00",
+      "from": "refine",
+      "to": "replan",
+      "note": "multi-process verbose.log: per-pid file (A) vs single-writer (B) — needs Jim before atomic"
+    },
+    {
+      "at": "2026-06-27T05:22:52+00:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "Jim picked A (per-pid verbose.<pid>.log); unblocked, atomic — ready for plan/refine to carry to queue"
+    },
+    {
+      "at": "2026-06-27T13:09:34+00:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "replanned with Jim's decision (per-pid verbose.<pid>.log); staged TK-INTAKE-1 under EP-INTAKE; 5 testable ACs; dbcheck=no DB; atomic"
+    },
+    {
+      "at": "2026-06-27T17:10:20+00:00",
+      "from": "refine",
+      "to": "queue",
+      "note": "refine: atomic (no split), red-teamed clean (no CRITICAL; 2 HIGH/3 MEDIUM build notes recorded in plan.md), dbcheck touches_db=false ok=true (prior true was a prose keyword false-positive on 'migration'; corrected)"
+    },
+    {
+      "at": "2026-07-02T02:43:42-04:00",
+      "from": "queue",
+      "to": "working",
+      "note": "execute (to-pr): pick_ready confirmed TK-INTAKE-1; starting build"
+    },
+    {
+      "at": "2026-07-02T03:00:26-04:00",
+      "from": "working",
+      "to": "review",
+      "note": "PR https://github.com/anthrorg/sylphie/pull/85 (branch fix/tk-intake-1-verbose-log-rotation, head 201e3e2). No CI checks configured on repo; local verification green: jest 5/5 ACs (3 stable runs), tsc --noEmit clean. Deviations flagged in PR: ~115 net LOC vs ~70 budget; stream error handler added. NEVER merge — Jim's call."
+    },
+    {
+      "at": "2026-07-02T05:17:42-04:00",
+      "from": "review",
+      "to": "refactor",
+      "note": "code-reviewer CHANGES-REQUESTED (2 BLOCKING code-level fixes; design SOUND per ashby). B1: flush-before-rename race in rotate() — oldStream.end() is async then renameSync runs immediately; AC3 (no data loss) only tested on happy path, not with bytes buffered at rotate time; risk on Windows target. Fix: rename in stream finish/close cb or switch to sync append + add a burst/backpressure AC3 test. B2: test harness non-portable — packages/shared adds test:jest but jest/ts-jest undeclared in any package.json (only @types/jest at root); jest.config.js hardcodes C:/Users/Jim/...npx-cache/ts-jest fallback, so ACs only runnable on Jim's machine. Fix: declare jest+ts-jest devDeps in @sylphie/shared, delete hardcoded path. SHOULD-FIX: ~115 vs ~70 LOC budget; prune should skip live foreign pids (process.kill(pid,0)). CANON clean. No DB. PR #85 left OPEN — never merged."
+    },
+    {
+      "at": "2026-07-02T21:16:36-04:00",
+      "from": "refactor",
+      "to": "queue",
+      "note": "REWORK COMPLETE + reviewed. B1 sync-append rotation (no rename race), B2 portable jest harness, live-pid prune guard. code-reviewer APPROVE-WITH-NITS (nit closed w/ 2 regression tests). Build clean, test:jest 8/8. PR #85 updated -> 442bde2 (branch fix/tk-intake-1-verbose-log-rotation), MERGEABLE. READY FOR JIM'S MERGE — verify/merge, NOT a fresh rebuild (a PR is already open)."
+    },
+    {
+      "at": "2026-07-02T23:27:54-04:00",
+      "from": "queue",
+      "to": "done",
+      "note": "PR #85 MERGED 2026-07-03; TK-108 -> done in contract. External merge — skipping working/review (rework already reviewed APPROVE-WITH-NITS this session)."
+    }
+  ]
+}

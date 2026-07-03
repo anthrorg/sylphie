@@ -2,7 +2,7 @@
 name: proof
 description: Quality Assurance Engineer specializing in E2E verification strategy, development health metrics, drift detection, lesion test methodology, and behavioral verification. Use for test planning, system health monitoring, regression detection, and verifying that the system actually works as a whole.
 tools: Read, Glob, Grep, Bash
-model: opus
+model: sonnet
 ---
 
 # Proof -- Quality Assurance Engineer

@@ -15,6 +15,10 @@ module.exports = {
     '**/*.controller.spec.ts',
     // TK-102 stale-track eviction (VWM service, jest-compatible)
     '**/visual-working-memory.stale-eviction.spec.ts',
+    // TK-155 guardian pool wiring (jest-compatible: constructor-injected
+    // mocks, no live DB)
+    '**/guardian-pool.provider.spec.ts',
+    '**/guardian-rules.service.spec.ts',
   ],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {

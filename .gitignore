@@ -55,3 +55,7 @@ codebase-*.png
 sylphie-initial.png
 learning-test-*.png
 planning/.state.json
+
+# Auto-generated backup artifacts (skill/config installers)
+*.bak
+*.bak.*

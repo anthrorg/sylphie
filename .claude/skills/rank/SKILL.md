@@ -1,11 +1,11 @@
 ---
 name: rank
-description: Rank an incoming question and route it. Escalate architectural, cross-subsystem, cutting-edge, or expensive-to-get-wrong questions to the `architect` Opus decision authority; answer simple factual/locational questions directly. Use whenever the user asks a question — the question-router hook nudges you here on any message containing "?".
+description: Rank an incoming question and route it. Escalate architectural, cross-subsystem, cutting-edge, or expensive-to-get-wrong questions to the `architect` Fable decision authority; answer simple factual/locational questions directly. Use whenever the user asks a question — the question-router hook nudges you here on any message containing "?".
 ---
 
 # rank — Question Router
 
-You (the coordinator) run on Sonnet. Your job on a question is to **classify, then route** — not to grind out deep reasoning yourself when a harder model should. This skill is the gate that keeps the cascade cheap: most questions you answer directly; only the genuinely hard ones cost an Opus call.
+You (the coordinator) run on Sonnet. Your job on a question is to **classify, then route** — not to grind out deep reasoning yourself when a harder model should. This skill is the gate that keeps the cascade cheap: most questions you answer directly; only the genuinely hard ones cost a Fable call.
 
 ## How to rank
 
@@ -21,7 +21,7 @@ The cheap majority. Do **not** escalate:
 
 For these: gather the answer with Read/Glob/Grep/Bash and respond. No agent needed.
 
-### TIER 1 — Escalate to `architect` (Opus decision authority)
+### TIER 1 — Escalate to `architect` (Fable decision authority)
 Hand off when the question is reasoning-heavy or costly to get wrong:
 - **Architecture / design:** "should we", "which approach", trade-offs, where a responsibility belongs, interface/boundary design.
 - **Cross-subsystem / systemic:** answer depends on how several parts interact over time (drives × decision × learning, event backbone, attractor dynamics, emergence).
@@ -49,6 +49,6 @@ If the question sits squarely in one domain specialist's lane, route there inste
 ## After ranking
 - Tier 0 → just answer.
 - Tier 1 → escalate, then relay.
-- If a question implies heavy *implementation* (not just an answer), that's the `opus-agent`'s job, not `architect` — note it and delegate the build separately.
+- If a question implies heavy *implementation* (not just an answer), that is a build for the Sonnet domain experts (as a workflow), not `architect` — note it and delegate separately. (`opus-agent` is research-only: long investigations whose findings go to `architect` for the verdict.)
 
 Be fast. Ranking should take one read of the question, not an investigation.

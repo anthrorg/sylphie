@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { Module, Global } from '@nestjs/common';
+import { Module, Global, Logger } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { Pool } from 'pg';
@@ -9,6 +9,7 @@ import {
   Neo4jModule,
   Neo4jInstanceName,
   POSTGRES_RUNTIME_POOL,
+  POSTGRES_GUARDIAN_POOL,
   neo4jConfig,
   timescaleConfig,
   postgresConfig,
@@ -62,6 +63,7 @@ import { CognitionGatewayService } from './services/cognition-gateway.service';
 import { CognitionBridgeService } from './services/cognition-bridge.service';
 import { TensorInferenceAdapter } from './services/tensor-inference-adapter.service';
 import { GuardianRulesService } from './services/guardian-rules.service';
+import { createGuardianPool } from './services/guardian-pool.provider';
 import { LearningPressureBridgeService } from './services/learning-pressure-bridge.service';
 
 /**
@@ -86,6 +88,8 @@ import { LearningPressureBridgeService } from './services/learning-pressure-brid
   ],
 })
 class CognitionModule {}
+
+const pgPoolLogger = new Logger('PostgresPool');
 
 @Module({
   imports: [
@@ -163,11 +167,12 @@ class CognitionModule {}
     HealthController,
   ],
   providers: [
-    // PostgreSQL runtime pool for guardian rule management
+    // PostgreSQL runtime pool — read access for guardian rule management
+    // (SELECT-only on drive_rules/proposed_drive_rules after TK-154).
     {
       provide: POSTGRES_RUNTIME_POOL,
       useFactory: (config: ConfigService): Pool => {
-        return new Pool({
+        const pool = new Pool({
           host: config.get('postgres.host', 'localhost'),
           port: config.get('postgres.port', 5434),
           database: config.get('postgres.database', 'sylphie_system'),
@@ -177,6 +182,42 @@ class CognitionModule {}
           idleTimeoutMillis: 30000,
           connectionTimeoutMillis: 5000,
         });
+        // Hygiene (TK-155 review): an idle-client error with no 'error'
+        // listener is an unhandled event that crashes the process. Log it
+        // instead — the pool itself recovers idle-client failures on its own.
+        pool.on('error', (err) =>
+          pgPoolLogger.error(`runtime pool idle client error: ${err.message}`, err.stack),
+        );
+        return pool;
+      },
+      inject: [ConfigService],
+    },
+    // PostgreSQL guardian pool (TK-155) — privileged write access ONLY.
+    // Used exclusively by GuardianRulesService.approveRule/rejectRule to
+    // promote/reject a proposed drive rule. Fails closed (not app-crash) if
+    // POSTGRES_GUARDIAN_USER/PASSWORD are unset — see
+    // ./services/guardian-pool.provider.ts and CANON Immutable Standard 6.
+    // NO hardcoded credential default: unlike the runtime pool above, there
+    // is no dev fallback user/password here.
+    {
+      provide: POSTGRES_GUARDIAN_POOL,
+      useFactory: (config: ConfigService): Pool => {
+        const pool = createGuardianPool({
+          host: config.get('postgres.host', 'localhost'),
+          port: config.get('postgres.port', 5434),
+          database: config.get('postgres.database', 'sylphie_system'),
+          user: config.get('postgres.guardianUser'),
+          password: config.get('postgres.guardianPassword'),
+          max: 2,
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 5000,
+        });
+        // Hygiene (TK-155 review): same idle-client 'error' exposure as the
+        // runtime pool above. A no-op on the unconfigured stand-in.
+        pool.on('error', (err) =>
+          pgPoolLogger.error(`guardian pool idle client error: ${err.message}`, err.stack),
+        );
+        return pool;
       },
       inject: [ConfigService],
     },

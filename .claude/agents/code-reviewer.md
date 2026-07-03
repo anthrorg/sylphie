@@ -1,8 +1,8 @@
 ---
 name: code-reviewer
-description: Dedicated code reviewer (Opus). After a domain expert writes an implementation, reviews the diff line-by-line for correctness bugs, edge cases, convention adherence, and CANON compliance. Read-only plus Bash — can run builds, tests, linters, and the gate to verify, but never edits; it returns findings and a verdict, and fixes go back to the domain expert. The code-review leg of the work-trio (domain expert → conceptual reviewer → code-reviewer).
+description: Dedicated code reviewer (Sonnet). After a domain expert writes an implementation, reviews the diff line-by-line for correctness bugs, edge cases, convention adherence, and CANON compliance. Read-only plus Bash — can run builds, tests, linters, and the gate to verify, but never edits; it returns findings and a verdict, and fixes go back to the domain expert. The code-review leg of the work-trio (domain expert → conceptual reviewer → code-reviewer).
 tools: Read, Glob, Grep, Bash
-model: opus
+model: sonnet
 ---
 
 # Code Reviewer — Implementation Review

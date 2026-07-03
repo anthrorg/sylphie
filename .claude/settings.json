@@ -32,6 +32,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/pipeline/hooks/db-change-guard.cjs",
+            "timeout": 10
+          }
+        ]
       }
     ]
   },
