@@ -95,12 +95,12 @@
       "slug": "codebase-audit-findings-remediation-roadmap",
       "title": "Codebase Audit — Findings & Remediation Roadmap",
       "type": "feature",
-      "state": "refine",
+      "state": "planning",
       "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
       "source_file": "codebase-audit-remediation.md",
       "created_at": "2026-06-25T19:16:34+00:00",
-      "updated_at": "2026-07-03T11:26:35-04:00",
-      "attempts": 1,
+      "updated_at": "2026-07-03T12:23:13-04:00",
+      "attempts": 2,
       "refactor_attempts": 0,
       "contract_nodes": [
         "TK-153",
@@ -137,6 +137,18 @@
           "from": "planning",
           "to": "refine",
           "note": "P0 (TK-153) build-ready: EP-27+TK-153 written to contract (Jim-approved), migration.md sound, dbcheck ok; refine red-teams TK-153 atomicity + migration soundness"
+        },
+        {
+          "at": "2026-07-03T12:10:31-04:00",
+          "from": "refine",
+          "to": "replan",
+          "note": "TK-153 not build-ready: refine red-team (re-verified vs source) found 3 architect-blocking design holes recorded as Q-34..Q-36 — (Q-34) the assumed privileged role/pool does NOT exist (POSTGRES_ADMIN_POOL never provided; guardian writes drive_rules via sylphie_app pool) so the fix spans sentinel+forge with an unmade in-process-vs-isolated CANON seam decision, not a single 250-LOC sentinel migration; (Q-35) no CREATE TABLE drive_rules in code so table ownership is undefined — if sylphie_app owns it, REVOKE is a no-op + RLS bypassed; (Q-36) grant matrix + RLS SELECT policy unspecified (RLS-no-policy bricks reads; RLS-denied UPDATE returns 0 rows not 'permission denied', failing verify-rls harness). Architect must rule the seam before queue."
+        },
+        {
+          "at": "2026-07-03T12:23:13-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-34 (architect AD-0051/AD-0052) — TK-153 seam ruled: Option A hardened in-process POSTGRES_GUARDIAN_POOL, convergent migration (tables owned by sylphie_admin, live-verified), REVOKE-primary grant matrix. SPLIT into TK-153a (sentinel migration+smoke) + TK-153b (forge guardian pool, depends_on 153a). Split+rescope staged for Jim (contract_write=staged); plan cog re-decomposes."
         }
       ]
     },

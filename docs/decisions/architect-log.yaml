@@ -2950,3 +2950,208 @@ decisions:
       - packages/cognition-service/main.py:583
       - packages/cognition-service/main.py:596
     supersedes: null
+
+  - id: AD-0051
+    date: 2026-07-03
+    title: "Q-34 ruled: guardian drive_rules writes execute via an in-process POSTGRES_GUARDIAN_POOL (guardian_admin role) in apps/sylphie — no separate approval process"
+    status: accepted
+    context: >
+      TK-153 (CANON Std-6 drive_rules lockdown) blocked on the privileged-role
+      seam: guardian-rules.service.ts:44 injects POSTGRES_RUNTIME_POOL
+      (sylphie_app) and INSERTs drive_rules at :133; POSTGRES_ADMIN_POOL is a
+      defined-but-never-provided Symbol (database.tokens.ts:14). Live-DB
+      inspection (sylphie-postgres, 2026-07-03) found a hand-applied four-role
+      scheme ALREADY in place: roles sylphie_admin (superuser/owner),
+      sylphie_app, drive_engine, guardian_admin all exist with LOGIN;
+      RLS enabled on both rules tables. Empirically TODAY: sylphie_app INSERT
+      drive_rules -> RLS violation; UPDATE/DELETE -> permission denied; UPDATE
+      proposed_drive_rules -> silent "UPDATE 0". Therefore the guardian
+      dashboard approve/reject path (RulesController -> GuardianRulesService
+      via the runtime pool) is ALREADY BROKEN against the dev DB — approveRule
+      throws an RLS violation, rejectRule silently no-ops into
+      NotFoundException. The seam decision was in-process privileged pool
+      (Option A) vs a separate guardian-approval process mirroring drive
+      isolation (Option B).
+    decision: >
+      Option A, hardened. Add a POSTGRES_GUARDIAN_POOL injection token
+      (alongside, NOT reusing, POSTGRES_ADMIN_POOL — that token means
+      superuser/DDL and stays unwired). Provide it in apps/sylphie with
+      guardian_admin credentials sourced ONLY from env
+      (POSTGRES_GUARDIAN_USER/POSTGRES_GUARDIAN_PASSWORD) — NO working
+      hardcoded default: if the env is absent the provider yields a
+      fail-closed null/sentinel and approve/reject throw a clear
+      "guardian credentials not configured" error; reads keep working on the
+      runtime pool. GuardianRulesService keeps getProposedRules/getActiveRules
+      on POSTGRES_RUNTIME_POOL and moves ONLY the approveRule/rejectRule
+      transactions to POSTGRES_GUARDIAN_POOL. Single provider, single
+      injection site (GuardianRulesService); no other service may inject the
+      guardian pool.
+    rationale: >
+      CANON Std-6's threat model is the AUTONOMOUS runtime rewriting its own
+      evaluation rules — every autonomous code path executes SQL as
+      sylphie_app, and after TK-153 that role is grant-denied on drive_rules,
+      which is the DB-layer guarantee Std-6 asks for. The guardian approval
+      path is categorically different from drive computation: it is an
+      episodic, human-initiated, guardian-authenticated admin action, and the
+      CANON's own guardian asymmetry design already places that surface
+      in-app (RulesController + isGuardian JWT). Drive isolation earns a
+      separate process because the drive engine is a continuously running
+      autonomous judge; a rule-approval click is not. Option B's marginal
+      gain applies only against an attacker with arbitrary code execution
+      inside the main process — who could equally read co-deployed secrets or
+      bypass the JWT check — while costing a new deployable (on a Railway
+      setup that already has deploy-deadlock pain), new secrets, and a new
+      authenticated API surface. Least-privilege note: the guardian pool uses
+      guardian_admin (DML on the two rules tables only), never the
+      sylphie_admin superuser.
+    alternatives:
+      - option: "Option B — separate guardian-approval process owning the privileged connection"
+        rejected_because: >
+          Marginal hardening against an in-process-compromise threat model
+          that the rest of Std-6's layers do not defend against either; a new
+          deployable + secret + API surface. Revisit if a guardian-ops
+          hardening epic is ever chartered or the guardian surface moves out
+          of apps/sylphie anyway.
+      - option: "Reuse POSTGRES_ADMIN_POOL with sylphie_admin credentials"
+        rejected_because: >
+          sylphie_admin is a SUPERUSER (bypasses RLS entirely, owns
+          everything); handing it to a request-serving service violates least
+          privilege. The ADMIN token stays reserved for schema/init tooling.
+    consequences: >
+      TK-153 splits (confirming refine's read): TK-153a (sentinel) = the
+      convergent DB migration per AD-0052; TK-153b (forge, depends_on
+      TK-153a) = guardian pool token + provider + GuardianRulesService rewire
+      + env plumbing (.env.example; Railway guardian secret is Jim's to set).
+      AC1/AC3/AC4 prove on 153a; AC2 proves on 153b. Also discloses a live
+      bug: guardian approve/reject is currently non-functional against the
+      dev DB — 153b is a FIX, not just hardening. DEP-3 (TK-129 verifier
+      warn-only -> abort) flips only after both land.
+    canon: "Implements Std-6; guardian asymmetry unaffected (approval authority stays guardian-JWT-gated; the DB identity now matches the authority boundary)"
+    evidence:
+      - apps/sylphie/src/services/guardian-rules.service.ts:44
+      - apps/sylphie/src/services/guardian-rules.service.ts:133
+      - apps/sylphie/src/controllers/rules.controller.ts:26
+      - apps/sylphie/src/app.module.ts:168
+      - packages/shared/src/storage/database.tokens.ts:14
+      - "live sylphie-postgres psql 2026-07-03: pg_roles, \\dp drive_rules/proposed_drive_rules, sylphie_app write attempts (rolled back)"
+    supersedes: null
+
+  - id: AD-0052
+    date: 2026-07-03
+    title: "Q-35/Q-36 ruled: drive_rules end-state is a CONVERGENT codification migration — owner sylphie_admin, REVOKE as primary denial, RLS ENABLE+FORCE as defense-in-depth, exact grant matrix fixed"
+    status: accepted
+    context: >
+      Q-35: no CREATE TABLE drive_rules/proposed_drive_rules exists in any
+      executable repo code (only reference SQL in .claude/agents/drive.md and
+      the IF-EXISTS-guarded index init). Live-DB inspection settles ownership:
+      both tables EXIST in dev, owner = sylphie_admin (superuser), RLS
+      enabled, FORCE off; created out-of-repo by hand (live columns match the
+      code, not drive.md's sketch; Prisma migrations cover only users).
+      Repo-truth is WORSE than live-dev truth: 001-runtime-user.sql:9-10
+      grants DEFAULT PRIVILEGES SELECT/INSERT/UPDATE/DELETE on future tables
+      to sylphie_app, so any FRESH environment (new volume, Railway) gives the
+      runtime full DML on drive_rules with no lockdown at all. Q-36: current
+      live grants are inconsistent — sylphie_app holds a dead INSERT grant on
+      drive_rules (RLS-blocked, errors as an RLS violation not permission
+      denied) and arwd on proposed_drive_rules where RLS silently filters
+      UPDATE to 0 rows. verify-rls.ts:130 asserts the literal string
+      'permission denied', and RlsVerificationService is currently dormant
+      (defined, never registered in any module).
+    decision: >
+      One idempotent, convergent migration (infra/migrations/NNN-drive-rules-
+      lockdown.ts, dry-run default) that produces the same end-state from ANY
+      starting point — hand-configured dev, fresh init, or Railway prod:
+      (1) CREATE TABLE IF NOT EXISTS both tables matching the LIVE schema
+      exactly (this codifies the schema in-repo for the first time);
+      (2) ALTER TABLE ... OWNER TO sylphie_admin (idempotent; corrective on
+      any environment where ownership drifted);
+      (3) CREATE ROLE IF ABSENT guardian_admin and drive_engine, LOGIN,
+      passwords from env;
+      (4) explicit per-table REVOKE ALL then GRANT the matrix below — this
+      neutralizes the 001 default-privileges footgun for these two tables
+      without touching default privileges globally (blast radius) and without
+      editing 001 (init immutable per db-change-guard);
+      (5) RLS: ENABLE + FORCE ROW LEVEL SECURITY on both tables (FORCE is
+      inert while the owner is a superuser but protects a future
+      non-superuser owner); DROP POLICY IF EXISTS + recreate in canonical
+      TO-role form.
+      GRANT MATRIX — drive_rules: sylphie_app SELECT only (REVOKE the dead
+      INSERT); drive_engine SELECT; guardian_admin SELECT,INSERT,UPDATE,
+      DELETE; nobody else. proposed_drive_rules: sylphie_app SELECT,INSERT
+      only (REVOKE UPDATE/DELETE — guardian status-updates move to the
+      guardian pool per AD-0051); drive_engine SELECT; guardian_admin
+      SELECT,INSERT,UPDATE,DELETE.
+      POLICIES — drive_rules: FOR SELECT TO sylphie_app USING(true); FOR
+      SELECT TO drive_engine USING(true); FOR ALL TO guardian_admin
+      USING(true) WITH CHECK(true); NO write policy for sylphie_app.
+      proposed_drive_rules: FOR SELECT TO sylphie_app; FOR INSERT TO
+      sylphie_app WITH CHECK (status = 'pending') — the runtime can only
+      insert pending proposals; FOR SELECT TO drive_engine; FOR ALL TO
+      guardian_admin.
+      MECHANISM RANKING CONFIRMED: REVOKE is the PRIMARY denial (yields the
+      'permission denied' string verify-rls.ts:130 asserts; an RLS-filtered
+      UPDATE where a grant exists returns a silent 0 rows); RLS is
+      defense-in-depth only. TK-153a does NOT wire RlsVerificationService —
+      arming the startup verifier is TK-129's scope (DEP-3 sequencing);
+      153a's job is to make checks 1-4 true. New harness required in 153a:
+      a continuity smoke that (a) seeds rows, (b) proves sylphie_app
+      INSERT/UPDATE/DELETE denied with permission-denied on drive_rules,
+      (c) connects as guardian_admin and proves the approve-shaped
+      INSERT/UPDATE succeeds, (d) proves row count/content unchanged,
+      (e) runs the REVERSE and proves grants restored. Verification step:
+      run the migration dry-run against Railway prod postgres to learn its
+      actual state before --confirm there.
+    rationale: >
+      The live dev DB proves the intended design (four roles, admin
+      ownership, RLS) but it exists only as hand-applied state — un-codified
+      state is not protection, it is luck: any fresh environment regresses to
+      full runtime DML via 001's default privileges. Convergence (not a
+      delta-from-assumed-state script) is the only shape that is safe to run
+      everywhere including prod whose state we have not seen. Ownership by
+      sylphie_admin is confirmed live, so REVOKE bites and RLS is not
+      owner-bypassed; FORCE costs one line and future-proofs an owner change.
+      Keeping REVOKE primary is forced by two observed behaviors: the
+      silent-0-rows RLS UPDATE trap and verify-rls's string assertion.
+      The WITH CHECK (status='pending') on proposer INSERT is a free
+      invariant: the only autonomous write anywhere in the rules surface is
+      now "append a pending proposal".
+    alternatives:
+      - option: "ALTER DEFAULT PRIVILEGES to strip sylphie_app DML on all future tables"
+        rejected_because: >
+          Blast radius — other app tables (users et al.) legitimately rely on
+          001's defaults; per-table explicit REVOKE/GRANT on the two rules
+          tables fully covers fresh environments since defaults only apply at
+          creation time and the migration runs after its own CREATE.
+      - option: "RLS-only lockdown (keep grants, rely on policies)"
+        rejected_because: >
+          Fails the existing harness contract (verify-rls expects 'permission
+          denied') and produces silent 0-row UPDATEs instead of loud errors —
+          a theater-adjacent failure mode.
+      - option: "Assume dev-DB state and ship only the REVOKE delta"
+        rejected_because: >
+          The scheme exists nowhere in executable code; a delta script
+          no-ops or errors on fresh/prod environments and the Std-6 gap
+          silently survives exactly where it matters most.
+    consequences: >
+      The drive_rules schema + role scheme become repo-codified for the first
+      time. TK-153a complexity grows beyond the original ~250 LOC estimate
+      (tables + roles + grants + policies + smoke), which the split absorbs.
+      sylphie_app rejectRule/approveRule attempts now fail LOUDLY
+      (permission denied) instead of silently, until TK-153b lands — hence
+      153a and 153b should merge in the same release window. Requires
+      guardian_admin/drive_engine passwords provisioned via env in every
+      environment (dev .env; Railway secrets = Jim). drive_engine role is
+      kept/granted but wiring drive-server to actually use it
+      (main.ts:60/:94 currently defaults to the timescale-style user) is
+      explicitly out of scope here — candidate follow-up ticket.
+    canon: "Implements Std-6 at the DB layer; confidence/provenance untouched; no theater — denial is loud, not silent"
+    evidence:
+      - infra/postgres/init/001-runtime-user.sql:9
+      - infra/postgres/init/002-drive-rules-indexes.sql:8
+      - packages/drive-engine/src/postgres-verification/verify-rls.ts:130
+      - packages/drive-engine/src/rule-proposer/postgres-rules-client.ts:111
+      - apps/drive-server/src/main.ts:90
+      - docker-compose.yml:91
+      - ".claude/agents/drive.md:179 (reference scheme the live DB mirrors)"
+      - "live sylphie-postgres psql 2026-07-03: table owners/RLS flags, grant/policy dump, _prisma_migrations history, rolled-back write attempts as sylphie_app"
+    supersedes: null
