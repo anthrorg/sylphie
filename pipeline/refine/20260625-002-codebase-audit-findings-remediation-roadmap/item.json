@@ -3,16 +3,18 @@
   "slug": "codebase-audit-findings-remediation-roadmap",
   "title": "Codebase Audit — Findings & Remediation Roadmap",
   "type": "feature",
-  "state": "planning",
+  "state": "refine",
   "namespace": "20260625-002-codebase-audit-findings-remediation-roadmap",
   "source_file": "codebase-audit-remediation.md",
   "created_at": "2026-06-25T19:16:34+00:00",
-  "updated_at": "2026-07-03T12:23:13-04:00",
+  "updated_at": "2026-07-03T13:09:05-04:00",
   "attempts": 2,
   "refactor_attempts": 0,
   "contract_nodes": [
     "TK-153",
-    "EP-27"
+    "EP-27",
+    "TK-154",
+    "TK-155"
   ],
   "blocked_reason": null,
   "history": [
@@ -57,6 +59,12 @@
       "from": "replan",
       "to": "planning",
       "note": "resolved: DEC-34 (architect AD-0051/AD-0052) — TK-153 seam ruled: Option A hardened in-process POSTGRES_GUARDIAN_POOL, convergent migration (tables owned by sylphie_admin, live-verified), REVOKE-primary grant matrix. SPLIT into TK-153a (sentinel migration+smoke) + TK-153b (forge guardian pool, depends_on 153a). Split+rescope staged for Jim (contract_write=staged); plan cog re-decomposes."
+    },
+    {
+      "at": "2026-07-03T13:09:05-04:00",
+      "from": "planning",
+      "to": "refine",
+      "note": "TK-153 split executed: TK-154 + TK-155 written; refine re-checks atomicity + migration soundness of the split"
     }
   ]
 }

@@ -38,9 +38,10 @@ scheduled-tasks tools.
 ## Config knobs — `pipeline/config.json`
 - `execute_mode`: **plan-only** (current — execute cog dry-runs, no builds) vs `to-pr`
   (runs /worktree-agents to an open PR; never merges).
-- `contract_write`: **staged** (current — plan/refine stage the ticket in plan.md;
-  writing tickets into `planning/contract.yaml` waits for Jim's approval gate) vs
-  `autonomous`.
+- `contract_write`: **autonomous** (current, Jim directive 2026-07-03 — process/
+  decomposition ticket writes go straight into `planning/contract.yaml` with no Jim
+  gate; only genuinely new application DIRECTION surfaces to him) vs `staged` (the old
+  mode — every ticket/epic write waited for Jim's approval gate).
 - `max_items_per_tick` (1), `max_replan_attempts`/`max_refactor_attempts` (2 → then the
   item is parked and surfaced, never auto-retried), `stuck_threshold_hours` (48),
   `archive_after_days` (14).
@@ -83,10 +84,16 @@ to plan flat. Install both staged pieces from the repo root:
 ## Decisions (current policy — Jim-ruled 2026-06-27)
 - `execute_mode = to-pr` — execute cog builds queue items to an OPEN PR via
   /worktree-agents; **never merges** (merge stays Jim's). (Flipped from plan-only.)
-- `contract_write = staged` — **ticket/epic writes stay gated** on Jim approval.
-  **Governance appends (decisions + changelog, append-only) are ALLOWED autonomously**
-  as routing/record. A cog must NOT write `contract.yaml` while another writer has it
-  dirty (concurrency guard — to be implemented).
+- `contract_write = autonomous` (**Jim directive 2026-07-03**, supersedes the
+  2026-06-27 `staged` ruling) — **process/decomposition ticket writes are the
+  coordinator's to make and go straight into `contract.yaml` with no Jim gate**:
+  ticket splitting, decomposing already-approved intent, migration mechanics,
+  implementing an `architect` ruling. Use `architect` for hard design/CANON calls, not
+  Jim. **Only genuinely new application DIRECTION** (a new feature/capability, a
+  priority/vision/non-goal change, a CANON change, or an irreversible/outward action
+  like a PR merge) still surfaces to Jim before acting. Governance appends
+  (decisions + changelog) remain append-only. A cog must NOT write `contract.yaml`
+  while another writer has it dirty (concurrency guard — to be implemented).
 - Item **001** (verbose.log rotation): **option A — per-process files `verbose.<pid>.log`**.
 - Item **002** P0: **APPROVED** to write `EP-AUDIT` + `TK-AUDIT-1` (drive_rules REVOKE+RLS)
   into `contract.yaml` at the next safe plan-cog run; the design-needing findings
