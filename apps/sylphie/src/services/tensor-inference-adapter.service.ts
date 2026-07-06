@@ -82,7 +82,7 @@ export class TensorInferenceAdapter implements ITensorInferenceService, OnModule
 
     // Merge adapter-maintained drive history with caller-provided panel context
     const mergedPanelContext = {
-      driveHistory: this.getDriveHistoryFlattened(),
+      driveHistory: this.getDriveHistory(),
       latentMatchScores: panelContext?.latentMatchScores,
       recentMaeValues: panelContext?.recentMaeValues,
       opportunityFeatures: panelContext?.opportunityFeatures,
@@ -185,16 +185,15 @@ export class TensorInferenceAdapter implements ITensorInferenceService, OnModule
     }
   }
 
-  /** Flatten the drive history buffer into a single array (10 x 12 = 120 floats). */
-  private getDriveHistoryFlattened(): number[] {
+  /** Build the nested drive history (10 timesteps x 12 drives) for the sidecar. */
+  private getDriveHistory(): number[][] {
     // Pad with zeros if fewer than DRIVE_HISTORY_SIZE entries
     const padCount = DRIVE_HISTORY_SIZE - this.driveHistoryBuffer.length;
     const zeros = new Array(12).fill(0);
-    const padded = [
+    return [
       ...Array.from({ length: padCount }, () => zeros),
       ...this.driveHistoryBuffer,
     ];
-    return padded.flat();
   }
 
   // ---------------------------------------------------------------------------

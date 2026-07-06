@@ -163,7 +163,7 @@ export class CognitionGatewayService implements OnModuleInit {
     driveSnapshot: DriveSnapshot,
     episodicContext?: number[],
     panelContext?: {
-      driveHistory?: readonly number[];
+      driveHistory?: readonly (readonly number[])[];
       latentMatchScores?: readonly number[];
       recentMaeValues?: readonly number[];
       opportunityFeatures?: readonly number[];
