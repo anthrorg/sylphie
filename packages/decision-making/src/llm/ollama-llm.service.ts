@@ -120,7 +120,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     this.useDeepSeekMedium = this.useDeepSeek && this.deepseekMediumModel.length > 0;
     this.deepseekPricingRates = resolveLlmPricingFromEnv();
 
-    this.client = new Ollama({ host });
+    this.client = new Ollama({ host, fetch: this.timeoutFetch });
     this.logger.log(
       `LLM configured: ${host} / ` +
         `quick=${this.models.quick}, ` +
@@ -134,6 +134,47 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   private resolveModel(tier: LlmTier = 'medium'): string {
     return this.models[tier];
   }
+
+  // ---------------------------------------------------------------------------
+  // TK-124 — per-request abort/timeout for the Ollama client
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Custom `fetch` supplied to the Ollama client's `Config.fetch` hook.
+   *
+   * ollama-js v0.6.3's non-streaming `client.chat()` path (`processStreamableRequest`,
+   * `stream` falsy) threads NO `AbortController`/signal at all — only the streaming
+   * path builds one, and `Ollama.abort()` only tracks `ongoingStreamedRequests`
+   * (it cannot cancel a non-streaming call, and is instance-wide for streamed ones).
+   * A hung Ollama socket therefore left both queue-turn and self-tick chat() calls
+   * unwedgeable forever.
+   *
+   * This wraps EVERY outgoing HTTP request the client makes in its OWN fresh
+   * `AbortSignal.timeout(this.timeoutMs)` — true per-request abort granularity,
+   * mirroring the DeepSeek path's own `signal: AbortSignal.timeout(this.timeoutMs)` —
+   * without ever calling `client.abort()`. If the caller (e.g. a future streaming
+   * use) already supplied its own signal, both are honored: whichever fires first
+   * aborts the request.
+   */
+  private timeoutFetch: typeof fetch = (input, init) => {
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    let signal: AbortSignal = timeoutSignal;
+
+    const upstream = init?.signal;
+    if (upstream) {
+      const combined = new AbortController();
+      if (timeoutSignal.aborted || upstream.aborted) {
+        combined.abort();
+      } else {
+        const onAbort = (): void => combined.abort();
+        timeoutSignal.addEventListener('abort', onAbort, { once: true });
+        upstream.addEventListener('abort', onAbort, { once: true });
+      }
+      signal = combined.signal;
+    }
+
+    return fetch(input, { ...init, signal });
+  };
 
   /**
    * Resolve GPU layer count for a given tier.

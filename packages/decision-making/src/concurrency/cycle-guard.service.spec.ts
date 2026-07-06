@@ -1101,3 +1101,158 @@ describe('TK-77 — Overlap guard: two triggers during one in-flight cycle', () 
     guard.destroy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// TK-123 — Epoch-guarded mutex release: a stale watchdog-killed cycle's
+// finally must not release/disarm a SUCCESSOR cycle's mutex/watchdog.
+//
+// Bug (pre-fix): runCycle's finally called disarmWatchdog()/cleared
+// tickInFlight/inFlightTurn UNCONDITIONALLY, even when myEpoch was stale
+// (watchdog already fired and a successor had started under a new epoch).
+// A late-resolving zombie promise would tear down the successor's live
+// watchdog and falsely mark the mutex free while the successor cycle was
+// still running.
+// ---------------------------------------------------------------------------
+
+describe('TK-123 — Epoch-guarded mutex release', () => {
+  const WATCHDOG_MS = 25_000;
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('AC1+AC2: a zombie cycle whose finally runs after a successor has started under a new epoch does not disarm the watchdog or clear tickInFlight/inFlightTurn for the successor; exactly one honest outcome per turn, never concurrent', async () => {
+    const zombieCtrl = { resolve: null as null | ((v: boolean) => void) };
+    const successorCtrl = { resolve: null as null | ((v: boolean) => void) };
+    let callCount = 0;
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const responses: string[] = [];
+    const kills: WatchdogKillEvent[] = [];
+
+    const guard = new CycleGuardService(null);
+    const mockExecutor = { getState: () => 'EXECUTING', forceIdle: jest.fn() };
+
+    guard.register(
+      async (turn, _epoch) => {
+        callCount++;
+        concurrent++;
+        if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+        try {
+          if (callCount === 1) {
+            // Zombie: hangs until resolved explicitly, well after its watchdog fires.
+            const result = await new Promise<boolean>(resolve => { zombieCtrl.resolve = resolve; });
+            return result;
+          }
+          // Successor: also controllable so we can inspect state while it is
+          // still in-flight (before it completes).
+          const result = await new Promise<boolean>(resolve => { successorCtrl.resolve = resolve; });
+          if (result) responses.push(turn.turnId);
+          return result;
+        } finally {
+          concurrent--;
+        }
+      },
+      (_turnId, _msg, _epoch) => {},
+      mockExecutor as any,
+    );
+    guard.cycleWatchdogKill$.subscribe(e => kills.push(e));
+
+    const zombie = makeTurn({ turnId: 'zombie-turn' });
+    const successor = makeTurn({ turnId: 'successor-turn' });
+
+    guard.enqueue(zombie);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Successor queued while zombie is in-flight.
+    guard.enqueue(successor);
+
+    // Fire the zombie's watchdog: forceIdle, tickInFlight=false, epoch++, SHRUG, drain.
+    jest.advanceTimersByTime(WATCHDOG_MS + 100);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(kills).toHaveLength(1);
+    expect(kills[0]?.turnId).toBe('zombie-turn');
+
+    // Let the successor's runCycle actually start (drained after the watchdog kill).
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // The successor must now own the mutex under the NEW epoch.
+    const statsBeforeZombieResolves = guard.getQueueStats();
+    expect(statsBeforeZombieResolves.tickInFlight).toBe(true);
+    expect(statsBeforeZombieResolves.cycleEpoch).toBe(2);
+    expect((guard as any).inFlightTurn?.turnId).toBe('successor-turn');
+    const watchdogHandleBefore = (guard as any).watchdogHandle;
+    expect(watchdogHandleBefore).not.toBeNull();
+
+    // Never more than one cycle running concurrently.
+    expect(maxConcurrent).toBe(1);
+
+    // Now resolve the ZOMBIE late — its finally runs while the successor is
+    // still in-flight under the new epoch (AC1 + AC2 scenario).
+    zombieCtrl.resolve?.(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The successor's mutex/watchdog/inFlightTurn must be UNCHANGED by the
+    // zombie's stale finally — this is the epoch-guard fix under test.
+    const statsAfterZombieResolves = guard.getQueueStats();
+    expect(statsAfterZombieResolves.tickInFlight).toBe(true);
+    expect(statsAfterZombieResolves.cycleEpoch).toBe(2);
+    expect((guard as any).inFlightTurn?.turnId).toBe('successor-turn');
+    expect((guard as any).watchdogHandle).toBe(watchdogHandleBefore);
+
+    // The zombie must not have produced a response (only reachable if its own
+    // finally had wrongly torn down/re-armed shared state and let it re-emit).
+    expect(responses).not.toContain('zombie-turn');
+    expect(maxConcurrent).toBe(1);
+
+    // Now let the successor complete normally — it gets exactly one honest outcome.
+    successorCtrl.resolve?.(true);
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    expect(responses).toEqual(['successor-turn']);
+    expect(maxConcurrent).toBe(1);
+
+    guard.destroy();
+  });
+
+  it('AC3 (regression): an ordinary cycle with no watchdog fire/epoch bump still disarms the watchdog, releases the mutex, and drains the next queued turn to completion', async () => {
+    const { guard, responses, kills } = buildGuard({ cycleDelayMs: 0 });
+
+    const first = makeTurn({ turnId: 'ordinary-first' });
+    const second = makeTurn({ turnId: 'ordinary-second' });
+
+    guard.enqueue(first);
+    guard.enqueue(second);
+
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    // No watchdog fired — this is the plain happy path.
+    expect(kills).toHaveLength(0);
+
+    // Both turns completed — the second was not left queued forever, proving
+    // the epoch-gated release does not brick ordinary (non-zombie) turns.
+    expect(responses.map(r => r.turnId)).toEqual(['ordinary-first', 'ordinary-second']);
+
+    // Watchdog disarmed and mutex freed after the last cycle.
+    const stats = guard.getQueueStats();
+    expect(stats.tickInFlight).toBe(false);
+    expect((guard as any).watchdogHandle).toBeNull();
+
+    guard.destroy();
+  });
+});

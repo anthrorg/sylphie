@@ -17,6 +17,7 @@
 import { Logger } from '@nestjs/common';
 import { DecisionTickEngineService } from './decision-tick-engine.service';
 import type { TickEngineCallbacks } from './decision-tick-engine.service';
+import { OllamaLlmService } from '../llm/ollama-llm.service';
 
 // Suppress verbose logs in tests.
 jest.mock('@sylphie/shared', () => {
@@ -377,5 +378,108 @@ describe('DecisionTickEngineService — onTick self-tick guard (AC2)', () => {
 describe('DecisionTickEngineService — DEFAULT_TICK_MS constant (AC2)', () => {
   it('DEFAULT_TICK_MS is 200', () => {
     expect(DecisionTickEngineService.DEFAULT_TICK_MS).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TK-124 AC2 — a hung Ollama socket during a self-tick must still let the
+// existing finally block run (selfTickInFlight cleared, notifyExternalComplete
+// called exactly once via the EXISTING :403 call) once the chat timeout aborts
+// the underlying request. This is an integration test: processInput wraps a
+// REAL OllamaLlmService.complete() call against a stalled fetch, proving the
+// AC1 timeout mechanism actually reaches and unwedges the self-tick path.
+// ---------------------------------------------------------------------------
+
+describe('DecisionTickEngineService — TK-124 AC2: hung chat during a self-tick unwedges via chat timeout', () => {
+  function buildLocalOllamaService(chatTimeoutMs: number): OllamaLlmService {
+    const config = {
+      get: (key: string, def?: unknown) => {
+        const map: Record<string, unknown> = {
+          'ollama.host': 'http://localhost:11434',
+          'ollama.modelQuick': 'qwen2.5:3b',
+          'ollama.modelMedium': 'qwen2.5:7b',
+          'ollama.modelDeep': 'qwen2.5:14b',
+          'ollama.chatTimeoutMs': chatTimeoutMs,
+          'ollama.deepseekApiKey': '', // force local Ollama path
+          'ollama.deepseekBaseUrl': 'https://api.deepseek.com',
+          'ollama.deepseekModel': 'deepseek-reasoner',
+          'ollama.deepseekMediumModel': '',
+        };
+        return key in map ? map[key] : def;
+      },
+    } as any;
+    const service = new OllamaLlmService(config);
+    service.onModuleInit();
+    return service;
+  }
+
+  function makeHangingFetchMock(): jest.Mock {
+    return jest.fn((_input: unknown, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        if (signal) {
+          if (signal.aborted) {
+            const err = new Error('This operation was aborted');
+            (err as any).name = 'AbortError';
+            reject(err);
+            return;
+          }
+          signal.addEventListener(
+            'abort',
+            () => {
+              const err = new Error('This operation was aborted');
+              (err as any).name = 'AbortError';
+              reject(err);
+            },
+            { once: true },
+          );
+        }
+      });
+    });
+  }
+
+  it('notifyExternalComplete fires exactly once (via the existing :403 call) when the self-tick chat call is stalled and the chat timeout aborts it', async () => {
+    // This test needs REAL timers so AbortSignal.timeout(30) actually fires.
+    jest.useRealTimers();
+
+    const fetchMock = makeHangingFetchMock();
+    global.fetch = fetchMock as any;
+
+    const llm = buildLocalOllamaService(30); // fast timeout for a quick test
+
+    const processInput = jest.fn(async () => {
+      // Real LLM call against the stalled fetch — must settle (reject) rather
+      // than hang, via the chat-timeout mechanism (TK-124 AC1).
+      await llm.complete({
+        tier: 'quick',
+        systemPrompt: 'sys',
+        messages: [{ role: 'user', content: 'hi' }],
+        maxTokens: 20,
+        temperature: 0.7,
+        metadata: { purpose: 'self-tick-test' },
+      });
+    });
+
+    const { engine, notifyExternalCompleteCalls } = buildEngine({
+      totalPressure: 10,
+      lastInputTs: 0,
+      onProcessInput: processInput,
+    });
+    (engine as any).lastSelfInitiatedAt = 0;
+
+    // onTick awaits processInput, which awaits the real (stalled) LLM call.
+    // Because processInput's own error is caught internally (:388-390) and
+    // the finally block always runs, onTick itself resolves even though the
+    // underlying chat() call rejected.
+    await engine.onTick(false);
+
+    expect(processInput).toHaveBeenCalledTimes(1);
+    // The chat call was attempted and its promise settled (rejected) — proven
+    // by onTick() itself resolving rather than hanging forever.
+    expect(fetchMock).toHaveBeenCalled();
+    // selfTickInFlight cleared and notifyExternalComplete called exactly once
+    // via the EXISTING call at :403 — not a duplicate/separate reset path.
+    expect(engine.isSelfTickInFlight()).toBe(false);
+    expect(notifyExternalCompleteCalls).toHaveLength(1);
   });
 });

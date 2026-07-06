@@ -225,3 +225,145 @@ describe('AC2 — no DEEPSEEK_*_COST_PER_M constant in service source', () => {
     expect(src).not.toMatch(/DEEPSEEK_OUTPUT_COST_PER_M/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TK-124 — LLM chat timeout: both client.chat() call sites must abort a
+// stalled non-streaming Ollama request rather than hang forever.
+//
+// Mechanism under test: a custom `fetch` supplied via the Ollama client's
+// Config.fetch hook, wrapping EVERY outgoing HTTP request in its own fresh
+// AbortController + AbortSignal.timeout(this.timeoutMs) — NOT client.abort()
+// (which cannot cancel a non-streaming call and is instance-wide for
+// streamed ones per ollama-js v0.6.3).
+// ---------------------------------------------------------------------------
+
+/** Build a service with a configurable chatTimeoutMs, no DeepSeek routing (forces local Ollama). */
+function buildLocalOllamaService(chatTimeoutMs: number): OllamaLlmService {
+  const config = {
+    get: (key: string, def?: unknown) => {
+      const map: Record<string, unknown> = {
+        'ollama.host': 'http://localhost:11434',
+        'ollama.modelQuick': 'qwen2.5:3b',
+        'ollama.modelMedium': 'qwen2.5:7b',
+        'ollama.modelDeep': 'qwen2.5:14b',
+        'ollama.chatTimeoutMs': chatTimeoutMs,
+        'ollama.deepseekApiKey': '', // no DeepSeek — force local Ollama path
+        'ollama.deepseekBaseUrl': 'https://api.deepseek.com',
+        'ollama.deepseekModel': 'deepseek-reasoner',
+        'ollama.deepseekMediumModel': '',
+      };
+      return key in map ? map[key] : def;
+    },
+  } as any;
+
+  const service = new OllamaLlmService(config);
+  service.onModuleInit();
+  return service;
+}
+
+/**
+ * A fetch mock that never resolves on its own, but rejects with an
+ * AbortError the moment the request's signal fires — the same contract
+ * real `fetch` honors for an aborted request.
+ */
+function makeHangingFetchMock(): jest.Mock {
+  return jest.fn((_input: unknown, init?: RequestInit) => {
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      if (signal) {
+        if (signal.aborted) {
+          const err = new Error('This operation was aborted');
+          (err as any).name = 'AbortError';
+          reject(err);
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            const err = new Error('This operation was aborted');
+            (err as any).name = 'AbortError';
+            reject(err);
+          },
+          { once: true },
+        );
+      }
+      // Otherwise: never resolves — simulates a wedged Ollama socket.
+    });
+  });
+}
+
+describe('TK-124 AC1 — stalled non-streaming chat() call is aborted by its own per-request timeout', () => {
+  const REQUEST = {
+    tier: 'quick' as const,
+    systemPrompt: 'You are helpful.',
+    messages: [{ role: 'user' as const, content: 'Hello' }],
+    maxTokens: 50,
+    temperature: 0.7,
+    metadata: { purpose: 'test' },
+  };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('processInput settles (rejects) instead of hanging forever when the underlying Ollama chat() call is stalled', async () => {
+    const fetchMock = makeHangingFetchMock();
+    global.fetch = fetchMock as any;
+
+    const service = buildLocalOllamaService(30); // 30ms timeout — fast test
+
+    await expect(service.complete(REQUEST)).rejects.toBeDefined();
+  });
+
+  it('the underlying fetch call receives a signal that is actually aborted (not just abandoned)', async () => {
+    const fetchMock = makeHangingFetchMock();
+    global.fetch = fetchMock as any;
+
+    const service = buildLocalOllamaService(30);
+
+    await expect(service.complete(REQUEST)).rejects.toBeDefined();
+
+    expect(fetchMock).toHaveBeenCalled();
+    const [, init] = fetchMock.mock.calls[0] as [unknown, RequestInit];
+    expect(init.signal).toBeDefined();
+    expect((init.signal as AbortSignal).aborted).toBe(true);
+  });
+
+  it('each outgoing request gets its OWN fresh AbortController (two stalled calls do not share one signal)', async () => {
+    const fetchMock = makeHangingFetchMock();
+    global.fetch = fetchMock as any;
+
+    const service = buildLocalOllamaService(30);
+
+    await expect(service.complete(REQUEST)).rejects.toBeDefined();
+    await expect(service.complete(REQUEST)).rejects.toBeDefined();
+
+    expect(fetchMock.mock.calls.length).toBe(2);
+    const signal1 = (fetchMock.mock.calls[0]![1] as RequestInit).signal as AbortSignal;
+    const signal2 = (fetchMock.mock.calls[1]![1] as RequestInit).signal as AbortSignal;
+    expect(signal1).not.toBe(signal2);
+    expect(signal1.aborted).toBe(true);
+    expect(signal2.aborted).toBe(true);
+  });
+
+  it('a fast (non-stalled) call completes normally without ever aborting', async () => {
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: { content: 'hi there' },
+        model: 'qwen2.5:3b',
+        prompt_eval_count: 5,
+        eval_count: 3,
+      }),
+      text: async () => '',
+    }));
+    global.fetch = fetchMock as any;
+
+    const service = buildLocalOllamaService(30);
+    const response = await service.complete(REQUEST);
+
+    expect(response.content).toBe('hi there');
+    const [, init] = fetchMock.mock.calls[0] as [unknown, RequestInit];
+    expect((init.signal as AbortSignal).aborted).toBe(false);
+  });
+});
