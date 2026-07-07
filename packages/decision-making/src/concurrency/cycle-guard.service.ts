@@ -545,14 +545,23 @@ export class CycleGuardService {
       // Do not re-throw — the cycle runner already handled forceIdle + logging.
       // The mutex must be released unconditionally.
     } finally {
-      // ── Step 5: Release watchdog, release mutex, drain next. ──────────────
-      this.disarmWatchdog();
-      this.tickInFlight = false;
-      this.inFlightTurn = null;
-
-      // Epoch check: only update breaker/probe if this epoch is still current.
-      // (If watchdog fired, epoch was incremented and this finally runs in the zombie.)
+      // ── Step 5: Release watchdog, release mutex, drain next — EPOCH-GUARDED. ──
+      //
+      // A watchdog kill increments cycleEpoch and force-releases the mutex/watchdog
+      // for the SUCCESSOR cycle before this (zombie) cycle's promise ever settles.
+      // If this finally unconditionally re-ran disarmWatchdog()/tickInFlight=false/
+      // inFlightTurn=null, it would disarm the successor's live watchdog and falsely
+      // free the mutex out from under it — allowing a second concurrent runCycle()
+      // to start while the successor is still genuinely in flight (TK-123).
+      //
+      // Guard: only release/disarm if we still own the current epoch. If a
+      // successor has already taken over (myEpoch !== this.cycleEpoch), this
+      // finally is the zombie — it must not touch the successor's state at all.
       if (myEpoch === this.cycleEpoch) {
+        this.disarmWatchdog();
+        this.tickInFlight = false;
+        this.inFlightTurn = null;
+
         // Normal completion: update circuit breaker state.
         if (success) {
           this.onSuccessfulCompletion();
@@ -560,10 +569,10 @@ export class CycleGuardService {
         // (Failure is handled in the watchdog handler, not here.)
         this.completed$.next({ turnId: turn.turnId, epochAtCompletion: myEpoch });
       }
-      // Always drain next — even if we are the zombie, the mutex is now free.
-      // If myEpoch !== cycleEpoch, the watchdog already incremented epoch and
-      // drained next; this drain call will see tickInFlight === false and an
-      // empty queue (if watchdog already kicked off the next cycle). Idempotent.
+      // Always attempt to drain. If we own the epoch, the mutex is now free and
+      // this proceeds normally. If we are the zombie, tickInFlight still belongs
+      // to the successor cycle, so drainNext() is a no-op (idempotent) — the
+      // successor's own finally will drain when it completes.
       void Promise.resolve().then(() => this.drainNext());
     }
   }
