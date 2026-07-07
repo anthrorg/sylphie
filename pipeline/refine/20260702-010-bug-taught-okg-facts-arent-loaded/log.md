@@ -1,0 +1,3 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/bug-login-fact-hydration.md` -> planning/ (type guess: bug)
+- `2026-07-06T21:37:15-04:00` opus plan-verify: ready-for-queue (full verdict in verify.md). I independently verified every load-bearing claim against current main and the plan holds. Root cause is accurate: on a cold PersonModelService.cache, the WS connect path (ensurePersonNode, [...]
+- `2026-07-06T21:37:15-04:00` moved **planning -> refine** — opus verify: ready-for-queue

@@ -5913,7 +5913,7 @@ nodes:
   - id: TK-109
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Default-deny rule-based auth gate (public allowlist + auth-or-localhost-gate for mutations) + dynamic-route e2e harness"
     priority: P1
@@ -5960,7 +5960,7 @@ nodes:
   - id: TK-110
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Wire a guardian Bearer token into SupervisorPanel.tsx's mutating calls (hard co-dependency of TK-BEH-1's supervisor gating)"
     priority: P1
@@ -5984,7 +5984,7 @@ nodes:
   - id: TK-111
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Shared boot-deadline helper; widen to person-model backfill + face-snapshot schema/hydrate; correct migration.md"
     priority: P1
@@ -6015,7 +6015,7 @@ nodes:
   - id: TK-112
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Qualify e1.payload in meanDriveResolutionTimes; surface query errors"
     priority: P1
@@ -6039,7 +6039,7 @@ nodes:
   - id: TK-113
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "STT session-identity-guarded close handler (pendingBuffers + sessions + keepAliveTimers)"
     priority: P1
@@ -6061,7 +6061,7 @@ nodes:
   - id: TK-114
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "WS/STT client-notify: trigger-phrase rejection + Deepgram abnormal-close event contract (defined here, not deferred)"
     priority: P1
@@ -6085,7 +6085,7 @@ nodes:
   - id: TK-115
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Unhandled cycle-response rejection + full socket-map purge on delivery to a dead socket"
     priority: P2
@@ -6105,7 +6105,7 @@ nodes:
   - id: TK-116
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "SensoryLoggerService interval leak on shutdown"
     priority: P2
@@ -6123,7 +6123,7 @@ nodes:
   - id: TK-117
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "DrivePublisher telemetry honesty: stop emitting the FULL fabricated-field set"
     priority: P2
@@ -6143,7 +6143,7 @@ nodes:
   - id: TK-118
     kind: ticket
     parent: EP-22
-    status: todo
+    status: in_progress
     type: bug
     title: "Frontend: consume mic_dead + thinking_indicator.error:true (mic-dead indicator, spinner-error clear)"
     priority: P1
@@ -6178,7 +6178,7 @@ nodes:
   - id: TK-119
     kind: ticket
     parent: EP-23
-    status: todo
+    status: in_progress
     type: bug
     title: "Contract fix: emit nested drive_history (number[][]) from tensor-inference-adapter; TS<->pydantic contract test"
     priority: P1
@@ -6206,7 +6206,7 @@ nodes:
   - id: TK-120
     kind: ticket
     parent: EP-23
-    status: todo
+    status: in_progress
     type: bug
     title: "EWC ordering fix (compute_fisher before set_reference) + wire check_demotions() beside check_graduations()"
     priority: P1
@@ -6234,7 +6234,7 @@ nodes:
   - id: TK-121
     kind: ticket
     parent: EP-23
-    status: todo
+    status: in_progress
     type: bug
     title: "Extract phase-boundary consolidation into a lock-free module-level helper; wire it at mode-advance; truth-edit ROADMAP.md"
     priority: P1
@@ -6273,7 +6273,7 @@ nodes:
   - id: TK-122
     kind: ticket
     parent: EP-23
-    status: todo
+    status: in_progress
     type: bug
     title: "Hard-disable ConvergenceModel.use_learned at both writers (check() graduation branch + load() checkpoint restore)"
     priority: P1
@@ -6307,7 +6307,7 @@ nodes:
   - id: TK-123
     kind: ticket
     parent: EP-24
-    status: todo
+    status: in_progress
     type: bug
     title: "Epoch-guarded mutex release: a stale watchdog-killed cycle must not release/disarm a newer cycle's mutex/watchdog"
     priority: P1
@@ -6328,7 +6328,7 @@ nodes:
   - id: TK-124
     kind: ticket
     parent: EP-24
-    status: todo
+    status: in_progress
     type: bug
     title: "LLM chat timeout (both client.chat() call sites) + self-tick watchdog coverage — unwedge hung Ollama sockets"
     priority: P1
@@ -6350,7 +6350,7 @@ nodes:
   - id: TK-125
     kind: ticket
     parent: EP-24
-    status: todo
+    status: in_progress
     type: bug
     title: "LLM circuit breaker half-open auto-probe (auto-recovery after a transient outage)"
     priority: P1
@@ -6373,7 +6373,7 @@ nodes:
   - id: TK-126
     kind: ticket
     parent: EP-24
-    status: todo
+    status: in_progress
     type: bug
     title: "Make the deliberation debate gate honest: thread scoreCandidates' selected-candidate score into confidence, normalized/clamped to [0,1] (DEC-32, Option A)"
     priority: P2
@@ -6398,7 +6398,7 @@ nodes:
   - id: TK-127
     kind: ticket
     parent: EP-24
-    status: todo
+    status: in_progress
     type: bug
     title: "applyRecallGroundingFromRetrieval: surface-check ahead of the GROUNDED early-return so provenance threads to the reinforcement gate (DEC-31 / AD-0048)"
     priority: P2
@@ -6434,7 +6434,7 @@ nodes:
   - id: TK-128
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "Reconnect + bounded/drained send queue (wire attemptRecovery, wait-for-open, bounded TTL queue)"
     priority: P1
@@ -6453,7 +6453,7 @@ nodes:
   - id: TK-129
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "Register RlsVerificationService + startup-abort on RLS misconfig"
     priority: P1
@@ -6476,7 +6476,7 @@ nodes:
   - id: TK-130
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "detectTheater reads isolated currentDriveState for the verdict"
     priority: P1
@@ -6494,7 +6494,7 @@ nodes:
   - id: TK-131
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "SESSION_START cannot overwrite drive state; preserve Timescale-restored checkpoint"
     priority: P1
@@ -6510,7 +6510,7 @@ nodes:
   - id: TK-132
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "Staleness anchor: a single >5s gap must not permanently lock the reader"
     priority: P1
@@ -6526,7 +6526,7 @@ nodes:
   - id: TK-133
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "Timescale event persistence: fix INSERT columns to match 002-events.sql OR remove the dead writer + emitter"
     priority: P2
@@ -6548,7 +6548,7 @@ nodes:
   - id: TK-134
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "HEALTH_STATUS: make real (engine emits, real lastPingAt/childMemoryBytes, enforce <10MB) OR remove the fake handler"
     priority: P2
@@ -6566,7 +6566,7 @@ nodes:
   - id: TK-135
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "tick-drift accumulator math"
     priority: P2
@@ -6583,7 +6583,7 @@ nodes:
   - id: TK-136
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "NaN guard on partial pressure vectors"
     priority: P2
@@ -6600,7 +6600,7 @@ nodes:
   - id: TK-137
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "fork checkpoint/exit race"
     priority: P2
@@ -6617,7 +6617,7 @@ nodes:
   - id: TK-138
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "POSTGRES_DB default mismatch"
     priority: P2
@@ -6634,7 +6634,7 @@ nodes:
   - id: TK-139
     kind: ticket
     parent: EP-25
-    status: todo
+    status: in_progress
     type: bug
     title: "reloadRules swallowed errors surface"
     priority: P2
@@ -6676,7 +6676,7 @@ nodes:
   - id: TK-141
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Unmount-reconnect zombie sockets — one shared teardown util across the WS hooks"
     priority: P1
@@ -6695,7 +6695,7 @@ nodes:
   - id: TK-142
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Anthropic API key out of the browser bundle — backend proxy for FE-agent calls"
     priority: P1
@@ -6714,7 +6714,7 @@ nodes:
   - id: TK-143
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Word-rating reaches a real backend handler — or the affordance is removed"
     priority: P1
@@ -6733,7 +6733,7 @@ nodes:
   - id: TK-144
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Perception WS reconnect + resume detections (applies TK-FE-1's shared util)"
     priority: P1
@@ -6752,7 +6752,7 @@ nodes:
   - id: TK-145
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Telemetry contract drift -> dead panels: wire dead handlers or remove; fix drive-publisher action:null and ms-vs-seconds timestamp mismatch"
     priority: P2
@@ -6771,7 +6771,7 @@ nodes:
   - id: TK-146
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "WebRTC RTCPeerConnection leak + staleness guard"
     priority: P2
@@ -6788,7 +6788,7 @@ nodes:
   - id: TK-147
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Transient /api/auth/me failure must not delete the token"
     priority: P2
@@ -6805,7 +6805,7 @@ nodes:
   - id: TK-148
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "Full-store Zustand re-renders -> selector-scoped subscriptions"
     priority: P2
@@ -6822,7 +6822,7 @@ nodes:
   - id: TK-149
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "usePressureStatus competing writers reconciled to a single source"
     priority: P2
@@ -6840,7 +6840,7 @@ nodes:
   - id: TK-150
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "shared: Prisma DSN URL-escape + drop env! non-null assertions"
     priority: P2
@@ -6860,7 +6860,7 @@ nodes:
   - id: TK-151
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "shared: withTransaction ROLLBACK must propagate the original error"
     priority: P2
@@ -6880,7 +6880,7 @@ nodes:
   - id: TK-152
     kind: ticket
     parent: EP-26
-    status: todo
+    status: in_progress
     type: bug
     title: "useAutoScroll honors the behavior argument"
     priority: P2
@@ -7460,3 +7460,4 @@ changelog:
   - { date: "2026-07-03", version: "2.12", change: "Interactive /pipeline-replan on item 20260625-002 (TK-153 seam). Got the architect ruling on the 3 refine blockers — recorded DEC-34 (accepted) resolving Q-34/Q-35/Q-36 and citing architect AD-0051 + AD-0052. Architect ruled against the LIVE sylphie-postgres DB and found: tables owned by sylphie_admin (so REVOKE bites), guardian_admin role already exists (un-codified), and — material — the guardian rule approve/reject path is ALREADY broken vs dev (approveRule RLS-violates, rejectRule silently updates 0 rows); TK-153 fixes a live break, not just hardens. Decision: Q-34 = Option A HARDENED (in-process POSTGRES_GUARDIAN_POOL role guardian_admin, env creds only/fail-closed, NOT superuser POSTGRES_ADMIN_POOL, no separate process); Q-35 = convergent migration (CREATE TABLE IF NOT EXISTS matching live schema = first in-repo codification, ALTER OWNER, CREATE ROLE if absent, REVOKE ALL + grant matrix, FORCE RLS; no touch to 001 defaults); Q-36 = REVOKE-primary denial + RLS defense-in-depth with a fixed per-table/per-role grant matrix + proposer INSERT WITH CHECK(status='pending'). Ticket SPLITS: TK-153a (sentinel — convergent migration + continuity/reverse smoke; AC1/3/4) + TK-153b (forge, depends_on 153a — POSTGRES_GUARDIAN_POOL token/provider/GuardianRulesService rewire; AC2), same release window. Q-34/35/36 -> status:resolved. The split + rescope are TICKET writes still gated by contract_write=staged (staged in plan.md, await Jim). Item 20260625-002 replan->planning. FLAG: this was the item's 2nd replan (attempts=2=max) but a NEW finding (not a loop) resolved by an architect ruling = forward progress. Jim ops: provision guardian_admin (+drive_engine) passwords as Railway/env secrets.", by: "coordinator (pipeline-replan)" }
   - { date: "2026-07-03", version: "2.13", change: "Executed the TK-153 split into the contract (Jim directive 2026-07-03: process/decomposition changes like ticket splitting are the coordinator's to make, not Jim's approval gate — only application-DIRECTION questions route to Jim). Per DEC-34 / architect AD-0051+AD-0052: marked TK-153 status=canceled (superseded), wrote TK-154 (sentinel — convergent drive_rules lockdown migration: CREATE TABLE IF NOT EXISTS live schema + ALTER OWNER + CREATE ROLE guardian_admin/drive_engine + REVOKE ALL + DEC-34 grant matrix + FORCE RLS, REVOKE-primary denial, + continuity/reverse smoke; AC1/3/4) and TK-155 (forge — POSTGRES_GUARDIAN_POOL token/provider + GuardianRulesService approve/reject rewire, env-only creds fail-closed, reads stay on runtime pool; depends_on TK-154; AC2, fixes the live-broken guardian approve/reject path). Both under EP-27, priority P1 / severity P0-blocker / engineering_level production. DEP-3 (TK-129 sequencing) now effectively points at TK-154. Item 20260625-002 -> refine. Also flipped pipeline config contract_write staged->autonomous (supersedes the 2026-06-27 staged ruling) for process/decomposition writes; genuinely new application direction still surfaces to Jim.", by: "coordinator (Jim directive: stop gating process changes)" }
   - { date: "2026-07-03", version: "2.14", change: "Built EP-27 TK-154 + TK-155 to PR #86 (co-ship, one branch agent/tk-154-155-drive-rules-lockdown) via a scoped work-trio workflow (sentinel/forge build -> ashby conceptual + code-reviewer -> owning-expert fixes; no BLOCKED-CANON). TK-154 = convergent drive_rules lockdown migration 002-drive-rules-lockdown.ts (dry-run/--confirm/--reverse; CREATE IF NOT EXISTS live schema, ALTER OWNER sylphie_admin, CREATE ROLE guardian_admin/drive_engine env-pw, REVOKE-primary grant matrix, FORCE RLS). TK-155 = POSTGRES_GUARDIAN_POOL token/provider + GuardianRulesService write-path rewire (reads stay on runtime pool), env-only creds fail-closed (HTTP 503 + boot WARN). Orchestrator-run gates: 37/37 unit + 24/24 live continuity/reverse smoke (throwaway container: AC1 writes denied, AC2 reads/pending-propose ok, AC3 idempotent row preservation, AC4 REVERSE restores grants) + build:shared/build:backend clean + 15/15 guardian specs. Also fixes a LIVE-broken guardian approve/reject path. TK-154/TK-155 -> in_progress + pr_url #86; item 20260625-002 working->review. NEVER-AUTO-MERGE: merge is Jim's; Jim ops before apply = provision guardian_admin/drive_engine Railway secrets.", by: "coordinator (hand build)" }
+  - { date: "2026-07-06", version: "2.15", change: "Tiered pipeline pass (workflow, Sonnet build + Opus verify) built the 5 queue items to open PRs: item 001 EP-22 -> PR #89 (TK-109..118, verify partial/merge-with-nits), 002 EP-23 -> PR #87 (TK-119..122, partial/merge-with-nits), 003 EP-24 -> PR #88 (TK-123..127, verdict COMPLETE/merge), 004 EP-25 -> PR #90 (TK-128..139 built, TK-140 not built, partial/merge-with-nits), 005 EP-26 -> PR #91 (TK-141..152, complete/merge-with-nits). 43 built tickets todo->in_progress (TK-140 stays todo). Pre-existing repo-wide frontend lint failure (~13.8k CRLF/prettier errors, present on unmodified main) reported honestly by two builders — not caused by these PRs. NEVER-AUTO-MERGE: all 5 merges are Jim's. First run was killed mid-flight by a power outage (19/29 agents done); recovered from the workflow journal and completed by continuation run wf_a8cfe401-240 with zero re-spend of finished plan work.", by: "coordinator (tiered-pass workflow)" }

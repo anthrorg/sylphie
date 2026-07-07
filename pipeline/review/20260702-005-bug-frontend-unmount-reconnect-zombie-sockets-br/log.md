@@ -1,0 +1,9 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/bug-audit-frontend-shared.md` -> planning/ (type guess: unclassified)
+- `2026-07-02T09:14:06-04:00` moved **planning -> refine** — EP-FE-RESILIENCE staged (6 tickets) in plan.md; testable ACs; dbcheck keyword false-positive resolved via deliberate n/a migration.md (client-code only, no schema), sentinel to confirm; contract_write=staged so tickets await Jim gate
+- `2026-07-02T13:09:58-04:00` refine: TK-FE-6 story-split into 6a-6g (atomic); TK-FE-1/TK-FE-4 seam clarified; red-team clean, no CRITICAL; HIGH: TK-FE-2 key-proxy host-service to confirm at build; dbcheck keyword false-positive, migration.md deliberate n/a is sound, sentinel to confirm no schema surface.
+- `2026-07-02T13:10:03-04:00` moved **refine -> queue** — atomic (TK-FE-6 split 6a-6g, TK-FE-1/4 seam clarified), red-teamed clean, no CRITICAL; dbcheck keyword-FP + migration.md deliberate n/a sound; HIGH key-proxy note; tickets staged in plan.md await Jim contract-write gate
+- `2026-07-02T23:50:32-04:00` Staged-write executed (Jim-approved): tickets written to contract.yaml as numeric nodes under per-item sub-epic; see contract_nodes. Changelog v2.9.
+- `2026-07-06T16:49:38-04:00` moved **queue -> working** — tiered workflow pass wf_02dd585c: Sonnet build in isolated worktree -> PR, Opus verification leg follows
+- `2026-07-06T16:49:39-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
+- `2026-07-06T21:37:14-04:00` built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits
+- `2026-07-06T21:37:14-04:00` moved **working -> review** — built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits

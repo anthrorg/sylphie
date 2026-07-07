@@ -1,1 +1,3 @@
 - `2026-07-02T02:24:40-04:00` **ingested** from `inbox/bug-audit-wkg-knowledge-graph.md` -> planning/ (type guess: bug)
+- `2026-07-06T21:37:14-04:00` opus plan-verify: needs-rework (full verdict in verify.md). Strong plan — I re-verified every load-bearing claim by reading the actual code, and the planner's diagnoses are accurate, including the non-obvious calls: the RELIEVES bullet is correctly REFUTED (wkg- [...]
+- `2026-07-06T21:37:14-04:00` opus verify: needs-rework — stays in planning for a planner fix pass (gaps in verify.md)

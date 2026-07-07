@@ -1,1 +1,3 @@
 - `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-observability-dashboard.md` -> planning/ (type guess: feature)
+- `2026-07-06T21:37:15-04:00` opus plan-verify: needs-rework (full verdict in verify.md). Plan is well-researched: I spot-checked every load-bearing claim against the codebase and all verify — the observability spec (Parts 1-3), metrics.controller.ts at 1,817 lines, no existing observability/snapshot [...]
+- `2026-07-06T21:37:15-04:00` opus verify: needs-rework — stays in planning for a planner fix pass (gaps in verify.md)

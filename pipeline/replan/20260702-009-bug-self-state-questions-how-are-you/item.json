@@ -1,0 +1,32 @@
+{
+  "id": "20260702-009",
+  "slug": "bug-self-state-questions-how-are-you",
+  "title": "Bug: Self-state questions (\"how are you?\") are answered as an LLM guess, not grounded in actual drive state",
+  "type": "bug",
+  "size_hint": "large",
+  "lines": 115,
+  "sections": 10,
+  "state": "replan",
+  "namespace": "20260702-009-bug-self-state-questions-how-are-you",
+  "source_file": "bug-grounded-self-state.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-06T21:37:15-04:00",
+  "attempts": 1,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess",
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-07-06T21:37:15-04:00",
+      "from": "planning",
+      "to": "replan",
+      "note": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess"
+    }
+  ]
+}

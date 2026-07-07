@@ -1,0 +1,9 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/bug-audit-drive-engine.md` -> planning/ (type guess: bug)
+- `2026-07-02T09:14:06-04:00` moved **planning -> refine** — EP-DRIVE-RESILIENCE staged (8 tickets) in plan.md; testable ACs; DB=Postgres RLS reconciled to already-approved TK-AUDIT-1 (no clone) + Timescale code-only; migration.md written, sentinel must review; contract_write=staged so tickets await Jim gate
+- `2026-07-02T13:09:58-04:00` refine: TK-DR-8 story-split into 8a-8f (atomic); red-team clean, no CRITICAL; HIGH deps recorded (TK-DR-2 depends_on TK-AUDIT-1; shared reconnect coord w/ 005+apps-sylphie); dbcheck ok, migration.md sound (delegates RLS to TK-AUDIT-1), sentinel sign-off still required.
+- `2026-07-02T13:10:03-04:00` moved **refine -> queue** — atomic (TK-DR-8 split 8a-8f), red-teamed clean, no CRITICAL; dbcheck ok + migration.md sound (RLS delegated to TK-AUDIT-1); HIGH deps recorded; tickets staged in plan.md await Jim contract-write gate
+- `2026-07-02T23:50:32-04:00` Staged-write executed (Jim-approved): tickets written to contract.yaml as numeric nodes under per-item sub-epic; see contract_nodes. Changelog v2.9.
+- `2026-07-06T16:49:38-04:00` moved **queue -> working** — tiered workflow pass wf_02dd585c: Sonnet build in isolated worktree -> PR, Opus verification leg follows
+- `2026-07-06T16:49:38-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
+- `2026-07-06T21:37:13-04:00` built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
+- `2026-07-06T21:37:14-04:00` moved **working -> review** — built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
