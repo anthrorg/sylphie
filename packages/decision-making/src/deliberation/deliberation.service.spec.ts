@@ -22,6 +22,7 @@
 import { DeliberationService } from './deliberation.service';
 import { DriveName } from '@sylphie/shared';
 import type { WkgContext, WkgEntity } from '../wkg/wkg-context.service';
+import type { RecallRetrieval } from './recall-retrieval';
 
 jest.mock('@sylphie/shared', () => {
   const actual = jest.requireActual('@sylphie/shared');
@@ -240,5 +241,66 @@ describe('TK-126 AC3 — a genuinely uncertain candidate still triggers debate (
     expect(completeCalls).toHaveLength(5); // debate fired — the gate is honest, not always-skip
     expect(result.trace.stepsExecuted).toBe(5);
     expect(result.trace.debate).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TK-127 (DEC-31 / AD-0048) — provenance threads through the real deliberate()
+// short-circuit path (deliberation.service.ts:446-450), not just the pure
+// applyRecallGroundingFromRetrieval function in isolation. Proves the fix
+// actually reaches a real caller: an already-GROUNDED verdict (via wkg.facts)
+// whose recall retrieval's fact value surfaces in the response now carries
+// groundingProvenance out on the DeliberationResult — this is what
+// decision-making.service.ts's WS3-T2 reinforcement gate keys on
+// (recallRetrieval.factNodeId === responseGroundingProvenance).
+// ---------------------------------------------------------------------------
+
+describe('TK-127 — recall-retrieval provenance threads through the short-circuit deliberate() path', () => {
+  it('an already-GROUNDED (via wkg.facts) short-circuit response whose recall value surfaces carries groundingProvenance (post-fix)', async () => {
+    const { service } = buildService({ candidateContent: STRONG_CANDIDATE_CONTENT, withEntity: false });
+
+    // Short-circuit path: GREETING intent with a direct RESPONSE (no
+    // NEEDS_DELIBERATION) skips candidate generation entirely.
+    const monologueContent = '[INTENT: GREETING]\n[ENTITY: none]\n[THOUGHT: ok]\n[RESPONSE: Your name is Jim!]';
+    (service as any).llm.complete = jest.fn(async (req: any) => ({
+      content: monologueContent,
+      tokensUsed: { prompt: 5, completion: 5 },
+      latencyMs: 1,
+      model: 'test-model',
+      cost: 0,
+    }));
+
+    // wkg.facts non-empty so knowledgeGrounding is ALREADY 'GROUNDED' before
+    // applyRecallGroundingFromRetrieval runs (deliberation.service.ts:429) —
+    // this is the exact "already GROUNDED by an earlier signal" scenario the
+    // pre-fix bug suppressed provenance for.
+    (service as any).wkgContext.getContextForFrame = jest.fn(async () => ({
+      entities: [],
+      relationships: [],
+      facts: [{ subject: 'user', predicate: 'name', object: 'Jim', confidence: 0.9, provenance: 'GUARDIAN' }],
+      procedures: [],
+      summary: '',
+    } as WkgContext));
+
+    const recallRetrieval: RecallRetrieval = {
+      recallKey: 'name',
+      factNodeId: 'attr-user-jim-name',
+      factValue: 'Jim',
+      source: 'OKG',
+      personId: 'user',
+    };
+
+    const result = await service.deliberate(
+      makeFrame('what is my name?'),
+      makeContext(0.1),
+      recallRetrieval,
+    );
+
+    expect(result.knowledgeGrounding).toBe('GROUNDED');
+    // Post-fix: provenance threads because the value ("Jim") surfaced in the
+    // response — pre-fix this was null solely because grounding was already
+    // GROUNDED before the check ran.
+    expect(result.groundingProvenance).toBe('attr-user-jim-name');
+    expect(result.groundedBy).toBe('OKG');
   });
 });

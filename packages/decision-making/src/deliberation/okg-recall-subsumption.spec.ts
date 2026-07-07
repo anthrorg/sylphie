@@ -183,11 +183,24 @@ describe('TK-84 AC2 — collapsed site replacement (applyRecallGroundingFromRetr
     expect(out.provenance).toBeNull();
   });
 
-  it('already GROUNDED (e.g. WKG-backed short-circuit) → not double-labeled by recall', () => {
+  // TK-127 (DEC-31 / AD-0048): the surface-check now runs BEFORE the
+  // already-GROUNDED early-return. The grounding LABEL is still not
+  // "double-labeled" (it was already GROUNDED and stays GROUNDED) — but
+  // provenance now threads when the value genuinely surfaced, which is what
+  // lets the WS3-T2 reinforcement gate fire for this node. Previously this
+  // was suppressed to null purely because an earlier signal already set
+  // GROUNDED, even though the value was surfaced — that was the bug.
+  it('already GROUNDED (e.g. WKG-backed short-circuit) + value surfaced → label unchanged, provenance now threads (post-fix)', () => {
     const out = applyRecallGroundingFromRetrieval(nameRetrieval, 'Your name is Jim!', 'GROUNDED');
     expect(out.grounding).toBe('GROUNDED');
-    // provenance is null here — already GROUNDED, no re-labeling (see applyRecall-
-    // GroundingFromRetrieval: if (currentGrounding === 'GROUNDED') early-return).
+    expect(out.provenance).toBe('attr-user-jim-name');
+    expect(out.groundedBy).toBe('OKG');
+  });
+
+  it('already GROUNDED + value NOT surfaced → honesty guard still holds (provenance null regardless of prior grounding)', () => {
+    const out = applyRecallGroundingFromRetrieval(nameRetrieval, 'I told you before.', 'GROUNDED');
+    expect(out.grounding).toBe('GROUNDED');
     expect(out.provenance).toBeNull();
+    expect(out.groundedBy).toBeNull();
   });
 });
