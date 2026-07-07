@@ -3302,3 +3302,177 @@ decisions:
       - apps/drive-server/src/main.ts:94
       - "gate runs 2026-07-03 (this pass): 37/37 unit, 15/15 jest, builds clean, 24/24 smoke, 9/9 e2e guardian approve/reject — all executed by architect"
     supersedes: null
+
+  - id: AD-0055
+    date: 2026-07-06
+    title: "Item 015 Q1 ruled: 'the veto logic' = the deterministic evaluation floor (rules.ts contingency defaults + confidence.types.ts evaluation functions), checksummed as a floor manifest; the literal veto function is future graduated-autonomy work and must register in the same manifest when built"
+    status: accepted
+    context: >
+      Pipeline item 20260702-015 source AC4 requires a floor-integrity boot
+      checksum of "ACTION_TYPE_DEFAULTS and the veto logic" (CANON Std-6
+      tie-in), but grep finds zero 'veto' hits in packages/**/*.ts. Traced:
+      the term comes from docs/future/sylphie-autonomous-cognition-research.md
+      §4.3 — a FUTURE graduated-autonomy component ("pure function of the
+      hardcoded rules and the present drive vector... write-protected from
+      everything, the same immutability CANON Standard 6 gives the evaluation
+      function"), imported today-tense by
+      docs/future/sylphie-persistence-migration-plan.md §5 invariant 6. No
+      veto function exists because Partial/Full autonomy stages are unbuilt.
+    decision: >
+      "The veto logic" for 015-f resolves to the deterministic evaluation
+      floor as it exists today: ALL exported units of (1)
+      packages/drive-engine/src/constants/rules.ts (ACTION_TYPE_DEFAULTS:80,
+      OUTCOME_DEFAULTS:205, METADATA_SCALED_ACTION_TYPES:185,
+      computeDefaultAffect:229) and (2)
+      packages/shared/src/types/confidence.types.ts (computeConfidence:107
+      incl. the Std-3 0.60 ceiling clamp, CONFIDENCE_THRESHOLDS:58,
+      applyGuardianWeight:146 — the Std-5 x2/x3 multiplier,
+      DEFAULT_DECAY_RATES:79, qualifiesForGraduation:174,
+      qualifiesForDemotion:191). 015-f checksums a floor MANIFEST (per-unit
+      sha256 over stable serialization: canonical JSON for constants,
+      Function.prototype.toString for pure functions, plus a composite hash)
+      against a committed, generated, runtime-immutable expected-checksum
+      artifact regenerated only by an explicit yarn floor:stamp step — never
+      stored in any DB the runtime can write. Standing constraint: the future
+      veto function must register in this manifest before any
+      Partial-autonomy stage activates.
+    rationale: >
+      Both candidate answers (confidence-ceiling enforcement, guardian
+      multiplier) are floor units — the fork was false; the invariant's
+      purpose ("the immutable floor must be verifiably the floor") covers the
+      contingencies the veto will be computed FROM plus the evaluation
+      function Std-6 names. confidence.types.ts's own header already declares
+      Std-6 write-protection, making it the canonical second module. An
+      expected checksum the system could update would let it re-baseline its
+      own floor — hence committed-artifact placement.
+    alternatives:
+      - option: "Checksum only ACTION_TYPE_DEFAULTS (015-f as staged)"
+        rejected_because: "Leaves the Std-3 ceiling and Std-5 multiplier — the evaluation floor proper — unverified; source AC4 stays permanently unsatisfiable."
+      - option: "Build a veto function now to have something to checksum"
+        rejected_because: "Graduated autonomy is unbuilt future work; a veto with no tensor-led stage is theater. Revisit at Partial-autonomy planning."
+    consequences: >
+      015-f retitled/rescoped to the floor manifest; ACs extended to every
+      registered unit with FloorChecksumMismatchError naming the failed unit;
+      new AC that the expected-checksum artifact has no runtime write path.
+      Source AC4 becomes satisfiable and closes with 015-f. Build-form
+      subtlety flagged: function toString hashes are stable only within one
+      build form; the stamp step must run against the form the boot check
+      runs in.
+    canon: "Implements Std-6 verification; transitively guards Std-3 ceiling and Std-5 multiplier as data. Expected-checksum must stay runtime-immutable or the check violates the standard it enforces."
+    evidence:
+      - packages/drive-engine/src/constants/rules.ts:80
+      - packages/shared/src/types/confidence.types.ts:9
+      - packages/shared/src/types/confidence.types.ts:111
+      - packages/shared/src/types/confidence.types.ts:150
+      - docs/future/sylphie-autonomous-cognition-research.md:108
+      - docs/future/sylphie-persistence-migration-plan.md:119
+    supersedes: null
+
+  - id: AD-0056
+    date: 2026-07-06
+    title: "Item 015 Q2 ruled: boot on a recognized-but-pending migration REFUSES and requires manual --confirm apply; fresh-EMPTY stores bootstrap-stamp to current; unstamped-with-data refuses; no auto-apply ever"
+    status: accepted
+    context: >
+      015-c AC3 was staged as "pick one behavior during build" for the boot
+      guard's handling of a recognized-but-not-yet-applied migration —
+      auto-apply via the 015-a runner vs refuse-and-require-manual. Opus
+      verify correctly flagged this as a production-DB-safety decision that
+      must not be a build-time coin-flip: auto-apply risks accidental live
+      schema change on every deploy; blanket refusal risks fresh-environment
+      boot deadlock.
+    decision: >
+      Three-state guard per store: (1) stamped current -> boot; (2) stamped
+      behind real data -> REFUSE with SchemaVersionPendingError naming store,
+      found version, target version, and the exact yarn
+      migrate:<name>:confirm command, exiting non-zero before serving; (3a)
+      unstamped AND empty of data (per-store emptiness definition is ticket
+      work) -> bootstrap-stamp to current version at boot (initialization,
+      not migration — resolves the fresh-env deadlock); (3b) unstamped with
+      data present -> refuse, directing to the manual v1 backfill. No
+      auto-apply path and no env escape hatch.
+    rationale: >
+      The house convention is explicit-confirm everywhere (db-change-safety
+      house convention; migrations 001/002 dry-run/--confirm pairs,
+      package.json:37-44; PR #86 rolled out migrate->deploy as a manual
+      same-window op). Least privilege makes auto-apply structurally wrong:
+      the app boots as sylphie_app, grant-denied on privileged surfaces per
+      AD-0052, while migrations perform DDL as sylphie_admin — auto-apply
+      would ship admin credentials into the request-serving runtime, exactly
+      what AD-0051 refused. Std-6: schema change to the stores holding the
+      evaluation substrate stays human-confirmed, outside the autonomous
+      loop. Prisma parity: migrate deploy is an explicit step there too. The
+      bootstrap-stamp carve-out needs only runtime-level writes (metadata
+      node/row, no DDL).
+    alternatives:
+      - option: "Auto-apply pending migrations at boot via the 015-a runner"
+        rejected_because: "Implicit --confirm on every deploy; requires admin credentials in the runtime (contra AD-0051/0052); breaks the repo-wide explicit-confirm DB posture. Revisit only if a separate privileged migration sidecar/deploy-step runner is ever chartered."
+      - option: "Refuse always, including fresh environments"
+        rejected_because: "Deadlocks every new compose/Railway env on a chicken-and-egg stamp; the empty-store bootstrap-stamp is initialization, not migration, and carries none of the auto-apply risk."
+    consequences: >
+      015-c AC3 rewritten to the refuse behavior; new ACs for fresh-empty
+      bootstrap-stamp (idempotent across double-boot) and
+      unstamped-with-data refusal; the staged open_question closes. Deploys
+      carrying a pending migration halt until manually applied — the
+      existing migrate+deploy same-window discipline, now loudly enforced.
+      Build-watch: the :SchemaVersion write (migration AND bootstrap paths)
+      must satisfy the WKG provenance guard — explicit provenance stamp or a
+      deliberate exempt path, as an AC on 015-b.
+    canon: "Aligns with Std-6 and the AD-0051/0052 least-privilege seam; keeps schema change human-confirmed outside the autonomous loop. No tension."
+    evidence:
+      - pipeline/policies/db-change-safety.md:40
+      - package.json:37
+      - docs/decisions/architect-log.yaml (AD-0051, AD-0052)
+      - apps/sylphie/src/services/wkg-bootstrap.service.ts
+    supersedes: null
+
+  - id: AD-0057
+    date: 2026-07-06
+    title: "Item 015 Q3 ruled: split-and-proceed — 015-a/b/c/d/f queue now; 015-e stays parked until 016-a's snapshot manifest LANDS in main; manifest must expose per-file sha256 checksums + top-level schema_version/tensor_arch_version (frozen interface)"
+    status: accepted
+    context: >
+      015-e (checksum verification against the snapshot manifest) hard-
+      depends on the manifest format from pipeline item 20260702-016
+      (snapshot/tested-restore), which sits at needs-rework in planning with
+      three fixable verify gaps plus its own unresolved architect question
+      (drive-engine quiesce handshake vs MVCC-consistent pg_dump). The
+      source item warned 015 and 016 "touch the same manifest code — run
+      sequentially."
+    decision: >
+      Proceed now with 015-a -> 015-b -> {015-c -> 015-f; 015-d} under the
+      AD-0055/AD-0056 rulings — all five are fork-free and code-disjoint from
+      016. 015-e stays parked (not queued) until 016 ticket -a is MERGED
+      with its manifest format. Binding interface contract on 016-a so 015-e
+      is buildable: manifest.json exposes a per-dump-file sha256 for every
+      snapshot artifact, and top-level schema_version + tensor_arch_version
+      keys in the same manifest.json (observability-spec §1 shape; resolves
+      016-verify gap 3; tensor_manifest.json may remain as the tensor-side
+      detail file). Recommended order: 015-a/b first, 016 plan-rework in
+      parallel, 016-a after 015-b lands so the manifest reads a real stamp
+      instead of a placeholder. NOT ruled here: 016's quiesce-handshake fork
+      — a separate architect ruling required before 016-a builds.
+    rationale: >
+      015's dependency on 016 was always scoped to one leaf invariant;
+      parking a P0 epic on its one blocked ticket inverts the source's own
+      priority (silent schema drift is the live compounding risk; manifest
+      checksum verification is additive on top). The sequential-run warning
+      applies only to manifest-touching code, which within 015 is only
+      015-e. Freezing the two manifest requirements now removes the risk
+      that the wait still produces an interface mismatch.
+    alternatives:
+      - option: "Park all of 015 until 016 lands"
+        rejected_because: "Blocks the P0 anti-drift mechanism on an additive verification leaf; no shared code justifies it outside 015-e."
+      - option: "Guess a manifest shape and build 015-e now"
+        rejected_because: "Rework-guaranteed; 016 is needs-rework not needs-replan, so the real format is close."
+    consequences: >
+      Coordinator: move 015 out of replan with the rewritten plan
+      (015-a/b/c/d/f to refine/queue; 015-e explicitly parked with its
+      unblock condition recorded); carry the frozen manifest-interface
+      contract into 016's reworked plan as hard ACs on 016-a; schedule the
+      016 quiesce-handshake architect ruling before 016-a is queued.
+    canon: "None directly; the frozen manifest contract carries 016's fail-loud/no-placeholder CANON posture forward unchanged."
+    evidence:
+      - pipeline/replan/20260702-015-feature-schema-versioning-migration-framework-an/plan.md:86
+      - pipeline/planning/20260702-016-feature-coordinated-sylphie-snapshot-tested-rest/plan.md:121
+      - pipeline/planning/20260702-016-feature-coordinated-sylphie-snapshot-tested-rest/verify.md:11
+      - docs/future/sylphie-persistence-migration-plan.md:34
+    supersedes: null

@@ -6,15 +6,15 @@
   "size_hint": "large",
   "lines": 69,
   "sections": 9,
-  "state": "replan",
+  "state": "planning",
   "namespace": "20260702-015-feature-schema-versioning-migration-framework-an",
   "source_file": "feature-schema-versioning.md",
   "created_at": "2026-07-02T02:24:40-04:00",
-  "updated_at": "2026-07-06T21:37:16-04:00",
+  "updated_at": "2026-07-06T22:16:56-04:00",
   "attempts": 1,
   "refactor_attempts": 0,
   "contract_nodes": [],
-  "blocked_reason": "opus verify: needs-replan — 3 architect question(s) recorded in verify.md; route to architect, never guess",
+  "blocked_reason": null,
   "history": [
     {
       "at": "2026-07-02T02:24:40-04:00",
@@ -27,6 +27,12 @@
       "from": "planning",
       "to": "replan",
       "note": "opus verify: needs-replan — 3 architect question(s) recorded in verify.md; route to architect, never guess"
+    },
+    {
+      "at": "2026-07-06T22:16:56-04:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: DEC-35 (AD-0055..0057); re-plan against rulings.md — 015-a/b/c/d/f to refine/queue, 015-e parked until 016-a merges"
     }
   ]
 }
