@@ -1,11 +1,21 @@
-"""Tests for ConvergenceModel use_learned graduation criterion (TK-41 / EP8-4).
+"""Tests for ConvergenceModel.use_learned (TK-41 / EP8-4, SUPERSEDED by TK-122).
 
-Acceptance criteria:
-  AC1: Given >=1000 samples AND proxy_accuracy >=0.80 (where accuracy is
-       1 - |learned_divergence - heuristic_divergence|), when a training step
-       runs, then use_learned flips True; INFO is logged.
-  AC2: Given <1000 samples, use_learned stays False regardless of accuracy.
-       A persisted True survives save/load (restart simulation).
+TK-41's original graduation criterion (use_learned flips True after >=1000
+samples with proxy_accuracy >= 0.80 against an untrained random head) was
+hard-disabled by DEC-33 / AD-0050 (pipeline item 20260702-002, TK-122) — a
+single lucky proxy-accuracy sample against a head that was never actually
+trained is not a safe graduation signal, and routing real decisions through
+it was a theater-prohibition violation. This file now tests the hard-disable
+at both writers instead of the old graduation behavior:
+
+  AC1: use_learned can never be set True by check(), regardless of sample
+       count or proxy accuracy — asserted across 1000+ calls.
+  AC2: load()'ing a checkpoint with a persisted use_learned=True forces it
+       back to False (with a WARNING logged); the checkpoint file itself is
+       left unmodified (load() stays read-only) and self-heals on the next
+       save().
+  AC3: After a forced-True-then-loaded-False checkpoint, check() resolves to
+       the heuristic divergence path (not _predict_learned()'s output).
 
 Run from the package root:
     cd packages/cognition-service && python -m pytest models/tests/test_convergence_graduation.py
@@ -22,7 +32,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from models.convergence import ConvergenceModel, DEFAULT_CONSENSUS_THRESHOLD
+from models.convergence import ConvergenceModel
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +50,6 @@ def _make_global_bias(seed: int = 0) -> list[float]:
     """Return a normalized 32-dim action bias vector."""
     rng = np.random.RandomState(seed)
     v = rng.standard_normal(32).astype(np.float32)
-    # Normalise so cosine similarity is well-defined.
     v = v / (np.linalg.norm(v) + 1e-8)
     return v.tolist()
 
@@ -51,10 +60,6 @@ def _make_panel(name: str, seed: int = 1) -> _FakePanel:
     v = v / (np.linalg.norm(v) + 1e-8)
     return _FakePanel(panel_name=name, action_bias=v.tolist())
 
-
-# ---------------------------------------------------------------------------
-# Helpers to manipulate the graduation criterion
-# ---------------------------------------------------------------------------
 
 def _patch_learned_divergence(model: ConvergenceModel, value: float):
     """Context manager: force _predict_learned to return a fixed value."""
@@ -71,11 +76,12 @@ def _run_check(model: ConvergenceModel, global_bias=None, panels=None):
 
 
 # ---------------------------------------------------------------------------
-# AC1 — graduation flips use_learned after >=1000 samples with accuracy >=0.80
+# AC1 — use_learned can never be flipped True by check(), at any sample
+# count or proxy accuracy (DEC-33 / AD-0050 hard-disable)
 # ---------------------------------------------------------------------------
 
-def test_graduation_flips_use_learned(caplog: pytest.LogCaptureFixture) -> None:
-    """AC1: use_learned becomes True once sample count and accuracy both pass."""
+def test_use_learned_stays_false_even_with_high_accuracy_past_1000_samples() -> None:
+    """AC1: >=1000 samples + proxy_accuracy that would have cleared 0.80 -> still False."""
     model = ConvergenceModel()
     assert model.use_learned is False
     assert model.convergence_sample_count == 0
@@ -83,39 +89,26 @@ def test_graduation_flips_use_learned(caplog: pytest.LogCaptureFixture) -> None:
     global_bias = _make_global_bias(0)
     panels = [_make_panel("p0", seed=1)]
 
-    # Compute what heuristic divergence will be for this input so we can set
-    # a learned value close enough to meet the 0.80 proxy accuracy threshold.
     p_arr = np.array(panels[0].action_bias, dtype=np.float32)
     g_arr = np.array(global_bias, dtype=np.float32)
     cos_sim = float(np.dot(g_arr, p_arr) / (np.linalg.norm(g_arr) * np.linalg.norm(p_arr)))
     heuristic = 1.0 - cos_sim
-    # learned divergence within 0.19 of heuristic → proxy_accuracy >= 0.81
+    # Would have cleared the old 0.80 proxy-accuracy threshold (accuracy ~0.90).
     high_accuracy_learned = heuristic + 0.10
 
-    # Run 999 checks with high-accuracy learned values — should NOT graduate yet.
     with _patch_learned_divergence(model, high_accuracy_learned):
-        for _ in range(999):
+        for _ in range(1100):
             _run_check(model, global_bias, panels)
 
-    assert model.use_learned is False
-    assert model.convergence_sample_count == 999
-
-    # The 1000th check should trigger graduation.
-    with caplog.at_level(logging.INFO, logger="cognition_service.convergence"):
-        with _patch_learned_divergence(model, high_accuracy_learned):
-            _run_check(model, global_bias, panels)
-
-    assert model.use_learned is True
-    assert model.convergence_sample_count == 1000
-    assert any(
-        "graduated to learned mode" in r.message
-        for r in caplog.records
-        if r.levelno == logging.INFO
-    ), "Expected INFO log about graduation"
+    assert model.convergence_sample_count == 1100
+    assert model.use_learned is False, (
+        "use_learned must be hard-disabled (DEC-33/AD-0050) — it must never "
+        "flip True regardless of sample count or proxy accuracy"
+    )
 
 
-def test_after_graduation_output_uses_learned_divergence() -> None:
-    """AC1: After graduation, check() returns the learned divergence score."""
+def test_check_output_always_uses_heuristic_divergence_not_learned() -> None:
+    """AC1/AC3: check() always resolves to the heuristic path, never _predict_learned()."""
     model = ConvergenceModel()
 
     global_bias = _make_global_bias(0)
@@ -125,95 +118,94 @@ def test_after_graduation_output_uses_learned_divergence() -> None:
     g_arr = np.array(global_bias, dtype=np.float32)
     cos_sim = float(np.dot(g_arr, p_arr) / (np.linalg.norm(g_arr) * np.linalg.norm(p_arr)))
     heuristic = 1.0 - cos_sim
-    learned_value = heuristic + 0.10  # within 0.20 → proxy_accuracy >= 0.80
 
-    # Get to exactly 1000 samples so the next call graduates.
-    with _patch_learned_divergence(model, learned_value):
-        for _ in range(1000):
-            _run_check(model, global_bias, panels)
-
-    assert model.use_learned is True
-
-    # After graduation, the output divergence_score should match the learned path.
-    known_learned = 0.42
-    with _patch_learned_divergence(model, known_learned):
+    # Even with a wildly different "learned" value, output must match heuristic.
+    with _patch_learned_divergence(model, 0.999):
         result = _run_check(model, global_bias, panels)
 
-    assert abs(result.divergence_score - known_learned) < 1e-5
-
-
-# ---------------------------------------------------------------------------
-# AC2 — <1000 samples: use_learned stays False
-# ---------------------------------------------------------------------------
-
-def test_no_graduation_below_1000_samples() -> None:
-    """AC2: Even with perfect proxy accuracy, <1000 samples cannot graduate."""
-    model = ConvergenceModel()
-
-    global_bias = _make_global_bias(0)
-    panels = [_make_panel("p0", seed=1)]
-
-    p_arr = np.array(panels[0].action_bias, dtype=np.float32)
-    g_arr = np.array(global_bias, dtype=np.float32)
-    cos_sim = float(np.dot(g_arr, p_arr) / (np.linalg.norm(g_arr) * np.linalg.norm(p_arr)))
-    heuristic = 1.0 - cos_sim
-    # Perfect accuracy: learned == heuristic → proxy_accuracy = 1.0
-    with _patch_learned_divergence(model, heuristic):
-        for _ in range(999):
-            _run_check(model, global_bias, panels)
-
-    assert model.use_learned is False
-    assert model.convergence_sample_count == 999
-
-
-def test_no_graduation_below_accuracy_threshold() -> None:
-    """AC2 (accuracy guard): >=1000 samples but bad accuracy → no graduation."""
-    model = ConvergenceModel()
-
-    global_bias = _make_global_bias(0)
-    panels = [_make_panel("p0", seed=1)]
-
-    p_arr = np.array(panels[0].action_bias, dtype=np.float32)
-    g_arr = np.array(global_bias, dtype=np.float32)
-    cos_sim = float(np.dot(g_arr, p_arr) / (np.linalg.norm(g_arr) * np.linalg.norm(p_arr)))
-    heuristic = 1.0 - cos_sim
-    # Learned divergence 0.25 away → proxy_accuracy = 0.75 < 0.80
-    bad_learned = heuristic + 0.25
-    bad_learned = max(0.0, min(1.0, bad_learned))  # clamp to [0,1]
-
-    with _patch_learned_divergence(model, bad_learned):
-        for _ in range(1000):
-            _run_check(model, global_bias, panels)
-
+    assert abs(result.divergence_score - heuristic) < 1e-5
     assert model.use_learned is False
 
 
+def test_disablement_logged_once_at_construction(caplog: pytest.LogCaptureFixture) -> None:
+    """AC1: the hard-disable is logged with an explicit reason."""
+    with caplog.at_level(logging.WARNING, logger="cognition_service.convergence"):
+        ConvergenceModel()
+
+    disable_logs = [
+        r for r in caplog.records
+        if "use_learned" in r.message and "hard-disabled" in r.message
+    ]
+    assert disable_logs, "Expected a WARNING logging the use_learned hard-disable reason"
+
+
 # ---------------------------------------------------------------------------
-# AC2 — persisted True survives save/load (restart simulation)
+# AC2 — a persisted use_learned=True checkpoint is forced back to False on load()
 # ---------------------------------------------------------------------------
 
-def test_use_learned_persists_across_save_load() -> None:
-    """AC2: A graduated use_learned=True survives save() and load() (restart)."""
+def test_persisted_use_learned_true_is_overridden_to_false_on_load(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AC2: load() forces use_learned=False even when the checkpoint says True."""
     model = ConvergenceModel()
-    # Force use_learned to True directly, simulating post-graduation state.
+    # Simulate a pre-TK-122 checkpoint that had graduated.
     model.use_learned = True
     model.convergence_sample_count = 1500
 
     with tempfile.TemporaryDirectory() as tmpdir:
         model.save(tmpdir)
 
-        # Simulate restart: fresh model, then load from disk.
         reloaded = ConvergenceModel()
         assert reloaded.use_learned is False  # sanity: starts False
-        ok = reloaded.load(tmpdir)
+
+        with caplog.at_level(logging.WARNING, logger="cognition_service.convergence"):
+            ok = reloaded.load(tmpdir)
 
     assert ok is True
-    assert reloaded.use_learned is True
-    assert reloaded.convergence_sample_count == 1500
+    assert reloaded.use_learned is False, (
+        "load() must force use_learned=False regardless of the persisted "
+        "value (DEC-33/AD-0050) — a graduated checkpoint must NOT survive"
+    )
+    assert reloaded.convergence_sample_count == 1500  # sample count itself is unaffected
+
+    override_logs = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "use_learned=True" in r.message
+    ]
+    assert override_logs, "Expected a WARNING logging the override of a persisted True flag"
+
+
+def test_load_does_not_rewrite_checkpoint_file() -> None:
+    """AC2: load() is read-only -- the on-disk flag is left as-is (self-heals on save())."""
+    model = ConvergenceModel()
+    model.use_learned = True
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model.save(tmpdir)
+        path = os.path.join(tmpdir, "convergence_model.npz")
+        before_mtime = os.path.getmtime(path)
+        before_bytes = open(path, "rb").read()
+
+        reloaded = ConvergenceModel()
+        reloaded.load(tmpdir)
+
+        after_mtime = os.path.getmtime(path)
+        after_bytes = open(path, "rb").read()
+
+    assert reloaded.use_learned is False
+    assert before_mtime == after_mtime, "load() must not touch the checkpoint file on disk"
+    assert before_bytes == after_bytes
+
+    # Self-heals the next time save() runs.
+    with tempfile.TemporaryDirectory() as tmpdir2:
+        reloaded.save(tmpdir2)
+        healed = ConvergenceModel()
+        healed.load(tmpdir2)
+        assert healed.use_learned is False
 
 
 def test_sample_count_persists_across_save_load() -> None:
-    """Sample count survives a checkpoint cycle (used for graduation after restart)."""
+    """Sample count survives a checkpoint cycle (diagnostic only now, no graduation gate)."""
     model = ConvergenceModel()
     model.convergence_sample_count = 750
 
@@ -223,14 +215,13 @@ def test_sample_count_persists_across_save_load() -> None:
         reloaded.load(tmpdir)
 
     assert reloaded.convergence_sample_count == 750
-    assert reloaded.use_learned is False  # not yet graduated
+    assert reloaded.use_learned is False
 
 
 def test_old_checkpoint_without_sample_count_defaults_to_zero() -> None:
     """Backward compat: old NPZ without convergence_sample_count loads cleanly."""
     model = ConvergenceModel()
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Write an NPZ without the new key to simulate an older checkpoint.
         path = os.path.join(tmpdir, "convergence_model.npz")
         np.savez(
             path,
@@ -246,33 +237,19 @@ def test_old_checkpoint_without_sample_count_defaults_to_zero() -> None:
     assert reloaded.use_learned is False
 
 
-# ---------------------------------------------------------------------------
-# Graduation does not fire repeatedly
-# ---------------------------------------------------------------------------
-
-def test_graduation_fires_exactly_once(caplog: pytest.LogCaptureFixture) -> None:
-    """use_learned only flips once; the graduation log only appears once."""
+def test_old_checkpoint_with_persisted_false_loads_false_without_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A checkpoint that was already False loads cleanly with no override warning."""
     model = ConvergenceModel()
+    assert model.use_learned is False
 
-    global_bias = _make_global_bias(0)
-    panels = [_make_panel("p0", seed=1)]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model.save(tmpdir)
+        reloaded = ConvergenceModel()
+        with caplog.at_level(logging.WARNING, logger="cognition_service.convergence"):
+            reloaded.load(tmpdir)
 
-    p_arr = np.array(panels[0].action_bias, dtype=np.float32)
-    g_arr = np.array(global_bias, dtype=np.float32)
-    cos_sim = float(np.dot(g_arr, p_arr) / (np.linalg.norm(g_arr) * np.linalg.norm(p_arr)))
-    heuristic = 1.0 - cos_sim
-    high_accuracy_learned = heuristic + 0.05
-
-    with caplog.at_level(logging.INFO, logger="cognition_service.convergence"):
-        with _patch_learned_divergence(model, high_accuracy_learned):
-            for _ in range(1100):
-                _run_check(model, global_bias, panels)
-
-    graduation_logs = [
-        r for r in caplog.records
-        if "graduated to learned mode" in r.message and r.levelno == logging.INFO
-    ]
-    assert len(graduation_logs) == 1, (
-        f"Expected exactly 1 graduation log, got {len(graduation_logs)}"
-    )
-    assert model.use_learned is True
+    assert reloaded.use_learned is False
+    override_logs = [r for r in caplog.records if "use_learned=True" in r.message]
+    assert not override_logs, "No override warning expected when the persisted flag was already False"
