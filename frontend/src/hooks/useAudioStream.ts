@@ -154,6 +154,19 @@ export function useAudioStream(): UseAudioStreamReturn {
               ws.send(JSON.stringify({ type: 'audio_config', mimeType }))
               newRecorder.start(TIMESLICE_MS)
             }
+
+            // TK-118: Deepgram closed abnormally and the server did NOT
+            // auto-reconnect (TK-114) — stop looking "live" and surface it
+            // via the hook's existing error/isStreaming state rather than
+            // silently continuing to show a working mic.
+            if (msg.type === 'mic_dead') {
+              console.warn('[Audio] Mic session ended (Deepgram closed, code=', msg.code, ')')
+              if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+                recorderRef.current.stop()
+              }
+              setIsStreaming(false)
+              setError('Microphone session ended unexpectedly — please restart the mic')
+            }
           } catch {
             // Not JSON — ignore
           }
