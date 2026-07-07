@@ -47,13 +47,14 @@ export const RELIEF_THRESHOLD = 0.3;     // drive < 0.3 for relief to be authent
  * Perform theater detection on an action outcome.
  *
  * Receives the theaterCheck data from the ACTION_OUTCOME payload and verifies
- * that any emotional expression matches the actual drive state. If the
- * expression was pre-validated by Communication, we still perform post-flight
- * verification to catch edge cases (drive value changed between dispatch and
- * outcome).
+ * that any emotional expression matches the drive engine's OWN isolated drive
+ * state at verification time (currentDriveState) — not the caller-supplied
+ * driveValueAtExpression. The caller-supplied value is untrusted testimony
+ * (CANON Standard 1 — Theater Prohibition: the isolated judge must not trust
+ * the defendant); currentDriveState is the engine's actual record.
  *
  * @param theaterCheck - The theater check data from ActionOutcomePayload
- * @param currentDriveState - Current drive snapshot for post-flight verification
+ * @param currentDriveState - The engine's actual isolated drive state, used for the verdict
  * @returns A TheaterVerdict indicating whether the expression was authentic
  */
 export function detectTheater(
@@ -78,24 +79,27 @@ export function detectTheater(
     };
   }
 
-  // Perform directional check based on expression type
-  const isAuthenticPressure = verifyPressureExpression(driveValueAtExpression);
-  const isAuthenticRelief = verifyReliefExpression(driveValueAtExpression);
+  // Verdict is derived from the engine's own isolated drive state, not the
+  // caller-supplied driveValueAtExpression (post-flight verification).
+  const isolatedDriveValue = currentDriveState[drive];
+  const isAuthenticPressure = verifyPressureExpression(isolatedDriveValue);
+  const isAuthenticRelief = verifyReliefExpression(isolatedDriveValue);
 
   if (expressionType === 'pressure' && !isAuthenticPressure) {
     vlog('theater check', {
       expressionType,
       drive,
-      driveValue: driveValueAtExpression,
+      driveValueAtExpression,
+      isolatedDriveValue,
       verdict: 'theatrical',
-      reason: `drive ${driveValueAtExpression} <= threshold ${PRESSURE_THRESHOLD}`,
+      reason: `isolated drive ${isolatedDriveValue} <= threshold ${PRESSURE_THRESHOLD}`,
     });
     return {
       isTheatrical: true,
-      reason: `Pressure expression (${drive}) requires drive > ${PRESSURE_THRESHOLD}, but was ${driveValueAtExpression}`,
+      reason: `Pressure expression (${drive}) requires isolated drive > ${PRESSURE_THRESHOLD}, but was ${isolatedDriveValue} (claimed: ${driveValueAtExpression})`,
       expressionType,
       drive,
-      driveValue: driveValueAtExpression,
+      driveValue: isolatedDriveValue,
     };
   }
 
@@ -103,32 +107,34 @@ export function detectTheater(
     vlog('theater check', {
       expressionType,
       drive,
-      driveValue: driveValueAtExpression,
+      driveValueAtExpression,
+      isolatedDriveValue,
       verdict: 'theatrical',
-      reason: `drive ${driveValueAtExpression} >= threshold ${RELIEF_THRESHOLD}`,
+      reason: `isolated drive ${isolatedDriveValue} >= threshold ${RELIEF_THRESHOLD}`,
     });
     return {
       isTheatrical: true,
-      reason: `Relief expression (${drive}) requires drive < ${RELIEF_THRESHOLD}, but was ${driveValueAtExpression}`,
+      reason: `Relief expression (${drive}) requires isolated drive < ${RELIEF_THRESHOLD}, but was ${isolatedDriveValue} (claimed: ${driveValueAtExpression})`,
       expressionType,
       drive,
-      driveValue: driveValueAtExpression,
+      driveValue: isolatedDriveValue,
     };
   }
 
-  // Expression passed directional check
+  // Expression passed directional check against the isolated drive state
   const verdict: TheaterVerdict = {
     isTheatrical: false,
-    reason: `${expressionType} expression is authentic (drive value: ${driveValueAtExpression})`,
+    reason: `${expressionType} expression is authentic (isolated drive value: ${isolatedDriveValue})`,
     expressionType,
     drive,
-    driveValue: driveValueAtExpression,
+    driveValue: isolatedDriveValue,
   };
 
   vlog('theater check', {
     expressionType,
     drive,
-    driveValue: driveValueAtExpression,
+    driveValueAtExpression,
+    isolatedDriveValue,
     verdict: 'authentic',
   });
 

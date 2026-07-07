@@ -32,6 +32,7 @@ import { getOrCreateEngine } from '@sylphie/drive-engine/drive-process/drive-eng
 import { TimescaleWriter } from '@sylphie/drive-engine/drive-process/timescale-writer';
 import { verboseFor } from '@sylphie/shared';
 import { WebSocketServerTransport } from './ws-transport';
+import { resolvePostgresConfig } from './postgres-config';
 
 const vlog = verboseFor('DriveEngine');
 
@@ -54,11 +55,7 @@ const engine = getOrCreateEngine(transport);
 // ---------------------------------------------------------------------------
 
 const tsWriter = new TimescaleWriter({
-  host: process.env.POSTGRES_HOST || 'localhost',
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
-  database: process.env.POSTGRES_DB || 'sylphie',
-  user: process.env.POSTGRES_RUNTIME_USER || process.env.POSTGRES_USER || 'sylphie',
-  password: process.env.POSTGRES_RUNTIME_PASSWORD || process.env.POSTGRES_PASSWORD || 'sylphie',
+  ...resolvePostgresConfig(),
   maxConnections: 2,
 });
 
@@ -88,11 +85,7 @@ async function initPersistence(): Promise<void> {
   // Uses the same database as TimescaleDB but a separate pool for isolation.
   try {
     const rulePool = new Pool({
-      host: process.env.POSTGRES_HOST || 'localhost',
-      port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
-      database: process.env.POSTGRES_DB || 'sylphie',
-      user: process.env.POSTGRES_RUNTIME_USER || process.env.POSTGRES_USER || 'sylphie',
-      password: process.env.POSTGRES_RUNTIME_PASSWORD || process.env.POSTGRES_PASSWORD || 'sylphie',
+      ...resolvePostgresConfig(),
       max: 2,
     });
     await engine.initializeRuleEngine(rulePool);

@@ -21,6 +21,7 @@ const vlog = verboseFor('DriveEngine');
 
 import { getOrCreateEngine } from './drive-engine';
 import { IpcTransport } from './message-transport';
+import { gracefulShutdown } from './shutdown';
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -49,9 +50,10 @@ console.log('[DriveEngine] Tick loop started');
 
 function onShutdown(signal: string): void {
   vlog('shutdown signal received', { signal });
-  console.log(`[DriveEngine] Received ${signal}, shutting down gracefully`);
-  engine.stop();
-  process.exit(0);
+  // Await the checkpoint save (engine.stop()) before exiting — previously
+  // this called process.exit(0) synchronously right after an un-awaited
+  // engine.stop(), racing the in-flight save against process termination.
+  void gracefulShutdown(engine, signal);
 }
 
 process.on('SIGTERM', () => onShutdown('SIGTERM'));

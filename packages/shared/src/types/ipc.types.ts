@@ -359,6 +359,16 @@ export interface SessionStartPayload {
    * or INITIAL_DRIVE_STATE for cold start).
    */
   readonly initialDriveState: DriveSnapshot;
+
+  /**
+   * When true, `initialDriveState` REPLACES the current drive state even if a
+   * Timescale checkpoint was restored at startup — an explicit, deliberate
+   * reset (e.g. the full-system reset flow). When false/omitted (the default
+   * for an ordinary session start), a Timescale-restored checkpoint is
+   * preserved rather than overwritten, so a routine SESSION_START cannot
+   * silently discard persisted drive history.
+   */
+  readonly forceReset?: boolean;
 }
 
 /**
@@ -695,4 +705,11 @@ export interface HealthStatusPayload {
    * Null when healthy is true.
    */
   readonly diagnosticMessage: string | null;
+
+  /**
+   * Real heap memory usage of the Drive Engine child process, in MB
+   * (process.memoryUsage().heapUsed / 1024 / 1024, measured in the child at
+   * emission time). Used to enforce DRIVE_PROCESS_MAX_MEMORY_MB.
+   */
+  readonly memoryMb: number;
 }

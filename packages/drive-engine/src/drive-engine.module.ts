@@ -31,6 +31,7 @@ import { RuleProposerService } from './rule-proposer.service';
 import { DriveProcessManagerService } from './drive-process/drive-process-manager.service';
 import { PostgresRulesClient } from './rule-proposer/postgres-rules-client';
 import { WsChannelService } from './ipc-channel/ws-channel.service';
+import { RlsVerificationService } from './postgres-verification/verify-rls';
 
 @Module({
   providers: [
@@ -53,6 +54,13 @@ import { WsChannelService } from './ipc-channel/ws-channel.service';
     },
     // PostgreSQL client for rule proposals (runs in main app, writes to shared DB)
     PostgresRulesClient,
+    // RLS verification (CANON §No Self-Modification, Immutable Standard 6):
+    // registered so its OnModuleInit actually runs and aborts startup if the
+    // sylphie_app runtime role can write drive_rules (RLS misconfigured).
+    // Previously implemented but registered in no module — OnModuleInit
+    // never ran. The REVOKE + RLS policy itself is TK-154's migration; this
+    // only wires the verifier to run against it.
+    RlsVerificationService,
     // WebSocket channel for Drive Engine server communication
     WsChannelService,
     // DriveReaderService must be registered under its class token so that

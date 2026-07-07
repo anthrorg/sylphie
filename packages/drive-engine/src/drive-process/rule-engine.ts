@@ -277,17 +277,31 @@ export class RuleEngine {
           `[RuleEngine] Failed to reload rules: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
+      // Surface the failure to the caller instead of swallowing it (TK-139).
+      // Previously this was swallowed entirely, so initialize()'s "@throws
+      // Error if the initial rule load fails" contract was never honored —
+      // a broken initial load would still log "Rule engine initialized"
+      // with 0 rules. schedulePeriodicReload() below catches this for the
+      // periodic timer so a later transient failure doesn't go unhandled.
+      throw err;
     }
   }
 
   /**
    * Schedule periodic rule reloads from the database.
    *
-   * Runs every RULE_RELOAD_INTERVAL_MS (default 60000ms).
+   * Runs every RULE_RELOAD_INTERVAL_MS (default 60000ms). Failures are
+   * caught here (reloadRules() now throws) so a periodic reload failure
+   * logs (already done inside reloadRules()) rather than becoming an
+   * unhandled promise rejection that could crash the process.
    */
   private schedulePeriodicReload(): void {
     this.reloadTimer = setInterval(async () => {
-      await this.reloadRules();
+      try {
+        await this.reloadRules();
+      } catch {
+        // Already logged inside reloadRules(); the periodic timer keeps running.
+      }
     }, RULE_RELOAD_INTERVAL_MS);
 
     // Allow the timer to not prevent process exit

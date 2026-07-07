@@ -45,6 +45,11 @@ export class DriveProcessManagerService implements IDriveProcessManager {
   private started = false;
   private wsUrl: string;
 
+  // Re-entrancy guard: prevents overlapping attemptRecovery() calls when
+  // multiple triggers (periodic unhealthy check, unexpected close) fire
+  // while a recovery attempt is already in flight.
+  private recoveryInFlight = false;
+
   constructor(
     private driveReaderService: DriveReaderService,
     private wsChannel: WsChannelService,
@@ -52,12 +57,42 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     private config: ConfigService,
   ) {
     this.wsUrl = this.config.get<string>('DRIVE_ENGINE_WS_URL', 'ws://localhost:3001');
-    this.healthMonitor = new HealthMonitor(this.wsChannel);
+    this.healthMonitor = new HealthMonitor(this.wsChannel, {
+      onUnhealthy: () => this.triggerRecovery(),
+    });
     this.recovery = new RecoveryMechanism(
       this.wsChannel,
       this.healthMonitor,
       this.wsUrl,
     );
+
+    // Wire the previously-dead RecoveryMechanism into production: an
+    // unexpected socket close (not a deliberate stop()) also triggers a
+    // reconnect attempt immediately, rather than waiting for the next
+    // periodic unhealthy check.
+    this.wsChannel.onClose(() => this.triggerRecovery());
+  }
+
+  /**
+   * Trigger a recovery attempt, guarded against overlapping invocations.
+   * Multiple triggers (unhealthy check, unexpected close) may fire close
+   * together; only one attemptRecovery() runs at a time.
+   */
+  private triggerRecovery(): void {
+    if (this.recoveryInFlight) {
+      return;
+    }
+    this.recoveryInFlight = true;
+    this.recovery
+      .attemptRecovery()
+      .catch((error) => {
+        this.logger.error(
+          `Recovery attempt failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        this.recoveryInFlight = false;
+      });
   }
 
   /**
@@ -78,8 +113,16 @@ export class DriveProcessManagerService implements IDriveProcessManager {
     try {
       this.logger.log(`Connecting to Drive Engine at ${this.wsUrl}`);
 
-      // Connect to the Drive Engine WebSocket server
-      this.wsChannel.connect(this.wsUrl);
+      // Connect to the Drive Engine WebSocket server. Non-blocking: connect()
+      // resolves on 'open' or rejects on close/error before then. We don't
+      // await it here — recovery (wired via onClose/onUnhealthy above)
+      // handles the case where the server isn't up yet — but we do catch it
+      // so an early rejection doesn't surface as an unhandled rejection.
+      this.wsChannel.connect(this.wsUrl).catch((error) => {
+        this.logger.warn(
+          `Initial connect did not complete: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
       // Attach handlers for inbound messages
       this.attachMessageHandlers();
@@ -223,13 +266,16 @@ export class DriveProcessManagerService implements IDriveProcessManager {
       },
     );
 
-    // HEALTH_STATUS: Internal response from health check pings
+    // HEALTH_STATUS: real keep-alive from the child (getHealthStatus()) —
+    // feeds the HealthMonitor's real lastPingAt/childMemoryBytes so they are
+    // no longer fabricated (always "now" / always null).
     this.wsChannel.onMessage(
       DriveIPCMessageType.HEALTH_STATUS,
       (message: DriveIPCMessage<any>) => {
         this.logger.debug(
-          `Health check response: tick=${message.payload.currentTick}, healthy=${message.payload.healthy}`,
+          `Health check response: tick=${message.payload.currentTick}, healthy=${message.payload.healthy}, memoryMb=${message.payload.memoryMb}`,
         );
+        this.healthMonitor.recordHealthStatus(message.payload);
       },
     );
 

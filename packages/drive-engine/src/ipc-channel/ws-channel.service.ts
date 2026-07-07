@@ -57,6 +57,20 @@ interface PendingMessage {
  */
 const VALIDATION_ERROR_LOG_INTERVAL_MS = 5_000;
 
+/**
+ * Maximum number of messages held in the send queue while disconnected.
+ * Bounds memory growth during an extended outage — once full, the oldest
+ * queued message is dropped to make room for the newest.
+ */
+const SEND_QUEUE_MAX_SIZE = 200;
+
+/**
+ * Time-to-live for a queued message, in milliseconds. Messages older than
+ * this are considered stale and dropped rather than sent on reconnect —
+ * prevents replaying long-outdated state after a long outage.
+ */
+const SEND_QUEUE_TTL_MS = 30_000;
+
 @Injectable()
 export class WsChannelService {
   private readonly logger = new Logger(WsChannelService.name);
@@ -76,44 +90,101 @@ export class WsChannelService {
   private lastValidationErrorLogAt = 0;
   private suppressedValidationErrors = 0;
 
+  // Set at the start of a deliberate close() so the 'close' event handler
+  // can distinguish an intentional shutdown from an unexpected drop and not
+  // fire the onClose (recovery) callbacks after a graceful stop.
+  private intentionalClose = false;
+
+  // Subscribers notified on an UNEXPECTED close (not a deliberate close()).
+  // Lets an owner (DriveProcessManagerService) wire reconnection without
+  // WsChannelService taking a hard dependency on RecoveryMechanism.
+  private closeCallbacks: Array<() => void> = [];
+
+  /**
+   * Register a callback invoked whenever the connection closes unexpectedly
+   * (i.e. NOT via an explicit close() call). Multiple callbacks may be
+   * registered; each is invoked defensively (a throwing callback does not
+   * prevent the others from running).
+   */
+  onClose(callback: () => void): void {
+    this.closeCallbacks.push(callback);
+  }
+
   /**
    * Connect to the Drive Engine WebSocket server.
    *
+   * Returns a Promise that resolves once the 'open' event fires and rejects
+   * if the connection closes or errors before that — callers that need to
+   * declare success only after a real connection (e.g. RecoveryMechanism)
+   * can await it. Existing fire-and-forget callers may ignore the return
+   * value; not awaiting it changes nothing about today's behavior.
+   *
    * @param url - WebSocket URL (e.g., ws://localhost:3001)
    */
-  connect(url: string): void {
+  connect(url: string): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       throw new Error('WebSocket channel already connected');
     }
 
     this.url = url;
+    this.intentionalClose = false;
     this.logger.log(`Connecting to Drive Engine at ${url}`);
 
-    this.ws = new WebSocket(url);
+    const ws = new WebSocket(url);
+    this.ws = ws;
 
-    this.ws.on('open', () => {
-      this.connectTime = Date.now();
-      this.lastMessageTime = Date.now();
-      vlog('WS connected', { url });
-      this.logger.log(`Connected to Drive Engine at ${url}`);
-      this.flushSendQueue();
-    });
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
 
-    this.ws.on('message', (data: WebSocket.RawData) => {
-      this.onServerMessage(data);
-    });
+      ws.on('open', () => {
+        this.connectTime = Date.now();
+        this.lastMessageTime = Date.now();
+        vlog('WS connected', { url });
+        this.logger.log(`Connected to Drive Engine at ${url}`);
+        this.flushSendQueue();
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      });
 
-    this.ws.on('close', (code, reason) => {
-      vlog('WS closed', { code, reason: reason?.toString() || 'none' });
-      this.logger.warn(
-        `Drive Engine connection closed (code: ${code}, reason: ${reason?.toString() || 'none'})`,
-      );
-      this.ws = null;
-    });
+      ws.on('message', (data: WebSocket.RawData) => {
+        this.onServerMessage(data);
+      });
 
-    this.ws.on('error', (error) => {
-      vlog('WS error', { error: error.message });
-      this.logger.error(`Drive Engine connection error: ${error.message}`);
+      ws.on('close', (code, reason) => {
+        vlog('WS closed', { code, reason: reason?.toString() || 'none' });
+        this.logger.warn(
+          `Drive Engine connection closed (code: ${code}, reason: ${reason?.toString() || 'none'})`,
+        );
+        this.ws = null;
+
+        if (!this.intentionalClose) {
+          for (const cb of this.closeCallbacks) {
+            try {
+              cb();
+            } catch (err) {
+              this.logger.error(
+                `onClose callback threw: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+        }
+
+        if (!settled) {
+          settled = true;
+          reject(new Error(`WebSocket closed before open (code: ${code})`));
+        }
+      });
+
+      ws.on('error', (error) => {
+        vlog('WS error', { error: error.message });
+        this.logger.error(`Drive Engine connection error: ${error.message}`);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      });
     });
   }
 
@@ -127,16 +198,43 @@ export class WsChannelService {
 
   /**
    * Send a message to the Drive Engine server.
-   * Messages are queued if the connection is not open.
+   * Messages are queued if the connection is not open. The queue is bounded
+   * (SEND_QUEUE_MAX_SIZE) — once full, the oldest queued message is dropped
+   * to make room — and TTL-pruned (SEND_QUEUE_TTL_MS) so a long outage does
+   * not replay stale messages once the connection recovers.
    */
   send(message: DriveIPCMessage<any>): void {
+    this.pruneExpired();
+
     this.sendQueue.push({
       message,
       timestamp: Date.now(),
     });
 
+    while (this.sendQueue.length > SEND_QUEUE_MAX_SIZE) {
+      const dropped = this.sendQueue.shift();
+      this.logger.warn(
+        `Send queue exceeded ${SEND_QUEUE_MAX_SIZE} — dropped oldest queued message (type: ${dropped?.message.type})`,
+      );
+    }
+
     if (!this.isProcessing) {
       this.flushSendQueue();
+    }
+  }
+
+  /**
+   * Remove queued messages older than SEND_QUEUE_TTL_MS.
+   */
+  private pruneExpired(): void {
+    const now = Date.now();
+    const before = this.sendQueue.length;
+    this.sendQueue = this.sendQueue.filter(
+      (pending) => now - pending.timestamp <= SEND_QUEUE_TTL_MS,
+    );
+    const expired = before - this.sendQueue.length;
+    if (expired > 0) {
+      this.logger.warn(`Dropped ${expired} expired queued message(s) (TTL: ${SEND_QUEUE_TTL_MS}ms)`);
     }
   }
 
@@ -146,6 +244,8 @@ export class WsChannelService {
    * @param graceMs - Grace period before force-closing (default: 5000)
    */
   async close(graceMs = 5000): Promise<void> {
+    this.intentionalClose = true;
+
     if (!this.ws) {
       this.logger.debug('WebSocket channel already closed');
       return;
@@ -267,6 +367,7 @@ export class WsChannelService {
     if (this.isProcessing) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+    this.pruneExpired();
     this.isProcessing = true;
 
     while (this.sendQueue.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
