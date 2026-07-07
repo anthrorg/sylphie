@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import {
   Box,
   TextField,
@@ -13,7 +13,7 @@ import SendIcon from '@mui/icons-material/Send'
 import SmartToyIcon from '@mui/icons-material/SmartToy'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
-import { isAvailable } from '../../services/feAgent'
+import { checkAvailable } from '../../services/feAgent'
 import { useTelemetryBuffer } from '../../hooks/useTelemetryBuffer'
 import { useFEAgentChat } from '../../hooks/useFEAgentChat'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
@@ -21,12 +21,25 @@ import { useAutoScroll } from '../../hooks/useAutoScroll'
 export const FEAgentPanel: React.FC = () => {
   const [expanded, setExpanded] = useState(false)
   const [input, setInput] = useState('')
+  // Availability is now a backend fact (TK-142: the key — and therefore the
+  // "is it configured" question — no longer lives in the browser), so it's
+  // checked once via the proxy's /status route instead of read synchronously
+  // from a Vite env var.
+  const [available, setAvailable] = useState(false)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   // getSnapshot provides a text summary of recent telemetry as LLM context
   const { getSnapshot } = useTelemetryBuffer()
   const { chat, thinking, streamingText, handleSubmit } = useFEAgentChat(getSnapshot)
 
-  const available = isAvailable()
+  useEffect(() => {
+    let cancelled = false
+    checkAvailable().then((result) => {
+      if (!cancelled) setAvailable(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useAutoScroll(chatScrollRef, [chat, streamingText])
 
@@ -47,7 +60,8 @@ export const FEAgentPanel: React.FC = () => {
     [onSubmit],
   )
 
-  // Graceful degradation: entire panel hides if VITE_ANTHROPIC_API_KEY is unset
+  // Graceful degradation: entire panel hides if the backend reports
+  // ANTHROPIC_API_KEY is unset (checked via GET /api/fe-agent/status).
   if (!available) return null
 
   return (

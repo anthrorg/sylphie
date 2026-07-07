@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../store'
 import { GraphDelta, ConversationMessage, TelemetryMessage } from '../types'
+import { useUnmountGuard } from './useUnmountGuard'
 
 // Use Vite proxy in dev so WebSocket paths are relative (/ws/...).
 // In production, same host serves both the frontend and NestJS backend.
@@ -16,6 +17,7 @@ export function useGraphWebSocket() {
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
   const refetchTimerRef = useRef<number | null>(null)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
 
   // Per-field selectors — store actions have stable identity in Zustand, so
   // subscribing field-by-field avoids re-running this hook on unrelated state
@@ -137,11 +139,15 @@ export function useGraphWebSocket() {
         console.info(`[Graph] WebSocket closed (${event.code})`)
         if (wsRef.current !== ws) return
         wsRef.current = null
+        // Unmounted — do NOT schedule a reconnect; this would spawn an orphan
+        // socket that outlives the component (TK-141: zombie-socket fix).
+        if (isUnmounted()) return
         setWsState('graph', 'reconnecting')
         scheduleReconnect()
       }
     } catch (error) {
       console.error('[Graph] Could not create WebSocket:', error)
+      if (isUnmounted()) return
       setWsState('graph', 'reconnecting')
       scheduleReconnect()
     }
@@ -153,6 +159,7 @@ export function useGraphWebSocket() {
     setGraphData,
     setGraphStats,
     scheduleDebouncedRefetch,
+    isUnmounted,
   ])
 
   const scheduleReconnect = useCallback(() => {
@@ -172,6 +179,7 @@ export function useGraphWebSocket() {
     fetchSnapshot()
 
     return () => {
+      markUnmounted()
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -180,7 +188,7 @@ export function useGraphWebSocket() {
       }
       wsRef.current?.close()
     }
-  }, [connect, fetchSnapshot])
+  }, [connect, fetchSnapshot, markUnmounted])
 
   return wsRef.current
 }
@@ -189,6 +197,7 @@ export function useConversationWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
 
   const setWsState = useAppStore((s) => s.setWsState)
   const addMessage = useAppStore((s) => s.addMessage)
@@ -339,15 +348,18 @@ export function useConversationWebSocket() {
           setWsState('conversation', 'disconnected')
           return
         }
+        // Unmounted — do NOT schedule a reconnect (TK-141: zombie-socket fix).
+        if (isUnmounted()) return
         setWsState('conversation', 'reconnecting')
         scheduleReconnect()
       }
     } catch (error) {
       console.error('[Conversation] Could not create WebSocket:', error)
+      if (isUnmounted()) return
       setWsState('conversation', 'reconnecting')
       scheduleReconnect()
     }
-  }, [setWsState, addMessage, incrementTurns, setThinking, setQueuePosition])
+  }, [setWsState, addMessage, incrementTurns, setThinking, setQueuePosition, isUnmounted])
 
   const scheduleReconnect = useCallback(() => {
     const delay = computeBackoffDelay(reconnectAttemptRef.current)
@@ -367,12 +379,13 @@ export function useConversationWebSocket() {
     connect()
 
     return () => {
+      markUnmounted()
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
       wsRef.current?.close()
     }
-  }, [connect])
+  }, [connect, markUnmounted])
 
   return { ws: wsRef.current, sendMessage, sendTextMessage }
 }
@@ -381,11 +394,10 @@ export function useTelemetryWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
 
   const setWsState = useAppStore((s) => s.setWsState)
   const updateTelemetry = useAppStore((s) => s.updateTelemetry)
-  const addPredictionToHistory = useAppStore((s) => s.addPredictionToHistory)
-  const addInnerMonologue = useAppStore((s) => s.addInnerMonologue)
   const addSystemLog = useAppStore((s) => s.addSystemLog)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
@@ -434,31 +446,19 @@ export function useTelemetryWebSocket() {
               }
               break
 
-            case 'prediction_result':
-              addPredictionToHistory(message.action, message.accuracy)
-              break
-
-            case 'maintenance_cycle':
-              addInnerMonologue({
-                // Verbatim TimescaleDB event payload — no LLM summarisation
-                text: `maintenance_cycle: jobs_run=${message.jobs_run} committed=${message.committed} phrase_consolidation=${message.phrase_consolidation}`,
-                timestamp: new Date(message.timestamp * 1000).toISOString(),
-                rawPayload: event.data,
-              })
-              addSystemLog({
-                text: `[maintenance] ${message.jobs_run} jobs, ${message.committed} committed${message.phrase_consolidation ? ', phrases consolidated' : ''}`,
-                timestamp: ts,
-                level: message.committed > 0 ? 'info' : 'warn',
-              })
-              break
-
-            case 'state_transition':
-              addSystemLog({
-                text: `[state] ${message.from_state} → ${message.to_state} (${message.event})`,
-                timestamp: ts,
-                level: 'info',
-              })
-              break
+            // TK-145 (item 20260702-005): 'prediction_result', 'maintenance_cycle',
+            // and 'state_transition' were REMOVED here (not wired) — nothing in
+            // the backend has ever emitted any of the three (confirmed: only
+            // drive-publisher.service.ts's 'executor_cycle' and
+            // telemetry-broadcast.service.ts's 'system_log' produce telemetry
+            // messages). Handling a message type with no producer is dead code
+            // that implies a data feed exists when it never did; removing it
+            // is the ticket's explicit "wire to a real event or remove" rule.
+            // predictionHistory/addPredictionToHistory remain in the store —
+            // PredictionAccuracyPanel's honest "No predictions yet" empty
+            // state is a smaller, separate call left for ashby/architect
+            // (whether to build real prediction telemetry is a feature, not
+            // this bug fix's scope).
 
             case 'system_log':
               addSystemLog({
@@ -487,15 +487,18 @@ export function useTelemetryWebSocket() {
         console.info(`[Telemetry] WebSocket closed (${event.code})`)
         if (wsRef.current !== ws) return
         wsRef.current = null
+        // Unmounted — do NOT schedule a reconnect (TK-141: zombie-socket fix).
+        if (isUnmounted()) return
         setWsState('telemetry', 'reconnecting')
         scheduleReconnect()
       }
     } catch (error) {
       console.error('[Telemetry] Could not create WebSocket:', error)
+      if (isUnmounted()) return
       setWsState('telemetry', 'reconnecting')
       scheduleReconnect()
     }
-  }, [setWsState, updateTelemetry, addPredictionToHistory, addInnerMonologue, addSystemLog])
+  }, [setWsState, updateTelemetry, addSystemLog, isUnmounted])
 
   const scheduleReconnect = useCallback(() => {
     const delay = computeBackoffDelay(reconnectAttemptRef.current)
@@ -513,12 +516,13 @@ export function useTelemetryWebSocket() {
     connect()
 
     return () => {
+      markUnmounted()
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
       wsRef.current?.close()
     }
-  }, [connect])
+  }, [connect, markUnmounted])
 
   return wsRef.current
 }

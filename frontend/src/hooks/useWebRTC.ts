@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useAppStore } from '../store'
 import { SignalingMessage, WebRTCConnectionState } from '../types'
+import { useUnmountGuard } from './useUnmountGuard'
 
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_BASE = `${WS_PROTOCOL}//${window.location.host}`
@@ -47,8 +48,15 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const { setWebRTCState, setCameraState } = useAppStore()
+  // Field-scoped selectors (TK-148): a bare, no-selector useAppStore call
+  // re-runs this hook's identity on every unrelated store write, which
+  // re-renders this WebRTC-driven media component on any state tick. Zustand
+  // action setters have stable identity, so selecting them field-by-field
+  // avoids that.
+  const setWebRTCState = useAppStore((s) => s.setWebRTCState)
+  const setCameraState = useAppStore((s) => s.setCameraState)
   const webrtcState = useAppStore((state) => state.webrtcState)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -241,8 +249,16 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
         setWebRTCState({ signalingState: 'reconnecting' })
 
         ws.onopen = () => {
+          if (wsRef.current !== ws) return
           setWebRTCState({ signalingState: 'connected' })
           reconnectAttemptRef.current = 0
+
+          // TK-146: a reconnect re-enters here without ever having closed the
+          // PREVIOUS peer connection (only the signaling socket gets torn down
+          // between reconnects) — createPeerConnection() would silently
+          // overwrite pcRef.current, leaking the old RTCPeerConnection (and its
+          // now-stale tracks/listeners). Close any existing one first.
+          closePeerConnection()
 
           const pc = createPeerConnection()
           stream.getTracks().forEach((track) => {
@@ -251,6 +267,7 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
         }
 
         ws.onmessage = (event) => {
+          if (wsRef.current !== ws) return
           try {
             const msg: SignalingMessage = JSON.parse(event.data)
             handleSignalingMessage(msg)
@@ -264,14 +281,22 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
         }
 
         ws.onclose = (event) => {
+          if (wsRef.current !== ws) return
           wsRef.current = null
           setWebRTCState({ signalingState: 'disconnected' })
+
+          // Unmounted — do NOT schedule a reconnect (TK-141: zombie-socket fix).
+          if (isUnmounted()) {
+            console.info(`[WebRTC] Signaling WebSocket closed after unmount (${event.code}) — not reconnecting`)
+            return
+          }
 
           if (pcRef.current && pcRef.current.connectionState !== 'closed') {
             const delay = computeBackoffDelay(reconnectAttemptRef.current)
             reconnectAttemptRef.current++
             reconnectTimeoutRef.current = window.setTimeout(() => {
               reconnectTimeoutRef.current = null
+              if (isUnmounted()) return
               if (localStreamRef.current) {
                 connectSignaling(localStreamRef.current)
               }
@@ -286,7 +311,7 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
         setError('Failed to connect signaling channel')
       }
     },
-    [setWebRTCState, createPeerConnection, handleSignalingMessage, computeBackoffDelay],
+    [setWebRTCState, createPeerConnection, closePeerConnection, handleSignalingMessage, computeBackoffDelay, isUnmounted],
   )
 
   const connect = useCallback(async () => {
@@ -342,6 +367,7 @@ export function useWebRTC(options: UseWebRTCOptions = {}): UseWebRTCReturn {
       connect()
     }
     return () => {
+      markUnmounted()
       closePeerConnection()
       closeSignaling()
       releaseMedia()

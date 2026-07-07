@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useCallback } from 'react'
 import { useSupervisorStore, SupervisorVerdict } from '../store/supervisorSlice'
+import { useUnmountGuard } from './useUnmountGuard'
 
 // Derive WS URL from current window origin — same pattern as useWebSocket.ts
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -20,6 +21,7 @@ export function useSupervisorWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptRef = useRef(0)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
 
   const { addVerdict } = useSupervisorStore()
 
@@ -69,13 +71,16 @@ export function useSupervisorWebSocket() {
         console.info(`[Supervisor] WebSocket closed (${event.code})`)
         if (wsRef.current !== ws) return
         wsRef.current = null
+        // Unmounted — do NOT schedule a reconnect (TK-141: zombie-socket fix).
+        if (isUnmounted()) return
         scheduleReconnect()
       }
     } catch (error) {
       console.error('[Supervisor] Could not create WebSocket:', error)
+      if (isUnmounted()) return
       scheduleReconnect()
     }
-  }, [addVerdict])
+  }, [addVerdict, isUnmounted])
 
   const scheduleReconnect = useCallback(() => {
     const delay = computeBackoffDelay(reconnectAttemptRef.current)
@@ -95,10 +100,11 @@ export function useSupervisorWebSocket() {
     connect()
 
     return () => {
+      markUnmounted()
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
       wsRef.current?.close()
     }
-  }, [connect])
+  }, [connect, markUnmounted])
 }

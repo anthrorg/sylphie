@@ -48,7 +48,12 @@ export function useVoiceRecording(): UseVoiceRecordingReturn {
   // Tracks cleanup functions for any playing audio object URLs
   const audioCleanupRef = useRef<(() => void) | null>(null)
 
-  const { voiceState, addMessage, setVoiceState } = useAppStore()
+  // Field-scoped selectors (TK-148): see useAudioStream.ts / useWebRTC.ts —
+  // this hook shares the mic/streaming path, so a full-store destructure
+  // re-renders its owning component on every unrelated store write.
+  const voiceState = useAppStore((s) => s.voiceState)
+  const addMessage = useAppStore((s) => s.addMessage)
+  const setVoiceState = useAppStore((s) => s.setVoiceState)
 
   // Dispatch a confirmed transcription text as a guardian message via WebSocket.
   // We re-use the same pattern as the text input path so ConversationPanel

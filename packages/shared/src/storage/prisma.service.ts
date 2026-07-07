@@ -2,6 +2,30 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 
+export interface PostgresRuntimeConfig {
+  runtimeUser: string;
+  runtimePassword: string;
+  host: string;
+  port: number;
+  database: string;
+}
+
+/**
+ * TK-150 (item 20260702-005): the user/password go into the URL's authority
+ * section, where `:`, `@`, `/`, `#`, `%`, etc. are structurally significant.
+ * An unescaped special character in either (e.g. a generated password
+ * containing `@`) silently splits the URL wrong — Prisma would parse a
+ * garbled host or database name instead of failing loudly, since it just
+ * sees a differently-shaped (but syntactically valid) connection string.
+ * Exported standalone so it's unit-testable without booting a real Prisma
+ * client.
+ */
+export function buildPostgresUrl(pg: PostgresRuntimeConfig): string {
+  const user = encodeURIComponent(pg.runtimeUser);
+  const password = encodeURIComponent(pg.runtimePassword);
+  return `postgresql://${user}:${password}@${pg.host}:${pg.port}/${pg.database}`;
+}
+
 @Injectable()
 export class PrismaService
   extends PrismaClient
@@ -11,7 +35,7 @@ export class PrismaService
 
   constructor(private configService: ConfigService) {
     const pg = configService.get('postgres')!;
-    const url = `postgresql://${pg.runtimeUser}:${pg.runtimePassword}@${pg.host}:${pg.port}/${pg.database}`;
+    const url = buildPostgresUrl(pg);
 
     super({
       datasources: { db: { url } },

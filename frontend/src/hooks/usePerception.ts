@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useAppStore } from '../store'
 import type { RecognizedItem } from '../types'
+import { useUnmountGuard } from './useUnmountGuard'
 
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_BASE = `${WS_PROTOCOL}//${window.location.host}`
@@ -125,12 +126,25 @@ export function usePerception(): UsePerceptionReturn {
   const layersRef = useRef<AnnotationLayer[]>(['objects', 'face-mesh'])
   // Tracks when the last overlay frame was rendered; used to throttle rAF to RENDER_INTERVAL_MS.
   const lastRenderRef = useRef<number>(0)
+  // TK-144: perception WS reconnect state (mirrors the other WS hooks' backoff pattern).
+  const reconnectTimeoutRef = useRef<number | null>(null)
+  const reconnectAttemptRef = useRef(0)
 
   const [active, setActive] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [layers, setLayersState] = useState<AnnotationLayer[]>(['objects', 'face-mesh'])
 
-  const { setCameraState, setRecognizedItems } = useAppStore()
+  // Field-scoped selectors (TK-148): see useWebRTC.ts for why a bare,
+  // no-selector useAppStore call is avoided in a 15fps-driven hook.
+  const setCameraState = useAppStore((s) => s.setCameraState)
+  const setRecognizedItems = useAppStore((s) => s.setRecognizedItems)
+  const { isUnmounted, markUnmounted } = useUnmountGuard()
+
+  const computeBackoffDelay = useCallback((attempt: number) => {
+    const base = Math.min(1000 * Math.pow(2, attempt), 30000)
+    const jitter = 0.8 + Math.random() * 0.4
+    return Math.round(base * jitter)
+  }, [])
 
   const setLayers = useCallback((newLayers: AnnotationLayer[]) => {
     setLayersState(newLayers)
@@ -138,6 +152,9 @@ export function usePerception(): UsePerceptionReturn {
   }, [])
 
   const cleanup = useCallback(() => {
+    markUnmounted()
+    if (reconnectTimeoutRef.current !== null) clearTimeout(reconnectTimeoutRef.current)
+    reconnectTimeoutRef.current = null
     if (intervalRef.current !== null) clearInterval(intervalRef.current)
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
     intervalRef.current = null
@@ -146,7 +163,185 @@ export function usePerception(): UsePerceptionReturn {
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null }
     if (videoRef.current) videoRef.current.srcObject = null
     setActive(false)
-  }, [])
+  }, [markUnmounted])
+
+  /**
+   * TK-144: (re)connect the perception WebSocket. Extracted from `start()` so
+   * a dropped connection (e.g. a backend restart) can reconnect using the
+   * SAME shared unmount-guard/backoff pattern as the other WS hooks (TK-141),
+   * reusing the still-live camera stream/canvas rather than re-requesting
+   * getUserMedia. On reopen, detections resume automatically: the capture
+   * interval restarts in `onopen` and `onmessage` repopulates the overlay refs.
+   */
+  const connectPerceptionSocket = useCallback(() => {
+    if (reconnectTimeoutRef.current !== null) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    const ws = new WebSocket(`${WS_BASE}/ws/perception`)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      if (wsRef.current !== ws) return
+      reconnectAttemptRef.current = 0
+      setCameraState({ feedMode: 'webrtc' })
+
+      intervalRef.current = window.setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN || !videoRef.current || !captureCanvasRef.current) return
+
+        const v = videoRef.current
+        const c = captureCanvasRef.current
+        const ctx = c.getContext('2d')
+        if (!ctx) return
+
+        if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+          c.width = v.videoWidth
+          c.height = v.videoHeight
+        }
+
+        ctx.drawImage(v, 0, 0)
+        c.toBlob(
+          (blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              blob.arrayBuffer().then((buf) => ws.send(buf))
+            }
+          },
+          'image/jpeg',
+          JPEG_QUALITY,
+        )
+      }, 1000 / CAPTURE_FPS)
+    }
+
+    ws.onmessage = (event: MessageEvent) => {
+      if (wsRef.current !== ws) return
+      try {
+        const data = JSON.parse(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data))
+        detectionsRef.current = data.detections ?? []
+        faceDetectionsRef.current = data.faces ?? []
+        if (data.face_connections?.length > 0) {
+          faceConnectionsRef.current = data.face_connections
+        }
+        if (data.face_oval?.length > 0) {
+          faceOvalRef.current = data.face_oval
+        }
+        // Tracked objects and scene events from SceneEventDetector.
+        // Cap scene events so an abnormally large server batch can't pin memory.
+        trackedObjectsRef.current = data.tracked_objects ?? []
+        const rawEvents: SceneEvent[] = data.scene_events ?? []
+        sceneEventsRef.current = rawEvents.length > MAX_SCENE_EVENTS
+          ? rawEvents.slice(-MAX_SCENE_EVENTS)
+          : rawEvents
+
+        // Build set of novel track IDs from scene events
+        const novelIds = new Set<number>()
+        for (const evt of sceneEventsRef.current) {
+          if (evt.type === 'object_appeared' || evt.type === 'person_arrived') {
+            novelIds.add(evt.trackId)
+          }
+        }
+        recentTrackIdsRef.current = novelIds
+
+        // Store VWM entities for overlay rendering
+        vwmEntitiesRef.current = (data.vwm_entities ?? []) as VwmEntity[]
+
+        // Store VLM caption for overlay; truncate so word-wrap never iterates
+        // over an arbitrarily long string on every rendered frame.
+        if (data.vlm_caption) {
+          const raw: string = data.vlm_caption
+          vlmCaptionRef.current = raw.length > MAX_VLM_CAPTION_LEN
+            ? raw.slice(0, MAX_VLM_CAPTION_LEN)
+            : raw
+        }
+
+        // Build recognized items from VWM entities (stabilized, WKG-resolved)
+        const vwmEntities = data.vwm_entities as Array<{
+          id: string
+          label: string
+          displayName: string | null
+          type: 'object' | 'face'
+          confidence: number
+          discovered: boolean
+          nodeId: string | null
+          personId: string | null
+          state: string
+          duration: number
+        }> | undefined
+
+        const items: RecognizedItem[] = []
+
+        if (vwmEntities && vwmEntities.length > 0) {
+          // Use VWM entities — stabilized, deduplicated, with KG-resolved names
+          for (const entity of vwmEntities) {
+            const label = entity.displayName
+              ? friendlyLabel(entity.displayName)
+              : friendlyLabel(entity.label)
+
+            items.push({
+              id: entity.id,
+              label,
+              type: entity.type,
+              confidence: entity.confidence,
+              discovered: entity.discovered,
+              nodeId: entity.nodeId,
+              personId: entity.personId,
+              duration: entity.duration,
+              state: entity.state as RecognizedItem['state'],
+            })
+          }
+        } else {
+          // Fallback to raw detections when VWM isn't active yet.
+          // Everything is undiscovered — YOLO labels are sensory hints,
+          // not knowledge. Sylphie doesn't "know" anything she hasn't learned.
+          const seen = new Set<string>()
+          for (const d of detectionsRef.current) {
+            const label = friendlyLabel(d.label_raw)
+            const key = `obj:${label}`
+            if (!seen.has(key)) {
+              seen.add(key)
+              items.push({ id: key, label, type: 'object', confidence: d.confidence, discovered: false })
+            }
+          }
+        }
+
+        setRecognizedItems(items)
+      } catch {
+        // Not JSON — ignore
+      }
+    }
+
+    ws.onclose = () => {
+      if (wsRef.current !== ws) return
+      wsRef.current = null
+      if (intervalRef.current !== null) { clearInterval(intervalRef.current); intervalRef.current = null }
+      detectionsRef.current = []
+      faceDetectionsRef.current = []
+      // Clear connection-scoped topology refs so stale mesh data from a prior
+      // session doesn't render on top of a fresh reconnect's first frames.
+      faceConnectionsRef.current = []
+      faceOvalRef.current = []
+      trackedObjectsRef.current = []
+      sceneEventsRef.current = []
+      vwmEntitiesRef.current = []
+      vlmCaptionRef.current = ''
+      setRecognizedItems([])
+      setCameraState({ feedMode: 'local' })
+
+      // Unmounted, or the camera stream itself was torn down (explicit
+      // stop/disconnect) — do NOT schedule a reconnect (TK-141 pattern).
+      if (isUnmounted() || !streamRef.current) return
+
+      const delay = computeBackoffDelay(reconnectAttemptRef.current)
+      reconnectAttemptRef.current++
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        reconnectTimeoutRef.current = null
+        if (isUnmounted() || !streamRef.current) return
+        connectPerceptionSocket()
+      }, delay)
+    }
+
+    ws.onerror = () => { /* raw feed continues */ }
+  }, [isUnmounted, computeBackoffDelay, setCameraState, setRecognizedItems])
 
   useEffect(() => {
     let cancelled = false
@@ -179,151 +374,9 @@ export function usePerception(): UsePerceptionReturn {
 
         startRenderLoop(video)
 
-        const ws = new WebSocket(`${WS_BASE}/ws/perception`)
-        wsRef.current = ws
-
-        ws.onopen = () => {
-          setCameraState({ feedMode: 'webrtc' })
-
-          intervalRef.current = window.setInterval(() => {
-            if (ws.readyState !== WebSocket.OPEN || !videoRef.current || !captureCanvasRef.current) return
-
-            const v = videoRef.current
-            const c = captureCanvasRef.current
-            const ctx = c.getContext('2d')
-            if (!ctx) return
-
-            if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
-              c.width = v.videoWidth
-              c.height = v.videoHeight
-            }
-
-            ctx.drawImage(v, 0, 0)
-            c.toBlob(
-              (blob) => {
-                if (blob && ws.readyState === WebSocket.OPEN) {
-                  blob.arrayBuffer().then((buf) => ws.send(buf))
-                }
-              },
-              'image/jpeg',
-              JPEG_QUALITY,
-            )
-          }, 1000 / CAPTURE_FPS)
-        }
-
-        ws.onmessage = (event: MessageEvent) => {
-          try {
-            const data = JSON.parse(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data))
-            detectionsRef.current = data.detections ?? []
-            faceDetectionsRef.current = data.faces ?? []
-            if (data.face_connections?.length > 0) {
-              faceConnectionsRef.current = data.face_connections
-            }
-            if (data.face_oval?.length > 0) {
-              faceOvalRef.current = data.face_oval
-            }
-            // Tracked objects and scene events from SceneEventDetector.
-            // Cap scene events so an abnormally large server batch can't pin memory.
-            trackedObjectsRef.current = data.tracked_objects ?? []
-            const rawEvents: SceneEvent[] = data.scene_events ?? []
-            sceneEventsRef.current = rawEvents.length > MAX_SCENE_EVENTS
-              ? rawEvents.slice(-MAX_SCENE_EVENTS)
-              : rawEvents
-
-            // Build set of novel track IDs from scene events
-            const novelIds = new Set<number>()
-            for (const evt of sceneEventsRef.current) {
-              if (evt.type === 'object_appeared' || evt.type === 'person_arrived') {
-                novelIds.add(evt.trackId)
-              }
-            }
-            recentTrackIdsRef.current = novelIds
-
-            // Store VWM entities for overlay rendering
-            vwmEntitiesRef.current = (data.vwm_entities ?? []) as VwmEntity[]
-
-            // Store VLM caption for overlay; truncate so word-wrap never iterates
-            // over an arbitrarily long string on every rendered frame.
-            if (data.vlm_caption) {
-              const raw: string = data.vlm_caption
-              vlmCaptionRef.current = raw.length > MAX_VLM_CAPTION_LEN
-                ? raw.slice(0, MAX_VLM_CAPTION_LEN)
-                : raw
-            }
-
-            // Build recognized items from VWM entities (stabilized, WKG-resolved)
-            const vwmEntities = data.vwm_entities as Array<{
-              id: string
-              label: string
-              displayName: string | null
-              type: 'object' | 'face'
-              confidence: number
-              discovered: boolean
-              nodeId: string | null
-              personId: string | null
-              state: string
-              duration: number
-            }> | undefined
-
-            const items: RecognizedItem[] = []
-
-            if (vwmEntities && vwmEntities.length > 0) {
-              // Use VWM entities — stabilized, deduplicated, with KG-resolved names
-              for (const entity of vwmEntities) {
-                const label = entity.displayName
-                  ? friendlyLabel(entity.displayName)
-                  : friendlyLabel(entity.label)
-
-                items.push({
-                  id: entity.id,
-                  label,
-                  type: entity.type,
-                  confidence: entity.confidence,
-                  discovered: entity.discovered,
-                  nodeId: entity.nodeId,
-                  personId: entity.personId,
-                  duration: entity.duration,
-                  state: entity.state as RecognizedItem['state'],
-                })
-              }
-            } else {
-              // Fallback to raw detections when VWM isn't active yet.
-              // Everything is undiscovered — YOLO labels are sensory hints,
-              // not knowledge. Sylphie doesn't "know" anything she hasn't learned.
-              const seen = new Set<string>()
-              for (const d of detectionsRef.current) {
-                const label = friendlyLabel(d.label_raw)
-                const key = `obj:${label}`
-                if (!seen.has(key)) {
-                  seen.add(key)
-                  items.push({ id: key, label, type: 'object', confidence: d.confidence, discovered: false })
-                }
-              }
-            }
-
-            setRecognizedItems(items)
-          } catch {
-            // Not JSON — ignore
-          }
-        }
-
-        ws.onclose = () => {
-          if (intervalRef.current !== null) { clearInterval(intervalRef.current); intervalRef.current = null }
-          detectionsRef.current = []
-          faceDetectionsRef.current = []
-          // Clear connection-scoped topology refs so stale mesh data from a prior
-          // session doesn't render on top of a fresh reconnect's first frames.
-          faceConnectionsRef.current = []
-          faceOvalRef.current = []
-          trackedObjectsRef.current = []
-          sceneEventsRef.current = []
-          vwmEntitiesRef.current = []
-          vlmCaptionRef.current = ''
-          setRecognizedItems([])
-          setCameraState({ feedMode: 'local' })
-        }
-
-        ws.onerror = () => { /* raw feed continues */ }
+        // TK-144: connect via the extracted, reconnect-capable helper (shares
+        // TK-141's unmount-guard + backoff pattern with the other WS hooks).
+        connectPerceptionSocket()
       } catch (err) {
         if (!cancelled) {
           const msg = err instanceof DOMException && err.name === 'NotAllowedError'
@@ -581,7 +634,7 @@ export function usePerception(): UsePerceptionReturn {
 
     start()
     return () => { cancelled = true; cleanup() }
-  }, [cleanup, setCameraState])
+  }, [cleanup, setCameraState, connectPerceptionSocket])
 
   return { canvasRef, active, error, layers, setLayers }
 }
