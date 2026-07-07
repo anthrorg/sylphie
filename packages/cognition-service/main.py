@@ -413,6 +413,20 @@ async def submit_training_sample(sample: TrainingSample):
                 len(tracker._graduated_categories),
             )
 
+        # Check for demotions in the same guarded block, on the same call, as
+        # graduations (TK-120 / pipeline item 20260702-002) — a graduated
+        # category whose rolling agreement has fallen below demotion_threshold
+        # reverts to LLM-decided. Not run on every /cognition/train call
+        # unconditionally, only when the preconditions above already let
+        # check_graduations() run.
+        newly_demoted = tracker.check_demotions()
+        if newly_demoted:
+            logger.warning(
+                "Newly demoted categories: %s (remaining graduated: %d)",
+                newly_demoted,
+                len(tracker._graduated_categories),
+            )
+
     # Periodic mode-advancement check every _ADVANCE_CHECK_INTERVAL samples.
     if tracker is not None:
         _state._samples_since_advance_check += 1
@@ -580,19 +594,20 @@ async def phase_transition(req: PhaseTransitionRequest):
             new_phase,
         )
     else:
-        trainer.ewc.set_reference(weights)
-        # NOTE: set_reference() fires before compute_fisher() — the first-call _fisher is seeded uniform; empirical Fisher blends in from the second boundary onward (Online EWC design).
+        # DEC-33 / AD-0049 ordering fix (TK-119/TK-120): compute_fisher() runs
+        # BEFORE set_reference(), so the phase Fisher estimate blended into the
+        # running EWC estimate at THIS boundary is computed from THIS
+        # boundary's calibration draw — not the previous boundary's (the old
+        # order left the blend one boundary behind). set_reference() still
+        # runs unconditionally afterward, even when the buffer is empty and no
+        # phase Fisher was computed this boundary, so the anchor always moves;
+        # in that case set_reference() falls back to its own uniform/decayed
+        # Fisher handling (see replay.py's set_reference docstring).
         calibration = buffer.snapshot_calibration(
             _FISHER_CALIBRATION_SAMPLES, stratified=True,
         )
         if calibration:
             try:
-                # TK-37 POC confirmed: this is the live active path — real
-                # empirical Fisher (squared per-chunk gradients) is computed and
-                # returned as fisher_computed=true when the buffer is non-empty.
-                # _compute_uniform_fisher() is only the first-call seed inside
-                # set_reference() (above), not the running estimator.  No wiring
-                # change needed (TK-39 Branch A).
                 trainer.ewc.compute_fisher(trainer, calibration)
                 fisher_computed = True
                 calibration_n = len(calibration)
@@ -603,9 +618,12 @@ async def phase_transition(req: PhaseTransitionRequest):
         else:
             logger.warning(
                 "Phase transition to '%s': replay buffer empty, Fisher not "
-                "computed (EWC anchored with uniform/decayed Fisher).",
+                "computed this boundary (set_reference will fall back to a "
+                "uniform/decayed Fisher).",
                 new_phase,
             )
+
+        trainer.ewc.set_reference(weights)
 
     # Advance the runtime mode.
     if _state.bootstrap_tracker is not None:
