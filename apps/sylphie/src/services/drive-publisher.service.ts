@@ -107,23 +107,31 @@ export class DrivePublisherService implements OnModuleInit, OnModuleDestroy {
         timestamp_ms: snapshot.timestamp instanceof Date
           ? snapshot.timestamp.getTime()
           : new Date(snapshot.timestamp as unknown as string).getTime(),
-        is_stale: false,
+        // TK-117: staleness is not actually measured here — a hardcoded
+        // `false` claimed freshness regardless of reality. null is honest.
+        is_stale: null,
       },
       drive_velocity: driveVelocity,
-      drive_entropy: 0,
+      // TK-117: not actually computed — was a hardcoded 0 (CANON theater
+      // prohibition: don't claim a measurement that isn't real).
+      drive_entropy: null,
       dominant_drive: dominantDrive,
       category: null,
       action: null,
       action_confidence: null,
-      state: 'idle',
-      transition_count: 0,
+      // TK-117: FSM state is not tracked at this seam — was a hardcoded 'idle'.
+      state: null,
+      // TK-117: not actually counted — was a hardcoded 0.
+      transition_count: null,
       cycle_count: snapshot.tickNumber,
       guardian_present: null,
-      speech_refractory: 0,
+      // TK-117: not actually tracked — was a hardcoded 0.
+      speech_refractory: null,
       action_diversity: {},
       system_health: { total_pressure: snapshot.totalPressure },
       schema_version: 1,
-      dynamic_threshold: 0,
+      // TK-117: not actually computed — was a hardcoded 0.
+      dynamic_threshold: null,
     });
   }
 }
