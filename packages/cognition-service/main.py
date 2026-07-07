@@ -38,6 +38,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 # Suppress TensorFlow GPU-not-available warning on native Windows.
@@ -440,6 +441,26 @@ async def submit_training_sample(sample: TrainingSample):
                     _state.total_shadow_samples,
                     _state.total_audit_samples,
                 )
+                # Automatic phase-boundary consolidation (DEC-33 / AD-0049,
+                # TK-121): the SAME helper the manual /cognition/phase-
+                # transition override endpoint calls, invoked exactly once for
+                # this boundary immediately after advance_mode() returns True.
+                if _state.trainer is not None and _state.buffer is not None:
+                    result = _consolidate_phase_boundary(_state.trainer, _state.buffer)
+                    logger.info(
+                        "=== PHASE TRANSITION: -> %s === (automatic mode-advance) "
+                        "(ewc_anchored=%s, fisher_computed=%s, calibration_samples=%d)",
+                        tracker.mode,
+                        result.weights_captured,
+                        result.fisher_computed,
+                        result.calibration_samples,
+                    )
+                else:
+                    logger.warning(
+                        "Bootstrap mode advanced to '%s' but trainer/buffer are "
+                        "unavailable — EWC consolidation skipped for this boundary.",
+                        tracker.mode,
+                    )
 
     return {"accepted": True, "buffer_size": _state.samples_in_buffer}
 
@@ -542,20 +563,97 @@ class PhaseTransitionRequest(BaseModel):
     new_phase: str  # audit | partial | full (shadow accepted but is the start state)
 
 
+@dataclass(frozen=True)
+class ConsolidationResult:
+    """Outcome of a single _consolidate_phase_boundary() call."""
+
+    weights_captured: bool
+    fisher_computed: bool
+    calibration_samples: int
+
+
+def _consolidate_phase_boundary(trainer: Trainer, buffer: DataBuffer) -> ConsolidationResult:
+    """Consolidate EWC weights at an operational phase boundary (Online EWC).
+
+    Module-level, LOCK-FREE helper (DEC-33 / AD-0049) — the single place this
+    logic lives, shared by BOTH the manual /cognition/phase-transition
+    override endpoint AND the automatic mode-advance path (called once,
+    immediately after BootstrapTracker.advance_mode() returns True in
+    POST /cognition/train).
+
+    Sequence:
+      1. trainer.get_weights() — captures a weight snapshot. get_weights()
+         acquires trainer._weight_lock internally for its own brief
+         copy-under-lock (training/trainer.py); that is the ONLY lock
+         acquisition anywhere in this call path. This helper acquires NO lock
+         of its own — no `with trainer._weight_lock:` appears here, and no
+         new lock object is introduced.
+      2. buffer.snapshot_calibration(_FISHER_CALIBRATION_SAMPLES, stratified=True)
+         — draws a calibration set from the replay buffer.
+      3. trainer.ewc.compute_fisher(trainer, calibration) — computes THIS
+         boundary's phase Fisher estimate (DEC-33/AD-0049 ordering fix,
+         TK-119/TK-120: this runs BEFORE set_reference()). Raises ValueError
+         on an empty calibration set; caught here and logged as a WARNING,
+         never propagated to the caller.
+      4. trainer.ewc.set_reference(weights) — runs UNCONDITIONALLY, even when
+         calibration was empty / compute_fisher raised, so the anchor always
+         moves at a phase boundary. set_reference() falls back to its own
+         uniform/decayed Fisher handling when no phase Fisher was computed
+         this boundary (see replay.py's set_reference docstring).
+
+    BootstrapTracker is never given a reference to trainer — this helper
+    stays module-level and is passed trainer/buffer explicitly by its caller.
+
+    Args:
+        trainer: The live Trainer instance (the same one the background
+                 training loop reads from).
+        buffer:  The live replay buffer.
+
+    Returns:
+        ConsolidationResult describing what happened, for the caller's
+        response body / log line.
+    """
+    weights = trainer.get_weights()
+    if not weights:
+        # Both model paths expose canonical weights now — an empty list is a
+        # bug, not an accepted configuration. Log loudly and skip: there is
+        # nothing to anchor to.
+        logger.error(
+            "_consolidate_phase_boundary: trainer returned NO weights — EWC "
+            "anchor/Fisher skipped. This should be impossible (NumPy and TF "
+            "paths both expose canonical weights); investigate."
+        )
+        return ConsolidationResult(
+            weights_captured=False, fisher_computed=False, calibration_samples=0,
+        )
+
+    calibration = buffer.snapshot_calibration(_FISHER_CALIBRATION_SAMPLES, stratified=True)
+
+    fisher_computed = False
+    try:
+        trainer.ewc.compute_fisher(trainer, calibration)
+        fisher_computed = True
+    except ValueError as exc:
+        logger.warning("Phase-boundary Fisher computation skipped: %s", exc)
+
+    trainer.ewc.set_reference(weights)
+
+    return ConsolidationResult(
+        weights_captured=True,
+        fisher_computed=fisher_computed,
+        calibration_samples=len(calibration),
+    )
+
+
 @app.post("/cognition/phase-transition")
 async def phase_transition(req: PhaseTransitionRequest):
     """Consolidate weights at an operational phase boundary (Online EWC).
 
-    This is the runtime mechanism by which the supervisor advances Sylphie
-    between operational phases. The static COGNITION_BOOTSTRAP_MODE env var
-    only sets the *initial* mode; this endpoint moves the live state machine.
-
-    On receipt it:
-      1. Anchors EWC to the current model weights (set_reference) — rolls the
-         running Online-EWC Fisher estimate.
-      2. Computes the empirical Fisher diagonal over a stratified calibration
-         set drawn from the replay buffer.
-      3. Updates the runtime bootstrap mode (BootstrapTracker.mode).
+    This is the MANUAL OVERRIDE by which a guardian/supervisor can force a
+    phase transition directly. The automatic path — tracker.advance_mode()
+    returning True in POST /cognition/train — calls the exact same
+    _consolidate_phase_boundary() helper; no consolidation logic is
+    duplicated between the two call sites.
 
     Returns 400 if the phase is unknown or the trainer/buffer is unavailable.
     """
@@ -577,71 +675,26 @@ async def phase_transition(req: PhaseTransitionRequest):
         )
 
     prev_phase = _state.bootstrap_mode
-    trainer = _state.trainer
-    buffer = _state.buffer
-
-    # Capture the EWC anchor and run the calibration-set Fisher pass.
-    weights = trainer.get_weights()
-    fisher_computed = False
-    calibration_n = 0
-    if not weights:
-        # Both model paths expose canonical weights now — an empty list is a
-        # bug, not an accepted configuration. Log loudly.
-        logger.error(
-            "Phase transition to '%s': trainer returned NO weights — "
-            "EWC anchor/Fisher skipped. This should be impossible (NumPy and "
-            "TF paths both expose canonical weights); investigate.",
-            new_phase,
-        )
-    else:
-        # DEC-33 / AD-0049 ordering fix (TK-119/TK-120): compute_fisher() runs
-        # BEFORE set_reference(), so the phase Fisher estimate blended into the
-        # running EWC estimate at THIS boundary is computed from THIS
-        # boundary's calibration draw — not the previous boundary's (the old
-        # order left the blend one boundary behind). set_reference() still
-        # runs unconditionally afterward, even when the buffer is empty and no
-        # phase Fisher was computed this boundary, so the anchor always moves;
-        # in that case set_reference() falls back to its own uniform/decayed
-        # Fisher handling (see replay.py's set_reference docstring).
-        calibration = buffer.snapshot_calibration(
-            _FISHER_CALIBRATION_SAMPLES, stratified=True,
-        )
-        if calibration:
-            try:
-                trainer.ewc.compute_fisher(trainer, calibration)
-                fisher_computed = True
-                calibration_n = len(calibration)
-            except ValueError as exc:
-                logger.warning(
-                    "Phase transition Fisher computation skipped: %s", exc,
-                )
-        else:
-            logger.warning(
-                "Phase transition to '%s': replay buffer empty, Fisher not "
-                "computed this boundary (set_reference will fall back to a "
-                "uniform/decayed Fisher).",
-                new_phase,
-            )
-
-        trainer.ewc.set_reference(weights)
+    result = _consolidate_phase_boundary(_state.trainer, _state.buffer)
 
     # Advance the runtime mode.
     if _state.bootstrap_tracker is not None:
         _state.bootstrap_tracker.mode = new_phase
 
     logger.info(
-        "=== PHASE TRANSITION: %s -> %s === "
+        "=== PHASE TRANSITION: %s -> %s === (manual override) "
         "(ewc_anchored=%s, fisher_computed=%s, calibration_samples=%d)",
-        prev_phase, new_phase, bool(weights), fisher_computed, calibration_n,
+        prev_phase, new_phase,
+        result.weights_captured, result.fisher_computed, result.calibration_samples,
     )
 
     return {
         "accepted": True,
         "previous_phase": prev_phase,
         "new_phase": new_phase,
-        "ewc_anchored": bool(weights),
-        "fisher_computed": fisher_computed,
-        "calibration_samples": calibration_n,
+        "ewc_anchored": result.weights_captured,
+        "fisher_computed": result.fisher_computed,
+        "calibration_samples": result.calibration_samples,
     }
 
 

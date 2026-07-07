@@ -21,6 +21,11 @@ class _FakeEWC:
 
     def compute_fisher(self, trainer, calibration_samples) -> None:  # noqa: ANN001
         self.calls.append(("compute_fisher", len(calibration_samples)))
+        # Match the real EWCRegularizer.compute_fisher() contract: raise on an
+        # empty calibration set rather than silently producing a degenerate
+        # Fisher (see training/replay.py).
+        if not calibration_samples:
+            raise ValueError("compute_fisher() requires a non-empty calibration set")
 
     def set_reference(self, weights) -> None:  # noqa: ANN001
         self.calls.append(("set_reference", len(weights)))
@@ -78,8 +83,11 @@ def test_set_reference_still_runs_unconditionally_when_buffer_empty() -> None:
     assert body["fisher_computed"] is False
     assert body["calibration_samples"] == 0
 
+    # compute_fisher() is still called (and raises ValueError on the empty
+    # calibration set, caught and logged as a warning); set_reference() then
+    # runs unconditionally regardless, so the anchor always moves.
     call_names = [c[0] for c in trainer.ewc.calls]
-    assert call_names == ["set_reference"], (
+    assert call_names == ["compute_fisher", "set_reference"], (
         "expected set_reference() to run unconditionally (anchor always moves) "
         f"even with an empty calibration draw, got call order: {call_names}"
     )
