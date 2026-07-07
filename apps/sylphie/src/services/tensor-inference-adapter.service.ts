@@ -82,7 +82,7 @@ export class TensorInferenceAdapter implements ITensorInferenceService, OnModule
 
     // Merge adapter-maintained drive history with caller-provided panel context
     const mergedPanelContext = {
-      driveHistory: this.getDriveHistoryFlattened(),
+      driveHistory: this.getDriveHistory(),
       latentMatchScores: panelContext?.latentMatchScores,
       recentMaeValues: panelContext?.recentMaeValues,
       opportunityFeatures: panelContext?.opportunityFeatures,
@@ -185,16 +185,19 @@ export class TensorInferenceAdapter implements ITensorInferenceService, OnModule
     }
   }
 
-  /** Flatten the drive history buffer into a single array (10 x 12 = 120 floats). */
-  private getDriveHistoryFlattened(): number[] {
-    // Pad with zeros if fewer than DRIVE_HISTORY_SIZE entries
+  /**
+   * Nested drive history buffer (10 timesteps x 12 drives), zero-padded at
+   * the front when fewer than DRIVE_HISTORY_SIZE snapshots have been
+   * recorded yet. Emits the shape schemas.py's drive_history expects
+   * (list[list[float]]) — never flattened.
+   */
+  private getDriveHistory(): number[][] {
     const padCount = DRIVE_HISTORY_SIZE - this.driveHistoryBuffer.length;
     const zeros = new Array(12).fill(0);
-    const padded = [
+    return [
       ...Array.from({ length: padCount }, () => zeros),
       ...this.driveHistoryBuffer,
     ];
-    return padded.flat();
   }
 
   // ---------------------------------------------------------------------------
