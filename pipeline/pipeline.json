@@ -2,7 +2,8 @@
   "version": 1,
   "next_seq": {
     "20260625": 3,
-    "20260702": 18
+    "20260702": 18,
+    "20260706": 10
   },
   "items": {
     "20260625-001": {
@@ -632,15 +633,15 @@
       "size_hint": "large",
       "lines": 54,
       "sections": 10,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-006-bug-learningplanningsupervisor-validation-retry-",
       "source_file": "bug-audit-learning-planning-supervisor.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:14-04:00",
+      "updated_at": "2026-07-06T22:23:42-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 1 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -653,6 +654,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 1 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:23:42-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-37 (AD-0059/0060); re-plan per rulings.md"
         }
       ]
     },
@@ -664,15 +671,15 @@
       "size_hint": "large",
       "lines": 49,
       "sections": 10,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-007-bug-perception-service-fabricated-face-confidenc",
       "source_file": "bug-audit-perception-service.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:14-04:00",
+      "updated_at": "2026-07-06T22:23:42-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -685,6 +692,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:23:42-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-36 (AD-0058); re-plan per rulings.md"
         }
       ]
     },
@@ -722,15 +735,15 @@
       "size_hint": "large",
       "lines": 115,
       "sections": 10,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-009-bug-self-state-questions-how-are-you",
       "source_file": "bug-grounded-self-state.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:15-04:00",
+      "updated_at": "2026-07-06T22:23:43-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -743,6 +756,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:23:43-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-38 (AD-0061/0062); re-plan per rulings.md"
         }
       ]
     },
@@ -786,15 +805,15 @@
       "size_hint": "large",
       "lines": 58,
       "sections": 8,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-011-feature-consolidation-loop-idle-replay-and",
       "source_file": "feature-consolidation-loop.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:15-04:00",
+      "updated_at": "2026-07-06T22:25:51-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 1 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -807,6 +826,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 1 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:25:51-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-39 (AD-0063); re-plan per rulings.md"
         }
       ]
     },
@@ -818,15 +843,15 @@
       "size_hint": "large",
       "lines": 87,
       "sections": 8,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-012-feature-executor-tension-tensor-graduation-over",
       "source_file": "feature-executor-tension.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:15-04:00",
+      "updated_at": "2026-07-06T22:25:51-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 5 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -839,6 +864,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 5 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:25:51-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-40 (AD-0064); re-plan per rulings.md"
         }
       ]
     },
@@ -876,15 +907,15 @@
       "size_hint": "large",
       "lines": 61,
       "sections": 9,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-014-feature-replay-from-events-rebuild-tensor-traini",
       "source_file": "feature-replay-from-events.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:16-04:00",
+      "updated_at": "2026-07-06T22:25:51-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 0 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -897,6 +928,12 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 0 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:25:51-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-41 (AD-0065); re-plan per rulings.md"
         }
       ]
     },
@@ -1004,15 +1041,15 @@
       "size_hint": "large",
       "lines": 79,
       "sections": 8,
-      "state": "replan",
+      "state": "planning",
       "namespace": "20260702-018-feature-theory-loop-curiosity-driven-acquisition",
       "source_file": "feature-theory-loop.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:16-04:00",
+      "updated_at": "2026-07-06T22:25:52-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [],
-      "blocked_reason": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess",
+      "blocked_reason": null,
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -1025,6 +1062,272 @@
           "from": "planning",
           "to": "replan",
           "note": "opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess"
+        },
+        {
+          "at": "2026-07-06T22:25:52-04:00",
+          "from": "replan",
+          "to": "planning",
+          "note": "resolved: DEC-42 (AD-0066); re-plan per rulings.md"
+        }
+      ]
+    },
+    "20260706-001": {
+      "id": "20260706-001",
+      "slug": "directive-autonomous-activity-taxonomy-sleep-cla",
+      "title": "Directive: Autonomous-activity taxonomy — sleep-class maintenance vs wake-class interruptible work",
+      "type": "unclassified",
+      "size_hint": "large",
+      "lines": 63,
+      "sections": 6,
+      "state": "planning",
+      "namespace": "20260706-001-directive-autonomous-activity-taxonomy-sleep-cla",
+      "source_file": "activity-taxonomy-sleep-vs-wake.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-002": {
+      "id": "20260706-002",
+      "slug": "feature-guardian-cockpit-stats-at-a",
+      "title": "Feature: Guardian Cockpit — stats at a glance + turn-inspector (\"Impact of this turn\") + search-everything",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 65,
+      "sections": 12,
+      "state": "planning",
+      "namespace": "20260706-002-feature-guardian-cockpit-stats-at-a",
+      "source_file": "feature-fe-guardian-cockpit-and-impact.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-003": {
+      "id": "20260706-003",
+      "slug": "feature-guardian-depth-surfaces-her-mind",
+      "title": "Feature: Guardian depth surfaces — Her Mind, Her Growth, Timeline, Instruments",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 40,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260706-003-feature-guardian-depth-surfaces-her-mind",
+      "source_file": "feature-fe-guardian-depth-surfaces.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-004": {
+      "id": "20260706-004",
+      "slug": "feature-public-test-drive-landing-what-to-expect",
+      "title": "Feature: Public Test-Drive — Landing → What-to-expect → Meet → Wrap (hosted, zero-trust)",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 42,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260706-004-feature-public-test-drive-landing-what-to-expect",
+      "source_file": "feature-fe-public-test-drive.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-005": {
+      "id": "20260706-005",
+      "slug": "feature-unified-frontend-shell-deploymentrole-ga",
+      "title": "Feature: Unified frontend shell + deployment/role gate (public vs guardian), retire legacy dashboard",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 39,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260706-005-feature-unified-frontend-shell-deploymentrole-ga",
+      "source_file": "feature-fe-shell-and-role-gate.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-006": {
+      "id": "20260706-006",
+      "slug": "feature-feeling-verbalizer-deterministic-drivena",
+      "title": "Feature: Feeling verbalizer — deterministic drive→natural-language self-state with disclosure gating",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 100,
+      "sections": 9,
+      "state": "planning",
+      "namespace": "20260706-006-feature-feeling-verbalizer-deterministic-drivena",
+      "source_file": "feeling-verbalizer-disclosure.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-007": {
+      "id": "20260706-007",
+      "slug": "feature-gate-proven-behavior-ledger-the-metric",
+      "title": "Feature: Gate-proven behavior ledger — the metric that says whether Sylphie is working",
+      "type": "feature",
+      "size_hint": "large",
+      "lines": 49,
+      "sections": 6,
+      "state": "planning",
+      "namespace": "20260706-007-feature-gate-proven-behavior-ledger-the-metric",
+      "source_file": "gate-proven-behavior-ledger.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-008": {
+      "id": "20260706-008",
+      "slug": "bug-batch-the-lower-8-learningplanning-defects",
+      "title": "Bug batch: the \"Lower-8\" learning/planning defects (split from item 20260702-006 per DEC-37)",
+      "type": "bug",
+      "size_hint": "small",
+      "lines": 25,
+      "sections": 4,
+      "state": "planning",
+      "namespace": "20260706-008-bug-batch-the-lower-8-learningplanning-defects",
+      "source_file": "lower8-learning-planning-defects.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-009": {
+      "id": "20260706-009",
+      "slug": "bug-roleplay-stage-directions-in-responses",
+      "title": "Bug: Roleplay stage directions in responses (\"*tilts head*\", \"*winces*\") — capability theater passing unfiltered",
+      "type": "bug",
+      "size_hint": "large",
+      "lines": 67,
+      "sections": 8,
+      "state": "planning",
+      "namespace": "20260706-009-bug-roleplay-stage-directions-in-responses",
+      "source_file": "stage-directions-capability-theater.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
+        }
+      ]
+    },
+    "20260706-010": {
+      "id": "20260706-010",
+      "slug": "feature-standing-trim-cadence-a-scheduled",
+      "title": "Feature: Standing trim cadence — a scheduled occam prosecution cog",
+      "type": "unclassified",
+      "size_hint": "small",
+      "lines": 46,
+      "sections": 5,
+      "state": "planning",
+      "namespace": "20260706-010-feature-standing-trim-cadence-a-scheduled",
+      "source_file": "trim-cadence-occam-cog.md",
+      "created_at": "2026-07-06T22:24:09-04:00",
+      "updated_at": "2026-07-06T22:24:09-04:00",
+      "attempts": 0,
+      "refactor_attempts": 0,
+      "contract_nodes": [],
+      "blocked_reason": null,
+      "history": [
+        {
+          "at": "2026-07-06T22:24:09-04:00",
+          "from": "inbox",
+          "to": "planning",
+          "note": "ingested"
         }
       ]
     }

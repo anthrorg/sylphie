@@ -1,3 +1,0 @@
-- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/bug-grounded-self-state.md` -> planning/ (type guess: bug)
-- `2026-07-06T21:37:14-04:00` opus plan-verify: needs-replan (full verdict in verify.md). Verified every file:line claim in source.md and plan.md against main — all accurate (recallKeyForQuestion fact-only at deliberation-helpers.ts:518-530; inferGrounding's 4-branch cascade with no drive source at [...]
-- `2026-07-06T21:37:15-04:00` moved **planning -> replan** — opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess

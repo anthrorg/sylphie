@@ -1,0 +1,5 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-theory-loop.md` -> planning/ (type guess: feature)
+- `2026-07-06T21:37:16-04:00` opus plan-verify: needs-replan (full verdict in verify.md). Concur with the planner's own route: needs-replan, and for the right reason. The plan is unusually rigorous — I spot-checked every load-bearing claim against source and all hold: the autonomous RESEARCH_ENTITY path [...]
+- `2026-07-06T21:37:16-04:00` moved **planning -> replan** — opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess
+- `2026-07-06T22:25:52-04:00` architect ruled both forks (DEC-42/AD-0066): TESS_CONFIRMED <=0.60 w/ slow decay in all 3 CASE sites; async file-drop transport; verdict path = THE sanctioned demote/promote
+- `2026-07-06T22:25:52-04:00` moved **replan -> planning** — resolved: DEC-42 (AD-0066); re-plan per rulings.md

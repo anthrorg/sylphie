@@ -1,0 +1,5 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-replay-from-events.md` -> planning/ (type guess: feature)
+- `2026-07-06T21:37:15-04:00` opus plan-verify: needs-replan (full verdict in verify.md). Concur with the Sonnet planner's replan recommendation. The plan itself is high-quality and I independently verified every load-bearing claim against the actual code: TrainingSample (schemas.py:116-126) requires [...]
+- `2026-07-06T21:37:16-04:00` moved **planning -> replan** — opus verify: needs-replan — 0 architect question(s) recorded in verify.md; route to architect, never guess
+- `2026-07-06T22:25:51-04:00` architect ruled OQ-1 (DEC-41/AD-0065): live-path-fidelity replay from sensory_ticks fused_embedding; drop ambiguous joins; AC targets category graduation
+- `2026-07-06T22:25:51-04:00` moved **replan -> planning** — resolved: DEC-41 (AD-0065); re-plan per rulings.md

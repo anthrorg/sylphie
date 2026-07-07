@@ -1,0 +1,5 @@
+- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-executor-tension.md` -> planning/ (type guess: feature)
+- `2026-07-06T21:37:15-04:00` opus plan-verify: needs-replan (full verdict in verify.md). I agree with the planner's replan verdict, and my adversarial pass strengthens it. Spot-checked the load-bearing claims against source: bootstrap.py:55 (0.85), tensor-candidate-builder.ts:42-46 (0.79/0.95 caps), [...]
+- `2026-07-06T21:37:15-04:00` moved **planning -> replan** — opus verify: needs-replan — 5 architect question(s) recorded in verify.md; route to architect, never guess
+- `2026-07-06T22:25:51-04:00` architect ruled all 5 forks (DEC-40/AD-0064): stakes tier=hard mode ceiling; new executor-floor.ts; checksum now fail-closed-to-shadow; tolerance OUT of drive_rules; Guilt into Signal-3 max
+- `2026-07-06T22:25:51-04:00` moved **replan -> planning** — resolved: DEC-40 (AD-0064); re-plan per rulings.md

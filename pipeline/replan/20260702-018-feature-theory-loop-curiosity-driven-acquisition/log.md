@@ -1,3 +1,0 @@
-- `2026-07-02T02:24:40-04:00` **ingested** from `inbox/feature-theory-loop.md` -> planning/ (type guess: feature)
-- `2026-07-06T21:37:16-04:00` opus plan-verify: needs-replan (full verdict in verify.md). Concur with the planner's own route: needs-replan, and for the right reason. The plan is unusually rigorous — I spot-checked every load-bearing claim against source and all hold: the autonomous RESEARCH_ENTITY path [...]
-- `2026-07-06T21:37:16-04:00` moved **planning -> replan** — opus verify: needs-replan — 2 architect question(s) recorded in verify.md; route to architect, never guess

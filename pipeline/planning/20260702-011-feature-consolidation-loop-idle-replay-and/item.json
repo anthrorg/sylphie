@@ -1,0 +1,38 @@
+{
+  "id": "20260702-011",
+  "slug": "feature-consolidation-loop-idle-replay-and",
+  "title": "Feature: Consolidation loop — idle replay and insight synthesis",
+  "type": "feature",
+  "size_hint": "large",
+  "lines": 58,
+  "sections": 8,
+  "state": "planning",
+  "namespace": "20260702-011-feature-consolidation-loop-idle-replay-and",
+  "source_file": "feature-consolidation-loop.md",
+  "created_at": "2026-07-02T02:24:40-04:00",
+  "updated_at": "2026-07-06T22:25:51-04:00",
+  "attempts": 1,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-02T02:24:40-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    },
+    {
+      "at": "2026-07-06T21:37:15-04:00",
+      "from": "planning",
+      "to": "replan",
+      "note": "opus verify: needs-replan — 1 architect question(s) recorded in verify.md; route to architect, never guess"
+    },
+    {
+      "at": "2026-07-06T22:25:51-04:00",
+      "from": "replan",
+      "to": "planning",
+      "note": "resolved: DEC-39 (AD-0063); re-plan per rulings.md"
+    }
+  ]
+}

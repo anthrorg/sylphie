@@ -1,0 +1,26 @@
+{
+  "id": "20260706-008",
+  "slug": "bug-batch-the-lower-8-learningplanning-defects",
+  "title": "Bug batch: the \"Lower-8\" learning/planning defects (split from item 20260702-006 per DEC-37)",
+  "type": "bug",
+  "size_hint": "small",
+  "lines": 25,
+  "sections": 4,
+  "state": "planning",
+  "namespace": "20260706-008-bug-batch-the-lower-8-learningplanning-defects",
+  "source_file": "lower8-learning-planning-defects.md",
+  "created_at": "2026-07-06T22:24:09-04:00",
+  "updated_at": "2026-07-06T22:24:09-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-06T22:24:09-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

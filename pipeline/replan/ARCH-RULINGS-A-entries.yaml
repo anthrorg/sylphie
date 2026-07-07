@@ -1,0 +1,251 @@
+  - id: AD-A1
+    date: 2026-07-06
+    title: "Item 20260702-011 Q1 ruled: consolidation reuses the :Insight label/shape (additive insight_source + DERIVED_FROM), shared atlas writer contract; trigger is an idle-injected executor action (CycleGuard-serialized), NOT a second driveState$ subscriber; cap 0.45"
+    status: accepted
+    context: >
+      Consolidation-loop replan fork: extend the done EP-12 CognitiveAwareness
+      pipeline in packages/learning vs a new WKG label with a coordinated second
+      trigger. Verified: the pressure subscriber (learning.service.ts:263-276)
+      fires the MAINTENANCE cycle, not synthesis (30-min timer, :230-238);
+      cross-session-synthesis's confabulation guards are conversation-pair-
+      specific (:124-127, :441-487); WORLD maintenance is keyed to :Insight
+      (prune-protect confidence-decay.service.ts:242); the episodic store is
+      deliberately local to DecisionMakingModule (episodic-memory.service.ts:4-7);
+      an idle-injection precedent exists (decision-tick-engine.service.ts:312-336).
+    decision: >
+      One label, one shape, two producers. Reuse :Insight + InsightType; additive
+      schema (insight_source discriminator, DERIVED_FROM->(:Theory) edges,
+      source_episode_ids property) via item 015's migration framework; atlas owns a
+      shared insight-writer contract used by both producers; cross-session-synthesis
+      is NOT extended to episodic/theory candidates. The consolidation loop lives in
+      decision-making and triggers as a synthetic executor action injected on idle
+      self-ticks (executor IDLE + CognitiveAwareness over threshold), serialized by
+      CycleGuard — replacing the staged "shared in-flight guard" AC. Confidence:
+      INFERENCE base 0.30, capped at the existing 0.45 SYNTHESIS_CONFIDENCE_CAP.
+      CognitiveAwareness relief rides a real action outcome (new ACTION_TYPE_DEFAULTS
+      entry), only on cycles that wrote >=1 insight. "Re-weight confidence" is
+      subsumed by MERGE-raises-only (up) + item 018's sanctioned verdict path (down);
+      no dedicated re-weighting mechanism.
+    rationale: >
+      A second insight label silently escapes decay/prune/synthesis semantics (ELSE
+      0.05 decay, unknown prune) — the exact drift item 015 exists to prevent; the
+      action-injection trigger resolves the trigger race structurally (one cycle at
+      a time) with zero new coordination machinery and stays push-only into drives.
+    alternatives:
+      - option: Extend cross-session-synthesis candidate sources (fork option a)
+        rejected_because: Rewrites conversation-pair-specific confabulation guards; violates the item's own reuse-don't-rewrite non-goal.
+      - option: New :ConsolidationInsight label + second coordinated driveState$ subscriber (fork option b)
+        rejected_because: Schema bifurcation of insight-kind knowledge + a bespoke cross-package coordination mechanism where CycleGuard already serializes actions.
+    consequences: >
+      Tickets re-derived: -a = additive :Insight extension + shared writer; -b =
+      tick-engine injection trigger; -c cap 0.45; -d demotion rides 018's verdict
+      path; new small drive ticket for the relief entry. Chain 008->015->018->011
+      unchanged; nothing queues before those land.
+    canon: "none — drive isolation (push/action-mediated), 0.60 ceiling (0.45 cap), theater (relief only on real writes) all upheld"
+    evidence:
+      - packages/learning/src/learning.service.ts:263
+      - packages/learning/src/learning.service.ts:230
+      - packages/learning/src/pipeline/cross-session-synthesis.service.ts:83
+      - packages/learning/src/pipeline/cross-session-synthesis.service.ts:441
+      - packages/learning/src/pipeline/confidence-decay.service.ts:242
+      - packages/decision-making/src/episodic-memory/episodic-memory.service.ts:4
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:312
+    supersedes: null
+
+  - id: AD-A2
+    date: 2026-07-06
+    title: "Item 20260702-012 ruled (5 forks): stakes() = pure shared score+tier with HARD mode-ceiling; the floor = new checksummable executor-floor policy module; minimal boot-checksum now (fail-closed-to-shadow); tolerance state OUT of drive_rules into a decision-making table; Guilt added to the Depressive Signal-3 max"
+    status: accepted
+    context: >
+      Executor-tension replan. Verified: no action-SELECTION floor exists
+      (ACTION_TYPE_DEFAULTS is an outcome-effects table, rules.ts:80-179; the
+      divergence mechanism reads tensorResult downstream,
+      decision-making.service.ts:882-890); ladder thresholds live and calibrated
+      (bootstrap.py:55-57; tensor-candidate-builder.ts:43-46); drive_rules is
+      REVOKE+RLS locked with a guardian-only pool (AD-0051/0052, PR #86);
+      detectDepressiveAttractor Signal 3 = max(sadness, anxiety) only and the
+      3-signal mean makes guilt-alone ~0.33 (attractor-monitor.service.ts:488-514).
+    decision: >
+      (1) stakes(actionCategory, driveState) -> {score:[0,1], tier LOW|MEDIUM|HIGH};
+      pure, table-driven, in packages/shared; drive-engine only ever receives the
+      computed value in pushed events. Tier is a HARD CEILING on max bootstrap mode
+      (LOW->FULL, MEDIUM->PARTIAL, HIGH->never past AUDIT); 0.85/0.79 untouched.
+      Boundary rule: irreversible/outward=HIGH, durable knowledge writes=MEDIUM
+      (quarantined :Theory=LOW), conversational/exploration=LOW; strong-negative-
+      drive state bumps one tier up only. (2) The floor = new pure executor-floor.ts:
+      floorPolicy(driveVector)->{permitted,preferred} static table; veto = category
+      not in permitted_tier(driveVector), tensor-blind by construction, applied only
+      to tensor-sourced candidates; on veto the tensor candidate is discarded and a
+      new FLOOR_VETO event is logged; existing arbitration unmodified.
+      divergence_magnitude = 0 on preferred-match else 1 (prototype). (3) Boot
+      checksum: minimal SHA-256 of the serialized floor/veto now, committed digest;
+      mismatch pins tensor modes to shadow/audit (fail-closed) rather than failing
+      boot; item 015 absorbs the check later. (4) The vindicated/punished tolerance
+      adjustment NEVER touches drive_rules (not via guardian pool, not a new
+      column) — autonomous writes under guardian_admin would launder autonomy
+      through the guardian identity against the AD-0051/0052 threat model. Tolerance
+      lives in a new decision-making-owned action_class_tolerance table, bounded
+      (loosen <= +/-20% of base), punished-strengthen >= 2x vindicated-loosen;
+      evaluation functions never written (Type1Tracker separation). Guilt
+      contingencies seeded once via guardian-approved migration; runtime Guilt =
+      push events only. (5) Add Guilt to Signal 3: worstNegativeDrive =
+      max(sadness, anxiety, guilt); no new detector, thresholds/averaging kept;
+      source AC#5 rewritten to stage all three signals + a negative fixture
+      (guilt-high while acting/predicting well must NOT fire).
+    rationale: >
+      A ceiling is monotone and auditable where a threshold multiplier creates a
+      second moving evaluation surface (Std-6-adjacent); the floor must be a
+      specification because the assumed counterfactual mechanism does not exist;
+      the checksum gates graduated autonomy, not availability; Std-6's threat
+      model is the autonomous runtime rewriting its own rules — the only honest
+      home for autonomous tolerance state is outside drive_rules entirely; the
+      averaging design of the depressive composite is correct and kept.
+    alternatives:
+      - option: stakes-tier as a multiplier on 0.85/0.79 thresholds
+        rejected_because: Dynamically modifies calibrated evaluation surfaces; ceiling achieves the source's intent auditable-and-monotone.
+      - option: Write tolerance through POSTGRES_GUARDIAN_POOL or a new guardian-approved drive_rules column
+        rejected_because: Executes autonomous writes under the guardian identity — defeats the TK-154/155 lockdown's threat model.
+      - option: Hard-block the veto on item 015's checksum framework
+        rejected_because: Serializes a ~30-line P0 safety check behind an unbuilt framework; convergence noted instead.
+    consequences: >
+      Tickets b-i re-derive: b adds the shared-package placement; c gains the
+      fail-closed-to-shadow semantics; g re-targets the new tolerance table
+      (migration.md = additive DM table + one guardian Guilt seed + Timescale event
+      types; drive_rules untouched); 012-i re-scoped to the one-line detector change
+      + positive/negative fixtures. Still sequence-blocked on 016/017/002.
+    canon: "Implements Std-6 honestly (no autonomous drive_rules path, eval functions untouched); guardian asymmetry pattern reused for strengthen/loosen; theater — guilt sparse via stakes-gating, veto denials loud"
+    evidence:
+      - packages/drive-engine/src/constants/rules.ts:80
+      - packages/decision-making/src/decision-making.service.ts:882
+      - packages/decision-making/src/tensor/tensor-candidate-builder.ts:43
+      - packages/cognition-service/inference/bootstrap.py:55
+      - packages/decision-making/src/monitoring/attractor-monitor.service.ts:488
+      - packages/decision-making/src/graduation/type1-tracker.service.ts:28
+      - packages/shared/src/types/event.types.ts:145
+      - docs/decisions/architect-log.yaml (AD-0051, AD-0052)
+    supersedes: null
+
+  - id: AD-A3
+    date: 2026-07-06
+    title: "Item 20260702-014 OQ-1 ruled: branch (a-prime) live-path-fidelity replay — fused_embedding read from the persisted sensory_ticks vector column, labels from the event chain, optional fields as documented schema defaults, per-sample fidelity provenance; AC3 re-targets category graduation (0.85/20), not 'audit stage'"
+    status: accepted
+    context: >
+      Replay-from-events fork: TrainingSample embeddings verified absent from every
+      events payload. NEW decisive evidence: sensory_ticks persists fused_embedding
+      vector(768) on every sampled frame (sensory-stream-logger.service.ts:99-115,
+      schema :183-193) with session/time/tick + drive snapshot; the LIVE training
+      path already runs with undefined episodicContext
+      (decision-making.service.ts:834) against schema defaults (schemas.py:120-121);
+      both logFrame call sites pass NO cycleId (decision-making.service.ts:441,
+      decision-tick-engine.service.ts:372); audit stage is a 100-comparison volume
+      gate, competence first appears at per-category graduation
+      (bootstrap.py:101-128, :233-235).
+    decision: >
+      Replay reconstructs at live-path fidelity: fused_embedding from sensory_ticks
+      (read, not recomputed); drive_vector/deltas from event drive_snapshots; labels
+      from the correlated ACTION_EXECUTED/ARBITRATION_COMPLETE/PREDICTION_EVALUATED
+      chain; response_embedding recomputed via the item-017-versioned encoder
+      (version mismatches flagged); episodic_context/modality_embeddings emitted as
+      the schema's documented zero/empty defaults; every sample carries a fidelity +
+      replay-run provenance block. No event-schema change (branch c unnecessary).
+      AC2 determinism holds byte-identically (seeded augmentation only). 014-a MUST
+      measure tick->action join precision (session+nearest-time today); ambiguous
+      joins are DROPPED, never guessed; optional micro-ticket to populate the
+      existing cycle_id column at both call sites (wiring, not schema). 014-c's AC
+      re-worded: shadow-reset verified, then the most-populated category GRADUATES
+      (>=0.85 over >=20 samples via check_graduations) — thresholds untouched. Tool
+      naming must not collide with training/replay.py (EWC buffer); manifest
+      comparison deferred until 016/017.
+    rationale: >
+      The 'missing embeddings' premise was half-false — the primary input vector is
+      durable in the event backbone; honest fidelity is what the model actually
+      trains on live, which already zero-defaults the optional fields. 'Audit-stage
+      agreement' proves volume, not competence; graduation is the first evidence of
+      reconstructed learning.
+    alternatives:
+      - option: "Branch (b) label-only reconstruction"
+        rejected_because: Needlessly discards the persisted fused_embedding; weakens AC2/AC3 without cause.
+      - option: "Branch (c) add embedding fields to event payloads"
+        rejected_because: Forbidden by the source's non-goals and unnecessary — sensory_ticks already carries the vector.
+    consequences: >
+      014-b/c ACs finalized per the field contract; join-precision measurement is
+      the one result that can degrade fidelity (drop-not-guess rule bounds it);
+      FLOOR_VETO/guilt events from item 012 enrich the corpus with no coupling;
+      retrained models re-enter shadow and remain under item 012's static stakes
+      ceilings.
+    canon: "Provenance-required satisfied via per-sample fidelity/run provenance; no self-modification — retrained models re-earn the unmodified gate from shadow; read-only over the event store"
+    evidence:
+      - packages/decision-making/src/logging/sensory-stream-logger.service.ts:99
+      - packages/decision-making/src/logging/sensory-stream-logger.service.ts:183
+      - packages/cognition-service/schemas.py:112
+      - packages/decision-making/src/decision-making.service.ts:834
+      - packages/decision-making/src/decision-making.service.ts:441
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:372
+      - packages/cognition-service/inference/bootstrap.py:101
+      - packages/shared/src/types/event.types.ts:567
+    supersedes: null
+
+  - id: AD-A4
+    date: 2026-07-06
+    title: "Item 20260702-018 ruled: TESS_CONFIRMED stays within the 0.60 non-guardian ceiling (promotion min(0.60, 0.35+0.25*tess_conf), decay 0.03 in all three decay CASE sites); Tess transport = async file-drop outbox/inbox with versioned request/verdict payloads; above-ceiling Tess would be a CANON change reserved to Jim"
+    status: accepted
+    context: >
+      Theory-loop replan, two forks. Verified: the only above-0.60 path is guardian
+      confirmation at 0.90 under Std-5 (provenance.types.ts:184-194); non-guardian
+      evidence tops out at exactly 0.60 (deriveOkgFactTier :220-244);
+      confidence-decay has three CASE sites whose ELSE 0.05 would silently defeat
+      'decays slowly' (confidence-decay.service.ts:140,197,294);
+      detectHallucinatedKnowledge matches (n:Entity) only
+      (attractor-monitor.service.ts:369-394) so quarantined :Theory writes cannot
+      trip it by volume; Tess has zero repo prior art; verdicts are inherently
+      asynchronous (10-stage Beta pipeline).
+    decision: >
+      (1) New extended provenance TESS_CONFIRMED, ceiling-compliant: promotion
+      confidence = min(0.60, 0.35 + 0.25 x tess_verdict_confidence) (base derives
+      from PROVENANCE_BASE_CONFIDENCE.LLM_GENERATED — no hardcoded literal), decay
+      0.03 (guardian-slow) added to node, edge, and OKG decay CASE blocks.
+      Refuted: status refuted, confidence 0.10, node retained as spawned_from
+      anchor, Curiosity discharged via a pushed action outcome, spawn the
+      why-was-I-wrong theory. Inconclusive: no change, no relief, cooldown.
+      TESS_CONFIRMED does NOT join the hallucinated-knowledge trusted set; the
+      never-verdicted precision ratio is additive (B4). Exceeding 0.60 is a CANON
+      Std-3/Std-5 change available only via update-canon with Jim's explicit
+      approval — recommended against and not needed. (2) Transport: asynchronous
+      file-drop — tess/outbox/<theory_id>.request.json and
+      tess/inbox/<theory_id>.verdict.json, idempotent poller, processed/ +
+      deadletter/ dirs, schema_version on both payloads (shapes recorded in
+      pipeline/replan/ARCH-RULINGS-A-learning-cluster.md §4). Not a sync CLI
+      subprocess (blocking on hours-scale verdicts), not a queue (unjustified new
+      infra, per the AD-0051 no-new-deployable reasoning). Verdict application is
+      THE sanctioned theory promote/demote path (item 011's contradiction pruning
+      rides it). Staleness threshold for pickResearchTarget delegated to
+      briefing-builder with a logged governance assumption (~72h suggested) after
+      confirming queryEntities returns a timestamp.
+    rationale: >
+      The 0.60 ceiling is the system's protection against exactly the
+      confidently-held-but-unverified knowledge this item's own detector sharpening
+      treats as pathology; an automated statistical pipeline must not share the
+      guardian's exception. 0.60-with-slow-decay already dominates all non-guardian
+      knowledge — the feature loses nothing. File-drop matches the source's own
+      async contract, house precedent, durability, and restart-safety.
+    alternatives:
+      - option: "TESS_CONFIRMED exceeds 0.60 (guardian-equivalent tier)"
+        rejected_because: CANON Std-3/Std-5 change — reserved to Jim via update-canon; splits guardian asymmetry and blurs the trusted-provenance line.
+      - option: "Sync CLI subprocess / message queue transport"
+        rejected_because: Blocking call on hours-scale verdicts is architecturally wrong; a queue is new infra for a single-consumer local integration.
+    consequences: >
+      Epic B (B1-B4) is now ticketable; Epic A minors folded (0.35 derives from the
+      provenance table; staleness assumption logged). Confidence ordering fixed
+      across the cluster: 0.45 consolidation-insight < 0.60 Tess-confirmed < 0.90
+      guardian. Still sequenced after 008/015/016 per the plan.
+    canon: "Std-3 ceiling + Std-5 guardian asymmetry UPHELD (no non-guardian path above 0.60); Std-2 provenance honest (new tier, never relabeled); theater — curiosity relief only at real resolution, never at proposal (CON-2)"
+    evidence:
+      - packages/shared/src/types/provenance.types.ts:184
+      - packages/shared/src/types/provenance.types.ts:220
+      - packages/learning/src/pipeline/confidence-decay.service.ts:140
+      - packages/learning/src/pipeline/confidence-decay.service.ts:197
+      - packages/learning/src/pipeline/confidence-decay.service.ts:294
+      - packages/decision-making/src/monitoring/attractor-monitor.service.ts:369
+      - packages/decision-making/src/action-handlers/action-handler-registry.service.ts:504
+      - packages/decision-making/src/tick-engine/decision-tick-engine.service.ts:411
+    supersedes: null

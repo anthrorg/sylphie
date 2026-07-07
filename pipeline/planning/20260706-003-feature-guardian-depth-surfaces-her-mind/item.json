@@ -1,0 +1,26 @@
+{
+  "id": "20260706-003",
+  "slug": "feature-guardian-depth-surfaces-her-mind",
+  "title": "Feature: Guardian depth surfaces — Her Mind, Her Growth, Timeline, Instruments",
+  "type": "feature",
+  "size_hint": "large",
+  "lines": 40,
+  "sections": 9,
+  "state": "planning",
+  "namespace": "20260706-003-feature-guardian-depth-surfaces-her-mind",
+  "source_file": "feature-fe-guardian-depth-surfaces.md",
+  "created_at": "2026-07-06T22:24:09-04:00",
+  "updated_at": "2026-07-06T22:24:09-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-06T22:24:09-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}

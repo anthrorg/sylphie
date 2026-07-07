@@ -1,0 +1,1 @@
+- `2026-07-06T22:24:09-04:00` **ingested** from `inbox/lower8-learning-planning-defects.md` -> planning/ (type guess: bug)

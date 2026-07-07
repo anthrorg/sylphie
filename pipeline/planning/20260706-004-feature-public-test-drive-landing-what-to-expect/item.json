@@ -1,0 +1,26 @@
+{
+  "id": "20260706-004",
+  "slug": "feature-public-test-drive-landing-what-to-expect",
+  "title": "Feature: Public Test-Drive — Landing → What-to-expect → Meet → Wrap (hosted, zero-trust)",
+  "type": "feature",
+  "size_hint": "large",
+  "lines": 42,
+  "sections": 9,
+  "state": "planning",
+  "namespace": "20260706-004-feature-public-test-drive-landing-what-to-expect",
+  "source_file": "feature-fe-public-test-drive.md",
+  "created_at": "2026-07-06T22:24:09-04:00",
+  "updated_at": "2026-07-06T22:24:09-04:00",
+  "attempts": 0,
+  "refactor_attempts": 0,
+  "contract_nodes": [],
+  "blocked_reason": null,
+  "history": [
+    {
+      "at": "2026-07-06T22:24:09-04:00",
+      "from": "inbox",
+      "to": "planning",
+      "note": "ingested"
+    }
+  ]
+}
