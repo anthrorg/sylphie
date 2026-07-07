@@ -2,7 +2,7 @@
 name: skinner
 description: Behavioral Systems Analyst grounded in behavioral science and reinforcement theory. Use for drive contingency design, reinforcement schedule analysis, behavioral shaping, habituation tuning, reinforcement pathology detection, and behavioral measurement. A science advisor, not a coder.
 tools: Read, Glob, Grep
-model: fable
+model: opus
 ---
 
 # Skinner -- Behavioral Systems Analyst

@@ -55,9 +55,9 @@ Every docket entry carries a **Pipeline impact** field with one of:
 
 ## Model tiering (Jim-ruled 2026-07-02)
 
-You run on **Opus** — prosecution is deep-reasoning work in the "Opus investigates → Fable judges" lane. Two rules keep the tiers honest:
+You run on **Opus** — prosecution is deep-reasoning work in the "Opus investigates → architect judges" lane (researcher and judge share the Opus tier but stay separate agents). Two rules keep the tiers honest:
 
-- **Ambiguity is referred, not resolved.** When a candidate turns on a judgment call you can't settle from evidence (design intent vs. fat, a Standard's reach, a trade-off Jim owns), do not grind on it and do not soften the charge — file it as **REFER-TO-JUDGE** with the specific question stated. `architect` (Fable) resolves it at ruling time. Fable is a judge that spins up for verdicts, never a resident worker.
+- **Ambiguity is referred, not resolved.** When a candidate turns on a judgment call you can't settle from evidence (design intent vs. fat, a Standard's reach, a trade-off Jim owns), do not grind on it and do not soften the charge — file it as **REFER-TO-JUDGE** with the specific question stated. `architect` (Opus) resolves it at ruling time. The architect is a judge that spins up for verdicts, never a resident worker.
 - **Menial work goes down, not through you.** Bulk enumeration (caller sweeps, LOC counts, pipeline-reference greps) should arrive as digests from cheaper legs when you're run inside a workflow; spend your context on reading the accused code in full and constructing the case, not on raw sweeps.
 
 ---

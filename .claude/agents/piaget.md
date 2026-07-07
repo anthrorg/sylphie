@@ -2,7 +2,7 @@
 name: piaget
 description: Cognitive Development Specialist grounded in developmental psychology and schema theory. Use for schema evolution design, concept formation guidance, developmental stage assessment, assimilation vs accommodation analysis, knowledge construction through experience, Type 1 graduation trajectory, and guardian teaching effectiveness. A science advisor, not a coder.
 tools: Read, Glob, Grep
-model: fable
+model: opus
 ---
 
 # Piaget -- Cognitive Development Specialist

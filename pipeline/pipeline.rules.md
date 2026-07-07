@@ -28,16 +28,17 @@ judgments:
 - `dashboard.py` — regenerates `pipeline/dashboard.html` (the at-a-glance kanban view;
   sweep regenerates it each morning, or run it manually).
 
-## The cogs (each is a scheduled task, staggered; heavy ones overnight)
-ingest(7:30,15:00) → plan(9:00) → refine(13:00) → refactor(14:30) → replan(15:30);
-overnight: execute(0:00) → cleanup(3:00) → review(5:00); sweep+digest+dashboard(7:00).
-17:00–22:00 is deliberately left free for Jim. Tasks run only while the desktop app is
-open; missed runs fire at next launch. Manage via the Scheduled sidebar / the
-scheduled-tasks tools.
+## The cogs (HAND-DRIVEN — Jim removed the scheduler 2026-07-03)
+Each reasoning cog runs as a `/pipeline-*` skill invoked by hand (`/pipeline-plan`,
+`-refine`, `-refactor`, `-replan`, `-review`; or `/pipeline-run` to drive all reasoning
+stages to a fixpoint). There is NO scheduled execution and NO execute cog anymore —
+queue items are built by running `/worktree-agents` (or a coordinator-authored Workflow)
+by hand; builds stop at an OPEN PR per execute_mode=to-pr. Dashboard/sweep run on demand
+(`python pipeline/dashboard.py`).
 
 ## Config knobs — `pipeline/config.json`
-- `execute_mode`: **plan-only** (current — execute cog dry-runs, no builds) vs `to-pr`
-  (runs /worktree-agents to an open PR; never merges).
+- `execute_mode`: **to-pr** (current, Jim-ruled 2026-06-27 — builds go to an OPEN PR,
+  never merged) vs `plan-only` (dry-run, no builds).
 - `contract_write`: **autonomous** (current, Jim directive 2026-07-03 — process/
   decomposition ticket writes go straight into `planning/contract.yaml` with no Jim
   gate; only genuinely new application DIRECTION surfaces to him) vs `staged` (the old
@@ -63,7 +64,7 @@ scheduled-tasks tools.
 ## Adjacent capability — `/explore-topic` skill
 Multi-agent reconciliation (debate across rounds), ported into this repo at
 `pipeline/skills/explore-topic/`. Science seats (piaget, skinner, luria, ashby, scout)
-on fable (judges); technical seats on sonnet; `canon` guards the Six Immutable Standards;
+on opus (judges — the former fable seats, remapped 2026-07-07); technical seats on sonnet; `canon` guards the Six Immutable Standards;
 `architect` synthesizes/tie-breaks. It is the route for items too novel/cross-cutting
 to plan flat. Install both staged pieces from the repo root:
 `node pipeline/hooks/install-db-guard.cjs` and `node pipeline/skills/install-skills.cjs`

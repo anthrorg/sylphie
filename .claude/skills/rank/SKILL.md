@@ -1,11 +1,11 @@
 ---
 name: rank
-description: Rank an incoming question and route it. Escalate architectural, cross-subsystem, cutting-edge, or expensive-to-get-wrong questions to the `architect` Fable decision authority; answer simple factual/locational questions directly. Use whenever the user asks a question — the question-router hook nudges you here on any message containing "?".
+description: Rank an incoming question and route it. Escalate architectural, cross-subsystem, cutting-edge, or expensive-to-get-wrong questions to the `architect` Opus decision authority; answer simple factual/locational questions directly. Use whenever the user asks a question — the question-router hook nudges you here on any message containing "?".
 ---
 
 # rank — Question Router
 
-You (the coordinator) run on Sonnet. Your job on a question is to **classify, then route** — not to grind out deep reasoning yourself when a harder model should. This skill is the gate that keeps the cascade cheap: most questions you answer directly; only the genuinely hard ones cost a Fable call.
+You (the coordinator) run on Sonnet. Your job on a question is to **classify, then route** — not to grind out deep reasoning yourself when a harder model should. This skill is the gate that keeps the cascade cheap: most questions you answer directly; only the genuinely hard ones cost an architect (Opus) call.
 
 ## How to rank
 
@@ -21,7 +21,7 @@ The cheap majority. Do **not** escalate:
 
 For these: gather the answer with Read/Glob/Grep/Bash and respond. No agent needed.
 
-### TIER 1 — Escalate to `architect` (Fable decision authority)
+### TIER 1 — Escalate to `architect` (Opus decision authority)
 Hand off when the question is reasoning-heavy or costly to get wrong:
 - **Architecture / design:** "should we", "which approach", trade-offs, where a responsibility belongs, interface/boundary design.
 - **Cross-subsystem / systemic:** answer depends on how several parts interact over time (drives × decision × learning, event backbone, attractor dynamics, emergence).
