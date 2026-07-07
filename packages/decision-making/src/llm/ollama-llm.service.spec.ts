@@ -281,6 +281,154 @@ describe('TK-124 AC1 — hung Ollama chat() call is aborted after chatTimeoutMs'
   });
 });
 
+// ---------------------------------------------------------------------------
+// TK-125 — LLM circuit breaker half-open auto-probe (local-Ollama tier only)
+// ---------------------------------------------------------------------------
+
+describe('TK-125 — local-Ollama tier breaker (separate from the shared DeepSeek breaker)', () => {
+  const OLLAMA_URL_MARKER = '/api/chat';
+
+  function makeTierAwareFetchMock(opts: {
+    ollamaShouldFail: () => boolean;
+  }) {
+    return jest.fn((input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes(OLLAMA_URL_MARKER)) {
+        if (opts.ollamaShouldFail()) {
+          return Promise.reject(new Error('ollama unreachable'));
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            message: { content: 'pong' },
+            model: 'qwen2.5:3b',
+            prompt_eval_count: 1,
+            eval_count: 1,
+          }),
+          text: async () => '',
+        } as unknown as Response);
+      }
+      // DeepSeek endpoint — always succeeds in these tests.
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: 'deepseek-ok' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+          model: 'deepseek-reasoner',
+        }),
+        text: async () => '',
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+  }
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('AC1: 5 consecutive local-Ollama failures trip ONLY the Ollama tier — DeepSeek availability is unaffected', async () => {
+    let ollamaShouldFail = true;
+    global.fetch = makeTierAwareFetchMock({ ollamaShouldFail: () => ollamaShouldFail });
+
+    const service = buildService({}); // deepseekApiKey set → useDeepSeek=true
+
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        service.complete({ ...BASE_REQUEST, tier: 'quick' }),
+      ).rejects.toThrow();
+    }
+
+    expect(service.isOllamaTierAvailable()).toBe(false);
+    // The shared DeepSeek breaker must be completely unaffected.
+    expect(service.isAvailable()).toBe(true);
+
+    const deepResponse = await service.complete({ ...BASE_REQUEST, tier: 'deep' });
+    expect(deepResponse.content).toBe('deepseek-ok');
+
+    ollamaShouldFail = false; // stop further failures for cleanliness
+  });
+
+  it('AC2: after the cooldown interval, the breaker auto-probes and flips availability back to true on success — no manual reset called', async () => {
+    let ollamaShouldFail = true;
+    global.fetch = makeTierAwareFetchMock({ ollamaShouldFail: () => ollamaShouldFail });
+
+    const service = buildService({});
+
+    for (let i = 0; i < 5; i++) {
+      await expect(service.complete({ ...BASE_REQUEST, tier: 'quick' })).rejects.toThrow();
+    }
+    expect(service.isOllamaTierAvailable()).toBe(false);
+
+    // Ollama recovers before the probe fires.
+    ollamaShouldFail = false;
+
+    // Advance past the probe cooldown interval (30s) without ever calling resetCircuitBreaker().
+    jest.advanceTimersByTime(30_000 + 100);
+    // Flush the probe's full async chain (client.chat -> post -> fetch -> json()).
+    for (let i = 0; i < 25; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+
+    expect(service.isOllamaTierAvailable()).toBe(true);
+  });
+
+  it('AC3: while tripped, probes do not busy-loop — only one probe attempt per cooldown interval, not one per request', async () => {
+    let ollamaShouldFail = true;
+    let ollamaCallCount = 0;
+    global.fetch = jest.fn((input: unknown, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes(OLLAMA_URL_MARKER)) {
+        ollamaCallCount++;
+        return Promise.reject(new Error('ollama unreachable'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1 }, model: 'deepseek-reasoner' }),
+        text: async () => '',
+      } as unknown as Response);
+    }) as unknown as typeof fetch;
+
+    const service = buildService({});
+
+    // Trip the breaker (5 failures from regular request traffic).
+    for (let i = 0; i < 5; i++) {
+      await expect(service.complete({ ...BASE_REQUEST, tier: 'quick' })).rejects.toThrow();
+    }
+    expect(service.isOllamaTierAvailable()).toBe(false);
+    const callsAtTrip = ollamaCallCount;
+    expect(callsAtTrip).toBe(5);
+
+    // While tripped, further regular request traffic must fail FAST — no
+    // additional real Ollama call attempts (fails via the isOllamaTierAvailable
+    // guard, not a real network round-trip).
+    for (let i = 0; i < 10; i++) {
+      await expect(service.complete({ ...BASE_REQUEST, tier: 'quick' })).rejects.toThrow();
+    }
+    expect(ollamaCallCount).toBe(callsAtTrip); // no new calls from request traffic
+
+    // Two full cooldown intervals elapse with Ollama still down — exactly
+    // ONE probe attempt per interval (not a busy-loop).
+    jest.advanceTimersByTime(30_000 + 100);
+    for (let i = 0; i < 25; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+    expect(ollamaCallCount).toBe(callsAtTrip + 1);
+
+    jest.advanceTimersByTime(30_000 + 100);
+    for (let i = 0; i < 25; i++) {
+      await Promise.resolve();
+      jest.advanceTimersByTime(0);
+    }
+    expect(ollamaCallCount).toBe(callsAtTrip + 2);
+
+    expect(service.isOllamaTierAvailable()).toBe(false); // still down — probes kept failing
+    ollamaShouldFail = false; // unused, kept for symmetry with other tests
+  });
+});
+
 describe('AC2 — no DEEPSEEK_*_COST_PER_M constant in service source', () => {
   it('service source does not contain the old hardcoded COST_PER_M constants', () => {
     // Read the source file content and assert the removed constants are gone.

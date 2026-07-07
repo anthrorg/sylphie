@@ -100,6 +100,33 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   /** Circuit breaker trips after this many consecutive failures. */
   private readonly CIRCUIT_BREAKER_THRESHOLD = 5;
 
+  // ---------------------------------------------------------------------------
+  // TK-125 — local-Ollama tier breaker (SEPARATE from the shared DeepSeek
+  // consecutiveFailures/available fields above).
+  //
+  // Non-goal (per ticket): this does NOT fix general cross-tier failure
+  // attribution — the DeepSeek deep/medium tiers keep their existing
+  // manual-reset-only behavior via `consecutiveFailures`/`available` above.
+  // This auto-probe targets ONLY the primary local-Ollama chat tier
+  // (medium/quick, the highest-frequency path): a trip here does not touch
+  // `this.available`, and a DeepSeek trip does not touch these fields.
+  // ---------------------------------------------------------------------------
+
+  /** Consecutive failure count for the local-Ollama tier's own breaker. */
+  private ollamaConsecutiveFailures = 0;
+
+  /** Whether the local-Ollama tier is currently available (its own breaker). */
+  private ollamaAvailable = true;
+
+  /** Handle to the periodic half-open probe timer (active only while tripped). */
+  private ollamaProbeHandle: ReturnType<typeof setInterval> | null = null;
+
+  /** Guards against stacking overlapping probe attempts. */
+  private isOllamaProbing = false;
+
+  /** Cooldown between half-open probe attempts once the tier's breaker trips. */
+  private readonly OLLAMA_BREAKER_PROBE_INTERVAL_MS = 30_000;
+
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit(): void {
@@ -341,6 +368,15 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     }
 
     // Local Ollama path (quick/medium, or deep when DeepSeek not configured)
+    // TK-125: gated by this tier's OWN breaker (ollamaAvailable), separate
+    // from the shared DeepSeek `available` flag checked at the top of this
+    // method (a DeepSeek trip does not block this path; see class-level notes).
+    if (!this.ollamaAvailable) {
+      throw new Error(
+        'LLM service unavailable (local-Ollama tier circuit breaker tripped — awaiting auto-probe recovery)',
+      );
+    }
+
     const model = this.resolveModel(request.tier);
     const ollamaMessages: Array<{ role: string; content: string }> = [];
 
@@ -366,7 +402,11 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       });
 
       const latencyMs = Date.now() - startMs;
-      this.consecutiveFailures = 0;
+      // TK-125: local-Ollama tier success resets THIS tier's own breaker
+      // state only — it must not clear the DeepSeek tiers' shared counter
+      // (that would be exactly the cross-tier attribution bug this ticket
+      // scopes the auto-probe away from).
+      this.onOllamaTierSuccess();
 
       const promptTokens = response.prompt_eval_count ?? 0;
       const completionTokens = response.eval_count ?? 0;
@@ -397,27 +437,24 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
       };
     } catch (err) {
       const latencyMs = Date.now() - startMs;
-      this.consecutiveFailures++;
-
-      if (this.consecutiveFailures >= this.CIRCUIT_BREAKER_THRESHOLD) {
-        this.available = false;
-        this.logger.error(
-          `Circuit breaker tripped after ${this.consecutiveFailures} consecutive failures.`,
-        );
-      }
+      // TK-125: local-Ollama tier failures increment THIS tier's own breaker
+      // only — they no longer feed the shared DeepSeek consecutiveFailures/
+      // available fields (previously all three tiers shared one counter, so
+      // an Ollama-only outage could trip availability for DeepSeek too).
+      this.onOllamaTierFailure();
 
       vlog('Ollama FAILED', {
         model,
         tier: request.tier ?? 'medium',
         purpose: request.metadata.purpose,
         latencyMs,
-        consecutiveFailures: this.consecutiveFailures,
+        consecutiveFailures: this.ollamaConsecutiveFailures,
         error: err instanceof Error ? err.message : String(err),
       });
 
       this.logger.error(
         `LLM call failed [${request.tier ?? 'medium'}/${model}] ` +
-          `(${latencyMs}ms, failures=${this.consecutiveFailures}): ` +
+          `(${latencyMs}ms, failures=${this.ollamaConsecutiveFailures}): ` +
           `${err instanceof Error ? err.message : String(err)}`,
       );
       throw err;
@@ -584,14 +621,111 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     return this.available;
   }
 
+  /** TK-125: local-Ollama tier's own breaker availability (separate from isAvailable()/DeepSeek). */
+  isOllamaTierAvailable(): boolean {
+    return this.ollamaAvailable;
+  }
+
   resetCircuitBreaker(): void {
     this.consecutiveFailures = 0;
     this.available = true;
+    // Manual reset (apps/sylphie/src/controllers/llm.controller.ts heal()) is a
+    // comprehensive override — also clear the local-Ollama tier's own breaker
+    // and stop its auto-probe timer so a stale probe doesn't race the reset.
+    this.ollamaConsecutiveFailures = 0;
+    this.ollamaAvailable = true;
+    if (this.ollamaProbeHandle !== null) {
+      clearInterval(this.ollamaProbeHandle);
+      this.ollamaProbeHandle = null;
+    }
+    this.isOllamaProbing = false;
     this.logger.log('Circuit breaker reset — LLM service marked available.');
   }
 
   enableLesionTest(): void {
     this.available = false;
     this.logger.warn('Lesion Test mode enabled — LLM service marked unavailable.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // TK-125 — local-Ollama tier breaker: trip / auto-probe / recover
+  // ---------------------------------------------------------------------------
+
+  /** Called on every successful local-Ollama tier call. */
+  private onOllamaTierSuccess(): void {
+    if (this.ollamaConsecutiveFailures > 0) {
+      this.ollamaConsecutiveFailures = 0;
+    }
+    if (!this.ollamaAvailable) {
+      // A regular (non-probe) call succeeded while tripped — recover immediately,
+      // same as a successful probe would.
+      this.recoverOllamaTier();
+    }
+  }
+
+  /** Called on every failed local-Ollama tier call. */
+  private onOllamaTierFailure(): void {
+    this.ollamaConsecutiveFailures++;
+    if (this.ollamaConsecutiveFailures >= this.CIRCUIT_BREAKER_THRESHOLD && this.ollamaAvailable) {
+      this.tripOllamaTier();
+    }
+  }
+
+  /** Trip the local-Ollama tier's breaker and start the half-open auto-probe timer. */
+  private tripOllamaTier(): void {
+    this.ollamaAvailable = false;
+    this.logger.error(
+      `Circuit breaker (local-Ollama tier) tripped after ${this.ollamaConsecutiveFailures} consecutive failures.`,
+    );
+    if (this.ollamaProbeHandle !== null) {
+      clearInterval(this.ollamaProbeHandle);
+    }
+    this.ollamaProbeHandle = setInterval(() => {
+      void this.runOllamaProbe();
+    }, this.OLLAMA_BREAKER_PROBE_INTERVAL_MS);
+  }
+
+  /** Recover the local-Ollama tier's breaker (probe success or an incidental non-probe success). */
+  private recoverOllamaTier(): void {
+    this.ollamaAvailable = true;
+    this.ollamaConsecutiveFailures = 0;
+    if (this.ollamaProbeHandle !== null) {
+      clearInterval(this.ollamaProbeHandle);
+      this.ollamaProbeHandle = null;
+    }
+    this.isOllamaProbing = false;
+    this.logger.log('Circuit breaker (local-Ollama tier) auto-recovered.');
+  }
+
+  /**
+   * Half-open auto-probe for the local-Ollama tier (TK-125).
+   *
+   * Fires on a fixed cooldown interval (OLLAMA_BREAKER_PROBE_INTERVAL_MS) while
+   * the tier's breaker is tripped — mirroring CycleGuard's own breaker probe
+   * pattern. Never stacks (isOllamaProbing guards re-entrancy) and never
+   * busy-loops (only the interval timer triggers a probe attempt, not regular
+   * request traffic — regular calls fail fast via the isOllamaTierAvailable
+   * guard in complete() while tripped).
+   */
+  private async runOllamaProbe(): Promise<void> {
+    if (this.isOllamaProbing || this.ollamaAvailable) {
+      return;
+    }
+    this.isOllamaProbing = true;
+    try {
+      const model = this.resolveModel('quick');
+      await this.client.chat({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        options: { num_predict: 1, num_gpu: 0 },
+      });
+      this.logger.log(`Local-Ollama tier probe succeeded (model=${model}).`);
+      this.recoverOllamaTier();
+    } catch (err) {
+      this.logger.warn(
+        `Local-Ollama tier probe failed — remaining tripped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.isOllamaProbing = false;
+    }
   }
 }
