@@ -19,6 +19,21 @@ module.exports = {
     // mocks, no live DB)
     '**/guardian-pool.provider.spec.ts',
     '**/guardian-rules.service.spec.ts',
+    // TK-109 route-auth guard (jest-compatible: direct-instantiation, no live DB)
+    '**/route-auth.guard.spec.ts',
+    // TK-111 shared boot-deadline helper (jest-compatible: pure, no live DB)
+    '**/boot-deadline.spec.ts',
+    // TK-113 stt.service close-handler guard (jest-compatible)
+    '**/stt.service.spec.ts',
+    // TK-114 audio/conversation gateway client-notify (jest-compatible)
+    '**/audio.gateway.spec.ts',
+    '**/conversation.gateway.spec.ts',
+    // TK-115 communication.service unhandled-rejection guard (jest-compatible)
+    '**/communication.service.spec.ts',
+    // TK-116 sensory-logger interval-leak guard (jest-compatible)
+    '**/sensory-logger.service.spec.ts',
+    // TK-117 drive-publisher telemetry-honesty guard (jest-compatible)
+    '**/drive-publisher.service.spec.ts',
   ],
   transform: {
     '^.+\\.tsx?$': [TSJEST, {

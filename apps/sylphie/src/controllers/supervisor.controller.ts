@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Inject, Query } from '@nestjs/common';
+import { Public } from '../decorators/public.decorator';
 import { SUPERVISOR_SERVICE } from '@sylphie/supervisor';
 import type {
   ISupervisorService,
@@ -25,6 +26,7 @@ export class SupervisorController {
    * verdict counts, and the 20 most recent verdicts.
    */
   @Get('status')
+  @Public()
   getStatus() {
     return this.supervisorService.getStatus();
   }
@@ -34,6 +36,7 @@ export class SupervisorController {
    * @param limit Maximum number of verdicts to return (default 50).
    */
   @Get('verdicts')
+  @Public()
   getVerdicts(@Query('limit') limit = '50') {
     const status = this.supervisorService.getStatus();
     const n = Math.max(1, Math.min(parseInt(limit, 10) || 50, status.recentVerdicts.length));

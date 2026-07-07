@@ -14,6 +14,7 @@ import { PrismaService } from '@sylphie/shared';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { AuthGuard, JwtPayload } from '../guards/auth.guard';
+import { Public } from '../decorators/public.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -23,6 +24,7 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @Public()
   async register(@Body() body: { username: string; password: string }) {
     const existing = await this.prisma.user.findUnique({
       where: { username: body.username },
@@ -43,6 +45,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Public()
   async login(@Body() body: { username: string; password: string }) {
     const user = await this.prisma.user.findUnique({
       where: { username: body.username },

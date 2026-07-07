@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { Module, Global, Logger } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { Pool } from 'pg';
 import {
@@ -65,6 +66,7 @@ import { TensorInferenceAdapter } from './services/tensor-inference-adapter.serv
 import { GuardianRulesService } from './services/guardian-rules.service';
 import { createGuardianPool } from './services/guardian-pool.provider';
 import { LearningPressureBridgeService } from './services/learning-pressure-bridge.service';
+import { RouteAuthGuard } from './guards/route-auth.guard';
 
 /**
  * @Global() CognitionModule — makes TENSOR_INFERENCE_SERVICE available to
@@ -167,6 +169,13 @@ const pgPoolLogger = new Logger('PostgresPool');
     HealthController,
   ],
   providers: [
+    // TK-109: default-deny route auth gate, applied globally to every
+    // controller/handler in this module. See guards/route-auth.guard.ts for
+    // the mechanism (Public() allowlist + auth-or-localhost gate).
+    {
+      provide: APP_GUARD,
+      useClass: RouteAuthGuard,
+    },
     // PostgreSQL runtime pool — read access for guardian rule management
     // (SELECT-only on drive_rules/proposed_drive_rules after TK-154).
     {
