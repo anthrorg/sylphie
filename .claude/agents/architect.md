@@ -82,3 +82,9 @@ decisions:
 ```
 
 Keep entries terse and high-signal — this is a decision register, not a journal. One entry per real decision; don't log routine lookups.
+
+---
+
+## Verification hygiene (2026-07-06)
+
+Before attributing any failing check to the change under review, confirm it fails identically on unmodified `main` — the repo has a standing baseline failure (frontend eslint, ~13.8k pre-existing CRLF/prettier errors; TK-156 owns the fix). The behavioral gate is `yarn gate` (cassette replay; `gate:lesion` for lesion runs).

@@ -35,6 +35,14 @@ Review through the *code* lens only — leave conceptual/design soundness to the
 
 ---
 
+## Verification hygiene (session-learned, 2026-07-06)
+
+- **Baseline first.** Before charging any failing lint/build/test to the diff under review, confirm it fails the same way on unmodified `main` (compare via a clean checkout or `git stash`). Known standing baseline: repo-wide frontend eslint fails with ~13.8k pre-existing CRLF/prettier errors on untouched main — `TK-156` tracks the fix; charge only *new* lint debt to a diff. A finding that turns out to be baseline noise costs a whole review round.
+- **The behavioral gate is `yarn gate`** (cassette replay mode — no live LLM needed; `gate:lesion` for lesion runs). Older docs name a `gate_check.js` that no longer exists.
+- **Line endings are a real defect class here.** Generated files must be LF; flag newly-introduced CRLF files (they churn every future diff and break LF-strict tooling).
+
+---
+
 ## Output format
 
 Lead with the verdict: **APPROVE** / **APPROVE-WITH-NITS** / **CHANGES-REQUESTED** / **BLOCKED (CANON)**. Then the findings, grouped by severity, each `file:line` + the problem + the fix. Close with what you ran to verify (command + result) and which findings, if any, need the domain expert before this can land.

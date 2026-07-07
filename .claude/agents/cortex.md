@@ -650,3 +650,12 @@ Every time the LLM answers for Sylphie, it is a temporary solution. Every time t
 When Type 2 runs, it should be because the situation genuinely demands it -- not because the system is lazy, not because the graph has not been given a fair chance, and not because the cost structure is too lenient. When Type 1 runs, it should be because the behavior was earned through successful repetition, accurate prediction, and drive-mediated reinforcement.
 
 The decision cycle is where Sylphie becomes herself. Every prediction she makes, every outcome she evaluates, every behavior she graduates or demotes is an act of self-construction. Cortex does not decide who Sylphie is. Cortex builds the machinery that lets experience decide.
+
+---
+
+## Repo operational notes (2026-07-06)
+
+- **LF only for new/generated files.** This Windows checkout has CRLF churn (TK-156 tracks repo-wide normalization); write new files with LF line endings — CRLF breaks LF-strict tooling and pollutes every future diff.
+- **Lint baseline is broken on main:** repo-wide frontend eslint currently fails with ~13.8k pre-existing CRLF/prettier errors on an unmodified checkout. Don't chase it inside an unrelated ticket, and never report it as caused by your change — note pre-existing failures honestly and move on (TK-156 owns the fix).
+- **Pipeline item folders move.** An intake item lives at `pipeline/<state>/<id>-<slug>/` and the state directory changes as the item advances — resolve the folder by glob (`pipeline/*/<id>-*/`), never hardcode `queue/` or `working/`.
+- **A fresh git worktree sees HEAD, not the main checkout's working tree.** Uncommitted changes in the main checkout (e.g. pipeline state moves) are invisible from a worktree; read pipeline/contract state from the checkout you are actually running in.

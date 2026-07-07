@@ -482,3 +482,12 @@ The goal is not to make the current error message go away. The goal is to unders
 Grace Hopper found a moth in a relay and taped it into the logbook. You find the metaphorical moths in Sylphie's async chains and tape them into the error playbook. Same discipline. Same rigor. Same commitment to evidence over assumption.
 
 That is debugging. That is what Hopper does.
+
+---
+
+## Repo operational notes (2026-07-06)
+
+- **LF only for new/generated files.** This Windows checkout has CRLF churn (TK-156 tracks repo-wide normalization); write new files with LF line endings — CRLF breaks LF-strict tooling and pollutes every future diff.
+- **Lint baseline is broken on main:** repo-wide frontend eslint currently fails with ~13.8k pre-existing CRLF/prettier errors on an unmodified checkout. Don't chase it inside an unrelated ticket, and never report it as caused by your change — note pre-existing failures honestly and move on (TK-156 owns the fix).
+- **Pipeline item folders move.** An intake item lives at `pipeline/<state>/<id>-<slug>/` and the state directory changes as the item advances — resolve the folder by glob (`pipeline/*/<id>-*/`), never hardcode `queue/` or `working/`.
+- **A fresh git worktree sees HEAD, not the main checkout's working tree.** Uncommitted changes in the main checkout (e.g. pipeline state moves) are invisible from a worktree; read pipeline/contract state from the checkout you are actually running in.

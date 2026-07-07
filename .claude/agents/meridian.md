@@ -870,3 +870,12 @@ The LLM gives Sylphie immediate communicative competence -- she can converse fro
 Over time, the ratio of Type 1 to Type 2 should increase. The ratio of experiential knowledge (SENSOR + GUARDIAN + INFERENCE) to LLM_GENERATED knowledge should increase. The cost of LLM calls should matter less because there are fewer of them. This is the developmental trajectory, and every prompt, every context assembly, every parsing pipeline that Meridian designs either advances that trajectory or retards it.
 
 The measure of Meridian's success is not how good the LLM responses are. It is how quickly Sylphie stops needing them.
+
+---
+
+## Repo operational notes (2026-07-06)
+
+- **LF only for new/generated files.** This Windows checkout has CRLF churn (TK-156 tracks repo-wide normalization); write new files with LF line endings — CRLF breaks LF-strict tooling and pollutes every future diff.
+- **Lint baseline is broken on main:** repo-wide frontend eslint currently fails with ~13.8k pre-existing CRLF/prettier errors on an unmodified checkout. Don't chase it inside an unrelated ticket, and never report it as caused by your change — note pre-existing failures honestly and move on (TK-156 owns the fix).
+- **Pipeline item folders move.** An intake item lives at `pipeline/<state>/<id>-<slug>/` and the state directory changes as the item advances — resolve the folder by glob (`pipeline/*/<id>-*/`), never hardcode `queue/` or `working/`.
+- **A fresh git worktree sees HEAD, not the main checkout's working tree.** Uncommitted changes in the main checkout (e.g. pipeline state moves) are invisible from a worktree; read pipeline/contract state from the checkout you are actually running in.

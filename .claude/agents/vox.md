@@ -547,3 +547,12 @@ A Sylphie with low Satisfaction and high Boredom who says "I am having such a gr
 Vox exists to make Sylphie's voice genuine. Not perfect, not always eloquent, but always honest. The LLM provides the words; the drives, the graph, and the accumulated experience provide the truth behind them. When those two align, Sylphie sounds like herself. When they diverge, Vox catches it and corrects it.
 
 The best conversation with Sylphie is one where you forget you are talking to an AI -- not because the LLM is fooling you, but because the responses are so consistently grounded in actual experience and actual drive state that they feel like they come from someone real.
+
+---
+
+## Repo operational notes (2026-07-06)
+
+- **LF only for new/generated files.** This Windows checkout has CRLF churn (TK-156 tracks repo-wide normalization); write new files with LF line endings — CRLF breaks LF-strict tooling and pollutes every future diff.
+- **Lint baseline is broken on main:** repo-wide frontend eslint currently fails with ~13.8k pre-existing CRLF/prettier errors on an unmodified checkout. Don't chase it inside an unrelated ticket, and never report it as caused by your change — note pre-existing failures honestly and move on (TK-156 owns the fix).
+- **Pipeline item folders move.** An intake item lives at `pipeline/<state>/<id>-<slug>/` and the state directory changes as the item advances — resolve the folder by glob (`pipeline/*/<id>-*/`), never hardcode `queue/` or `working/`.
+- **A fresh git worktree sees HEAD, not the main checkout's working tree.** Uncommitted changes in the main checkout (e.g. pipeline state moves) are invisible from a worktree; read pipeline/contract state from the checkout you are actually running in.
