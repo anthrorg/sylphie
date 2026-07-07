@@ -6,13 +6,13 @@
   "size_hint": "large",
   "lines": 54,
   "sections": 10,
-  "state": "review",
+  "state": "refactor",
   "namespace": "20260702-002-bug-tensor-cognition-sidecar-is-dead",
   "source_file": "bug-audit-cognition-sidecar.md",
   "created_at": "2026-07-02T02:24:40-04:00",
-  "updated_at": "2026-07-06T21:37:13-04:00",
+  "updated_at": "2026-07-06T22:27:20-04:00",
   "attempts": 2,
-  "refactor_attempts": 0,
+  "refactor_attempts": 1,
   "contract_nodes": [
     "EP-23",
     "TK-119",
@@ -20,7 +20,7 @@
     "TK-121",
     "TK-122"
   ],
-  "blocked_reason": null,
+  "blocked_reason": "code review blocker: TK-121 AC4 (consolidation duration measurement + >250ms follow-up) has zero code/tests; major: first-cycle latency guard dead on abort path; findings in log.md",
   "history": [
     {
       "at": "2026-07-02T02:24:40-04:00",
@@ -87,6 +87,12 @@
       "from": "working",
       "to": "review",
       "note": "built to open PR #87 (agent/pipeline-20260702-002-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+    },
+    {
+      "at": "2026-07-06T22:27:20-04:00",
+      "from": "review",
+      "to": "refactor",
+      "note": "code review blocker: TK-121 AC4 (consolidation duration measurement + >250ms follow-up) has zero code/tests; major: first-cycle latency guard dead on abort path; findings in log.md"
     }
   ]
 }

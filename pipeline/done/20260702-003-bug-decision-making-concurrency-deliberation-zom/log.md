@@ -9,3 +9,5 @@
 - `2026-07-06T16:49:38-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
 - `2026-07-06T21:37:13-04:00` built to open PR #88 (agent/pipeline-20260702-003-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge
 - `2026-07-06T21:37:13-04:00` moved **working -> review** — built to open PR #88 (agent/pipeline-20260702-003-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge
+- `2026-07-06T22:27:20-04:00` review tick: code-reviewer APPROVE (0 blockers/majors), luria SOUND-WITH-CONCERNS (Std-6 EMA tension bounded per DEC-32, flag future demotion mechanism; gate-score must never be written to WKG confidence). Opus verify: complete/merge. READY FOR JIM'S MERGE (PR #88).
+- `2026-07-06T22:27:21-04:00` moved **review -> done** — reviewed + verified: PR #88 ready to merge (merge is Jim's)

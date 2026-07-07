@@ -7,3 +7,5 @@
 - `2026-07-06T16:49:38-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
 - `2026-07-06T21:37:13-04:00` built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
 - `2026-07-06T21:37:14-04:00` moved **working -> review** — built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
+- `2026-07-06T22:27:21-04:00` review tick: code-reviewer APPROVE-WITH-NITS, skinner SOUND-WITH-CONCERNS (SESSION_START forceReset path narrowed not closed; TK-DR-8f x3 coefficient not in this diff — must stay tracked; verification-time vs expression-time theater misclassification residual). Opus verify: partial (TK-140 not built, honest). READY FOR JIM'S MERGE (PR #90).
+- `2026-07-06T22:27:21-04:00` moved **review -> done** — reviewed + verified: PR #90 ready to merge with nits; TK-140 remains todo

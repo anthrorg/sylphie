@@ -6,11 +6,11 @@
   "size_hint": "large",
   "lines": 55,
   "sections": 10,
-  "state": "review",
+  "state": "done",
   "namespace": "20260702-005-bug-frontend-unmount-reconnect-zombie-sockets-br",
   "source_file": "bug-audit-frontend-shared.md",
   "created_at": "2026-07-02T02:24:40-04:00",
-  "updated_at": "2026-07-06T21:37:14-04:00",
+  "updated_at": "2026-07-06T22:27:21-04:00",
   "attempts": 0,
   "refactor_attempts": 0,
   "contract_nodes": [
@@ -59,6 +59,12 @@
       "from": "working",
       "to": "review",
       "note": "built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits"
+    },
+    {
+      "at": "2026-07-06T22:27:21-04:00",
+      "from": "review",
+      "to": "done",
+      "note": "reviewed + verified: PR #91 ready to merge with nits"
     }
   ]
 }

@@ -7,3 +7,5 @@
 - `2026-07-06T16:49:39-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
 - `2026-07-06T21:37:14-04:00` built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits
 - `2026-07-06T21:37:14-04:00` moved **working -> review** — built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits
+- `2026-07-06T22:27:21-04:00` review tick: code-reviewer APPROVE-WITH-NITS, ashby SOUND-WITH-CONCERNS (dead guardian word-rating surface removed honestly; word-level guardian correction channel now a standing gap — follow-up). Opus verify: complete/merge-with-nits. READY FOR JIM'S MERGE (PR #91).
+- `2026-07-06T22:27:21-04:00` moved **review -> done** — reviewed + verified: PR #91 ready to merge with nits

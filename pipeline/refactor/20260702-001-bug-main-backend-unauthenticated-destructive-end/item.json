@@ -6,13 +6,13 @@
   "size_hint": "large",
   "lines": 55,
   "sections": 10,
-  "state": "review",
+  "state": "refactor",
   "namespace": "20260702-001-bug-main-backend-unauthenticated-destructive-end",
   "source_file": "bug-audit-apps-sylphie-backend.md",
   "created_at": "2026-07-02T02:24:40-04:00",
-  "updated_at": "2026-07-06T21:37:13-04:00",
+  "updated_at": "2026-07-06T22:27:20-04:00",
   "attempts": 1,
-  "refactor_attempts": 0,
+  "refactor_attempts": 1,
   "contract_nodes": [
     "EP-22",
     "TK-109",
@@ -26,7 +26,7 @@
     "TK-117",
     "TK-118"
   ],
-  "blocked_reason": null,
+  "blocked_reason": "code review blocker: AuthGuard missing from AppModule providers (app cannot boot) + 2 majors (health Promise.all regression, unread turnError) + guardian role-check follow-up; findings in log.md + review workflow output",
   "history": [
     {
       "at": "2026-07-02T02:24:40-04:00",
@@ -75,6 +75,12 @@
       "from": "working",
       "to": "review",
       "note": "built to open PR #89 (agent/pipeline-20260702-001-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+    },
+    {
+      "at": "2026-07-06T22:27:20-04:00",
+      "from": "review",
+      "to": "refactor",
+      "note": "code review blocker: AuthGuard missing from AppModule providers (app cannot boot) + 2 majors (health Promise.all regression, unread turnError) + guardian role-check follow-up; findings in log.md + review workflow output"
     }
   ]
 }

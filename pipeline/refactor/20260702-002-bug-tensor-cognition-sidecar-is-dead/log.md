@@ -12,3 +12,5 @@
 - `2026-07-06T16:49:38-04:00` build launched in tiered workflow (Sonnet build + Opus verify), coordinator holds contract writes
 - `2026-07-06T21:37:13-04:00` built to open PR #87 (agent/pipeline-20260702-002-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
 - `2026-07-06T21:37:13-04:00` moved **working -> review** — built to open PR #87 (agent/pipeline-20260702-002-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits
+- `2026-07-06T22:27:20-04:00` review tick: code-reviewer CHANGES-REQUESTED (BLOCKER: TK-121 AC4 wholly unimplemented — no monotonic timing/INFO log/250ms follow-up in _consolidate_phase_boundary; MAJOR: TK-119 first-cycle latency instrument structurally cannot fire on the 50ms abort path it exists to catch — measure in the catch block). ashby SOUND-WITH-CONCERNS (theater removals endorsed). Fixes to meridian.
+- `2026-07-06T22:27:20-04:00` moved **review -> refactor** — code review blocker: TK-121 AC4 (consolidation duration measurement + >250ms follow-up) has zero code/tests; major: first-cycle latency guard dead on abort path; findings in log.md

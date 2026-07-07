@@ -6,11 +6,11 @@
   "size_hint": "large",
   "lines": 60,
   "sections": 10,
-  "state": "review",
+  "state": "done",
   "namespace": "20260702-004-bug-drive-engineserver-resilience-isolation-laye",
   "source_file": "bug-audit-drive-engine.md",
   "created_at": "2026-07-02T02:24:40-04:00",
-  "updated_at": "2026-07-06T21:37:14-04:00",
+  "updated_at": "2026-07-06T22:27:21-04:00",
   "attempts": 0,
   "refactor_attempts": 0,
   "contract_nodes": [
@@ -60,6 +60,12 @@
       "from": "working",
       "to": "review",
       "note": "built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+    },
+    {
+      "at": "2026-07-06T22:27:21-04:00",
+      "from": "review",
+      "to": "done",
+      "note": "reviewed + verified: PR #90 ready to merge with nits; TK-140 remains todo"
     }
   ]
 }

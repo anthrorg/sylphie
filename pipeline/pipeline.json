@@ -257,13 +257,13 @@
       "size_hint": "large",
       "lines": 55,
       "sections": 10,
-      "state": "review",
+      "state": "refactor",
       "namespace": "20260702-001-bug-main-backend-unauthenticated-destructive-end",
       "source_file": "bug-audit-apps-sylphie-backend.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:13-04:00",
+      "updated_at": "2026-07-06T22:27:20-04:00",
       "attempts": 1,
-      "refactor_attempts": 0,
+      "refactor_attempts": 1,
       "contract_nodes": [
         "EP-22",
         "TK-109",
@@ -277,7 +277,7 @@
         "TK-117",
         "TK-118"
       ],
-      "blocked_reason": null,
+      "blocked_reason": "code review blocker: AuthGuard missing from AppModule providers (app cannot boot) + 2 majors (health Promise.all regression, unread turnError) + guardian role-check follow-up; findings in log.md + review workflow output",
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -326,6 +326,12 @@
           "from": "working",
           "to": "review",
           "note": "built to open PR #89 (agent/pipeline-20260702-001-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+        },
+        {
+          "at": "2026-07-06T22:27:20-04:00",
+          "from": "review",
+          "to": "refactor",
+          "note": "code review blocker: AuthGuard missing from AppModule providers (app cannot boot) + 2 majors (health Promise.all regression, unread turnError) + guardian role-check follow-up; findings in log.md + review workflow output"
         }
       ]
     },
@@ -337,13 +343,13 @@
       "size_hint": "large",
       "lines": 54,
       "sections": 10,
-      "state": "review",
+      "state": "refactor",
       "namespace": "20260702-002-bug-tensor-cognition-sidecar-is-dead",
       "source_file": "bug-audit-cognition-sidecar.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:13-04:00",
+      "updated_at": "2026-07-06T22:27:20-04:00",
       "attempts": 2,
-      "refactor_attempts": 0,
+      "refactor_attempts": 1,
       "contract_nodes": [
         "EP-23",
         "TK-119",
@@ -351,7 +357,7 @@
         "TK-121",
         "TK-122"
       ],
-      "blocked_reason": null,
+      "blocked_reason": "code review blocker: TK-121 AC4 (consolidation duration measurement + >250ms follow-up) has zero code/tests; major: first-cycle latency guard dead on abort path; findings in log.md",
       "history": [
         {
           "at": "2026-07-02T02:24:40-04:00",
@@ -418,6 +424,12 @@
           "from": "working",
           "to": "review",
           "note": "built to open PR #87 (agent/pipeline-20260702-002-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+        },
+        {
+          "at": "2026-07-06T22:27:20-04:00",
+          "from": "review",
+          "to": "refactor",
+          "note": "code review blocker: TK-121 AC4 (consolidation duration measurement + >250ms follow-up) has zero code/tests; major: first-cycle latency guard dead on abort path; findings in log.md"
         }
       ]
     },
@@ -429,11 +441,11 @@
       "size_hint": "large",
       "lines": 55,
       "sections": 10,
-      "state": "review",
+      "state": "done",
       "namespace": "20260702-003-bug-decision-making-concurrency-deliberation-zom",
       "source_file": "bug-audit-decision-making-core.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:13-04:00",
+      "updated_at": "2026-07-06T22:27:21-04:00",
       "attempts": 1,
       "refactor_attempts": 0,
       "contract_nodes": [
@@ -493,6 +505,12 @@
           "from": "working",
           "to": "review",
           "note": "built to open PR #88 (agent/pipeline-20260702-003-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge"
+        },
+        {
+          "at": "2026-07-06T22:27:21-04:00",
+          "from": "review",
+          "to": "done",
+          "note": "reviewed + verified: PR #88 ready to merge (merge is Jim's)"
         }
       ]
     },
@@ -504,11 +522,11 @@
       "size_hint": "large",
       "lines": 60,
       "sections": 10,
-      "state": "review",
+      "state": "done",
       "namespace": "20260702-004-bug-drive-engineserver-resilience-isolation-laye",
       "source_file": "bug-audit-drive-engine.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:14-04:00",
+      "updated_at": "2026-07-06T22:27:21-04:00",
       "attempts": 0,
       "refactor_attempts": 0,
       "contract_nodes": [
@@ -558,6 +576,12 @@
           "from": "working",
           "to": "review",
           "note": "built to open PR #90 (agent/pipeline-20260702-004-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: partial/merge-with-nits"
+        },
+        {
+          "at": "2026-07-06T22:27:21-04:00",
+          "from": "review",
+          "to": "done",
+          "note": "reviewed + verified: PR #90 ready to merge with nits; TK-140 remains todo"
         }
       ]
     },
@@ -569,11 +593,11 @@
       "size_hint": "large",
       "lines": 55,
       "sections": 10,
-      "state": "review",
+      "state": "done",
       "namespace": "20260702-005-bug-frontend-unmount-reconnect-zombie-sockets-br",
       "source_file": "bug-audit-frontend-shared.md",
       "created_at": "2026-07-02T02:24:40-04:00",
-      "updated_at": "2026-07-06T21:37:14-04:00",
+      "updated_at": "2026-07-06T22:27:21-04:00",
       "attempts": 0,
       "refactor_attempts": 0,
       "contract_nodes": [
@@ -622,6 +646,12 @@
           "from": "working",
           "to": "review",
           "note": "built to open PR #91 (agent/pipeline-20260702-005-r2) by tiered-pass recovery wf_a8cfe401-240; opus verify: complete/merge-with-nits"
+        },
+        {
+          "at": "2026-07-06T22:27:21-04:00",
+          "from": "review",
+          "to": "done",
+          "note": "reviewed + verified: PR #91 ready to merge with nits"
         }
       ]
     },
