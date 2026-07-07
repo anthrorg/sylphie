@@ -17,6 +17,8 @@
 import { Logger } from '@nestjs/common';
 import { DecisionTickEngineService } from './decision-tick-engine.service';
 import type { TickEngineCallbacks } from './decision-tick-engine.service';
+import { CycleGuardService } from '../concurrency/cycle-guard.service';
+import type { InboundTurn } from '../concurrency/inbound-turn';
 
 // Suppress verbose logs in tests.
 jest.mock('@sylphie/shared', () => {
@@ -377,5 +379,150 @@ describe('DecisionTickEngineService — onTick self-tick guard (AC2)', () => {
 describe('DecisionTickEngineService — DEFAULT_TICK_MS constant (AC2)', () => {
   it('DEFAULT_TICK_MS is 200', () => {
     expect(DecisionTickEngineService.DEFAULT_TICK_MS).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TK-124 AC2 — self-tick watchdog coverage: a chat-timeout-aborted processInput
+// must reach the EXISTING finally block (selfTickInFlight cleared,
+// notifyExternalComplete() called exactly once via the existing call), and a
+// turn queued during the self-tick must drain rather than strand forever.
+//
+// Uses a REAL CycleGuardService (not a mock) so notifyExternalComplete()
+// genuinely re-triggers drainNext() end-to-end — this is the seam TK-124
+// requires the fix to REACH, not a duplicate/flag-only reset.
+// ---------------------------------------------------------------------------
+
+describe('DecisionTickEngineService — TK-124 AC2: chat-timeout during a self-tick unwedges via the existing notifyExternalComplete() call', () => {
+  function buildEngineWithRealCycleGuard(opts: {
+    onProcessInput: () => Promise<void>;
+    queuedTurnCompletions: string[];
+  }): {
+    engine: DecisionTickEngineService;
+    cycleGuard: CycleGuardService;
+  } {
+    const mockTickSampler = {
+      onNewInput: jest.fn(),
+      onSceneChange: jest.fn(),
+      hasNewInput: jest.fn(() => false),
+      getLastInputTimestamp: jest.fn(() => 0),
+      peek: jest.fn(async () => makeFakeFrame()),
+      sample: jest.fn(async () => makeFakeFrame()),
+      injectSyntheticText: jest.fn(),
+    };
+
+    const cycleGuard = new CycleGuardService(null);
+    const mockExecutorEngine = { getState: jest.fn(() => 'IDLE'), forceIdle: jest.fn() };
+
+    const mockDriveStateReader = {
+      getCurrentState: jest.fn(() => ({
+        totalPressure: 10, // above IDLE_PRESSURE_THRESHOLD so onTick proceeds
+        pressureVector: {
+          Boredom: 0, Curiosity: 0, Anxiety: 0, Sadness: 0, Guilt: 0,
+          Focus: 0, CognitiveAwareness: 0, Novelty: 0, Satisfaction: 0, Social: 0,
+        },
+        tickNumber: 1,
+        sessionId: 'session-test',
+        timestamp: new Date(),
+        driveDeltas: {},
+        ruleMatchResult: { ruleId: null, eventType: 'TEST', matched: false },
+      })),
+    };
+
+    const mockStreamLogger = { logFrame: jest.fn() };
+    const mockWkgContext = { queryEntities: jest.fn(async () => []) };
+    const mockMoodBleedMonitor = { onCycleStart: jest.fn(), onCycleEnd: jest.fn() };
+
+    const engine = new DecisionTickEngineService(
+      mockTickSampler as any,
+      cycleGuard,
+      mockDriveStateReader as any,
+      mockExecutorEngine as any,
+      mockStreamLogger as any,
+      mockWkgContext as any,
+      null,
+      mockMoodBleedMonitor as any,
+    );
+
+    engine.wire({ processInput: opts.onProcessInput });
+
+    // Real production wiring (decision-making.service.ts:334): CycleGuard's
+    // queue drain defers to the tick engine's self-tick mutex.
+    cycleGuard.register(
+      async (turn: InboundTurn, _epoch: number) => {
+        // A genuine queued (non-self) turn — completes immediately.
+        opts.queuedTurnCompletions.push(turn.turnId);
+        return true;
+      },
+      () => {},
+      mockExecutorEngine as any,
+      () => engine.isSelfTickInFlight(),
+    );
+
+    return { engine, cycleGuard };
+  }
+
+  it('a chat-timeout abort during a self-tick causes notifyExternalComplete() to fire exactly once, and a turn queued mid-self-tick drains afterward', async () => {
+    let rejectProcessInput: ((err: Error) => void) | null = null;
+    const notifySpy = jest.fn();
+
+    const onProcessInput = jest.fn(() => {
+      // Simulates the chat-timeout mechanism (TK-124 AC1) causing the
+      // underlying chat() call — and therefore processInput() — to reject
+      // once the abort fires, rather than hanging forever.
+      return new Promise<void>((_resolve, reject) => {
+        rejectProcessInput = reject;
+      });
+    });
+
+    const queuedTurnCompletions: string[] = [];
+    const { engine, cycleGuard } = buildEngineWithRealCycleGuard({ onProcessInput, queuedTurnCompletions });
+    const originalNotify = cycleGuard.notifyExternalComplete.bind(cycleGuard);
+    jest.spyOn(cycleGuard, 'notifyExternalComplete').mockImplementation(() => {
+      notifySpy();
+      originalNotify();
+    });
+
+    // Kick off the self-tick — it will hang inside processInput.
+    const tickPromise = engine.onTick(false);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(engine.isSelfTickInFlight()).toBe(true);
+
+    // While the self-tick is in flight, a real user turn arrives and is queued.
+    const queuedTurn: InboundTurn = {
+      turnId: 'queued-during-self-tick',
+      isGuardian: false,
+      receivedAt: Date.now(),
+      enqueuedAt: Date.now(),
+      text: 'hello',
+    };
+    cycleGuard.enqueue(queuedTurn);
+
+    // Flush — the queued turn must NOT run yet (self-tick still in flight).
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(queuedTurnCompletions).toHaveLength(0);
+
+    // The chat timeout (AC1's mechanism) fires — the aborted chat() call
+    // causes processInput() to reject, settling the self-tick's promise.
+    expect(rejectProcessInput).not.toBeNull();
+    const abortErr = new Error('The operation was aborted.');
+    (abortErr as Error & { name: string }).name = 'AbortError';
+    rejectProcessInput!(abortErr);
+
+    await expect(tickPromise).resolves.toBeUndefined(); // onTick swallows the error internally (logged)
+
+    // The EXISTING finally block ran: selfTickInFlight cleared, and
+    // notifyExternalComplete() was called exactly once via the existing call
+    // (:403) — not a duplicate/flag-only reset.
+    expect(engine.isSelfTickInFlight()).toBe(false);
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+
+    // The queued turn is not stranded — it drains after the self-tick ends.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(queuedTurnCompletions).toContain('queued-during-self-tick');
+
+    cycleGuard.destroy();
   });
 });

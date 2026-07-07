@@ -48,7 +48,10 @@ function makeFetchMock(promptTokens: number, completionTokens: number, content =
 // inject a custom process.env snapshot for pricing tests.
 import { OllamaLlmService } from './ollama-llm.service';
 
-function buildService(env: NodeJS.ProcessEnv = {}): OllamaLlmService {
+function buildService(
+  env: NodeJS.ProcessEnv = {},
+  configOverrides: Record<string, unknown> = {},
+): OllamaLlmService {
   // Minimal ConfigService stub
   const config = {
     get: (key: string, def?: unknown) => {
@@ -62,6 +65,7 @@ function buildService(env: NodeJS.ProcessEnv = {}): OllamaLlmService {
         'ollama.deepseekBaseUrl': 'https://api.deepseek.com',
         'ollama.deepseekModel': 'deepseek-reasoner',
         'ollama.deepseekMediumModel': '',
+        ...configOverrides,
       };
       return key in map ? map[key] : def;
     },
@@ -211,6 +215,71 @@ describe('AC2 — custom DEEPSEEK_*_PRICE_PER_M env vars are reflected in cost',
 // ---------------------------------------------------------------------------
 // Source-level guard: DEEPSEEK_*_COST_PER_M must not exist in the service file
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// TK-124 — LLM chat timeout via Config.fetch (per-request AbortSignal.timeout)
+// ---------------------------------------------------------------------------
+
+describe('TK-124 AC1 — hung Ollama chat() call is aborted after chatTimeoutMs', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('a stalled client causes complete() to settle (reject), and the underlying fetch was actually aborted (not just abandoned)', async () => {
+    const TIMEOUT_MS = 30;
+    let capturedSignal: AbortSignal | undefined;
+
+    // Simulate a wedged Ollama socket: fetch never resolves on its own; it
+    // only rejects if/when its signal aborts (real fetch/AbortController
+    // semantics — the request is truly cancelled, not merely abandoned).
+    global.fetch = jest.fn((_input: unknown, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? undefined;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted.');
+          (err as Error & { name: string }).name = 'AbortError';
+          reject(err);
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const service = buildService({}, { 'ollama.chatTimeoutMs': TIMEOUT_MS });
+    const request = { ...BASE_REQUEST, tier: 'quick' as const };
+
+    // The promise MUST settle (reject) — proving the hung call is unwedged —
+    // rather than hanging forever.
+    await expect(service.complete(request)).rejects.toThrow();
+
+    // The mechanism must be a real abort, not a bare Promise.race that leaves
+    // the underlying request running unaborted: the signal handed to fetch
+    // must itself have transitioned to aborted.
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
+  it('a fast (non-hung) call is NOT aborted — the timeout does not fire for normal-latency responses', async () => {
+    const TIMEOUT_MS = 5000;
+    global.fetch = jest.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(init?.signal?.aborted).toBe(false);
+      return {
+        ok: true,
+        json: async () => ({
+          message: { content: 'hi' },
+          model: 'qwen2.5:3b',
+          prompt_eval_count: 5,
+          eval_count: 3,
+        }),
+        text: async () => '',
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const service = buildService({}, { 'ollama.chatTimeoutMs': TIMEOUT_MS });
+    const request = { ...BASE_REQUEST, tier: 'quick' as const };
+
+    const response = await service.complete(request);
+    expect(response.content).toBe('hi');
+  });
+});
 
 describe('AC2 — no DEEPSEEK_*_COST_PER_M constant in service source', () => {
   it('service source does not contain the old hardcoded COST_PER_M constants', () => {

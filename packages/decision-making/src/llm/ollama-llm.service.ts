@@ -120,7 +120,7 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
     this.useDeepSeekMedium = this.useDeepSeek && this.deepseekMediumModel.length > 0;
     this.deepseekPricingRates = resolveLlmPricingFromEnv();
 
-    this.client = new Ollama({ host });
+    this.client = new Ollama({ host, fetch: this.buildTimeoutFetch() });
     this.logger.log(
       `LLM configured: ${host} / ` +
         `quick=${this.models.quick}, ` +
@@ -133,6 +133,29 @@ export class OllamaLlmService implements ILlmService, OnModuleInit {
   /** Resolve the Ollama model name for a given tier. */
   private resolveModel(tier: LlmTier = 'medium'): string {
     return this.models[tier];
+  }
+
+  /**
+   * Build a per-request-timeout fetch wrapper for the Ollama client (TK-124).
+   *
+   * ollama-js v0.6.3's ChatRequest has no per-call AbortSignal for the
+   * non-streaming chat() path — both call sites in this file use the default
+   * (falsy) `stream` option, which threads no AbortController at all. The
+   * streaming path is the only one that builds one, and `Ollama.abort()` only
+   * tracks streamed requests (instance-wide — the wrong granularity for a
+   * concurrent queue-turn chat). Config.fetch is the only per-request hook
+   * available: every outgoing HTTP request this wrapper handles gets its own
+   * fresh `AbortSignal.timeout(this.timeoutMs)` merged into that request's
+   * init — mirroring the DeepSeek path's own
+   * `signal: AbortSignal.timeout(this.timeoutMs)` — giving true per-request
+   * abort granularity without ever calling `client.abort()` (which would
+   * abort every in-flight streamed request, not just this one).
+   */
+  private buildTimeoutFetch(): typeof fetch {
+    return (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const signal = init?.signal ?? AbortSignal.timeout(this.timeoutMs);
+      return fetch(input, { ...(init ?? {}), signal });
+    };
   }
 
   /**
