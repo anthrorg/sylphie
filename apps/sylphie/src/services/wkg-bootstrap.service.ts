@@ -15,6 +15,7 @@ import {
 import { VoiceLatentSpaceService } from './voice-latent-space.service';
 import { ConversationHistoryService } from './conversation-history.service';
 import { PersonModelService } from './person-model.service';
+import { withDeadline } from '../utils/boot-deadline';
 
 /**
  * Seeds the World Knowledge Graph with bootstrap nodes on startup.
@@ -57,28 +58,14 @@ export class WkgBootstrapService implements OnModuleInit {
     // requires WKG nodes will trigger bootstrap via the lazy-call path, or
     // the operator can POST /reset to re-run it explicitly.
     const TIMEOUT_MS = 15_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`WKG bootstrap timed out after ${TIMEOUT_MS} ms`)),
-        TIMEOUT_MS,
+    const result = await withDeadline(this.bootstrap(), TIMEOUT_MS, 'WKG bootstrap');
+    if (result === undefined) {
+      this.logger.warn(
+        'WKG bootstrap did not complete within its deadline (non-fatal) — ' +
+          'bootstrap will run on first successful connection.',
       );
-    });
-
-    try {
-      await Promise.race([this.bootstrap(), deadline]);
-    } catch (err) {
-      this.logger.error(
-        `WKG bootstrap failed (non-fatal): ${
-          err instanceof Error ? err.message : String(err)
-        }. Bootstrap will run on first successful connection.`,
-      );
-      // Intentionally NOT re-throwing — must not block boot.
-    } finally {
-      // Always clear the timer so it cannot keep the event loop alive after
-      // onModuleInit returns (whether bootstrap won or the deadline fired).
-      clearTimeout(timer);
     }
+    // Intentionally never re-throwing — must not block boot.
   }
 
   /**
