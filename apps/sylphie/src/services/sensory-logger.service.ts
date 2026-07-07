@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { TickSamplerService } from '@sylphie/decision-making';
 import { verboseFor } from '@sylphie/shared';
 import { TelemetryBroadcastService } from './telemetry-broadcast.service';
@@ -16,7 +16,7 @@ const SAMPLE_INTERVAL_MS = 2000;
  * on its own cadence and this service can be removed.
  */
 @Injectable()
-export class SensoryLoggerService implements OnModuleInit {
+export class SensoryLoggerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SensoryLoggerService.name);
   private interval: ReturnType<typeof setInterval> | null = null;
 
@@ -28,6 +28,16 @@ export class SensoryLoggerService implements OnModuleInit {
   onModuleInit() {
     this.interval = setInterval(() => this.sample(), SAMPLE_INTERVAL_MS);
     this.logger.log(`Sensory sampling started (${SAMPLE_INTERVAL_MS}ms interval)`);
+  }
+
+  /** TK-116: clear the sampling interval so shutdown does not leave a
+   * lingering timer keeping the event loop alive. */
+  onModuleDestroy() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+      this.logger.log('Sensory sampling stopped');
+    }
   }
 
   private async sample() {
