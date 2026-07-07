@@ -196,14 +196,21 @@ export class ConversationGateway
     // Try TARGETED delivery first: socketId → live socket.
     if (socketId) {
       const target = this.socketIdToClient.get(socketId);
-      if (target && target.readyState === WebSocket.OPEN) {
-        target.send(JSON.stringify(delivery));
-        vlog('delivery TARGETED (socketId hit)', {
-          turnId: (delivery as any).turnId,
-          socketId,
-          userId: userId ?? null,
-        });
-        return;
+      if (target) {
+        if (target.readyState === WebSocket.OPEN) {
+          target.send(JSON.stringify(delivery));
+          vlog('delivery TARGETED (socketId hit)', {
+            turnId: (delivery as any).turnId,
+            socketId,
+            userId: userId ?? null,
+          });
+          return;
+        }
+        // TK-115: the socket is half-dead (found via socketIdToClient but
+        // not OPEN — e.g. CLOSING). Purge it from ALL maps now, at the
+        // point of discovery, rather than leaking it until (or unless)
+        // handleDisconnect separately fires for it.
+        this.purgeStaleSocket(target);
       }
       // Socket is gone — fall through to userId lookup.
       vlog('delivery socketId stale, trying userId fallback', {
@@ -216,13 +223,17 @@ export class ConversationGateway
     // USER_FALLBACK: userId → current socket for that user.
     if (userId) {
       const target = this.userIdToClient.get(userId);
-      if (target && target.readyState === WebSocket.OPEN) {
-        target.send(JSON.stringify(delivery));
-        vlog('delivery USER_FALLBACK (userId hit)', {
-          turnId: (delivery as any).turnId,
-          userId,
-        });
-        return;
+      if (target) {
+        if (target.readyState === WebSocket.OPEN) {
+          target.send(JSON.stringify(delivery));
+          vlog('delivery USER_FALLBACK (userId hit)', {
+            turnId: (delivery as any).turnId,
+            userId,
+          });
+          return;
+        }
+        // TK-115: same half-dead-socket purge as the socketId branch above.
+        this.purgeStaleSocket(target);
       }
       // User has disconnected entirely — log and drop.
       // CANON theater prohibition: a dropped delivery must be logged,
@@ -325,11 +336,27 @@ export class ConversationGateway
     const user = this.clientUsers.get(client);
     const socketId = this.clientSocketIds.get(client);
 
+    this.purgeStaleSocket(client);
+
+    this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
+    vlog('client disconnected', { userId: user?.userId ?? 'anonymous', socketId: socketId ?? null, totalClients: this.clients.size });
+  }
+
+  /**
+   * TK-115: remove a socket from ALL FIVE client-tracking maps. Shared by
+   * handleDisconnect (the normal path) and routeDelivery (which now purges a
+   * half-dead socket the moment delivery discovers it, rather than leaking
+   * those five map entries until — or unless — handleDisconnect separately
+   * fires for that same socket).
+   */
+  private purgeStaleSocket(client: WebSocket): void {
+    const user = this.clientUsers.get(client);
+    const socketId = this.clientSocketIds.get(client);
+
     this.clients.delete(client);
     this.clientUsers.delete(client);
     this.clientSocketIds.delete(client);
 
-    // WS4 Ticket 4: clean up reverse maps.
     if (socketId) {
       this.socketIdToClient.delete(socketId);
     }
@@ -340,9 +367,6 @@ export class ConversationGateway
         this.userIdToClient.delete(user.userId);
       }
     }
-
-    this.logger.log(`Conversation client disconnected (${this.clients.size} total)`);
-    vlog('client disconnected', { userId: user?.userId ?? 'anonymous', socketId: socketId ?? null, totalClients: this.clients.size });
   }
 
   // ---------------------------------------------------------------------------
@@ -419,6 +443,21 @@ export class ConversationGateway
         const socketId = this.clientSocketIds.get(client);
         const turnId = this.communication.intakeTurn(data.text, sessionId, userId, username, isGuardian, socketId);
         vlog('turn enqueued via intakeTurn', { turnId, userId, isGuardian, socketId });
+      })
+      .catch((err) => {
+        // TK-114: handleTriggerPhrase rejected — the spinner was left at
+        // is_thinking:true with no signal to the client (a silent stall).
+        // Notify the ORIGINATING client only (matches the scoped-send
+        // pattern above), reusing the existing thinking_indicator message
+        // type with one additive field rather than inventing a new type.
+        this.logger.error(
+          `handleTriggerPhrase failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(
+            JSON.stringify({ type: 'thinking_indicator', is_thinking: false, error: true }),
+          );
+        }
       });
   }
 
