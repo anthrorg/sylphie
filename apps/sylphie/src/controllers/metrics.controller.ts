@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, Inject, Logger, Post, Query } from '@nestjs/common';
+import { Public } from '../decorators/public.decorator';
 import {
   ARBITRATION_SERVICE,
   ArbitrationService,
@@ -146,6 +147,7 @@ export class MetricsController {
    * @returns HealthMetrics snapshot.
    */
   @Get('health')
+  @Public()
   async health(): Promise<HealthMetrics> {
     const computedAt = new Date();
 
@@ -1183,6 +1185,7 @@ export class MetricsController {
    * date(created_at). Returns `{ days: [] }` when the graph has no nodes.
    */
   @Get('observatory/vocabulary-growth')
+  @Public()
   async vocabularyGrowth(): Promise<{ days: Array<{ date: string; count: number }> }> {
     const session = this.neo4j.getSession(Neo4jInstanceName.WORLD, 'READ');
     try {
@@ -1214,6 +1217,7 @@ export class MetricsController {
    * and averages total_pressure. Returns `{ sessions: [] }` when no events exist.
    */
   @Get('observatory/drive-evolution')
+  @Public()
   async driveEvolution(): Promise<{ sessions: Array<{ sessionId: string; meanPressure: number; timestamp: string }> }> {
     try {
       const result = await this.timescale.query<{
@@ -1252,6 +1256,7 @@ export class MetricsController {
    * unique action types within 20-event windows per session.
    */
   @Get('observatory/action-diversity')
+  @Public()
   async actionDiversity(): Promise<{ sessions: Array<{ sessionId: string; index: number; uniqueActionTypes: number }> }> {
     try {
       const result = await this.timescale.query<{
@@ -1295,6 +1300,7 @@ export class MetricsController {
    *   autonomous    : type1Pct >= 0.80
    */
   @Get('observatory/developmental-stage')
+  @Public()
   async developmentalStage(): Promise<{
     sessions: Array<{ sessionId: string; type1Pct: number; stage: string }>;
     overall: { stage: string; type1Pct: number };
@@ -1362,6 +1368,7 @@ export class MetricsController {
    * side-by-side session comparison in the telemetry dashboard.
    */
   @Get('observatory/session-comparison')
+  @Public()
   async sessionComparison(): Promise<{ sessions: Array<{ sessionId: string; totalEvents: number; type1: number; type2: number; shrug: number }> }> {
     try {
       const result = await this.timescale.query<{
@@ -1403,6 +1410,7 @@ export class MetricsController {
    * Queries PREDICTION_EVALUATED events (if they exist) grouped by session.
    */
   @Get('observatory/comprehension-accuracy')
+  @Public()
   async comprehensionAccuracy(): Promise<{ sessions: Array<{ sessionId: string; mae: number; sampleCount: number }> }> {
     // The in-process window is the authoritative current-session source.
     const { mae: currentMae, sampleCount: currentSamples } =
@@ -1465,6 +1473,7 @@ export class MetricsController {
    * Queries Neo4j WORLD for Utterance nodes grouped by provenance type.
    */
   @Get('observatory/phrase-recognition')
+  @Public()
   async phraseRecognition(): Promise<{
     totalUtterances: number;
     recognizedCount: number;
@@ -1757,7 +1766,7 @@ export class MetricsController {
         sample_count: string;
       }>(
         `SELECT
-           payload->>'drive' AS drive,
+           e1.payload->>'drive' AS drive,
            AVG(
              EXTRACT(EPOCH FROM (e2.timestamp - e1.timestamp)) * 1000
            ) AS mean_ms,
@@ -1771,7 +1780,7 @@ export class MetricsController {
           AND e2.timestamp <= e1.timestamp + INTERVAL '5 minutes'
          WHERE e1.type = 'DRIVE_PRESSURE_ELEVATED'
            AND e1.payload->>'drive' IS NOT NULL
-         GROUP BY payload->>'drive'`,
+         GROUP BY e1.payload->>'drive'`,
       );
 
       const resolutionTimes: Partial<Record<string, MeanDriveResolutionTime>> = {};
@@ -1790,8 +1799,20 @@ export class MetricsController {
 
       return resolutionTimes;
     } catch (err) {
-      this.logger.error('computeMeanDriveResolutionTimes TimescaleDB query failed', err);
-      return {};
+      // TK-112: surface the failure instead of silently returning {} — a
+      // {} here was previously indistinguishable from "no drives crossed
+      // the 5-sample CANON-omission threshold yet" (a real, healthy state)
+      // vs. the query itself failing (e.g. the ambiguous-column bug this
+      // ticket fixes, or a genuine connection failure). Logged with
+      // context and rethrown so the caller sees a real error, not a
+      // false-negative empty snapshot.
+      this.logger.error(
+        `computeMeanDriveResolutionTimes TimescaleDB query failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      throw err;
     }
   }
 

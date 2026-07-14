@@ -38,6 +38,16 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
   private readonly keepAliveTimers = new Map<string, NodeJS.Timeout>();
   /** Buffers audio chunks that arrive before Deepgram WS is open */
   private readonly pendingBuffers = new Map<string, Buffer[]>();
+  /**
+   * TK-113 — per-clientId generation counter. Incremented every time a new
+   * session is created for a clientId; the OLD session's close handler
+   * captures its own generation at creation time and compares it against the
+   * current value before touching any of the three maps above, so a stale
+   * close event (reconnect churn — a new session already replaced this one
+   * before the old socket's close event fires) cannot clobber the
+   * replacement session's entries.
+   */
+  private readonly generations = new Map<string, number>();
 
   constructor(private readonly config: ConfigService) {}
 
@@ -72,6 +82,12 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
     }
 
     vlog('STT session starting', { clientId });
+
+    // TK-113: bump this clientId's generation. The close handler below
+    // captures `generation` (this value) in its closure and checks it
+    // against the live map entry before deleting anything.
+    const generation = (this.generations.get(clientId) ?? 0) + 1;
+    this.generations.set(clientId, generation);
 
     // Start buffering audio chunks that arrive before the WS is open
     this.pendingBuffers.set(clientId, []);
@@ -160,6 +176,21 @@ export class SttService implements OnModuleInit, OnModuleDestroy {
         `Deepgram session closed for client ${clientId} (code=${code}${reasonStr ? `, reason=${reasonStr}` : ''})`,
       );
       vlog('STT session closed', { clientId, code, reason: reasonStr });
+
+      // TK-113: if a newer session has already been created for this
+      // clientId (reconnect churn — createSession() bumped the generation
+      // before this stale close event fired), do NOT touch any of the
+      // three maps: they now belong to the replacement session.
+      if (this.generations.get(clientId) !== generation) {
+        vlog('STT stale close handler suppressed — session superseded', {
+          clientId,
+          staleGeneration: generation,
+          currentGeneration: this.generations.get(clientId),
+        });
+        onClose?.(code, reasonStr);
+        return;
+      }
+
       this.pendingBuffers.delete(clientId);
       const timer = this.keepAliveTimers.get(clientId);
       if (timer) {

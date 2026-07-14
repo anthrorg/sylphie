@@ -21,6 +21,7 @@
 
 import { Injectable, Logger, Optional, Inject, OnModuleInit } from '@nestjs/common';
 import { Neo4jService, Neo4jInstanceName, type PersonModelSummary, verboseFor, deriveOkgFactTier } from '@sylphie/shared';
+import { withDeadline } from '../utils/boot-deadline';
 
 const vlog = verboseFor('Communication');
 
@@ -99,8 +100,20 @@ export class PersonModelService implements OnModuleInit {
       return;
     }
 
+    // TK-111: the constraint DDL + label backfill below previously ran with
+    // NO deadline at all — a stuck Neo4j OTHER session could block
+    // NestFactory.create() indefinitely. Wrapped in the shared 15s deadline
+    // helper (same class of operation as wkg-bootstrap.service.ts's
+    // precedent: single-instance Neo4j constraint DDL, not parallelized).
+    const result = await withDeadline(this.initializeOkgSchema(), 15_000, 'OKG schema init');
+    if (result === undefined) {
+      this.logger.warn('OKG schema init did not complete within its deadline (degraded mode) — will retry on next lazy access.');
+    }
+  }
+
+  private async initializeOkgSchema(): Promise<void> {
     // Create uniqueness constraint on Person.node_id
-    const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');
+    const session = this.neo4j!.getSession(Neo4jInstanceName.OTHER, 'WRITE');
     try {
       await session.run(
         `CREATE CONSTRAINT person_node_id_unique IF NOT EXISTS

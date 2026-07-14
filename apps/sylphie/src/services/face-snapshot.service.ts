@@ -29,6 +29,7 @@ import {
   verboseFor,
 } from '@sylphie/shared';
 import { randomUUID } from 'crypto';
+import { withDeadline } from '../utils/boot-deadline';
 
 const vlog = verboseFor('Perception');
 
@@ -187,6 +188,18 @@ export class FaceSnapshotService implements OnModuleInit {
   // ---------------------------------------------------------------------------
 
   async onModuleInit(): Promise<void> {
+    // TK-111: the constraint DDL + ensureSchema()/hydrate() sequence below
+    // previously ran with NO deadline at all. Wrapped in the shared 20s
+    // deadline helper (matches wkg-query.service.ts's precedent: this is a
+    // compound op spanning Neo4j OTHER AND TimescaleDB, the heavier of the
+    // two existing deadline classes).
+    const result = await withDeadline(this.initializeAndHydrate(), 20_000, 'Face snapshot init');
+    if (result === undefined) {
+      this.logger.warn('Face snapshot init did not complete within its deadline (degraded mode).');
+    }
+  }
+
+  private async initializeAndHydrate(): Promise<void> {
     // OKG constraint
     if (this.neo4j) {
       const session = this.neo4j.getSession(Neo4jInstanceName.OTHER, 'WRITE');

@@ -195,6 +195,7 @@ export function useConversationWebSocket() {
   const incrementTurns = useAppStore((s) => s.incrementTurns)
   const setThinking = useAppStore((s) => s.setThinking)
   const setQueuePosition = useAppStore((s) => s.setQueuePosition)
+  const setTurnError = useAppStore((s) => s.setTurnError)
 
   const computeBackoffDelay = useCallback((attempt: number) => {
     const base = Math.min(1000 * Math.pow(2, attempt), 30000)
@@ -272,6 +273,11 @@ export function useConversationWebSocket() {
             if (message.is_thinking) {
               setQueuePosition(null)
             }
+            // TK-118: surface a distinct "turn failed" signal when the server
+            // reports { is_thinking: false, error: true } (TK-114 — the
+            // trigger-phrase path rejected). A normal thinking_indicator
+            // (no error field) clears any stale turn-failed signal.
+            setTurnError(!!message.error)
             return
           }
 
@@ -347,7 +353,7 @@ export function useConversationWebSocket() {
       setWsState('conversation', 'reconnecting')
       scheduleReconnect()
     }
-  }, [setWsState, addMessage, incrementTurns, setThinking, setQueuePosition])
+  }, [setWsState, addMessage, incrementTurns, setThinking, setQueuePosition, setTurnError])
 
   const scheduleReconnect = useCallback(() => {
     const delay = computeBackoffDelay(reconnectAttemptRef.current)

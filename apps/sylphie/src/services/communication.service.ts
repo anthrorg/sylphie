@@ -210,7 +210,18 @@ export class CommunicationService implements OnModuleInit {
 
     this.decisionMaking.response$.subscribe({
       next: (response) => {
-        void this.handleCycleResponse(response);
+        // TK-115: catch a handleCycleResponse rejection instead of leaving it
+        // as an unhandled promise rejection — log it with context (response
+        // carries turnId/originator, useful for correlation) so a failure is
+        // observable rather than silently crashing the process later.
+        void this.handleCycleResponse(response).catch((err) => {
+          this.logger.error(
+            `handleCycleResponse rejected for turnId=${response.turnId ?? 'unknown'}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            err instanceof Error ? err.stack : undefined,
+          );
+        });
       },
       error: (err) => {
         this.logger.error(`response$ stream error: ${err}`);

@@ -85,6 +85,15 @@ interface AppState {
    * A number (1-based) means this socket's turn is queued at that position.
    */
   queuePosition: number | null
+  /**
+   * TK-118 — set when the server reports `{ type: 'thinking_indicator',
+   * is_thinking: false, error: true }` (TK-114): the in-flight turn failed
+   * server-side rather than completing normally. Distinct from a normal
+   * spinner-clear so ConversationPanel can render a "turn failed" signal
+   * instead of silently returning to idle. Cleared on the next successful
+   * turn (any non-error thinking_indicator, or a delivered response).
+   */
+  turnError: boolean
 
   // Session info
   sessionStats: SessionStats
@@ -148,6 +157,8 @@ interface AppState {
   setThinking: (thinking: boolean) => void
   /** WS4 Ticket 6: update the queue position for this socket (null = not waiting). */
   setQueuePosition: (position: number | null) => void
+  /** TK-118: set/clear the turn-failed signal (see turnError doc above). */
+  setTurnError: (failed: boolean) => void
   setSessionStats: (stats: Partial<SessionStats>) => void
   incrementTurns: () => void
   resetStasisCount: () => void
@@ -233,6 +244,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   isThinking: false,
   queuePosition: null,
+  turnError: false,
 
   sessionStats: {
     session_cost_usd: 0,
@@ -331,6 +343,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setThinking: (thinking) => set({ isThinking: thinking }),
   setQueuePosition: (position) => set({ queuePosition: position }),
+  setTurnError: (failed) => set({ turnError: failed }),
 
   setSessionStats: (stats) =>
     set((prev) => ({

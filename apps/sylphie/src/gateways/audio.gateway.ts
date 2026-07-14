@@ -169,6 +169,12 @@ export class AudioGateway
       this.logger.error(
         `Deepgram closed for ${clientId} with error code=${code} — not reconnecting`,
       );
+      // TK-114: notify the client instead of silently dropping. Deliberately
+      // NOT restart_audio — that type implies "we already reconnected for
+      // you", which is false here (this branch does not auto-reconnect).
+      if (state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: 'mic_dead', code }));
+      }
       return;
     }
 

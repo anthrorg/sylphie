@@ -25,6 +25,7 @@ import {
   Close as CloseIcon,
   Refresh as RefreshIcon,
 } from '@mui/icons-material'
+import { useAppStore } from '../../store'
 import { useSupervisorStore, SamplingPolicy } from '../../store/supervisorSlice'
 import { useSupervisorWebSocket } from '../../hooks/useSupervisorWebSocket'
 import { VerdictCard } from './VerdictCard'
@@ -177,6 +178,7 @@ const LiveFeedTab: React.FC = () => {
 const ControlsTab: React.FC = () => {
   const { enabled, sampleRate, burstMode, budgetRemaining, budgetUsedToday, setStatus } =
     useSupervisorStore()
+  const authToken = useAppStore((s) => s.authToken)
 
   const [localRate, setLocalRate] = useState(sampleRate)
   const [isSaving, setIsSaving] = useState(false)
@@ -187,19 +189,27 @@ const ControlsTab: React.FC = () => {
     setLocalRate(sampleRate)
   }, [sampleRate])
 
+  // TK-BEH-1b: guardian Bearer token, reused from useAppStore (the same
+  // store App.tsx already reads for /api/auth/me) — required now that
+  // TK-BEH-1's RouteAuthGuard gates these mutating supervisor routes.
   const postAndRefresh = useCallback(
     async (url: string, body?: unknown) => {
       setIsSaving(true)
       setStatusError(null)
       try {
+        const headers: Record<string, string> = {}
+        if (body) headers['Content-Type'] = 'application/json'
+        if (authToken) headers['Authorization'] = `Bearer ${authToken}`
         const res = await fetch(url, {
           method: 'POST',
-          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          headers,
           body: body ? JSON.stringify(body) : undefined,
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         // Re-fetch status to sync store
-        const statusRes = await fetch('/api/supervisor/status')
+        const statusRes = await fetch('/api/supervisor/status', {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+        })
         if (statusRes.ok) {
           const data = await statusRes.json()
           setStatus(data)
@@ -210,7 +220,7 @@ const ControlsTab: React.FC = () => {
         setIsSaving(false)
       }
     },
-    [setStatus],
+    [setStatus, authToken],
   )
 
   const handleToggleEnabled = useCallback(() => {
@@ -381,6 +391,7 @@ interface SupervisorPanelProps {
 export const SupervisorPanel: React.FC<SupervisorPanelProps> = ({ open, onClose }) => {
   const [tab, setTab] = useState(0)
   const { setStatus, enabled, totalVerdicts, flaggedCount } = useSupervisorStore()
+  const authToken = useAppStore((s) => s.authToken)
   const [loadingStatus, setLoadingStatus] = useState(false)
 
   // Start the WebSocket connection as soon as the panel is used
@@ -391,7 +402,9 @@ export const SupervisorPanel: React.FC<SupervisorPanelProps> = ({ open, onClose 
     if (!open) return
 
     setLoadingStatus(true)
-    fetch('/api/supervisor/status')
+    fetch('/api/supervisor/status', {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -403,7 +416,7 @@ export const SupervisorPanel: React.FC<SupervisorPanelProps> = ({ open, onClose 
         console.warn('[Supervisor] Status fetch failed:', err)
       })
       .finally(() => setLoadingStatus(false))
-  }, [open, setStatus])
+  }, [open, setStatus, authToken])
 
   return (
     <Dialog

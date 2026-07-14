@@ -1,4 +1,5 @@
 import { Controller, Get, HttpCode } from '@nestjs/common';
+import { Public } from '../decorators/public.decorator';
 
 /**
  * HealthController — cheap container liveness probe.
@@ -21,6 +22,7 @@ import { Controller, Get, HttpCode } from '@nestjs/common';
 export class HealthController {
   @Get()
   @HttpCode(200)
+  @Public()
   live(): { status: 'ok'; uptimeSeconds: number; timestamp: string } {
     return {
       status: 'ok',
