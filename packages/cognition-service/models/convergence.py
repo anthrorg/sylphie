@@ -59,31 +59,51 @@ class ConvergenceModel:
     ~10K parameters.
 
     During early bootstrap, this falls back to pure cosine similarity
-    (the learned model's random weights would be unreliable). The model
-    learns to refine the threshold based on which types of disagreement
-    actually warranted escalation.
+    (the learned model's random weights would be unreliable).
 
-    Graduation criterion (DEC-13, mvp-level):
-        use_learned flips True when convergence_sample_count >= 1000 AND
-        the proxy accuracy >= 0.80 over the last sample. Proxy accuracy is
-        1 - |learned_divergence - heuristic_divergence|, which measures how
-        closely the learned head tracks the heuristic baseline (no ground-truth
-        labels available at mvp level).
+    use_learned is HARD-DISABLED (DEC-33 / AD-0050, TK-122): it can never be
+    set True by check() or by load()'ing a checkpoint with a persisted True
+    flag. The original DEC-13 graduation criterion below described a design
+    that was never actually safe — a single lucky proxy-accuracy sample
+    against this never-backprop'd random head is not a trained model —
+    and is kept here only as historical context for what the old (removed)
+    graduation branch used to do:
+
+        [REMOVED] use_learned flipped True when convergence_sample_count
+        >= 1000 AND proxy accuracy >= 0.80 over the last sample, where proxy
+        accuracy was 1 - |learned_divergence - heuristic_divergence| (no
+        ground-truth labels available at mvp level). Kept only for reference
+        via _GRAD_MIN_SAMPLES/_GRAD_MIN_ACCURACY below, which are otherwise
+        unused now that the branch is gone.
     """
 
-    # Minimum samples before use_learned can be flipped.
+    # Historical graduation thresholds (DEC-13) — retained only as reference;
+    # the branch that used them was removed per DEC-33/AD-0050.
     _GRAD_MIN_SAMPLES: int = 1000
-    # Proxy accuracy threshold for graduation (DEC-13 assumption).
     _GRAD_MIN_ACCURACY: float = 0.80
 
     def __init__(self) -> None:
         self.input_dim = config.ACTION_SPACE_DIM * 5  # 32 * 5 = 160
         self.total_params = 0
-        self.use_learned = False  # Start with heuristic, switch when trained
+        self.use_learned = False  # HARD-DISABLED (DEC-33 / AD-0050) — see check()/load()
         # Counts how many check() calls have run (proxy for training exposure).
         self.convergence_sample_count: int = 0
 
         self._build()
+
+        # DEC-33 / AD-0050 (TK-122, pipeline item 20260702-002): use_learned can
+        # no longer be flipped to True by check()'s old proxy-accuracy graduation
+        # branch, nor by a persisted checkpoint flag in load() — a single lucky
+        # proxy-accuracy sample against this untrained, never-backprop'd random
+        # head was a theater-prohibition violation (routing real decisions
+        # through a head that was never trained on anything). Heuristic
+        # cosine-similarity divergence is used for every convergence check until
+        # a real trained head exists (separate, larger ticket).
+        logger.warning(
+            "ConvergenceModel: no trained head available — use_learned "
+            "hard-disabled; heuristic cosine-similarity divergence used for "
+            "all convergence checks."
+        )
 
     def _build(self) -> None:
         """Initialize weights with Xavier uniform."""
@@ -124,10 +144,10 @@ class ConvergenceModel:
     ) -> ConvergenceOutput:
         """Check convergence between global and panel models.
 
-        Uses heuristic cosine similarity during early bootstrap,
-        switches to learned model when trained. After each call the sample
-        count is incremented and the graduation criterion is evaluated so
-        use_learned can flip automatically without an external trigger.
+        Always uses heuristic cosine similarity — use_learned is
+        hard-disabled (DEC-33 / AD-0050) and can never flip True from this
+        method. The sample count is still incremented each call for status
+        reporting.
         """
         global_arr = np.array(global_action_bias, dtype=np.float32)
 
@@ -147,23 +167,11 @@ class ConvergenceModel:
 
         self.convergence_sample_count += 1
 
-        # Graduation check: flip use_learned once when the criterion is first met.
-        # Guarded by `not self.use_learned` so we never re-evaluate after graduation.
-        if not self.use_learned:
-            # Proxy accuracy: how closely does the learned head track heuristic?
-            # (DEC-13 mvp assumption — no ground-truth labels available.)
-            proxy_accuracy = 1.0 - abs(learned_divergence - heuristic_divergence)
-            if (
-                self.convergence_sample_count >= self._GRAD_MIN_SAMPLES
-                and proxy_accuracy >= self._GRAD_MIN_ACCURACY
-            ):
-                self.use_learned = True
-                logger.info(
-                    "ConvergenceModel graduated to learned mode "
-                    "(sample_count=%d, proxy_accuracy=%.4f)",
-                    self.convergence_sample_count,
-                    proxy_accuracy,
-                )
+        # DEC-33 / AD-0050: the old graduation branch that flipped
+        # self.use_learned = True from a single lucky proxy-accuracy sample
+        # against this untrained random head has been REMOVED (not merely
+        # guarded) — this code path can no longer set use_learned. See
+        # __init__ / load() for the (permanent) hard-disable.
 
         divergence_score = learned_divergence if self.use_learned else heuristic_divergence
 
@@ -232,7 +240,19 @@ class ConvergenceModel:
                     path,
                 )
             if "use_learned" in data:
-                self.use_learned = bool(data["use_learned"][0])
+                persisted_use_learned = bool(data["use_learned"][0])
+                if persisted_use_learned:
+                    # DEC-33 / AD-0050: hard-disable, both writers. The
+                    # checkpoint file itself is NOT rewritten/migrated here
+                    # (load() stays read-only) — the persisted flag self-heals
+                    # to False the next time save() runs.
+                    logger.warning(
+                        "Convergence checkpoint %s had use_learned=True — "
+                        "overriding to False (use_learned is hard-disabled, "
+                        "DEC-33/AD-0050). Checkpoint file left unmodified.",
+                        path,
+                    )
+                self.use_learned = False
             if "convergence_sample_count" in data:
                 self.convergence_sample_count = int(data["convergence_sample_count"][0])
             # Recompute param count from the live tensors (the loaded arrays may

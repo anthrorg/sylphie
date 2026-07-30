@@ -10,6 +10,8 @@
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   verboseFor,
   type SensoryFrame,
@@ -22,6 +24,33 @@ import {
 } from './sidecar-circuit-breaker';
 
 const vlog = verboseFor('Cognition');
+
+/** The AbortSignal timeout (ms) on POST /cognition/cycle — see runCycle(). */
+const CYCLE_ABORT_TIMEOUT_MS = 50;
+
+/**
+ * Write a follow-up intake item to pipeline/inbox/ documenting an observed
+ * first-cycle latency over the AbortSignal timeout (TK-119 AC3/AC4 — this
+ * ticket does not itself change the 50ms timeout value, only measures and,
+ * if warranted, flags it for a follow-up decision via the intake pipeline).
+ * `inboxDir` is a parameter (not a hardcoded path) so tests can point it at
+ * a scratch directory instead of the real pipeline/inbox/.
+ */
+export function fileFirstCycleLatencyFollowUp(measuredMs: number, inboxDir: string): string {
+  const filename = `${Date.now()}-cognition-first-cycle-latency.md`;
+  const filePath = path.join(inboxDir, filename);
+  const body =
+    `# First-cycle /cognition/cycle latency exceeded the ${CYCLE_ABORT_TIMEOUT_MS}ms AbortSignal\n\n` +
+    `- **Measured:** ${measuredMs.toFixed(2)}ms\n` +
+    `- **Threshold:** ${CYCLE_ABORT_TIMEOUT_MS}ms (cognition-gateway.service.ts runCycle() AbortSignal.timeout)\n\n` +
+    'Filed automatically by CognitionGatewayService per TK-119 AC3 (pipeline item ' +
+    '20260702-002). Proposes reviewing/raising the AbortSignal timeout on the ' +
+    '/cognition/cycle call — this item does not itself change the value, only ' +
+    'documents the measured first-cycle latency for a follow-up decision.\n';
+  fs.mkdirSync(inboxDir, { recursive: true });
+  fs.writeFileSync(filePath, body, 'utf-8');
+  return filePath;
+}
 
 /** Response shape from POST /cognition/cycle */
 export interface CognitionCycleResult {
@@ -120,6 +149,9 @@ export class CognitionGatewayService implements OnModuleInit {
     cooldownMs: 30_000,
   });
 
+  /** Whether the first post-startup cycle's latency has been measured/logged. */
+  private firstCycleLatencyChecked = false;
+
   constructor(private readonly config: ConfigService) {
     this.host = this.config.get<string>(
       'COGNITION_HOST',
@@ -163,7 +195,8 @@ export class CognitionGatewayService implements OnModuleInit {
     driveSnapshot: DriveSnapshot,
     episodicContext?: number[],
     panelContext?: {
-      driveHistory?: readonly number[];
+      /** Last 10 drive pressure vectors, nested (10 x 12), never flattened. */
+      driveHistory?: readonly (readonly number[])[];
       latentMatchScores?: readonly number[];
       recentMaeValues?: readonly number[];
       opportunityFeatures?: readonly number[];
@@ -201,13 +234,15 @@ export class CognitionGatewayService implements OnModuleInit {
       ...(panelContext?.opportunityFeatures ? { opportunity_features: panelContext.opportunityFeatures } : {}),
     };
 
+    const startedAt = performance.now();
     try {
       const response = await fetch(`${this.host}/cognition/cycle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(50), // 50ms timeout — if sidecar is slow, skip
+        signal: AbortSignal.timeout(CYCLE_ABORT_TIMEOUT_MS),
       });
+      this.checkFirstCycleLatency(performance.now() - startedAt);
 
       if (!response.ok) {
         this.logger.warn(
@@ -244,6 +279,39 @@ export class CognitionGatewayService implements OnModuleInit {
         setTimeout(() => this.checkHealth(), 30_000);
       }
       return null;
+    }
+  }
+
+  /**
+   * Measure and log the FIRST post-startup /cognition/cycle latency against
+   * the CYCLE_ABORT_TIMEOUT_MS AbortSignal (TK-119 AC3). Only fires once per
+   * process lifetime. If it exceeds the threshold, files a follow-up item
+   * via the intake pipeline (pipeline/inbox/) instead of changing the
+   * timeout value itself.
+   */
+  private checkFirstCycleLatency(elapsedMs: number): void {
+    if (this.firstCycleLatencyChecked) return;
+    this.firstCycleLatencyChecked = true;
+
+    this.logger.log(
+      `First /cognition/cycle latency: ${elapsedMs.toFixed(2)}ms ` +
+        `(AbortSignal threshold ${CYCLE_ABORT_TIMEOUT_MS}ms)`,
+    );
+
+    if (elapsedMs > CYCLE_ABORT_TIMEOUT_MS) {
+      try {
+        const inboxDir = path.join(process.cwd(), 'pipeline', 'inbox');
+        const filed = fileFirstCycleLatencyFollowUp(elapsedMs, inboxDir);
+        this.logger.warn(
+          `First-cycle latency ${elapsedMs.toFixed(2)}ms exceeded the ` +
+            `${CYCLE_ABORT_TIMEOUT_MS}ms AbortSignal — follow-up filed at ${filed}`,
+        );
+      } catch (fileErr) {
+        this.logger.warn(
+          `First-cycle latency exceeded the AbortSignal threshold but the ` +
+            `follow-up item could not be filed: ${(fileErr as Error).message}`,
+        );
+      }
     }
   }
 
