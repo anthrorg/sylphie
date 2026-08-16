@@ -193,6 +193,15 @@ export class DriveReaderService implements IDriveStateReader {
       this.lastValidSnapshotTimestamp,
     );
 
+    // Advance the staleness anchor to THIS snapshot's timestamp regardless of
+    // whether it passes validation below. Previously the anchor only
+    // advanced on a successfully cached snapshot, so a single >5s gap would
+    // permanently lock the reader: every later snapshot was compared against
+    // the same frozen anchor and rejected as stale too, forever. Advancing
+    // here means at most one snapshot is rejected per gap — the next one is
+    // compared against a fresh anchor and accepted normally.
+    this.lastValidSnapshotTimestamp = normalized.timestamp;
+
     if (!coherenceResult.valid && coherenceResult.error) {
       this.logger.error('Snapshot coherence validation failed', {
         error: coherenceResult.error.message,
@@ -202,9 +211,7 @@ export class DriveReaderService implements IDriveStateReader {
       throw coherenceResult.error;
     }
 
-    // Update the internal snapshot and track timestamp for staleness detection
+    // Update the internal snapshot
     this.snapshotSubject.next(normalized);
-    this.lastValidSnapshotTimestamp = normalized.timestamp;
-
   }
 }

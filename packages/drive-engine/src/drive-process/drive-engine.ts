@@ -40,6 +40,7 @@ import {
   DriveEventPayload,
   TheaterProhibitedPayload,
   OpportunityCreatedPayload,
+  HealthStatusPayload,
 } from '@sylphie/shared';
 import { DriveStateManager } from './drive-state';
 import { getDriveUpdateRates, validateRates } from './accumulation';
@@ -58,16 +59,13 @@ import {
   MAX_OUTCOME_QUEUE_LENGTH,
 } from '../constants/drives';
 import {
-  BATCH_SIZE,
-  BATCH_TIMEOUT_MS,
-  MAX_QUEUE_SIZE,
   DRIVE_TICK_SAMPLE_INTERVAL,
   HEALTH_STATUS_INTERVAL_TICKS,
   TICK_RATE_SAMPLE_WINDOW_TICKS,
   TICK_RATE_DRIFT_WARN_RATIO,
 } from '../constants/events';
-import { EventEmitter, type IEventEmitter } from './event-emitter';
 import { TimescaleWriter } from './timescale-writer';
+import { computeNextTickDelay } from './tick-scheduling';
 import {
   detectTheater,
   PRESSURE_THRESHOLD,
@@ -152,7 +150,6 @@ export class DriveEngine {
   private opportunityDetector: OpportunityDetector;
   private opportunityQueue: OpportunityQueue;
   private planningPublisher: PlanningPublisher;
-  private eventEmitter: IEventEmitter | null = null;
   private timescaleWriter: TimescaleWriter | null = null;
   private tickNumber: number = 0;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -161,6 +158,11 @@ export class DriveEngine {
   private sessionId: string = '';
   private isRunning: boolean = false;
   private sessionNumber: number = 1;
+
+  // Set true when restoreState() finds and applies a Timescale checkpoint.
+  // An ordinary SESSION_START (no forceReset) must preserve this restored
+  // state rather than overwrite it with the payload's initialDriveState.
+  private restoredFromCheckpoint: boolean = false;
 
   // Metrics tracking for health checks
   private lastHealthCheckAt: number = Date.now();
@@ -246,6 +248,7 @@ export class DriveEngine {
     const restoredVector = checkpoint.pressureVector as Record<DriveName, number>;
     this.stateManager = new DriveStateManager(restoredVector);
     this.tickNumber = checkpoint.tickNumber;
+    this.restoredFromCheckpoint = true;
 
     vlog('drive state restored from checkpoint', {
       tickNumber: this.tickNumber,
@@ -396,13 +399,33 @@ export class DriveEngine {
 
   /**
    * Handle SESSION_START: initialize drive state for a new session.
+   *
+   * A Timescale-restored checkpoint is preserved rather than overwritten
+   * UNLESS the caller explicitly requests forceReset (e.g. the full-system
+   * reset flow) — an ordinary session start must not silently discard
+   * persisted drive history.
    */
   private handleSessionStart(payload: SessionStartPayload): void {
     this.sessionId = payload.sessionId;
     this.sessionNumber++;
     this.opportunityDetector.setSessionNumber(this.sessionNumber);
+
+    if (this.restoredFromCheckpoint && !payload.forceReset) {
+      vlog('session started — preserving restored checkpoint', {
+        sessionId: this.sessionId,
+        sessionNumber: this.sessionNumber,
+        tickNumber: this.tickNumber,
+      });
+      return;
+    }
+
     this.stateManager = new DriveStateManager(payload.initialDriveState.pressureVector);
-    vlog('session started', { sessionId: this.sessionId, sessionNumber: this.sessionNumber });
+    this.restoredFromCheckpoint = false;
+    vlog('session started', {
+      sessionId: this.sessionId,
+      sessionNumber: this.sessionNumber,
+      forceReset: payload.forceReset ?? false,
+    });
   }
 
   /**
@@ -426,10 +449,7 @@ export class DriveEngine {
 
     const now = Date.now();
     const drift = now - this.nextTickScheduledAt;
-    let delay = DRIVE_ENGINE_TICK_INTERVAL_MS - drift;
-
-    // Clamp delay to stay within bounds
-    delay = Math.max(0, Math.min(delay + MAX_TICK_DRIFT_MS, DRIVE_ENGINE_TICK_INTERVAL_MS));
+    const delay = computeNextTickDelay(drift, DRIVE_ENGINE_TICK_INTERVAL_MS, MAX_TICK_DRIFT_MS);
 
     this.tickTimer = setTimeout(() => {
       this.tick();
@@ -544,6 +564,13 @@ export class DriveEngine {
           this.planningPublisher.publishOpportunities(topOpportunities);
         }
         this.nextEmissionAt = this.tickNumber + EMISSION_INTERVAL_TICKS;
+      }
+
+      // 10b. Emit a real HEALTH_STATUS keep-alive (every HEALTH_STATUS_INTERVAL_TICKS,
+      // ~60s at 1Hz). Previously the engine never sent this at all.
+      if (this.tickNumber >= this.nextHealthCheckAt) {
+        this.emitHealthStatus();
+        this.nextHealthCheckAt = this.tickNumber + HEALTH_STATUS_INTERVAL_TICKS;
       }
 
       // 11. Auto-save checkpoint every 60s so state survives hard kills.
@@ -993,6 +1020,31 @@ export class DriveEngine {
       memoryMb: memMB,
       diagnosticMessage,
     };
+  }
+
+  /**
+   * Emit a HEALTH_STATUS keep-alive to the parent process with the engine's
+   * OWN real status (getHealthStatus(): real memoryMb via
+   * process.memoryUsage(), real msSinceLastTick, and the <10MB limit
+   * enforced in the healthy flag). Previously the engine never sent
+   * HEALTH_STATUS at all — the main-process handler existed but could never
+   * fire, and the main-process HealthMonitor separately fabricated
+   * lastPingAt/childMemoryBytes rather than receiving them.
+   */
+  private emitHealthStatus(): void {
+    const status = this.getHealthStatus();
+    const message: DriveIPCMessage<HealthStatusPayload> = {
+      type: DriveIPCMessageType.HEALTH_STATUS,
+      payload: {
+        healthy: status.healthy,
+        currentTick: status.currentTick,
+        msSinceLastTick: status.msSinceLastTick,
+        diagnosticMessage: status.diagnosticMessage,
+        memoryMb: status.memoryMb,
+      },
+      timestamp: new Date(),
+    };
+    this.transport.send(message);
   }
 }
 

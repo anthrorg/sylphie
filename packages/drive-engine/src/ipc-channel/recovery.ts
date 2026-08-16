@@ -149,9 +149,12 @@ export class RecoveryMechanism {
       await this.delay(waitMs);
 
       try {
-        // Close the old connection and reconnect.
+        // Close the old connection and reconnect. connect() resolves only
+        // once the 'open' event fires (or rejects on error/close before
+        // then) — success is declared only after a real connection, not
+        // merely after issuing the connect call.
         await this.wsChannel.close(2000);
-        this.wsChannel.connect(this.wsUrl);
+        await this.wsChannel.connect(this.wsUrl);
         // Guard: older/mocked channels may not implement this counter.
         if (typeof this.wsChannel.incrementReconnectCount === 'function') {
           this.wsChannel.incrementReconnectCount();

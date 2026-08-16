@@ -255,9 +255,11 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
   /**
    * Reset the Drive Engine's in-memory state to INITIAL_DRIVE_STATE.
    *
-   * Sends a SESSION_START message with a fresh session and cold-start drive
-   * values. The Drive Engine creates a new DriveStateManager, zeroing all
-   * accumulated pressure and relief.
+   * Sends a SESSION_START message with a fresh session, cold-start drive
+   * values, and forceReset: true — an explicit, deliberate reset. The Drive
+   * Engine creates a new DriveStateManager, zeroing all accumulated pressure
+   * and relief, EVEN IF a Timescale-restored checkpoint is in effect (an
+   * ordinary SESSION_START without forceReset would preserve it instead).
    */
   resetDriveState(): void {
     const now = new Date();
@@ -267,6 +269,7 @@ export class ActionOutcomeReporterService implements IActionOutcomeReporter {
       type: DriveIPCMessageType.SESSION_START,
       payload: {
         sessionId,
+        forceReset: true,
         initialDriveState: {
           pressureVector: { ...INITIAL_DRIVE_STATE },
           timestamp: now,

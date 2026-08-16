@@ -179,6 +179,7 @@ const SessionStartPayloadSchema = z.object({
     totalPressure: z.number().min(0).max(12.0),
     sessionId: z.string(),
   }),
+  forceReset: z.boolean().optional(),
 });
 
 /**
@@ -331,6 +332,7 @@ const HealthStatusPayloadSchema = z.object({
   currentTick: z.number().int().min(0),
   msSinceLastTick: z.number().int().min(0),
   diagnosticMessage: z.string().nullable(),
+  memoryMb: z.number().min(0),
 });
 
 // ---------------------------------------------------------------------------

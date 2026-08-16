@@ -194,11 +194,20 @@ export class DriveStateManager {
 
   /**
    * Copy a state object.
+   *
+   * Guards against a PARTIAL input vector (e.g. a checkpoint or
+   * SESSION_START payload missing a drive key): a missing/undefined/NaN
+   * value falls back to INITIAL_DRIVE_STATE's value for that drive rather
+   * than propagating `undefined`, which would poison every downstream
+   * arithmetic op (`undefined + rate === NaN`) for the life of the process.
    */
   private copyState(state: MutableDriveState | PressureVector): MutableDriveState {
     const copy: Record<DriveName, number> = {} as Record<DriveName, number>;
     for (const drive of DRIVE_INDEX_ORDER) {
-      copy[drive] = state[drive];
+      const value = state[drive];
+      copy[drive] = typeof value === 'number' && !Number.isNaN(value)
+        ? value
+        : INITIAL_DRIVE_STATE[drive];
     }
     return copy as MutableDriveState;
   }

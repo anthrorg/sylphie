@@ -56,16 +56,28 @@ export class HealthMonitor {
   private checkIntervalHandle: NodeJS.Timeout | null = null;
   private lastSnapshotTime: number;
 
+  // Real values received from the child's HEALTH_STATUS messages (recordHealthStatus()).
+  // Previously getHealthReport() fabricated these: lastPingAt was always
+  // `new Date()` (i.e. "now", regardless of when the child last actually
+  // reported) and childMemoryBytes was hardcoded null.
+  private lastReceivedPingAt: Date | null = null;
+  private lastReceivedMemoryBytes: number | null = null;
+
+  /** Invoked each time a periodic check finds the process unhealthy. */
+  private readonly onUnhealthy?: () => void;
+
   constructor(
     private wsChannel: WsChannelService,
     options?: {
       checkIntervalMs?: number;
       heartbeatTimeoutMs?: number;
+      onUnhealthy?: () => void;
     },
   ) {
     this.checkIntervalMs = options?.checkIntervalMs ?? 2000; // Check every 2 seconds
     this.heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 5000; // Timeout after 5 seconds
     this.lastSnapshotTime = Date.now();
+    this.onUnhealthy = options?.onUnhealthy;
   }
 
   /**
@@ -119,9 +131,6 @@ export class HealthMonitor {
     const msSinceLastSnapshot = now - this.lastSnapshotTime;
     const healthy = msSinceLastSnapshot < this.heartbeatTimeoutMs;
 
-    const connectionInfo = this.wsChannel.getConnectionInfo();
-    const childMemoryBytes: number | null = null;
-
     let diagnosticMessage: string | null = null;
     if (!healthy) {
       diagnosticMessage = `No DRIVE_SNAPSHOT for ${msSinceLastSnapshot}ms (timeout: ${this.heartbeatTimeoutMs}ms)`;
@@ -130,10 +139,21 @@ export class HealthMonitor {
     return {
       healthy,
       msSinceLastSnapshot,
-      childMemoryBytes,
-      lastPingAt: new Date(),
+      childMemoryBytes: this.lastReceivedMemoryBytes,
+      lastPingAt: this.lastReceivedPingAt ?? new Date(0),
       diagnosticMessage,
     };
+  }
+
+  /**
+   * Record a real HEALTH_STATUS message received from the child process.
+   * Called by DriveProcessManagerService's HEALTH_STATUS handler. Replaces
+   * the previously-fabricated lastPingAt (always "now") and childMemoryBytes
+   * (always null) with the engine's own real, self-reported values.
+   */
+  recordHealthStatus(payload: { memoryMb: number }): void {
+    this.lastReceivedPingAt = new Date();
+    this.lastReceivedMemoryBytes = Math.round(payload.memoryMb * 1024 * 1024);
   }
 
   /**
@@ -155,6 +175,7 @@ export class HealthMonitor {
         `Health check failed: ${report.diagnosticMessage}`,
         'HealthMonitor',
       );
+      this.onUnhealthy?.();
     }
   }
 
