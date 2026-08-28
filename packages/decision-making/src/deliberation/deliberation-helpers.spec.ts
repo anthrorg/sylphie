@@ -22,6 +22,10 @@ import {
   buildDriveSummary,
   buildEpisodeSummary,
   extractNewEntities,
+  scoreCandidates,
+  normalizeScoreToConfidence,
+  SCORE_MIN,
+  SCORE_MAX,
 } from './deliberation-helpers';
 
 // Verify the re-export from deliberation.service still works (AC1 — no callers break).
@@ -353,5 +357,66 @@ describe('extractNewEntities', () => {
   it('deduplicates entities', () => {
     const entities = extractNewEntities('London London London', EMPTY_WKG);
     expect(entities.filter(e => e === 'London')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TK-126 (DEC-32, Option A) — normalizeScoreToConfidence / scoreCandidates
+// honest debate-gate signal
+// ---------------------------------------------------------------------------
+
+describe('TK-126 — normalizeScoreToConfidence (DEC-32 pinned [0,1] mapping)', () => {
+  it('SCORE_MIN/SCORE_MAX match the pinned governance constants', () => {
+    expect(SCORE_MIN).toBe(-0.95);
+    expect(SCORE_MAX).toBe(1.15);
+  });
+
+  it('AC1 reference case: a GROUNDED, no-penalty score (1.0) maps to confidence ≈0.929 (clears 0.7)', () => {
+    const confidence = normalizeScoreToConfidence(1.0);
+    expect(confidence).toBeCloseTo(0.929, 3);
+    expect(confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('AC3 reference case: an untagged, no-bonus/no-penalty score (0.5) maps to confidence ≈0.690 (stays under 0.7)', () => {
+    const confidence = normalizeScoreToConfidence(0.5);
+    expect(confidence).toBeCloseTo(0.690, 3);
+    expect(confidence).toBeLessThan(0.7);
+  });
+
+  it('clamps below SCORE_MIN to confidence 0', () => {
+    expect(normalizeScoreToConfidence(SCORE_MIN - 5)).toBe(0);
+  });
+
+  it('clamps above SCORE_MAX to confidence 1', () => {
+    expect(normalizeScoreToConfidence(SCORE_MAX + 5)).toBe(1);
+  });
+
+  it('is monotonically increasing in score', () => {
+    expect(normalizeScoreToConfidence(-0.5)).toBeLessThan(normalizeScoreToConfidence(0));
+    expect(normalizeScoreToConfidence(0)).toBeLessThan(normalizeScoreToConfidence(0.5));
+    expect(normalizeScoreToConfidence(0.5)).toBeLessThan(normalizeScoreToConfidence(1.0));
+  });
+});
+
+describe('TK-126 — scoreCandidates base-factor calibration (feeds normalizeScoreToConfidence)', () => {
+  it('a GROUNDED candidate with no penalties and no entity mention scores exactly 1.0 (base weight)', () => {
+    const wkg = { ...EMPTY_WKG, entities: [{ nodeId: 'e1', label: 'Zzyzx', nodeType: 'Entity', properties: {}, confidence: 0.9, provenance: 'test' }] } as any;
+    const scored = scoreCandidates(
+      [{ text: '[GROUNDED] That sounds nice, thanks for sharing.', reasoning: '' }],
+      'FACT',
+      wkg,
+    );
+    expect(scored.scores[0].score).toBeCloseTo(1.0, 5);
+    expect(normalizeScoreToConfidence(scored.scores[0].score)).toBeCloseTo(0.929, 3);
+  });
+
+  it('an untagged candidate with no bonus/penalty scores exactly 0.5 (base weight)', () => {
+    const scored = scoreCandidates(
+      [{ text: 'That is interesting.', reasoning: '' }],
+      'FACT',
+      EMPTY_WKG,
+    );
+    expect(scored.scores[0].score).toBeCloseTo(0.5, 5);
+    expect(normalizeScoreToConfidence(scored.scores[0].score)).toBeCloseTo(0.690, 3);
   });
 });

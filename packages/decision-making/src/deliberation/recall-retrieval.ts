@@ -513,19 +513,33 @@ export function applyRecallGroundingFromRetrieval(
   if (!retrieval) {
     return { grounding: currentGrounding, provenance: null, groundedBy: null };
   }
-  // Already GROUNDED by a stronger/earlier signal — keep it, do not double-label.
-  if (currentGrounding === 'GROUNDED') {
-    return { grounding: currentGrounding, provenance: null, groundedBy: null };
-  }
+  // TK-127 (DEC-31 / AD-0048): the surface-check is the SOLE provenance gate,
+  // evaluated BEFORE the already-GROUNDED early-return. Previously the
+  // already-GROUNDED check ran first and suppressed provenance whenever an
+  // earlier signal had already set GROUNDED — even when THIS retrieval's fact
+  // value genuinely surfaced in the response — so the WS3-T2 reinforcement
+  // gate (which requires factNodeId === responseGroundingProvenance) almost
+  // never fired. Reordering does NOT weaken the honesty guard: an unsurfaced
+  // retrieval still returns provenance=null unconditionally, whatever the
+  // current grounding state; only a genuinely-surfaced value ever threads
+  // provenance, exactly as before (CANON Std-1/Std-4 — no unconditional return).
+  //
   // Honesty guard (C2 + C8.1 Std-1): the fact VALUE must actually surface in the
-  // response, as a WHOLE WORD, for the label to read GROUNDED. The retrieval node
-  // id is real either way, but a fact that was retrieved yet not used in the
-  // answer must NOT claim GROUNDED — and a value that only appears as an
+  // response, as a WHOLE WORD, for provenance to thread. The retrieval node id
+  // is real either way, but a fact that was retrieved yet not used in the
+  // answer must NOT claim provenance — and a value that only appears as an
   // incidental substring ("Max" inside "Maxford") must NOT count as surfaced.
   const surfaced = valueSurfacesAsWord(retrieval.factValue, responseText);
   if (!surfaced) {
+    // Not surfaced: leave grounding/provenance untouched — including when
+    // already GROUNDED by an earlier signal (do not double-label AND do not
+    // fabricate provenance for a retrieval the response never actually used).
     return { grounding: currentGrounding, provenance: null, groundedBy: null };
   }
+  // Surfaced: thread provenance so the reinforcement gate can fire. If
+  // currentGrounding was already 'GROUNDED', this keeps that label (never a
+  // downgrade); if it wasn't, this is the upgrade to GROUNDED that the
+  // surfaced fact value earns.
   return {
     grounding: 'GROUNDED',
     provenance: retrieval.factNodeId,

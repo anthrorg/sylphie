@@ -317,6 +317,45 @@ export function scoreCandidates(
   return { bestIndex, scores, rationale };
 }
 
+// ---------------------------------------------------------------------------
+// TK-126 (DEC-32, Option A) — honest debate-gate confidence signal
+//
+// Threads scoreCandidates' selected-candidate score into the deliberation
+// confidence via a FIXED [0,1] normalization, so the shouldDebate gate reflects
+// a real, already-evaluated quality signal instead of a fabricated placeholder
+// (`0.5 + (selectedIndex === 0 ? 0.1 : 0)`).
+//
+// The bounds are derived from the BASE (pre-EMA) factor weights in
+// scoreCandidates ONLY — deliberately excluding nudgeScoringWeights' own
+// dynamic range — so the 0.7 DEBATE_THRESHOLD's MEANING stays stable as the
+// EMA adjustment vector evolves post-warmup (DEC-32 requirement).
+//
+//   SCORE_MIN = -0.95  worst base-factor combo: untagged(+0.5) - chatbot(-0.5)
+//                       - idk-conv(-0.7) - ends-with-?(-0.15) - verbose(-0.1)
+//   SCORE_MAX =  1.15  best base-factor combo: grounded(+1.0) + entity(+0.15)
+//
+// Option B (lowering DEBATE_THRESHOLD instead) is REJECTED by DEC-32 as Std-4
+// (Theater Prohibition) theater — a still-fabricated confidence made reachable
+// by moving the bar is not honest, it just relocates the fabrication.
+// ---------------------------------------------------------------------------
+
+/** Worst possible base (pre-EMA) scoreCandidates score — see derivation above. */
+export const SCORE_MIN = -0.95;
+
+/** Best possible base (pre-EMA) scoreCandidates score — see derivation above. */
+export const SCORE_MAX = 1.15;
+
+/**
+ * Normalize a scoreCandidates() score to a [0,1] confidence value using the
+ * fixed SCORE_MIN/SCORE_MAX mapping (DEC-32, Option A). Clamped at both ends
+ * so scores outside the base-factor range (e.g. from EMA drift) never produce
+ * an out-of-[0,1] confidence.
+ */
+export function normalizeScoreToConfidence(score: number): number {
+  const normalized = (score - SCORE_MIN) / (SCORE_MAX - SCORE_MIN);
+  return Math.min(1, Math.max(0, normalized));
+}
+
 /** Parse the arbiter's decision. */
 export function parseArbiterDecision(
   text: string,

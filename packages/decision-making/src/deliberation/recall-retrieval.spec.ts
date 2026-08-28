@@ -139,10 +139,24 @@ describe('WS3-T1 — applyRecallGroundingFromRetrieval (label upgrade + honesty 
     expect(out.groundedBy).toBeNull();
   });
 
-  it('already GROUNDED → not double-labeled', () => {
+  // TK-127 (DEC-31 / AD-0048): the surface-check now runs BEFORE the
+  // already-GROUNDED early-return, so a genuinely-surfaced value threads
+  // provenance even when an earlier signal already set GROUNDED — this is
+  // what lets the WS3-T2 reinforcement gate fire. Not a double-label: the
+  // grounding LABEL is unchanged (still 'GROUNDED'), only the provenance
+  // that was previously (buggily) suppressed now threads through.
+  it('already GROUNDED + value surfaced → grounding stays GROUNDED AND provenance now threads (post-fix)', () => {
     const out = applyRecallGroundingFromRetrieval(retrieval, 'Your name is Jim!', 'GROUNDED');
     expect(out.grounding).toBe('GROUNDED');
-    expect(out.provenance).toBeNull(); // no override
+    expect(out.provenance).toBe('attr-user-jim-name');
+    expect(out.groundedBy).toBe('OKG');
+  });
+
+  it('already GROUNDED + value NOT surfaced → honesty guard still holds regardless of prior grounding (provenance null)', () => {
+    const out = applyRecallGroundingFromRetrieval(retrieval, 'I think you told me earlier.', 'GROUNDED');
+    expect(out.grounding).toBe('GROUNDED');
+    expect(out.provenance).toBeNull();
+    expect(out.groundedBy).toBeNull();
   });
 
   it('null retrieval → passthrough (non-recall turn)', () => {

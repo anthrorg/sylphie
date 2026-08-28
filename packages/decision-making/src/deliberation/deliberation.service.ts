@@ -47,6 +47,7 @@ import {
   type MonologueClassification,
   parseCandidates,
   scoreCandidates,
+  normalizeScoreToConfidence,
   parseArbiterDecision,
   parseGroundingTag,
   parseMonologueClassification,
@@ -638,7 +639,11 @@ export class DeliberationService {
         ? inferredGrounding
         : parsedGrounding ?? inferredGrounding;
 
-    let confidence = 0.5 + (selectedIndex === 0 ? 0.1 : 0); // Slight boost if first choice
+    // TK-126 (DEC-32, Option A): confidence is the REAL scoreCandidates signal
+    // for the selected candidate, normalized to [0,1] via the pinned
+    // SCORE_MIN/SCORE_MAX mapping — not a fabricated placeholder tied to
+    // position bias. See deliberation-helpers.ts for the derivation.
+    let confidence = normalizeScoreToConfidence(scored.scores[selectedIndex].score);
     let rationale = scored.rationale;
 
     this.logger.debug(`Selected candidate ${selectedIndex + 1}: "${selected.text.substring(0, 60)}..."`);
