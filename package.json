@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "yarn workspace sylphie-frontend dev",
     "build": "yarn workspace sylphie-frontend build",
+    "test:frontend": "yarn workspace sylphie-frontend test",
     "lint": "yarn workspace sylphie-frontend lint",
     "lint:fix": "yarn workspace sylphie-frontend lint:fix",
     "format": "yarn workspace sylphie-frontend format",

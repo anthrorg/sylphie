@@ -80,7 +80,20 @@ export class TimescaleService implements OnModuleInit, OnModuleDestroy {
       await client.query('COMMIT');
       return result;
     } catch (e) {
-      await client.query('ROLLBACK');
+      // TK-151 (item 20260702-005): if the ROLLBACK query itself throws
+      // (e.g. the connection dropped), the un-awaited-around-a-try
+      // `await client.query('ROLLBACK')` would replace `e` — the caller
+      // would see the ROLLBACK failure instead of the ORIGINAL error that
+      // triggered the rollback in the first place, masking the real cause.
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        this.logger.error(
+          `ROLLBACK failed while handling a transaction error: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }`,
+        );
+      }
       throw e;
     } finally {
       client.release();

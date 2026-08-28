@@ -433,7 +433,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const newAction: ActionHistoryEntry = {
         action: data.action,
         confidence: data.action_confidence,
-        timestamp: data.timestamp,
+        // TK-145 (item 20260702-005): ms-vs-seconds mismatch — `data.timestamp`
+        // is wall-clock MILLISECONDS (see the innerMonologue entry a few lines
+        // below), but `ActionHistoryEntry.timestamp` is SECONDS everywhere else
+        // it's produced (addActionToHistory / addPredictionToHistory both use
+        // `Date.now() / 1000`), and `formatRelativeTime` (MetricsPanel.tsx)
+        // computes its diff against `Date.now() / 1000`. Storing the raw ms
+        // value here made every entry look ~1000x further in the past than it
+        // was (e.g. a few seconds old rendering as "Xh ago").
+        timestamp: data.timestamp / 1000,
       }
       const history = [newAction, ...state.actionHistory].slice(0, MAX_HISTORY)
       updates.actionHistory = history

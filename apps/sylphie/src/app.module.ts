@@ -27,6 +27,7 @@ import { DrivesController, PressureController } from './controllers/drives.contr
 import { VoiceController } from './controllers/voice.controller';
 import { MetricsController } from './controllers/metrics.controller';
 import { LlmController } from './controllers/llm.controller';
+import { FeAgentController } from './controllers/fe-agent.controller';
 import { AuthController } from './controllers/auth.controller';
 import { SupervisorController } from './controllers/supervisor.controller';
 import { RulesController } from './controllers/rules.controller';
@@ -161,6 +162,7 @@ const pgPoolLogger = new Logger('PostgresPool');
     VoiceController,
     MetricsController,
     LlmController,
+    FeAgentController,
     SupervisorController,
     RulesController,
     CognitionController,

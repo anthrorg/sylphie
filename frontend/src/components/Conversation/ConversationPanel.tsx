@@ -20,11 +20,10 @@ import { useAppStore } from '../../store'
 import { useConversationWebSocket } from '../../hooks/useWebSocket'
 import { useAutoScroll } from '../../hooks/useAutoScroll'
 import { ConversationMessage } from '../../types'
-import { WordRatingDrawer } from './WordRatingDrawer'
 
 // Message types: guardian=user input, response=Sylphie reply, cb_speech=Sylphie initiated speech,
 // thinking=processing indicator, error=system error
-const MessageBubbleImpl: React.FC<{ message: ConversationMessage; onClick?: () => void }> = ({ message, onClick }) => {
+const MessageBubbleImpl: React.FC<{ message: ConversationMessage }> = ({ message }) => {
   const isGuardian = message.type === 'guardian'
   const isTranscription = message.type === 'transcription'
   const isThinking = message.type === 'thinking'
@@ -40,12 +39,10 @@ const MessageBubbleImpl: React.FC<{ message: ConversationMessage; onClick?: () =
 
   return (
     <Box
-      onClick={onClick}
       sx={{
         display: 'flex',
         justifyContent: isGuardian || isTranscription ? 'flex-end' : 'flex-start',
         mb: 1.5,
-        cursor: onClick ? 'pointer' : 'default',
       }}
     >
       <Box
@@ -316,7 +313,6 @@ const ConversationInput: React.FC<{ sendTextMessage: (text: string) => boolean }
 }
 
 export const ConversationPanel: React.FC = () => {
-  const [ratingTarget, setRatingTarget] = useState<ConversationMessage | null>(null)
   const feedRef = useRef<HTMLDivElement>(null)
 
   // Per-field selectors — full-store subscription was re-rendering the entire
@@ -326,7 +322,7 @@ export const ConversationPanel: React.FC = () => {
   const queuePosition = useAppStore((s) => s.queuePosition)
   const wsConnectionState = useAppStore((s) => s.wsState.conversation)
   const addMessage = useAppStore((s) => s.addMessage)
-  const { sendMessage, sendTextMessage } = useConversationWebSocket()
+  const { sendTextMessage } = useConversationWebSocket()
 
   // Auto-scroll chat to bottom when new messages arrive
   useAutoScroll(feedRef, [messages])
@@ -345,10 +341,6 @@ export const ConversationPanel: React.FC = () => {
     window.addEventListener('sylphie:voice_text', handleVoiceText)
     return () => window.removeEventListener('sylphie:voice_text', handleVoiceText)
   }, [wsConnectionState, addMessage, sendTextMessage])
-
-  const handleWordMarked = (phraseNodeId: string, word: string, position: number) => {
-    sendMessage({ type: 'phrase_word_rating', phrase_node_id: phraseNodeId, word, position, rating: 'bad' })
-  }
 
   const isConnected = wsConnectionState === 'connected'
 
@@ -393,11 +385,7 @@ export const ConversationPanel: React.FC = () => {
         )}
 
         {messages.map((message, index) => (
-          <MessageBubble
-            key={message.clientId ?? index}
-            message={message}
-            onClick={message.type === 'cb_speech' ? () => setRatingTarget(message) : undefined}
-          />
+          <MessageBubble key={message.clientId ?? index} message={message} />
         ))}
 
         {/* Typing indicator — shown when Sylphie is processing (thinking) */}
@@ -475,12 +463,6 @@ export const ConversationPanel: React.FC = () => {
           </Box>
         )}
       </Box>
-
-      <WordRatingDrawer
-        message={ratingTarget}
-        onClose={() => setRatingTarget(null)}
-        onWordMarked={handleWordMarked}
-      />
 
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />
 

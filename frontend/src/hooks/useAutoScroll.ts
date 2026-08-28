@@ -21,10 +21,11 @@ export function useAutoScroll(
     // scrollIntoView() is intentionally NOT used as fallback because it would
     // scroll the entire page, not just the container.
     if (el.scrollHeight > el.clientHeight) {
-      el.scrollTop = el.scrollHeight
+      // TK-152: this used to hard-set scrollTop (always an instant jump),
+      // silently ignoring the `behavior` option entirely. scrollTo() actually
+      // honors 'smooth' vs 'auto'.
+      el.scrollTo({ top: el.scrollHeight, behavior })
     }
-  }, deps) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // behavior is read in effect but not used directly; satisfies noUnusedLocals
-  void behavior
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, behavior])
 }

@@ -11,6 +11,7 @@ import { ChatView } from './pages/dashboard/ChatView'
 import { GuardianView } from './pages/dashboard/GuardianView'
 import { useAppStore } from './store'
 import { useAnalyticsPageviews } from './lib/analytics'
+import { classifyAuthMeStatus } from './lib/authMeOutcome'
 
 function AuthGate() {
   // Must run inside <BrowserRouter> so it can call useLocation().
@@ -33,11 +34,33 @@ function AuthGate() {
       headers: { Authorization: `Bearer ${authToken}` },
     })
       .then((res) => {
-        if (!res.ok) throw new Error()
+        // TK-147: only a 401 (the token itself is invalid/expired) means the
+        // guardian is actually logged out. A transient 5xx or a network
+        // blip is NOT a reason to delete the stored token and boot them back
+        // to the login page — that used to happen unconditionally in the
+        // .catch() below for ANY failure, including a momentary backend hiccup.
+        const outcome = classifyAuthMeStatus(res.status)
+        if (outcome === 'unauthenticated') {
+          clearAuth()
+          return null
+        }
+        if (outcome === 'transient') {
+          // Leave the token intact and stop the auth spinner. The stored
+          // authToken (already in state from localStorage) still lets the
+          // app render; retrying /api/auth/me happens naturally on the next
+          // reload or WS reconnect.
+          setAuthChecked(true)
+          return null
+        }
         return res.json()
       })
-      .then((user) => setAuth(authToken, user))
-      .catch(() => clearAuth())
+      .then((user) => {
+        if (user) setAuth(authToken, user)
+      })
+      .catch(() => {
+        // Network error (offline, DNS, etc.) — also transient; do NOT clear auth.
+        setAuthChecked(true)
+      })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!authChecked) {

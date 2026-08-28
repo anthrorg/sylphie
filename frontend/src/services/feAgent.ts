@@ -1,56 +1,44 @@
 /**
- * FE Agent service — Claude API integration for real-time Sylphie state assistant.
+ * FE Agent service — calls the backend proxy (TK-142 / item 20260702-005).
+ *
+ * The Anthropic API key used to live in this module, read from a Vite
+ * "public" build-time env var and passed to an in-browser SDK client with
+ * its explicit unsafe-browser-use opt-in flag set. Vite inlines that class
+ * of env var into the built JS bundle, so anyone loading the dashboard's
+ * public login page could extract the key.
+ *
+ * The key now lives ONLY in the backend process env (`ANTHROPIC_API_KEY`,
+ * never a Vite-exposed name) — see
+ * apps/sylphie/src/controllers/fe-agent.controller.ts. This module never
+ * imports the Anthropic SDK and never sees the key.
  *
  * Read-only: never writes to Sylphie's graph, never sends commands to Sylphie.
- * Telemetry buffer in, text response out.
- *
- * Uses the Anthropic JS SDK with dangerouslyAllowBrowser since this runs
- * in the guardian's browser (trusted environment, not public-facing).
  */
-
-import Anthropic from '@anthropic-ai/sdk'
-
-const SYSTEM_PROMPT = `You are the FE Agent, a real-time assistant embedded in the Sylphie guardian interface. Your role is to help the guardian understand what Sylphie is doing, feeling, and learning.
-
-Sylphie is an AI companion that develops genuine personality through experience. It has:
-- 12 drives (4 core: system_health, moral_valence, integrity, cognitive_awareness; 8 complement: guilt, curiosity, boredom, anxiety, satisfaction, sadness, focus, social)
-- A pressure-driven executor engine that selects actions based on drive pressures
-- A World Knowledge Graph (Neo4j) where all learning accumulates
-- Dual-process cognition: Type 1 (graph reflexes) and Type 2 (LLM-assisted deliberation)
-
-Key concepts:
-- "pressure" = internal drive intensity (0.0-1.0). High pressure drives action selection.
-- "executor state" = idle, categorizing, querying, selecting, executing
-- "action" = what Sylphie chose to do
-- "category" = which drive triggered the action
-- "Type 1/Type 2" = reflex vs deliberative cognition
-
-You have access to a real-time telemetry snapshot. Use it to give specific, data-grounded answers. Be concise. Reference actual pressure values and action history when relevant.
-
-You are READ-ONLY. You cannot control Sylphie, send it commands, or modify its graph.`
-
-let client: Anthropic | null = null
-
-function getClient(): Anthropic | null {
-  if (client) return client
-
-  const apiKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ANTHROPIC_API_KEY
-  if (!apiKey) return null
-
-  client = new Anthropic({
-    apiKey,
-    dangerouslyAllowBrowser: true,
-  })
-  return client
-}
-
-export function isAvailable(): boolean {
-  return !!(import.meta as unknown as { env: Record<string, string> }).env?.VITE_ANTHROPIC_API_KEY
-}
 
 export interface FEAgentMessage {
   role: 'user' | 'assistant'
   content: string
+}
+
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('sylphie_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/**
+ * Checks the BACKEND'S availability (whether ANTHROPIC_API_KEY is configured
+ * server-side) — replaces the old synchronous client-side env-var check,
+ * since the frontend no longer holds (or can hold) that information itself.
+ */
+export async function checkAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/fe-agent/status')
+    if (!res.ok) return false
+    const data = (await res.json()) as { available?: boolean }
+    return !!data.available
+  } catch {
+    return false
+  }
 }
 
 export async function askFEAgent(
@@ -59,34 +47,26 @@ export async function askFEAgent(
   history: FEAgentMessage[],
   onChunk: (text: string) => void,
 ): Promise<string> {
-  const anthropic = getClient()
-  if (!anthropic) {
-    throw new Error('FE Agent unavailable — VITE_ANTHROPIC_API_KEY not set')
-  }
-
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    ...history,
-    {
-      role: 'user',
-      content: `[TELEMETRY SNAPSHOT]\n${telemetrySnapshot}\n\n[GUARDIAN QUESTION]\n${question}`,
+  const res = await fetch('/api/fe-agent/ask', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...authHeaders(),
     },
-  ]
-
-  const stream = anthropic.messages.stream({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages,
+    body: JSON.stringify({ question, telemetrySnapshot, history }),
   })
 
-  let fullResponse = ''
-
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      fullResponse += event.delta.text
-      onChunk(fullResponse)
-    }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { message?: string } | null
+    throw new Error(body?.message || `FE Agent request failed (${res.status})`)
   }
 
-  return fullResponse
+  const data = (await res.json()) as { response: string }
+
+  // The backend proxy answers in one shot (no SSE) — see the controller's
+  // docstring for why streaming parity was deferred rather than silently
+  // dropped. Deliver the full text through the same onChunk callback so
+  // existing callers (useFEAgentChat) don't need to change.
+  onChunk(data.response)
+  return data.response
 }

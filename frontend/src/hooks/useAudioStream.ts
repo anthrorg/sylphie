@@ -44,7 +44,11 @@ export function useAudioStream(): UseAudioStreamReturn {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
-  const { setVoiceState } = useAppStore()
+  // Field-scoped selector (TK-148): a bare, no-selector useAppStore call
+  // re-runs this hook's identity on every unrelated store write — this hook
+  // is driven by a continuously-streaming mic WS, so that's a lot of
+  // needless re-renders of whatever component owns it.
+  const setVoiceState = useAppStore((s) => s.setVoiceState)
 
   const cleanup = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
